@@ -132,6 +132,14 @@ fn card<'a>(devices: &'a Value, name: &str) -> Option<&'a Value> {
         .find(|d| d["name"] == name)
 }
 
+/// `name`'s request to pair, if any.
+fn asking<'a>(devices: &'a Value, name: &str) -> Option<&'a Value> {
+    devices["requests"]
+        .as_array()?
+        .iter()
+        .find(|r| r["name"] == name)
+}
+
 fn state_of(devices: &Value, name: &str) -> String {
     card(devices, name).map_or("gone".into(), |d| {
         d["state"]["state"].as_str().unwrap().to_string()
@@ -199,12 +207,17 @@ impl Stub {
 
 /// `GET path` on `url` (`http://127.0.0.1:port`): status and body.
 fn get(url: &str, path: &str) -> Result<(u16, String), std::io::Error> {
+    get_as(url, path, url.strip_prefix("http://").unwrap())
+}
+
+/// `get` naming `host` in the `Host` header.
+fn get_as(url: &str, path: &str, host: &str) -> Result<(u16, String), std::io::Error> {
     let addr = url.strip_prefix("http://").unwrap();
     let mut stream = TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
     )?;
     let mut text = String::new();
     stream.read_to_string(&mut text)?;
@@ -222,13 +235,13 @@ async fn pair(app: &mut App, store: &Path, name: &str) -> Stub {
     let s = stub(&app.link, store, name, &[]);
     let code = s.line("code ")["code ".len()..].to_string();
     let devices = app
-        .devices_where("it asks to pair", |d| state_of(d, name) == "asking_to_pair")
+        .devices_where("it asks to pair", |d| asking(d, name).is_some())
         .await;
-    let asking = &card(&devices, name).unwrap()["state"];
+    let ask = asking(&devices, name).unwrap();
     // The code the desktop shows is the one the device shows.
-    assert_eq!(asking["code"], code.as_str());
+    assert_eq!(ask["code"], code.as_str());
     assert_eq!(devices["headset"], "asking_to_pair");
-    let request = asking["request"].clone();
+    let request = ask["request"].clone();
     app.send(json!({"type": "allow_pairing", "request": request}))
         .await;
     s.line("paired ");
@@ -279,6 +292,9 @@ async fn pair_link_tunnel_reconnect_drop_and_forget() {
     quest.line("request GET /state");
     let (status, _) = get(&tunnel, "/nowhere").unwrap();
     assert_eq!(status, 404);
+    // A page on a rebound DNS name is not this port's own host.
+    let (status, _) = get_as(&tunnel, "/state", "evil.example:80").unwrap();
+    assert_eq!(status, 403);
     // The pairing secret never reaches the page.
     let secret = pairings
         .split("\"secret\":\"")
@@ -366,17 +382,15 @@ async fn pair_link_tunnel_reconnect_drop_and_forget() {
     let stranger = stub(&app.link, other.path(), "Stranger", &["--once"]);
     stranger.line("code ");
     let devices = app
-        .devices_where("the stranger asks", |d| {
-            state_of(d, "Stranger") == "asking_to_pair"
-        })
+        .devices_where("the stranger asks", |d| asking(d, "Stranger").is_some())
         .await;
-    let c = card(&devices, "Stranger").unwrap();
-    assert!(c["tunnel"].is_null() && c["paired"] == false);
-    let request = c["state"]["request"].clone();
+    // A request is no device: no card, no tunnel.
+    assert!(card(&devices, "Stranger").is_none());
+    let request = asking(&devices, "Stranger").unwrap()["request"].clone();
     app.send(json!({"type": "deny_pairing", "request": request}))
         .await;
     stranger.line("ended pairing was refused");
-    app.devices_where("its card goes", |d| card(d, "Stranger").is_none())
+    app.devices_where("its request goes", |d| asking(d, "Stranger").is_none())
         .await;
     assert!(!app.pairings().contains("Stranger"));
 

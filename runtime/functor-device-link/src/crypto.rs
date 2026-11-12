@@ -139,6 +139,7 @@ impl Transport {
 
     /// The messages carrying `frame`; a frame over [`MAX_FRAME`] is refused.
     pub(crate) fn seal(&mut self, frame: &Frame) -> Result<Vec<Vec<u8>>, Error> {
+        frame.check()?;
         let bytes = frame.encode();
         if bytes.len() > MAX_FRAME {
             return Err(Error::TooLarge);
@@ -170,8 +171,8 @@ impl Transport {
         out
     }
 
-    /// The frame `msg` completes, if it does.
-    pub(crate) fn open(&mut self, msg: &[u8]) -> Result<Option<Frame>, Error> {
+    /// The frame `msg` completes, if it does; frames over `limit` bytes end it.
+    pub(crate) fn open(&mut self, msg: &[u8], limit: usize) -> Result<Option<Frame>, Error> {
         if msg.len() > MAX_MESSAGE {
             return Err(Error::TooLarge);
         }
@@ -185,7 +186,7 @@ impl Transport {
             Some((1, chunk)) => (true, chunk),
             _ => return Err(Error::Malformed("chunk")),
         };
-        if self.partial.len() + chunk.len() > MAX_FRAME {
+        if self.partial.len() + chunk.len() > limit.min(MAX_FRAME) {
             return Err(Error::TooLarge);
         }
         self.partial.extend_from_slice(chunk);

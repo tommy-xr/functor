@@ -243,10 +243,26 @@ fn pairings_file(home: &Path) -> PathBuf {
     home.join("devices.json")
 }
 
-/// The stored pairings; none if the file is missing or unreadable.
-pub fn load_pairings(home: &Path) -> Vec<StoredPairing> {
-    let text = std::fs::read_to_string(pairings_file(home)).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or_default()
+/// The stored pairings; none if the file is missing. An unparsable file is
+/// moved aside (`devices.json.bad`), never overwritten.
+pub fn load_pairings(home: &Path) -> io::Result<Vec<StoredPairing>> {
+    let file = pairings_file(home);
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    match serde_json::from_str(&text) {
+        Ok(pairings) => Ok(pairings),
+        Err(e) => {
+            eprintln!(
+                "functor-app: {} is unreadable ({e}); moved aside",
+                file.display()
+            );
+            std::fs::rename(&file, file.with_extension("json.bad"))?;
+            Ok(Vec::new())
+        }
+    }
 }
 
 pub fn save_pairings(home: &Path, pairings: &[StoredPairing]) -> io::Result<()> {

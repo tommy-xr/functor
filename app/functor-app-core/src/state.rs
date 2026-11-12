@@ -498,18 +498,23 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             false,
         ),
         Event::Link(event) => {
+            if let LinkEvent::Failed { reason } = &event {
+                commands.push(Command::Broadcast(ServerMsg::Rejected {
+                    reason: reason.clone(),
+                }));
+            }
             let (changed, link) = on_link(&mut state.devices, event, state.now);
             commands.extend(link.into_iter().map(Command::Link));
             (changed, false)
         }
         Event::Client(ClientMsg::AllowPairing { request }) => {
-            match devices::allow(&state.devices, request, state.now) {
-                Ok(command) => commands.push(Command::Link(command)),
-                Err(reason) => {
-                    reject(&mut commands, reason);
+            match devices::allow(&mut state.devices, request, state.now) {
+                Ok(command) => {
+                    commands.push(Command::Link(command));
+                    (true, false)
                 }
+                Err(reason) => (reject(&mut commands, reason), false),
             }
-            (false, false)
         }
         Event::Client(ClientMsg::DenyPairing { request }) => {
             match devices::deny(&mut state.devices, request) {
@@ -4595,7 +4600,7 @@ mod tests {
         assert!(matches!(commands[..], [Command::Broadcast(_)]));
         assert_eq!(s.devices.headset, Headset::AskingToPair);
         let (_, commands) = update(s.clone(), client(ClientMsg::AllowPairing { request: 4 }));
-        assert_eq!(commands, [Command::Link(LinkCommand::Allow { request: 4 })]);
+        assert!(commands.contains(&Command::Link(LinkCommand::Allow { request: 4 })));
         let (_, commands) = update(s.clone(), client(ClientMsg::AllowPairing { request: 5 }));
         assert_eq!(commands, rejected("that pairing request has ended"));
         // Expired by the core's wall clock.

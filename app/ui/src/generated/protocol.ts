@@ -155,11 +155,11 @@ id: string, name: string,
  */
 paired: boolean, state: DeviceState, 
 /**
- * The headset app's version, as it last said.
+ * The headset app's version, as it last said over its link.
  */
 app_version: string | null, 
 /**
- * Wall-clock ms.
+ * Wall-clock ms, from its links.
  */
 first_seen: number | null, last_seen: number | null, 
 /**
@@ -168,7 +168,7 @@ first_seen: number | null, last_seen: number | null,
  */
 tunnel: string | null, };
 
-export type DeviceState = { "state": "asking_to_pair", request: number, code: string, expires_at: number, } | { "state": "away" } | { "state": "connected", link: LinkKind, 
+export type DeviceState = { "state": "away" } | { "state": "connected", link: LinkKind, 
 /**
  * Percent.
  */
@@ -184,7 +184,7 @@ project: string | null,
 /**
  * The last ping's round trip.
  */
-latency_ms: number | null, } | { "state": "needs_update", update: Side, reason: string, } | { "state": "cannot_reach", reason: string, since: number, };
+latency_ms: number | null, } | { "state": "needs_update", update: Side, reason: string, since: number, } | { "state": "cannot_reach", reason: string, since: number, };
 
 export type Devices = { 
 /**
@@ -192,9 +192,14 @@ export type Devices = {
  */
 listening: string | null, 
 /**
- * Paired devices and those asking to pair, by name then id.
+ * Paired devices, and unpaired ones whose app is too old to pair, by
+ * name then id.
  */
 list: Array<Device>, 
+/**
+ * Devices asking to pair, oldest first: the prompt shows one at a time.
+ */
+requests: Array<PairRequest>, 
 /**
  * The title bar's one word for them all.
  */
@@ -377,6 +382,31 @@ ratio: number, first: Node, second: Node, };
  * Why a file's lines are not in the diff.
  */
 export type Omitted = "binary" | "large" | "budget" | "unreadable";
+
+/**
+ * A device asking to pair (unauthenticated: its id and name are claims).
+ */
+export type PairRequest = { request: number, 
+/**
+ * The id it claims, hex.
+ */
+device: string, name: string, app_version: string, 
+/**
+ * Both sides show it.
+ */
+code: string, 
+/**
+ * Wall-clock ms.
+ */
+expires_at: number, 
+/**
+ * The user allowed it; the headset's own confirmation is awaited.
+ */
+allowed: boolean, 
+/**
+ * It claims the id of a device already paired.
+ */
+repair: boolean, };
 
 export type Pane = { 
 /**

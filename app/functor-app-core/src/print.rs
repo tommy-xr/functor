@@ -120,13 +120,6 @@ pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
     let mut lines = vec![format!("headset: {word} ({link})")];
     for d in &devices.list {
         let state = match &d.state {
-            DeviceState::AskingToPair { code, .. } => {
-                format!(
-                    "asking to pair, code {} {}",
-                    &code[..code.len() / 2],
-                    &code[code.len() / 2..]
-                )
-            }
             DeviceState::Away => "away".to_string(),
             DeviceState::Connected {
                 link,
@@ -159,6 +152,15 @@ pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
             .unwrap_or_default();
         let short = &d.id[..d.id.len().min(8)];
         lines.push(format!("  {} {short}: {state}{tunnel}", d.name));
+    }
+    for r in &devices.requests {
+        let short = &r.device[..r.device.len().min(8)];
+        let (a, b) = r.code.split_at(r.code.len() / 2);
+        let allowed = if r.allowed { ", allowed" } else { "" };
+        lines.push(format!(
+            "  {} {short}: asking to pair, code {a} {b}{allowed}",
+            r.name
+        ));
     }
     lines
 }

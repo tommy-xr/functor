@@ -184,7 +184,15 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
         let mut paired = false;
         for event in out.events {
             match event {
-                device::Event::Code { code, .. } => say(&format!("code {code}")),
+                // The headset's user would compare first; the stub agrees at once.
+                device::Event::Code { code, .. } => {
+                    say(&format!("code {code}"));
+                    for msg in machine.confirm().send {
+                        ws.send(Message::Binary(msg.into()))
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
                 device::Event::Paired {
                     desktop,
                     desktop_name,
@@ -314,8 +322,10 @@ async fn discover(desktop: Option<String>) -> Option<String> {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut first = None;
         while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
-            let Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) = found.recv_timeout(left) else {
-                continue;
+            let info = match found.recv_timeout(left) {
+                Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => info,
+                Ok(_) => continue,
+                Err(_) => break,
             };
             let Some(ip) = info.get_addresses_v4().into_iter().next() else {
                 continue;

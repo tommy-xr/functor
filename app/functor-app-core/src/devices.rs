@@ -1,13 +1,17 @@
-//! Headsets (D26, D27): the paired ones and those asking to pair, each in
-//! one of a few connection states, each state with one fix. The shell runs
-//! the device link and reports what happens as [`LinkEvent`]s; pairing
-//! secrets stay in the shell, never in this state (which the page sees).
+//! Headsets (D26, D27): the paired ones, each in one of a few connection
+//! states with one fix, and the requests to pair. The shell runs the device
+//! link and reports what happens as [`LinkEvent`]s; pairing secrets stay in
+//! the shell, never in this state (which the page sees).
+//!
+//! Anything an unpaired peer says (a request to pair, an old version) is
+//! unauthenticated: it never changes a paired device's name, `last_seen`
+//! or a live link's state.
 
 use serde::{Deserialize, Serialize};
 
-/// A paired device last heard from this long ago is away, not failing.
+/// A paired device whose link failed this long ago is away, not failing.
 pub const RECENT_MS: u64 = 120_000;
-/// Cards of unpaired devices with an old app, shown at most.
+/// Requests and unpaired cards shown at most (the shell caps them lower).
 const MAX_UNPAIRED: usize = 8;
 
 /// The oldest headset app this desktop works with. Local and CI builds
@@ -19,8 +23,11 @@ pub const MIN_HEADSET_APP: (u64, u64, u64) = (0, 1, 0);
 pub struct Devices {
     /// Where the device link listens (`host:port`); `None` when it is off.
     pub listening: Option<String>,
-    /// Paired devices and those asking to pair, by name then id.
+    /// Paired devices, and unpaired ones whose app is too old to pair, by
+    /// name then id.
     pub list: Vec<Device>,
+    /// Devices asking to pair, oldest first: the prompt shows one at a time.
+    pub requests: Vec<PairRequest>,
     /// The title bar's one word for them all.
     pub headset: Headset,
 }
@@ -34,9 +41,9 @@ pub struct Device {
     /// A pairing is stored for it.
     pub paired: bool,
     pub state: DeviceState,
-    /// The headset app's version, as it last said.
+    /// The headset app's version, as it last said over its link.
     pub app_version: Option<String>,
-    /// Wall-clock ms.
+    /// Wall-clock ms, from its links.
     pub first_seen: Option<u64>,
     pub last_seen: Option<u64>,
     /// Its debug runtime through the link: `http://127.0.0.1:<port>`, kept
@@ -48,16 +55,29 @@ pub struct Device {
     pub conn: Option<u64>,
 }
 
+/// A device asking to pair (unauthenticated: its id and name are claims).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PairRequest {
+    pub request: u64,
+    /// The id it claims, hex.
+    pub device: String,
+    pub name: String,
+    pub app_version: String,
+    /// Both sides show it.
+    pub code: String,
+    /// Wall-clock ms.
+    pub expires_at: u64,
+    /// The user allowed it; the headset's own confirmation is awaited.
+    pub allowed: bool,
+    /// It claims the id of a device already paired.
+    pub repair: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum DeviceState {
-    /// Show `code` (until `expires_at`, wall ms) and ask Allow / Not mine.
-    AskingToPair {
-        request: u64,
-        code: String,
-        expires_at: u64,
-    },
     /// Paired, not connected: off, asleep or elsewhere.
     Away,
     Connected {
@@ -72,9 +92,14 @@ pub enum DeviceState {
         /// The last ping's round trip.
         latency_ms: Option<u64>,
     },
-    /// It cannot work with this app until one of them is updated.
-    NeedsUpdate { update: Side, reason: String },
-    /// Paired and recently seen, but its link just failed (since `since`).
+    /// It cannot work with this app until one of them is updated (seen at
+    /// `since`).
+    NeedsUpdate {
+        update: Side,
+        reason: String,
+        since: u64,
+    },
+    /// Paired, but its link just failed (at `since`).
     CannotReach { reason: String, since: u64 },
 }
 
@@ -137,7 +162,7 @@ pub enum LinkEvent {
         code: String,
         expires_at: u64,
     },
-    /// Request `request` was allowed and its pairing stored.
+    /// Request `request` was allowed by both users and its pairing stored.
     Paired {
         request: u64,
         device: Paired,
@@ -182,6 +207,14 @@ pub enum LinkEvent {
         device: String,
         url: String,
     },
+    /// A Forget could not be written: `device` is still paired on disk.
+    NotForgotten {
+        device: Paired,
+    },
+    /// Something the user asked for failed; every page is told.
+    Failed {
+        reason: String,
+    },
     /// About once a second: states that age.
     Tick,
 }
@@ -214,27 +247,28 @@ impl Devices {
         self.list.iter_mut().find(|d| d.conn == Some(conn))
     }
 
-    fn by_request(&mut self, request: u64) -> Option<&mut Device> {
-        self.list.iter_mut().find(
-            |d| matches!(d.state, DeviceState::AskingToPair { request: r, .. } if r == request),
-        )
-    }
-
-    /// Ends `request`: a paired device goes back to away, another goes.
-    fn end_request(&mut self, request: u64) -> bool {
-        let Some(device) = self.by_request(request) else {
-            return false;
-        };
-        device.state = DeviceState::Away;
-        self.list
-            .retain(|d| d.paired || !matches!(d.state, DeviceState::Away));
-        true
-    }
-
     fn insert(&mut self, device: Device) {
         self.list.push(device);
         self.list
             .sort_by(|a, b| (&a.name, &a.id).cmp(&(&b.name, &b.id)));
+    }
+
+    fn unpaired(&self) -> usize {
+        self.requests.len() + self.list.iter().filter(|d| !d.paired).count()
+    }
+
+    fn end_request(&mut self, request: u64) -> bool {
+        let before = self.requests.len();
+        self.requests.retain(|r| r.request != request);
+        self.requests.len() != before
+    }
+
+    fn insert_paired(&mut self, p: Paired) {
+        self.insert(Device {
+            first_seen: Some(p.first_seen),
+            last_seen: Some(p.last_seen),
+            ..card(p.id, p.name, true, DeviceState::Away)
+        });
     }
 }
 
@@ -264,9 +298,9 @@ pub fn too_old(version: &str) -> bool {
 }
 
 /// The title-bar word: whatever most needs the user.
-pub fn headset(list: &[Device]) -> Headset {
-    let has = |f: fn(&DeviceState) -> bool| list.iter().any(|d| f(&d.state));
-    if has(|s| matches!(s, DeviceState::AskingToPair { .. })) {
+pub fn headset(devices: &Devices) -> Headset {
+    let has = |f: fn(&DeviceState) -> bool| devices.list.iter().any(|d| f(&d.state));
+    if !devices.requests.is_empty() {
         Headset::AskingToPair
     } else if has(|s| matches!(s, DeviceState::Connected { .. })) {
         Headset::Connected
@@ -274,7 +308,7 @@ pub fn headset(list: &[Device]) -> Headset {
         Headset::NeedsUpdate
     } else if has(|s| matches!(s, DeviceState::CannotReach { .. })) {
         Headset::CannotReach
-    } else if list.iter().any(|d| d.paired) {
+    } else if devices.list.iter().any(|d| d.paired) {
         Headset::Away
     } else {
         Headset::NotPaired
@@ -290,15 +324,12 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
         LinkEvent::Started { listening, paired } => {
             devices.listening = listening;
             devices.list.clear();
+            devices.requests.clear();
             for p in paired {
                 commands.push(LinkCommand::OpenTunnel {
                     device: p.id.clone(),
                 });
-                devices.insert(Device {
-                    first_seen: Some(p.first_seen),
-                    last_seen: Some(p.last_seen),
-                    ..card(p.id, p.name, true, DeviceState::Away)
-                });
+                devices.insert_paired(p);
             }
         }
         LinkEvent::PairRequest {
@@ -309,35 +340,21 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
             code,
             expires_at,
         } => {
-            let asking = DeviceState::AskingToPair {
-                request,
-                code,
-                expires_at,
-            };
-            // One request per device: a newer one replaces it.
-            if let Some(DeviceState::AskingToPair { request: old, .. }) =
-                devices.find(&device).map(|d| d.state.clone())
-            {
-                commands.push(LinkCommand::Deny { request: old });
-            }
-            match devices.find(&device) {
-                Some(d) => {
-                    d.state = asking;
-                    d.name = name;
-                    d.app_version = Some(app_version);
-                }
-                None => {
-                    let unpaired = devices.list.iter().filter(|d| !d.paired).count();
-                    if unpaired >= MAX_UNPAIRED {
-                        // The shell caps unpaired peers; this is a backstop.
-                        commands.push(LinkCommand::Deny { request });
-                    } else {
-                        devices.insert(Device {
-                            app_version: Some(app_version),
-                            ..card(device, name, false, asking)
-                        });
-                    }
-                }
+            // The shell caps unpaired peers; this is a backstop.
+            if devices.unpaired() >= MAX_UNPAIRED {
+                commands.push(LinkCommand::Deny { request });
+            } else {
+                let repair = devices.list.iter().any(|d| d.paired && d.id == device);
+                devices.requests.push(PairRequest {
+                    request,
+                    device,
+                    name,
+                    app_version,
+                    code,
+                    expires_at,
+                    allowed: false,
+                    repair,
+                });
             }
         }
         LinkEvent::Paired { request, device } => {
@@ -352,11 +369,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                     d.first_seen = Some(device.first_seen);
                     d.last_seen = Some(device.last_seen);
                 }
-                None => devices.insert(Device {
-                    first_seen: Some(device.first_seen),
-                    last_seen: Some(device.last_seen),
-                    ..card(device.id, device.name, true, DeviceState::Away)
-                }),
+                None => devices.insert_paired(device),
             }
         }
         LinkEvent::PairEnded { request } => {
@@ -374,6 +387,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                     true => DeviceState::NeedsUpdate {
                         update: Side::Headset,
                         reason: format!("its app is {app_version}; this desktop needs a newer one"),
+                        since: now,
                     },
                     false => DeviceState::Connected {
                         link,
@@ -444,21 +458,15 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
             let state = DeviceState::NeedsUpdate {
                 update,
                 reason: format!("link protocol {theirs} against {ours}: {older} is older"),
+                since: now,
             };
-            let room = devices.list.iter().filter(|d| !d.paired).count() < MAX_UNPAIRED;
+            let room = devices.unpaired() < MAX_UNPAIRED;
             match devices.find(&device) {
                 // A live link proves more than this unauthenticated hello.
                 Some(d) if d.conn.is_some() => {}
-                Some(d) => {
-                    d.state = state;
-                    d.last_seen = Some(now);
-                }
-                None if room => {
-                    devices.insert(Device {
-                        last_seen: Some(now),
-                        ..card(device, name, false, state)
-                    });
-                }
+                // Only the state: it ages back to away unless the claim repeats.
+                Some(d) => d.state = state,
+                None if room => devices.insert(card(device, name, false, state)),
                 None => {}
             }
         }
@@ -467,14 +475,21 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 d.tunnel = Some(url);
             }
         }
+        LinkEvent::NotForgotten { device } => {
+            if devices.find(&device.id).is_none() {
+                devices.insert_paired(device);
+            }
+        }
+        // Nothing changes here; `update` tells the pages.
+        LinkEvent::Failed { .. } => {}
         LinkEvent::Tick => {
             for d in &mut devices.list {
-                let stale = d
-                    .last_seen
-                    .is_none_or(|t| now.saturating_sub(t) >= RECENT_MS);
-                let ages = matches!(d.state, DeviceState::CannotReach { .. })
-                    || (d.conn.is_none() && matches!(d.state, DeviceState::NeedsUpdate { .. }));
-                if ages && stale {
+                let since = match d.state {
+                    DeviceState::CannotReach { since, .. } => since,
+                    DeviceState::NeedsUpdate { since, .. } if d.conn.is_none() => since,
+                    _ => continue,
+                };
+                if now.saturating_sub(since) >= RECENT_MS {
                     d.state = DeviceState::Away;
                 }
             }
@@ -484,41 +499,46 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 .retain(|d| d.paired || !matches!(d.state, DeviceState::Away));
         }
     }
-    devices.headset = headset(&devices.list);
+    devices.headset = headset(devices);
     (*devices != before, commands)
 }
 
-/// Allow request `request`, unless it has ended or expired.
-pub fn allow(devices: &Devices, request: u64, now: u64) -> Result<LinkCommand, String> {
-    let live = devices.list.iter().any(|d| {
-        matches!(d.state, DeviceState::AskingToPair { request: r, expires_at, .. }
-            if r == request && now < expires_at)
-    });
-    match live {
-        true => Ok(LinkCommand::Allow { request }),
-        false => Err("that pairing request has ended".to_string()),
+/// Allow request `request`, unless it has ended or expired; it then waits
+/// for the headset's own confirmation if that has not come yet.
+pub fn allow(devices: &mut Devices, request: u64, now: u64) -> Result<LinkCommand, String> {
+    match devices
+        .requests
+        .iter_mut()
+        .find(|r| r.request == request && now < r.expires_at)
+    {
+        Some(r) => {
+            r.allowed = true;
+            Ok(LinkCommand::Allow { request })
+        }
+        None => Err("that pairing request has ended".to_string()),
     }
 }
 
-/// Deny request `request`: its card goes (or a paired one is away) now.
+/// Deny request `request`: its prompt goes now.
 pub fn deny(devices: &mut Devices, request: u64) -> Result<LinkCommand, String> {
     match devices.end_request(request) {
         true => {
-            devices.headset = headset(&devices.list);
+            devices.headset = headset(devices);
             Ok(LinkCommand::Deny { request })
         }
         false => Err("that pairing request has ended".to_string()),
     }
 }
 
-/// Forget paired `device`: its card goes now.
+/// Forget paired `device`: its card goes now (and comes back if the shell
+/// cannot write that: `LinkEvent::NotForgotten`).
 pub fn forget(devices: &mut Devices, device: &str) -> Result<LinkCommand, String> {
     let before = devices.list.len();
     devices.list.retain(|d| !(d.paired && d.id == device));
     if devices.list.len() == before {
         return Err(format!("no paired device {device}"));
     }
-    devices.headset = headset(&devices.list);
+    devices.headset = headset(devices);
     Ok(LinkCommand::Forget {
         device: device.to_string(),
     })
@@ -557,7 +577,7 @@ mod tests {
             LinkEvent::PairRequest {
                 request,
                 device: device.into(),
-                name: "Quest 3".into(),
+                name: "Stranger".into(),
                 app_version: "0.1.0".into(),
                 code: "123456".into(),
                 expires_at: now + 120_000,
@@ -585,9 +605,18 @@ mod tests {
         d.list.iter().find(|x| x.id == id).unwrap().state.clone()
     }
 
+    fn paired(id: &str) -> Paired {
+        Paired {
+            id: id.into(),
+            name: "Quest 3".into(),
+            first_seen: 150,
+            last_seen: 150,
+        }
+    }
+
     #[test]
     fn nothing_paired_is_not_paired_and_stored_ones_start_away() {
-        assert_eq!(headset(&[]), Headset::NotPaired);
+        assert_eq!(headset(&Devices::default()), Headset::NotPaired);
         let d = started(&["a", "b"]);
         assert_eq!(d.headset, Headset::Away);
         assert!(d
@@ -602,25 +631,19 @@ mod tests {
         let mut d = started(&[]);
         ask(&mut d, 7, "new", 100);
         assert_eq!(d.headset, Headset::AskingToPair);
-        assert!(matches!(
-            state(&d, "new"),
-            DeviceState::AskingToPair { request: 7, .. }
-        ));
-        assert_eq!(allow(&d, 7, 100), Ok(LinkCommand::Allow { request: 7 }));
-        assert!(allow(&d, 8, 100).is_err());
+        assert_eq!(d.requests[0].request, 7);
+        assert!(d.list.is_empty());
+        assert_eq!(allow(&mut d, 7, 100), Ok(LinkCommand::Allow { request: 7 }));
+        // Waiting for the headset's own confirmation.
+        assert!(d.requests[0].allowed);
+        assert!(allow(&mut d, 8, 100).is_err());
         // Expired by the desktop's clock.
-        assert!(allow(&d, 7, 100 + 120_000).is_err());
-        let paired = Paired {
-            id: "new".into(),
-            name: "Quest 3".into(),
-            first_seen: 150,
-            last_seen: 150,
-        };
+        assert!(allow(&mut d, 7, 100 + 120_000).is_err());
         let (changed, cmds) = on_link(
             &mut d,
             LinkEvent::Paired {
                 request: 7,
-                device: paired,
+                device: paired("new"),
             },
             150,
         );
@@ -632,7 +655,7 @@ mod tests {
             }]
         );
         assert_eq!(state(&d, "new"), DeviceState::Away);
-        assert!(d.list[0].paired);
+        assert!(d.list[0].paired && d.requests.is_empty());
         assert_eq!(d.headset, Headset::Away);
     }
 
@@ -641,39 +664,46 @@ mod tests {
         let mut d = started(&[]);
         ask(&mut d, 1, "x", 0);
         on_link(&mut d, LinkEvent::PairEnded { request: 1 }, 5);
-        assert!(d.list.is_empty());
+        assert!(d.requests.is_empty());
         assert_eq!(d.headset, Headset::NotPaired);
         ask(&mut d, 2, "x", 0);
         assert_eq!(deny(&mut d, 2), Ok(LinkCommand::Deny { request: 2 }));
-        assert!(d.list.is_empty());
+        assert!(d.requests.is_empty() && d.list.is_empty());
         assert!(deny(&mut d, 2).is_err());
     }
 
     #[test]
-    fn a_paired_device_asking_again_returns_to_away_if_not_allowed() {
+    fn a_request_claiming_a_paired_id_never_touches_its_card() {
         let mut d = started(&["a"]);
-        ask(&mut d, 3, "a", 0);
-        assert!(matches!(state(&d, "a"), DeviceState::AskingToPair { .. }));
-        on_link(&mut d, LinkEvent::PairEnded { request: 3 }, 1);
-        assert_eq!(state(&d, "a"), DeviceState::Away);
-        assert!(d.list[0].paired);
-    }
-
-    #[test]
-    fn a_second_request_from_one_device_replaces_the_first() {
-        let mut d = started(&[]);
-        ask(&mut d, 1, "x", 0);
-        let cmds = ask(&mut d, 2, "x", 1);
-        assert_eq!(cmds, [LinkCommand::Deny { request: 1 }]);
-        assert_eq!(d.list.len(), 1);
+        connect(&mut d, 1, "a", "0.1.0", 5);
+        let card = d.list[0].clone();
+        ask(&mut d, 3, "a", 6);
+        assert!(d.requests[0].repair);
+        assert_eq!(d.list[0], card);
+        on_link(&mut d, LinkEvent::PairEnded { request: 3 }, 7);
+        assert_eq!(d.list[0], card);
+        // The live link still updates.
+        on_link(&mut d, LinkEvent::Latency { conn: 1, ms: 9 }, 8);
         assert!(matches!(
-            state(&d, "x"),
-            DeviceState::AskingToPair { request: 2, .. }
+            state(&d, "a"),
+            DeviceState::Connected {
+                latency_ms: Some(9),
+                ..
+            }
         ));
     }
 
     #[test]
-    fn unpaired_cards_are_capped() {
+    fn requests_from_one_id_queue_and_never_cancel_each_other() {
+        let mut d = started(&[]);
+        assert!(ask(&mut d, 1, "x", 0).is_empty());
+        assert!(ask(&mut d, 2, "x", 1).is_empty());
+        let queued: Vec<u64> = d.requests.iter().map(|r| r.request).collect();
+        assert_eq!(queued, [1, 2]);
+    }
+
+    #[test]
+    fn unpaired_requests_are_capped() {
         let mut d = started(&[]);
         for i in 0..MAX_UNPAIRED as u64 {
             assert!(ask(&mut d, i, &format!("d{i}"), 0).is_empty());
@@ -682,7 +712,7 @@ mod tests {
             ask(&mut d, 99, "extra", 0),
             [LinkCommand::Deny { request: 99 }]
         );
-        assert_eq!(d.list.len(), MAX_UNPAIRED);
+        assert_eq!(d.requests.len(), MAX_UNPAIRED);
     }
 
     #[test]
@@ -713,7 +743,7 @@ mod tests {
                 latency_ms: Some(12),
             }
         );
-        // Another connection's status changes nothing.
+        // Another connection's news changes nothing.
         let (changed, _) = on_link(&mut d, LinkEvent::Latency { conn: 8, ms: 1 }, 1007);
         assert!(!changed);
         on_link(
@@ -733,7 +763,7 @@ mod tests {
         let mut d = started(&[]);
         ask(&mut d, 1, "x", 0);
         connect(&mut d, 5, "x", "0.1.0", 1);
-        assert!(matches!(state(&d, "x"), DeviceState::AskingToPair { .. }));
+        assert!(d.list.is_empty());
     }
 
     #[test]
@@ -769,7 +799,7 @@ mod tests {
     fn needs_an_update_for_another_protocol_or_an_old_app() {
         let mismatch = |theirs| LinkEvent::Mismatch {
             device: "a".into(),
-            name: "Quest 3".into(),
+            name: "Impostor".into(),
             theirs,
             ours: 2,
         };
@@ -783,6 +813,11 @@ mod tests {
             }
         ));
         assert_eq!(d.headset, Headset::NeedsUpdate);
+        // An unauthenticated claim changes neither name nor last seen.
+        assert_eq!(
+            (d.list[0].name.as_str(), d.list[0].last_seen),
+            ("Quest a", Some(2))
+        );
         on_link(&mut d, mismatch(3), 11);
         assert!(matches!(
             state(&d, "a"),
@@ -791,6 +826,9 @@ mod tests {
                 ..
             }
         ));
+        // It ages back to away unless the claim repeats.
+        on_link(&mut d, LinkEvent::Tick, 11 + RECENT_MS);
+        assert_eq!(state(&d, "a"), DeviceState::Away);
         // An unknown device gets a card, which ages out.
         let mut u = started(&[]);
         on_link(
@@ -836,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn forget_removes_a_paired_device() {
+    fn forget_removes_a_paired_device_and_a_failed_write_brings_it_back() {
         let mut d = started(&["a"]);
         assert_eq!(
             forget(&mut d, "a"),
@@ -845,7 +883,15 @@ mod tests {
         assert!(d.list.is_empty());
         assert_eq!(d.headset, Headset::NotPaired);
         assert!(forget(&mut d, "a").is_err());
-        // Not an unpaired one.
+        on_link(
+            &mut d,
+            LinkEvent::NotForgotten {
+                device: paired("a"),
+            },
+            5,
+        );
+        assert!(d.list[0].paired);
+        // Not a request.
         ask(&mut d, 1, "x", 0);
         assert!(forget(&mut d, "x").is_err());
     }

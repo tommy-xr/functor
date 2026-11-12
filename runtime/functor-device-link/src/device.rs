@@ -17,7 +17,9 @@ pub struct Identity {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Event {
-    /// Show `code` until `expires_at`: the desktop shows the same one.
+    /// Show `code` until `expires_at` and ask the user whether the desktop
+    /// shows the same one: [`Device::confirm`] if it does, else
+    /// [`Device::cancel`]. Nothing is stored until both users agree.
     Code {
         desktop: DesktopId,
         desktop_name: String,
@@ -64,6 +66,8 @@ enum Phase {
     Comparing {
         transport: Transport,
         desktop: (DesktopId, String),
+        /// Our user said the codes match.
+        confirmed: bool,
     },
     Linked {
         transport: Transport,
@@ -142,13 +146,18 @@ impl Device {
             Phase::Sent { hs, mode } => self.reply(*hs, mode, msg, now),
             Phase::Ended => Output::failed(Error::Ended),
             mut phase => {
+                // Until the link is up, frames are a few bytes.
+                let limit = match phase {
+                    Phase::Linked { .. } => crate::MAX_FRAME,
+                    _ => crate::MAX_PAIRING_FRAME,
+                };
                 let transport = match &mut phase {
                     Phase::Committed { transport, .. }
                     | Phase::Comparing { transport, .. }
                     | Phase::Linked { transport } => transport,
                     Phase::Sent { .. } | Phase::Ended => unreachable!("matched above"),
                 };
-                match transport.open(msg) {
+                match transport.open(msg, limit) {
                     Ok(None) => {
                         self.phase = phase;
                         Output::default()
@@ -265,16 +274,23 @@ impl Device {
                     code,
                     expires_at,
                 };
-                self.phase = Phase::Comparing { transport, desktop };
+                self.phase = Phase::Comparing {
+                    transport,
+                    desktop,
+                    confirmed: false,
+                };
                 Output {
                     events: vec![event],
                     ..Output::default()
                 }
             }
+            // Only once our user confirmed: a desktop that answers its own
+            // prompt at once cannot pair a headset nobody looked at.
             (
                 Phase::Comparing {
                     mut transport,
                     desktop,
+                    confirmed: true,
                 },
                 Frame::PairAccept {
                     desktop: id,
@@ -341,6 +357,30 @@ impl Device {
     /// Answers a request.
     pub fn respond(&mut self, response: Response) -> Result<Vec<Vec<u8>>, Error> {
         self.send(&Frame::Response(response))
+    }
+
+    /// The user says the desktop shows the same code.
+    pub fn confirm(&mut self) -> Output<Event> {
+        match &mut self.phase {
+            Phase::Comparing {
+                transport,
+                confirmed: confirmed @ false,
+                ..
+            } => match transport.seal(&Frame::PairConfirm) {
+                Ok(send) => {
+                    *confirmed = true;
+                    Output {
+                        send,
+                        ..Output::default()
+                    }
+                }
+                Err(e) => {
+                    self.phase = Phase::Ended;
+                    Output::failed(e)
+                }
+            },
+            _ => Output::default(),
+        }
     }
 
     /// Stops pairing (the user backed out): the desktop is told.

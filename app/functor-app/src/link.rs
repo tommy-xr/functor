@@ -22,9 +22,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
+use axum::extract::State;
+use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use functor_app_core::devices::{LinkCommand, LinkEvent, LinkKind, Paired};
@@ -53,11 +52,18 @@ pub const SERVICE: &str = "_functor-link._tcp.local.";
 /// The one path the listener answers.
 pub const PATH: &str = "/link";
 
-/// Connections not yet authenticated, at once: all, and from one address.
-const MAX_PENDING: usize = 16;
+/// Connections not yet authenticated or pairing, at once: all, and from
+/// one address (an IPv6 /64 counts as one).
+const MAX_PENDING: usize = 64;
 const MAX_PENDING_PER_IP: usize = 4;
-/// Pairing prompts open at once.
+/// Pairing prompts open at once: all, and from one address.
 const MAX_ASKING: usize = 4;
+const MAX_ASKING_PER_IP: usize = 1;
+/// Tunnelled requests waiting on one device at once; more get 429 before
+/// their bodies are read.
+const MAX_TUNNEL_IN_FLIGHT: usize = 8;
+/// A peer that does not take our messages this long is gone.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Per address: failures and pairing attempts it may spend, refilled one
 /// every `REFILL_MS`.
 const BUDGET: u64 = 10;
@@ -97,6 +103,7 @@ struct HubState {
     pending: usize,
     pending_per_ip: HashMap<IpAddr, usize>,
     asking: usize,
+    asking_per_ip: HashMap<IpAddr, usize>,
     /// Per address: (tokens left, when last refilled).
     budgets: HashMap<IpAddr, (u64, u64)>,
     next_conn: u64,
@@ -112,6 +119,8 @@ enum ConnCmd {
     Allow,
     Deny,
     Close,
+    /// This device's pairing is gone: close if the connection is its.
+    Forgotten(String),
     Request(
         wire::Request,
         oneshot::Sender<Result<wire::Response, String>>,
@@ -122,7 +131,7 @@ impl Hub {
     /// The hub for `home`: its desktop id (made once) and stored pairings.
     pub fn new(home: PathBuf, events: UnboundedSender<Event>) -> std::io::Result<Hub> {
         let id = store::desktop_id(&home)?;
-        let pairings = store::load_pairings(&home);
+        let pairings = store::load_pairings(&home)?;
         let name = desktop_name();
         Ok(Hub(Arc::new(Inner {
             home,
@@ -170,10 +179,13 @@ impl Hub {
         tokio::spawn(async move {
             loop {
                 let Ok((stream, peer)) = listener.accept().await else {
+                    // Out of descriptors, say: not a busy loop.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 };
-                if hub.admit(peer.ip()) {
-                    tokio::spawn(hub.clone().connection(stream, peer.ip()));
+                let ip = key(peer.ip());
+                if hub.admit(ip) {
+                    tokio::spawn(hub.clone().connection(stream, ip));
                 }
             }
         });
@@ -237,6 +249,10 @@ impl Hub {
     fn admit(&self, ip: IpAddr) -> bool {
         let mut s = self.0.state.lock().unwrap();
         let now = now_ms();
+        // Forget addresses back at a full budget, so spoofed ones cannot grow it.
+        if s.budgets.len() > 4096 {
+            s.budgets.retain(|_, (left, _)| *left < BUDGET);
+        }
         if tokens(&mut s.budgets, ip, now) == 0 {
             return false;
         }
@@ -262,12 +278,25 @@ impl Hub {
     fn release_pending(&self, ip: IpAddr) {
         let mut s = self.0.state.lock().unwrap();
         s.pending = s.pending.saturating_sub(1);
-        if let Some(n) = s.pending_per_ip.get_mut(&ip) {
-            *n -= 1;
-            if *n == 0 {
-                s.pending_per_ip.remove(&ip);
-            }
+        release(&mut s.pending_per_ip, ip);
+    }
+
+    /// A pairing prompt for `ip`, if there is room for one.
+    fn reserve_prompt(&self, ip: IpAddr) -> bool {
+        let mut s = self.0.state.lock().unwrap();
+        let from_ip = s.asking_per_ip.get(&ip).copied().unwrap_or(0);
+        if s.asking >= MAX_ASKING || from_ip >= MAX_ASKING_PER_IP {
+            return false;
         }
+        s.asking += 1;
+        *s.asking_per_ip.entry(ip).or_default() += 1;
+        true
+    }
+
+    fn release_prompt(&self, ip: IpAddr) {
+        let mut s = self.0.state.lock().unwrap();
+        s.asking = s.asking.saturating_sub(1);
+        release(&mut s.asking_per_ip, ip);
     }
 
     fn secret(&self, device: &str) -> Option<Secret> {
@@ -294,60 +323,100 @@ impl Hub {
         }
     }
 
+    /// Changes the stored pairings: read afresh (another app process may
+    /// share the home), changed, written, and only then this one's copy.
+    fn update_pairings(
+        &self,
+        s: &mut HubState,
+        change: impl FnOnce(&mut Vec<StoredPairing>),
+    ) -> std::io::Result<()> {
+        let mut pairings = store::load_pairings(&self.0.home)?;
+        change(&mut pairings);
+        store::save_pairings(&self.0.home, &pairings)?;
+        s.pairings = pairings;
+        Ok(())
+    }
+
     /// Deletes `device`'s pairing (its secret with it), then closes its
-    /// links and its tunnel.
+    /// links, half-open ones too, and its tunnel. If that cannot be
+    /// written, nothing changes and the core is told.
     fn forget(&self, device: &str) {
         let mut s = self.0.state.lock().unwrap();
-        s.pairings.retain(|p| p.id != device);
-        if let Err(e) = store::save_pairings(&self.0.home, &s.pairings) {
-            eprintln!("functor-app: cannot save the pairings: {e}");
+        let shown = s.pairings.iter().find(|p| p.id == device).map(paired);
+        if let Err(e) = self.update_pairings(&mut s, |all| all.retain(|p| p.id != device)) {
+            if let Some(device) = shown {
+                let reason = format!("cannot forget {}: {e}", device.name);
+                self.send(LinkEvent::NotForgotten { device });
+                self.send(LinkEvent::Failed { reason });
+            }
+            return;
         }
-        for conn in s
-            .conns
-            .values()
-            .filter(|c| c.linked.as_deref() == Some(device))
-        {
-            let _ = conn.cmds.send(ConnCmd::Close);
+        for conn in s.conns.values() {
+            let _ = conn.cmds.send(ConnCmd::Forgotten(device.to_string()));
         }
         if let Some((_, task)) = s.tunnels.remove(device) {
             task.abort();
         }
     }
 
-    fn store_pairing(&self, hello: &Hello, secret: &Secret) -> Paired {
+    /// Stores `secret` for the device; an error leaves nothing stored.
+    fn store_pairing(&self, hello: &Hello, secret: &Secret) -> std::io::Result<Paired> {
         let now = wall_ms();
         let id = hex(&hello.device);
         let mut s = self.0.state.lock().unwrap();
-        let first_seen = s
-            .pairings
-            .iter()
-            .find(|p| p.id == id)
-            .map_or(now, |p| p.first_seen);
-        s.pairings.retain(|p| p.id != id);
-        let pairing = StoredPairing {
-            id,
-            name: hello.name.clone(),
-            secret: secret.to_hex(),
-            first_seen,
-            last_seen: now,
-        };
-        let shown = paired(&pairing);
-        s.pairings.push(pairing);
-        if let Err(e) = store::save_pairings(&self.0.home, &s.pairings) {
-            eprintln!("functor-app: cannot save the pairings: {e}");
-        }
-        shown
+        let mut shown = None;
+        self.update_pairings(&mut s, |all| {
+            let first_seen = all
+                .iter()
+                .find(|p| p.id == id)
+                .map_or(now, |p| p.first_seen);
+            all.retain(|p| p.id != id);
+            let pairing = StoredPairing {
+                id,
+                name: hello.name.clone(),
+                secret: secret.to_hex(),
+                first_seen,
+                last_seen: now,
+            };
+            shown = Some(paired(&pairing));
+            all.push(pairing);
+        })?;
+        Ok(shown.expect("just stored"))
     }
 
     /// Notes that `device` was seen now, kept for its card after a restart.
     fn seen(&self, device: &str) {
         let mut s = self.0.state.lock().unwrap();
-        if let Some(p) = s.pairings.iter_mut().find(|p| p.id == device) {
-            p.last_seen = wall_ms();
-            if let Err(e) = store::save_pairings(&self.0.home, &s.pairings) {
-                eprintln!("functor-app: cannot save the pairings: {e}");
+        let now = wall_ms();
+        let saved = self.update_pairings(&mut s, |all| {
+            if let Some(p) = all.iter_mut().find(|p| p.id == device) {
+                p.last_seen = now;
+            }
+        });
+        if let Err(e) = saved {
+            eprintln!("functor-app: cannot save the pairings: {e}");
+        }
+    }
+
+    /// Marks `conn` as `device`'s link if the secret it proved is still the
+    /// stored one (not forgotten or replaced meanwhile), closing any older
+    /// link of the device; whether it was.
+    fn promote(&self, conn: u64, device: &str, proved: &Option<Secret>) -> bool {
+        let mut s = self.0.state.lock().unwrap();
+        let stored = s.pairings.iter().find(|p| p.id == device);
+        let current = stored.and_then(|p| Secret::from_hex(&p.secret));
+        if current.is_none() || current != *proved {
+            return false;
+        }
+        for (id, c) in s.conns.iter() {
+            if *id != conn && c.linked.as_deref() == Some(device) {
+                let _ = c.cmds.send(ConnCmd::Close);
             }
         }
+        if let Some(c) = s.conns.get_mut(&conn) {
+            c.linked = Some(device.to_string());
+        }
+        true
     }
 
     /// The live link of `device`.
@@ -390,6 +459,7 @@ impl Hub {
             pending: true,
             asking: false,
             paired: false,
+            proved: None,
             linked: None,
             waiting: HashMap::new(),
             next_request: 0,
@@ -423,22 +493,31 @@ impl Hub {
             return;
         };
         let url = format!("http://127.0.0.1:{}", addr.port());
-        let app = Router::new()
-            .fallback(tunnel)
-            .layer(DefaultBodyLimit::max(MAX_BODY))
-            .with_state((self.clone(), device.clone()));
+        let tunnel_state = Arc::new(Tunnel {
+            hub: self.clone(),
+            device: device.clone(),
+            port: addr.port(),
+            slots: tokio::sync::Semaphore::new(MAX_TUNNEL_IN_FLIGHT),
+        });
+        let app = Router::new().fallback(tunnel).with_state(tunnel_state);
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        {
+        let url = {
             let mut s = self.0.state.lock().unwrap();
-            // Forgotten meanwhile.
-            if !s.pairings.iter().any(|p| p.id == device) {
+            let raced = s.tunnels.get(&device).map(|(url, _)| url.clone());
+            // Forgotten meanwhile, or another open won the race.
+            if raced.is_some() || !s.pairings.iter().any(|p| p.id == device) {
                 task.abort();
-                return;
+                match raced {
+                    Some(url) => url,
+                    None => return,
+                }
+            } else {
+                s.tunnels.insert(device.clone(), (url.clone(), task));
+                url
             }
-            s.tunnels.insert(device.clone(), (url.clone(), task));
-        }
+        };
         self.send(LinkEvent::TunnelOpened { device, url });
     }
 }
@@ -458,6 +537,27 @@ fn check_upgrade(req: &Request, res: WsResponse) -> Result<WsResponse, ErrorResp
         return refuse(StatusCode::FORBIDDEN);
     }
     Ok(res)
+}
+
+/// The address limits count by: itself, or for IPv6 its /64 (one host can
+/// take many addresses there).
+fn key(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6((u128::from(v6) & !((1u128 << 64) - 1)).into()),
+        },
+        v4 => v4,
+    }
+}
+
+fn release(counts: &mut HashMap<IpAddr, usize>, ip: IpAddr) {
+    if let Some(n) = counts.get_mut(&ip) {
+        *n -= 1;
+        if *n == 0 {
+            counts.remove(&ip);
+        }
+    }
 }
 
 /// `ip`'s tokens after refilling to `now`.
@@ -523,6 +623,8 @@ struct Connection {
     /// Counted as an open pairing prompt.
     asking: bool,
     paired: bool,
+    /// The secret its hello was checked against (linking).
+    proved: Option<Secret>,
     /// The device's hex id, once linked.
     linked: Option<String>,
     waiting: HashMap<u32, oneshot::Sender<Result<wire::Response, String>>>,
@@ -545,12 +647,16 @@ impl Connection {
                     Some(Ok(Message::Binary(bytes))) => {
                         if std::mem::take(&mut first) {
                             if let Some(refused) = self.refuse_pairing(&bytes) {
-                                let _ = ws.send(Message::Binary(refused.into())).await;
+                                let _ = put(&mut ws, refused).await;
                                 return Err(Error::Busy);
                             }
                         }
                         let hub = &self.hub;
-                        self.machine.receive(&bytes, now_ms(), |d| hub.secret(&hex(d)))
+                        let proved = &mut self.proved;
+                        self.machine.receive(&bytes, now_ms(), |d| {
+                            *proved = hub.secret(&hex(d));
+                            proved.clone()
+                        })
                     }
                     Some(Ok(Message::Close(_))) | None => return Ok(()),
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
@@ -565,16 +671,19 @@ impl Connection {
                 Some(cmd) = cmds.recv() => match cmd {
                     ConnCmd::Allow => self.machine.allow(now_ms()),
                     ConnCmd::Deny => self.machine.deny(),
-                    ConnCmd::Close => {
+                    ConnCmd::Forgotten(device) if self.device() != Some(device.as_str()) => continue,
+                    ConnCmd::Close | ConnCmd::Forgotten(_) => {
                         if let Ok(msgs) = self.machine.send(&Frame::Close("closed by the desktop".into())) {
                             for m in msgs {
-                                let _ = ws.send(Message::Binary(m.into())).await;
+                                let _ = put(&mut ws, m).await;
                             }
                         }
-                        let _ = ws.close(None).await;
+                        let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.close(None)).await;
                         return Ok(());
                     }
                     ConnCmd::Request(mut request, reply) => {
+                        // Requests whose callers gave up free their slots.
+                        self.waiting.retain(|_, r| !r.is_closed());
                         if self.waiting.len() >= MAX_IN_FLIGHT {
                             let _ = reply.send(Err("too many requests in flight".into()));
                             continue;
@@ -604,18 +713,17 @@ impl Connection {
                     }
                 }
             };
-            for msg in out.send {
-                if ws.send(Message::Binary(msg.into())).await.is_err() {
-                    return Err(Error::Closed("the connection dropped".into()));
-                }
-            }
+            // Events first: a pairing is stored before its secret is sent.
             for event in out.events {
-                self.event(event);
+                self.event(event)?;
+            }
+            for msg in out.send {
+                put(&mut ws, msg).await?;
             }
             match out.end {
                 None => {}
                 Some(End::Done) => {
-                    let _ = ws.close(None).await;
+                    let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.close(None)).await;
                     return Ok(());
                 }
                 Some(End::Failed(e)) => return Err(e),
@@ -623,7 +731,13 @@ impl Connection {
         }
     }
 
-    /// A pairing hello while too many prompts are open: the refusal to send.
+    /// The device's hex id, once linked.
+    fn device(&self) -> Option<&str> {
+        self.linked.as_deref()
+    }
+
+    /// A pairing hello takes a prompt slot (it is then no longer pending),
+    /// or gets the refusal to send.
     fn refuse_pairing(&mut self, first: &[u8]) -> Option<Vec<u8>> {
         let Ok((hello, _)) = Hello::decode(first) else {
             return None;
@@ -633,11 +747,16 @@ impl Connection {
         }
         // Every pairing attempt costs, so prompts cannot be spammed.
         self.hub.spend(self.ip);
-        let busy = self.hub.0.state.lock().unwrap().asking >= MAX_ASKING;
-        busy.then(|| Reply::Reject(Reject::Busy).encode())
+        if !self.hub.reserve_prompt(self.ip) {
+            return Some(Reply::Reject(Reject::Busy).encode());
+        }
+        self.asking = true;
+        self.unpend();
+        None
     }
 
-    fn event(&mut self, event: desktop::Event) {
+    /// Acts on one event; an error ends the connection.
+    fn event(&mut self, event: desktop::Event) -> Result<(), Error> {
         let hub = self.hub.clone();
         match event {
             desktop::Event::PairRequest {
@@ -645,8 +764,6 @@ impl Connection {
                 code,
                 expires_at,
             } => {
-                hub.0.state.lock().unwrap().asking += 1;
-                self.asking = true;
                 let expires_at = wall_ms() + expires_at.saturating_sub(now_ms());
                 hub.send(LinkEvent::PairRequest {
                     request: self.id,
@@ -658,8 +775,15 @@ impl Connection {
                 });
             }
             desktop::Event::Paired { hello, secret } => {
+                let device = match hub.store_pairing(&hello, &secret) {
+                    Ok(device) => device,
+                    Err(e) => {
+                        let reason = format!("cannot store the pairing with {}: {e}", hello.name);
+                        hub.send(LinkEvent::Failed { reason });
+                        return Err(Error::Closed("the pairing could not be stored".into()));
+                    }
+                };
                 self.paired = true;
-                let device = hub.store_pairing(&hello, &secret);
                 hub.send(LinkEvent::Paired {
                     request: self.id,
                     device,
@@ -667,19 +791,11 @@ impl Connection {
             }
             desktop::Event::Linked { hello } => {
                 let device = hex(&hello.device);
-                self.unpend();
-                // The newest link of a device wins.
-                {
-                    let mut s = hub.0.state.lock().unwrap();
-                    for (id, c) in s.conns.iter() {
-                        if *id != self.id && c.linked.as_deref() == Some(&device) {
-                            let _ = c.cmds.send(ConnCmd::Close);
-                        }
-                    }
-                    if let Some(c) = s.conns.get_mut(&self.id) {
-                        c.linked = Some(device.clone());
-                    }
+                // The newest link of a device wins, if its secret still stands.
+                if !hub.promote(self.id, &device, &self.proved) {
+                    return Err(Error::NotPaired);
                 }
+                self.unpend();
                 hub.seen(&device);
                 self.linked = Some(device.clone());
                 hub.send(LinkEvent::Connected {
@@ -712,6 +828,7 @@ impl Connection {
                 ours: VERSION,
             }),
         }
+        Ok(())
     }
 
     fn unpend(&mut self) {
@@ -726,7 +843,7 @@ impl Connection {
             let _ = reply.send(Err("the headset disconnected".into()));
         }
         if self.asking {
-            hub.0.state.lock().unwrap().asking -= 1;
+            hub.release_prompt(self.ip);
             if !self.paired {
                 hub.send(LinkEvent::PairEnded { request: self.id });
             }
@@ -751,6 +868,15 @@ impl Connection {
     }
 }
 
+/// Sends `msg`, giving up on a peer that will not take it.
+async fn put(ws: &mut Ws, msg: Vec<u8>) -> Result<(), Error> {
+    match tokio::time::timeout(WRITE_TIMEOUT, ws.send(Message::Binary(msg.into()))).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => Err(Error::Closed("the connection dropped".into())),
+        Err(_) => Err(Error::Timeout),
+    }
+}
+
 fn desktop_output(send: Vec<Vec<u8>>) -> functor_device_link::Output<desktop::Event> {
     functor_device_link::Output {
         send,
@@ -768,40 +894,70 @@ const RESPONSE_HEADERS: [HeaderName; 4] = [
     header::VARY,
 ];
 
+/// One device's tunnel port.
+struct Tunnel {
+    hub: Hub,
+    device: String,
+    port: u16,
+    /// Requests waiting on the device (`MAX_TUNNEL_IN_FLIGHT`).
+    slots: tokio::sync::Semaphore,
+}
+
 /// One HTTP request on a device's tunnel port, forwarded over its link.
-async fn tunnel(
-    State((hub, device)): State<(Hub, String)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
+async fn tunnel(State(t): State<Arc<Tunnel>>, request: axum::extract::Request) -> Response {
+    let refuse = |status: StatusCode, why: &'static str| (status, why).into_response();
+    let (parts, body) = request.into_parts();
+    // Only this port's own name: a rebound DNS name (a web page's) is not.
+    let host = parts
+        .headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok());
+    let own = [
+        format!("127.0.0.1:{}", t.port),
+        format!("localhost:{}", t.port),
+    ];
+    if !host.is_some_and(|h| own.iter().any(|o| o.eq_ignore_ascii_case(h))) {
+        return refuse(StatusCode::FORBIDDEN, "host is not allowed");
+    }
     // As the debug runtime itself: no page from another origin.
-    if let Some(origin) = headers.get(header::ORIGIN) {
+    if let Some(origin) = parts.headers.get(header::ORIGIN) {
         if !origin.to_str().is_ok_and(loopback_origin) {
-            return (StatusCode::FORBIDDEN, "origin is not allowed").into_response();
+            return refuse(StatusCode::FORBIDDEN, "origin is not allowed");
         }
     }
-    if uri.path() == "/stream" {
-        return (StatusCode::NOT_IMPLEMENTED, "streams are not tunnelled yet").into_response();
+    if parts.uri.path() == "/stream" {
+        return refuse(StatusCode::NOT_IMPLEMENTED, "streams are not tunnelled yet");
     }
-    let Some(link) = hub.link_of(&device) else {
-        return (
+    let target = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+    if target.len() > wire::MAX_TARGET {
+        return refuse(StatusCode::URI_TOO_LONG, "the path is too long");
+    }
+    if parts.method.as_str().len() > wire::MAX_METHOD {
+        return refuse(StatusCode::METHOD_NOT_ALLOWED, "unknown method");
+    }
+    // A slot before the body is read, so waiting requests stay bounded.
+    let Ok(_slot) = t.slots.try_acquire() else {
+        return refuse(StatusCode::TOO_MANY_REQUESTS, "too many requests at once");
+    };
+    let Ok(body) = axum::body::to_bytes(body, MAX_BODY).await else {
+        return refuse(StatusCode::PAYLOAD_TOO_LARGE, "the body is too large");
+    };
+    let Some(link) = t.hub.link_of(&t.device) else {
+        return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
             "the headset is not connected",
-        )
-            .into_response();
+        );
     };
     let request = wire::Request {
         id: 0,
-        method: method.as_str().to_string(),
-        target: uri.path_and_query().map_or("/", |p| p.as_str()).to_string(),
+        method: parts.method.as_str().to_string(),
+        target: target.to_string(),
         headers: REQUEST_HEADERS
             .iter()
             .filter_map(|h| {
                 Some((
                     h.as_str().to_string(),
-                    headers.get(h)?.to_str().ok()?.to_string(),
+                    parts.headers.get(h)?.to_str().ok()?.to_string(),
                 ))
             })
             .collect(),
@@ -809,9 +965,9 @@ async fn tunnel(
     };
     let (reply, answer) = oneshot::channel();
     if link.send(ConnCmd::Request(request, reply)).is_err() {
-        return (StatusCode::BAD_GATEWAY, "the headset disconnected").into_response();
+        return refuse(StatusCode::BAD_GATEWAY, "the headset disconnected");
     }
-    let wait = match method {
+    let wait = match parts.method {
         Method::GET | Method::HEAD => GET_TIMEOUT,
         _ => PUSH_TIMEOUT,
     };
@@ -832,24 +988,45 @@ async fn tunnel(
             out
         }
         Ok(Ok(Err(e))) => (StatusCode::BAD_GATEWAY, e).into_response(),
-        Ok(Err(_)) => (StatusCode::BAD_GATEWAY, "the headset disconnected").into_response(),
-        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "the headset did not answer").into_response(),
+        Ok(Err(_)) => refuse(StatusCode::BAD_GATEWAY, "the headset disconnected"),
+        Err(_) => refuse(StatusCode::GATEWAY_TIMEOUT, "the headset did not answer"),
     }
 }
 
-/// `http://127.0.0.1:5173`, `http://localhost`, `http://[::1]:8080`.
+/// The debug runtime's own rule (it cannot be shared: the app does not
+/// depend on the runtime): `http(s)://` and `127.0.0.1`, `localhost` or
+/// `[::1]`, an optional port, nothing else.
 fn loopback_origin(origin: &str) -> bool {
-    let Some(rest) = origin.strip_prefix("http://") else {
+    let Some((scheme, authority)) = origin.split_once("://") else {
         return false;
     };
-    let host = match rest.strip_prefix('[') {
-        Some(v6) => v6.split_once(']').map_or("", |(h, _)| h),
-        None => rest.split(':').next().unwrap_or(""),
-    };
-    match host {
-        "localhost" => true,
-        host => host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
     }
+    if authority.is_empty()
+        || authority.contains(['/', '?', '#', '@'])
+        || authority.chars().any(char::is_whitespace)
+    {
+        return false;
+    }
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some(("::1", "")) => ("[::1]", None),
+            Some(("::1", suffix)) => match suffix.strip_prefix(':') {
+                Some(port) => ("[::1]", Some(port)),
+                None => return false,
+            },
+            _ => return false,
+        },
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        },
+    };
+    if !host.eq_ignore_ascii_case("localhost") && host != "127.0.0.1" && host != "[::1]" {
+        return false;
+    }
+    port.is_none_or(|p| !p.is_empty() && p.parse::<u16>().is_ok())
 }
 
 #[cfg(test)]
@@ -880,6 +1057,9 @@ mod tests {
             "https://example.com",
             "http://192.168.1.2",
             "http://localhost.evil.com",
+            "http://localhost:1@evil.com",
+            "http://127.0.0.2",
+            "http://localhost:",
             "null",
         ] {
             assert!(!loopback_origin(bad), "{bad}");
@@ -933,6 +1113,18 @@ mod tests {
             "{status:?}"
         );
         let _ = daemon.shutdown();
+    }
+
+    #[test]
+    fn limits_count_an_ipv6_slash_64_as_one_address() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().unwrap();
+        let b: IpAddr = "2001:db8:1:2:bbbb::9".parse().unwrap();
+        let c: IpAddr = "2001:db8:1:3::1".parse().unwrap();
+        assert_eq!(key(a), key(b));
+        assert_ne!(key(a), key(c));
+        let v4: IpAddr = "10.0.0.2".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.2".parse().unwrap();
+        assert_eq!(key(mapped), v4);
     }
 
     #[test]

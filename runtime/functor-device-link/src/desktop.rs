@@ -6,7 +6,7 @@ use crate::crypto::{self, Transport};
 use crate::wire::{self, Frame, Hello, HelloError, Mode, Preamble, Reject, Reply, Request};
 use crate::wire::{Response, Status};
 use crate::{random, DesktopId, DeviceId, End, Error, Output, Secret, SharedEntropy};
-use crate::{HANDSHAKE_TIMEOUT_MS, LINK_TIMEOUT_MS, PAIR_EXPIRY_MS, VERSION};
+use crate::{HANDSHAKE_TIMEOUT_MS, LINK_TIMEOUT_MS, MAX_FRAME, PAIR_EXPIRY_MS, VERSION};
 
 /// A hello plus its handshake message fits well within this.
 const MAX_FIRST: usize = 1024;
@@ -52,10 +52,13 @@ enum Phase {
         nonce: [u8; 32],
         hash: Vec<u8>,
     },
-    /// Both sides show the code; the user decides.
+    /// Both sides show the code. The secret goes once both users said it
+    /// matches: ours (`allowed`) and the headset's (`confirmed`).
     Comparing {
         transport: Transport,
         hello: Hello,
+        allowed: bool,
+        confirmed: bool,
     },
     /// Allowed; the device stores the secret and says so.
     Accepted {
@@ -69,7 +72,6 @@ enum Phase {
     },
     Linked {
         transport: Transport,
-        hello: Hello,
     },
     Ended,
 }
@@ -95,29 +97,9 @@ impl Desktop {
         }
     }
 
-    /// The device, once its hello is read and supported.
-    pub fn hello(&self) -> Option<&Hello> {
-        match &self.phase {
-            Phase::Committed { hello, .. }
-            | Phase::Comparing { hello, .. }
-            | Phase::Linking { hello, .. }
-            | Phase::Linked { hello, .. } => Some(hello),
-            Phase::Hello | Phase::Accepted { .. } | Phase::Ended => None,
-        }
-    }
-
     /// Whether the link is up (authenticated).
     pub fn linked(&self) -> bool {
         matches!(self.phase, Phase::Linked { .. })
-    }
-
-    /// Whether this connection is (still) a pairing attempt: an unpaired
-    /// peer, for the shell's limits.
-    pub fn pairing(&self) -> bool {
-        matches!(
-            self.phase,
-            Phase::Hello | Phase::Committed { .. } | Phase::Comparing { .. }
-        )
     }
 
     /// One received WebSocket message. `secret` finds a paired device's
@@ -219,6 +201,11 @@ impl Desktop {
 
     /// Decrypts `msg` in `phase`, which must have a transport.
     fn open(&mut self, mut phase: Phase, msg: &[u8]) -> Result<(Phase, Option<Frame>), Error> {
+        // Until the link is up, frames are a few bytes: no big buffers for strangers.
+        let limit = match phase {
+            Phase::Linking { .. } | Phase::Linked { .. } => MAX_FRAME,
+            _ => crate::MAX_PAIRING_FRAME,
+        };
         let transport = match &mut phase {
             Phase::Committed { transport, .. }
             | Phase::Comparing { transport, .. }
@@ -227,7 +214,7 @@ impl Desktop {
             | Phase::Linked { transport, .. } => transport,
             Phase::Hello | Phase::Ended => unreachable!("handled by receive"),
         };
-        let frame = transport.open(msg)?;
+        let frame = transport.open(msg, limit)?;
         Ok((phase, frame))
     }
 
@@ -253,6 +240,8 @@ impl Desktop {
                 self.phase = Phase::Comparing {
                     transport,
                     hello: hello.clone(),
+                    allowed: false,
+                    confirmed: false,
                 };
                 Output {
                     send,
@@ -264,6 +253,26 @@ impl Desktop {
                     end: None,
                 }
             }
+            (
+                Phase::Comparing {
+                    transport,
+                    hello,
+                    allowed,
+                    ..
+                },
+                Frame::PairConfirm,
+            ) => match allowed {
+                true => self.accept(transport, hello, now),
+                false => {
+                    self.phase = Phase::Comparing {
+                        transport,
+                        hello,
+                        allowed,
+                        confirmed: true,
+                    };
+                    Output::default()
+                }
+            },
             (Phase::Accepted { .. }, Frame::PairDone) => Output {
                 end: Some(End::Done),
                 ..Output::default()
@@ -271,14 +280,11 @@ impl Desktop {
             (Phase::Linking { transport, hello }, frame) => {
                 // The first frame from the device proves it: linked, then
                 // the frame itself as on a link.
-                self.phase = Phase::Linked {
-                    transport,
-                    hello: hello.clone(),
-                };
+                self.phase = Phase::Linked { transport };
                 let mut out = self.linked_frame(frame, now);
-                out.events.insert(0, Event::Linked { hello });
-                if out.end.is_some() {
-                    self.phase = Phase::Ended;
+                match out.end {
+                    Some(_) => self.phase = Phase::Ended,
+                    None => out.events.insert(0, Event::Linked { hello }),
                 }
                 out
             }
@@ -320,37 +326,59 @@ impl Desktop {
         }
     }
 
-    /// The user allowed the pairing request: a fresh secret goes to the
-    /// device, and [`Event::Paired`] says to store it.
+    /// The user allowed the pairing request. Once the headset's user has
+    /// confirmed too, a fresh secret goes to the device and [`Event::Paired`]
+    /// says to store it.
     pub fn allow(&mut self, now: u64) -> Output<Event> {
         match std::mem::replace(&mut self.phase, Phase::Ended) {
-            Phase::Comparing { .. } if now >= self.deadline => Output::failed(Error::Expired),
             Phase::Comparing {
-                mut transport,
+                transport,
                 hello,
+                confirmed: true,
+                ..
+            } => self.accept(transport, hello, now),
+            Phase::Comparing {
+                transport,
+                hello,
+                confirmed: false,
+                ..
             } => {
-                let secret = Secret(random(&self.entropy));
-                let accept = Frame::PairAccept {
-                    desktop: self.id,
-                    secret: secret.clone(),
+                self.phase = Phase::Comparing {
+                    transport,
+                    hello,
+                    allowed: true,
+                    confirmed: false,
                 };
-                let send = match transport.seal(&accept) {
-                    Ok(send) => send,
-                    Err(e) => return Output::failed(e),
-                };
-                self.phase = Phase::Accepted { transport };
-                self.deadline = now + HANDSHAKE_TIMEOUT_MS;
-                Output {
-                    send,
-                    events: vec![Event::Paired { hello, secret }],
-                    end: None,
-                }
+                Output::default()
             }
             // Not asked now (the peer already went): nothing to do.
             phase => {
                 self.phase = phase;
                 Output::default()
             }
+        }
+    }
+
+    /// Both users agreed: send the secret.
+    fn accept(&mut self, mut transport: Transport, hello: Hello, now: u64) -> Output<Event> {
+        if now >= self.deadline {
+            return Output::failed(Error::Expired);
+        }
+        let secret = Secret(random(&self.entropy));
+        let accept = Frame::PairAccept {
+            desktop: self.id,
+            secret: secret.clone(),
+        };
+        let send = match transport.seal(&accept) {
+            Ok(send) => send,
+            Err(e) => return Output::failed(e),
+        };
+        self.phase = Phase::Accepted { transport };
+        self.deadline = now + HANDSHAKE_TIMEOUT_MS;
+        Output {
+            send,
+            events: vec![Event::Paired { hello, secret }],
+            end: None,
         }
     }
 

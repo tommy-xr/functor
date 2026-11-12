@@ -110,6 +110,11 @@ fn compare(seed: u64) -> (Desktop, Device, String, String, Vec<u8>) {
 /// Pairs, returning the secret both stored.
 fn paired(seed: u64) -> Secret {
     let (mut desktop, mut device, _, _, _) = compare(seed);
+    // The headset's user confirms first; the desktop's Allow sends the secret.
+    let confirm = device.confirm();
+    assert!(to_desktop(&mut desktop, &confirm.send, 5, None)
+        .events
+        .is_empty());
     let allowed = desktop.allow(5);
     let [desktop::Event::Paired { secret, .. }] = &allowed.events[..] else {
         panic!("not paired: {:?}", allowed.events);
@@ -410,6 +415,101 @@ fn a_desktop_revealing_another_nonce_than_it_committed_to_is_refused() {
 }
 
 #[test]
+fn the_secret_waits_for_both_users_in_either_order() {
+    // Allowed on the desktop first: nothing is sent until the headset confirms.
+    let (mut desktop, mut device, _, _, _) = compare(160);
+    let early = desktop.allow(5);
+    assert!(early.send.is_empty() && early.events.is_empty() && early.end.is_none());
+    let confirmed = to_desktop(&mut desktop, &device.confirm().send, 6, None);
+    assert!(matches!(
+        &confirmed.events[..],
+        [desktop::Event::Paired { .. }]
+    ));
+    let stored = to_device(&mut device, &confirmed.send, 7);
+    assert!(matches!(&stored.events[..], [device::Event::Paired { .. }]));
+}
+
+#[test]
+fn a_desktop_that_accepts_before_the_headset_confirms_is_refused() {
+    use crate::crypto;
+    // A rogue desktop answers its own prompt the moment the code shows.
+    let (mut device, hello) = Device::pair(&identity(), seeded(170), 0);
+    let first = &hello.send[0];
+    let (_, at) = Hello::decode(first).unwrap();
+    let entropy = seeded(171);
+    let mut hs = crypto::handshake(Mode::Pair, false, &first[..at], None, &entropy);
+    crypto::read(&mut hs, &first[at..]).unwrap();
+    let nonce = [9; 32];
+    let payload = crate::wire::encode_desktop(&DESKTOP, "rogue", Some(&crypto::commit(&nonce)));
+    let reply = Reply::Handshake(crypto::write(&mut hs, &payload)).encode();
+    let mut transport = crypto::Transport::new(hs).unwrap();
+    to_device(&mut device, &[reply], 1);
+    let shown = to_device(
+        &mut device,
+        &transport.seal(&Frame::PairReveal(nonce)).unwrap(),
+        2,
+    );
+    assert!(matches!(&shown.events[..], [device::Event::Code { .. }]));
+    let accept = Frame::PairAccept {
+        desktop: DESKTOP,
+        secret: Secret([5; 32]),
+    };
+    let out = to_device(&mut device, &transport.seal(&accept).unwrap(), 3);
+    assert!(out.events.is_empty(), "{:?}", out.events);
+    assert!(matches!(out.end, Some(End::Failed(Error::Unexpected(_)))));
+}
+
+#[test]
+fn strangers_get_no_big_buffers_before_the_link() {
+    use crate::crypto;
+    // A rogue device, built from the primitives, pairs far enough to have
+    // a transport, then streams a big frame.
+    let hello = Hello {
+        version: VERSION,
+        device: [3; 16],
+        name: "rogue".into(),
+        mode: Mode::Pair,
+        app_version: "1".into(),
+    }
+    .encode();
+    let entropy = seeded(180);
+    let mut hs = crypto::handshake(Mode::Pair, true, &hello, None, &entropy);
+    let mut first = hello;
+    first.extend(crypto::write(&mut hs, &[]));
+    let mut desktop = new_desktop(181);
+    let reply = to_desktop(&mut desktop, &[first], 1, None);
+    let Ok(Reply::Handshake(msg2)) = Reply::decode(&reply.send[0]) else {
+        panic!("no handshake reply");
+    };
+    crypto::read(&mut hs, &msg2).unwrap();
+    let mut transport = crypto::Transport::new(hs).unwrap();
+    let big = Frame::Channel {
+        channel: 1,
+        data: vec![0; MAX_PAIRING_FRAME],
+    };
+    let out = to_desktop(&mut desktop, &transport.seal(&big).unwrap(), 2, None);
+    assert_eq!(out.end, Some(End::Failed(Error::TooLarge)));
+}
+
+#[test]
+fn a_frame_the_peer_would_refuse_is_not_sent() {
+    let secret = paired(190);
+    let (mut desktop, _) = linked(191, &secret);
+    let long = Request {
+        id: 1,
+        method: "GET".into(),
+        target: format!("/{}", "a".repeat(crate::wire::MAX_TARGET)),
+        headers: vec![],
+        body: vec![],
+    };
+    assert_eq!(desktop.request(long), Err(Error::TooLarge));
+    let hidden = Frame::Close("a\u{202e}b".into());
+    assert_eq!(desktop.send(&hidden), Err(Error::Malformed("text")));
+    // And the link is still up.
+    assert!(desktop.linked());
+}
+
+#[test]
 fn a_denied_pairing_stores_nothing() {
     let (mut desktop, mut device, _, _, _) = compare(200);
     let out = desktop.deny();
@@ -425,6 +525,7 @@ fn an_expired_code_cannot_be_allowed() {
     let (mut desktop, mut device, _, _, _) = compare(300);
     // The code was shown at 3 (desktop) and 4 (device).
     let late = 3 + PAIR_EXPIRY_MS;
+    to_desktop(&mut desktop, &device.confirm().send, 5, None);
     let out = desktop.allow(late);
     assert!(out.events.is_empty() && out.send.is_empty());
     assert_eq!(out.end, Some(End::Failed(Error::Expired)));

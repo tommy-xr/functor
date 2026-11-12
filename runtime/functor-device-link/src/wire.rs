@@ -9,14 +9,14 @@ pub const MAGIC: [u8; 4] = *b"FLNK";
 
 pub const MAX_NAME: usize = 64;
 pub const MAX_APP_VERSION: usize = 32;
-const MAX_METHOD: usize = 16;
-const MAX_TARGET: usize = 8 * 1024;
-const MAX_HEADERS: usize = 32;
-const MAX_HEADER_NAME: usize = 64;
-const MAX_HEADER_VALUE: usize = 4 * 1024;
-const MAX_BUILD: usize = 128;
-const MAX_PROJECT: usize = 1024;
-const MAX_REASON: usize = 256;
+pub const MAX_METHOD: usize = 16;
+pub const MAX_TARGET: usize = 8 * 1024;
+pub const MAX_HEADERS: usize = 32;
+pub const MAX_HEADER_NAME: usize = 64;
+pub const MAX_HEADER_VALUE: usize = 4 * 1024;
+pub const MAX_BUILD: usize = 128;
+pub const MAX_PROJECT: usize = 1024;
+pub const MAX_REASON: usize = 256;
 
 /// What a connection is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,6 +247,8 @@ pub enum Frame {
     PairDeny,
     /// Pairing, either way: no longer pairing.
     PairCancel,
+    /// Pairing, device → desktop: its user says the codes match.
+    PairConfirm,
 }
 
 impl Frame {
@@ -314,8 +316,48 @@ impl Frame {
             Frame::PairDone => w.u8(19),
             Frame::PairDeny => w.u8(20),
             Frame::PairCancel => w.u8(21),
+            Frame::PairConfirm => w.u8(22),
         }
         w.0
+    }
+
+    /// Whether `decode` would take this frame back: every text within its
+    /// limit and allowed. Checked before sending, so a frame the peer would
+    /// refuse is an error here, not a dropped link there.
+    pub fn check(&self) -> Result<(), Error> {
+        let text = |t: &str, max: usize| match () {
+            _ if t.len() > max => Err(Error::TooLarge),
+            _ if !allowed(t) => Err(Error::Malformed("text")),
+            _ => Ok(()),
+        };
+        let headers = |hs: &[(String, String)]| {
+            if hs.len() > MAX_HEADERS {
+                return Err(Error::TooLarge);
+            }
+            hs.iter().try_for_each(|(n, v)| {
+                text(n, MAX_HEADER_NAME)?;
+                text(v, MAX_HEADER_VALUE)
+            })
+        };
+        match self {
+            Frame::Request(r) => {
+                text(&r.method, MAX_METHOD)?;
+                text(&r.target, MAX_TARGET)?;
+                headers(&r.headers)
+            }
+            Frame::Response(r) => headers(&r.headers),
+            Frame::Status(s) => {
+                if s.battery.is_some_and(|b| b > 100) {
+                    return Err(Error::Malformed("battery"));
+                }
+                text(&s.build, MAX_BUILD)?;
+                s.project
+                    .as_deref()
+                    .map_or(Ok(()), |p| text(p, MAX_PROJECT))
+            }
+            Frame::Close(reason) => text(reason, MAX_REASON),
+            _ => Ok(()),
+        }
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Frame, Error> {
@@ -366,6 +408,7 @@ impl Frame {
             19 => Frame::PairDone,
             20 => Frame::PairDeny,
             21 => Frame::PairCancel,
+            22 => Frame::PairConfirm,
             _ => return Err(Error::Malformed("frame kind")),
         };
         r.end()?;
@@ -441,6 +484,15 @@ impl Writer {
     }
 }
 
+/// Text a peer may send: no control characters, and no invisible ones
+/// that reorder or hide text (a name that reads like another's).
+fn allowed(text: &str) -> bool {
+    !text.chars().any(|c| {
+        c.is_control()
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    })
+}
+
 /// `s` cut to at most `max` bytes, on a character boundary.
 fn clip(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
@@ -493,7 +545,7 @@ impl<'a> Reader<'a> {
             return Err(Error::TooLarge);
         }
         let text = std::str::from_utf8(self.take(len)?).map_err(|_| Error::Malformed("text"))?;
-        if text.chars().any(char::is_control) {
+        if !allowed(text) {
             return Err(Error::Malformed("text"));
         }
         Ok(text.to_string())

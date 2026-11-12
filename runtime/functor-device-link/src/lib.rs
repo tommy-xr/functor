@@ -51,6 +51,9 @@ pub const MAX_MESSAGE: usize = 65_535;
 /// version adds.
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
+/// Largest frame before the link is up: pairing frames are under 64 bytes.
+pub const MAX_PAIRING_FRAME: usize = 256;
+
 /// Digits in the pairing code: see [`code`].
 pub const CODE_DIGITS: usize = 6;
 /// How many pairing codes there are.

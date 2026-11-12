@@ -140,7 +140,7 @@ pub enum ClientMsg {
         task: u64,
     },
     /// The user compared the codes: pair the device asking with `request`
-    /// (`DeviceState::AskingToPair`).
+    /// (`Devices::requests`); the secret goes once the headset confirms too.
     AllowPairing {
         request: u64,
     },
