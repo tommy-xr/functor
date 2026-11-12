@@ -107,6 +107,10 @@ test("delete is blocked while running or with a change to review", () => {
   // Outside git nothing can be reviewed, so nothing holds it.
   assert.equal(deleteBlock(ready, false), null);
   assert.equal(deleteBlock(task(3, { kind: "kept" }), true), null);
+  // A stopped run's change, not measured yet, may hold edits.
+  const unmeasured = task(4, { kind: "waiting_on_you" }, { baseline: "b", change: null });
+  assert.equal(deleteBlock(unmeasured, true), "Its change is not measured yet: open its changes, then try again.");
+  assert.equal(deleteBlock(unmeasured, false), null);
 });
 
 test("relative times against a fixed clock", () => {

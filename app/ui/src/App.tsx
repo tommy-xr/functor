@@ -46,9 +46,10 @@ export function App() {
   if (state?.active && chosen !== undefined) seen.current.set(choiceKey(state), chosen);
   const selected = currentTask(state, seen.current);
   useEffect(() => {
-    if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected });
+    // Only where the core still has none: another window's or a new task's choice wins.
+    if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected, if_unset: true });
   }, [online, state?.active, chosen === undefined]);
-  const setSelected = (task: number | null) => send({ type: "select_task", task });
+  const setSelected = (task: number | null) => send({ type: "select_task", task, if_unset: false });
   const [target, setTarget] = useState<CanvasProps["target"]>(null);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });

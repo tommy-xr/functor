@@ -37,6 +37,9 @@ export function taskGroup(status: TaskStatus): Group {
   }
 }
 
+/** A task's title as shown: blank ones read "Untitled task". */
+export const untitled = (task: Task) => task.title || "Untitled task";
+
 /** Most recently active first; tasks without a time (none yet) by id. */
 function newestFirst(a: Task, b: Task): number {
   return (b.updated_at ?? 0) - (a.updated_at ?? 0) || b.id - a.id;
@@ -48,7 +51,7 @@ function newestFirst(a: Task, b: Task): number {
  */
 export function groupTasks(tasks: readonly Task[], project: string | null, query = "") {
   const q = query.trim().toLowerCase();
-  const mine = tasks.filter((t) => t.project === project && (!q || (t.title || "Untitled task").toLowerCase().includes(q)));
+  const mine = tasks.filter((t) => t.project === project && (!q || untitled(t).toLowerCase().includes(q)));
   return GROUPS.map(({ group, label }) => ({
     group,
     label,
@@ -90,6 +93,8 @@ export function secondaryLine(task: Task, items: readonly Item[] | undefined): s
 export function deleteBlock(task: Task, tracksChanges: boolean): string | null {
   if (task.run !== null || task.reverting) return "It is running: stop it first.";
   if (tracksChanges && hasChange(task)) return "It has a change to review: keep or revert it first.";
+  if (tracksChanges && task.baseline !== null && task.change === null)
+    return "Its change is not measured yet: open its changes, then try again.";
   return null;
 }
 

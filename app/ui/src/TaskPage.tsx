@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { AppState, Item, Task } from "./generated/protocol";
-import { stepAvailable, tokens, viewPhrase } from "./chat-model";
-import { Counts, ReviewActions, TaskBadge } from "./DiffView";
+import { stepAvailable, tokens } from "./chat-model";
+import { WalkSteps } from "./Chat";
+import { Counts, FileCounts, ReviewActions, TaskBadge } from "./DiffView";
 import { hasChange, plural, totals } from "./diff-model";
 import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
 import { taskPage, usageTable, type RunSteps } from "./task-page-model";
-import { relativeTime } from "./tasks-model";
-import { untitled, useNow } from "./TasksPane";
+import { relativeTime, untitled } from "./tasks-model";
+import { RenameInput, useNow } from "./TasksPane";
 
 /**
  * A task's page (the `Task` tab): a read view of what the agent was given,
@@ -94,35 +95,15 @@ export function TaskPage({
           </Section>
           {page.walkthrough && (
             <Section id={id("walk")} title="Walkthrough">
-              <ol className="walk-steps">
-                {page.walkthrough.steps.map((s, i) => {
-                  const walk = page.walkthrough!;
-                  const available = stepAvailable(s.view, state?.files ?? [], !!state?.tracks_changes && hasChange(task));
-                  const where = viewPhrase(s.view);
-                  return (
-                    <li key={i}>
-                      <button
-                        type="button"
-                        className="walk-step"
-                        aria-current={i === walk.current ? "step" : undefined}
-                        disabled={!online || !available}
-                        onClick={() => send({ type: "walkthrough_step", task: task.id, item: walk.item, step: i })}
-                      >
-                        <span className="walk-n" aria-hidden="true">
-                          {i + 1}
-                        </span>
-                        <span className="walk-body">
-                          <span className="walk-title">{s.title}</span>
-                          {s.note && <span className="walk-note">{s.note}</span>}
-                          <span className="walk-where">
-                            {!available ? "No longer available" : where.code ? <><code>{where.code}</code>{where.after}</> : where.after?.replace(/^ /, "")}
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ol>
+              <WalkSteps
+                steps={page.walkthrough.steps}
+                current={page.walkthrough.current}
+                available={page.walkthrough.steps.map((s) =>
+                  stepAvailable(s.view, state?.files ?? [], !!state?.tracks_changes && hasChange(task)),
+                )}
+                enabled={online}
+                onStep={(step) => send({ type: "walkthrough_step", task: task.id, item: page.walkthrough!.item, step })}
+              />
             </Section>
           )}
           <Section id={id("usage")} title="Usage">
@@ -176,31 +157,13 @@ function Section({ id, title, children }: { id: string; title: string; children:
 /** The title, renamed in place: Enter or leaving the field saves, Escape does not. */
 function Title({ task, id, online, send }: { task: Task; id: string; online: boolean; send: Send }) {
   const [editing, setEditing] = useState(false);
-  const cancel = useRef(false);
   const button = useRef<HTMLButtonElement>(null);
-  const commit = (value: string) => {
-    setEditing(false);
-    const next = value.split(/\s+/).filter(Boolean).join(" ");
-    if (!cancel.current && next && next !== task.title) send({ type: "rename_task", task: task.id, title: next });
-    cancel.current = false;
-    setTimeout(() => button.current?.focus());
-  };
   if (editing) {
-    return (
-      <input
-        className="task-rename task-page-rename"
-        aria-label="Task title"
-        defaultValue={task.title}
-        maxLength={120}
-        autoFocus
-        onFocus={(e) => e.currentTarget.select()}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") cancel.current = true;
-          if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
-        }}
-        onBlur={(e) => commit(e.currentTarget.value)}
-      />
-    );
+    const done = () => {
+      setEditing(false);
+      setTimeout(() => button.current?.focus());
+    };
+    return <RenameInput task={task} send={send} className="task-page-rename" onDone={done} />;
   }
   return (
     <>
@@ -303,7 +266,7 @@ function ChangeSection({
         {task.change.files.map((f) => (
           <li key={f.path}>
             <span className="mono">{f.path}</span>
-            {f.binary ? <span className="counts mono">binary</span> : <Counts added={f.added} removed={f.removed} />}
+            <FileCounts file={f} />
           </li>
         ))}
         {task.change.more > 0 && <li className="hint">and {plural(task.change.more, "more file")}</li>}
@@ -312,7 +275,8 @@ function ChangeSection({
         <button type="button" className="button" onClick={onOpenChanges}>
           Open changes
         </button>
-        {task.status.kind === "ready_for_review" && <ReviewActions task={task} send={send} online={online} notice={notice} />}
+        {/* As the Changes tab offers them: on any change, disabled while it runs or reverts. */}
+        <ReviewActions task={task} send={send} online={online} notice={notice} />
       </div>
     </div>
   );

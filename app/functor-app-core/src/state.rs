@@ -473,10 +473,12 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             state.canvas_stacked = stacked;
             (false, false)
         }
-        Event::Client(ClientMsg::SelectTask { task }) => match select_task(&mut state, task) {
-            Ok(changed) => (changed, true),
-            Err(reason) => (reject(&mut commands, reason), false),
-        },
+        Event::Client(ClientMsg::SelectTask { task, if_unset }) => {
+            match select_task(&mut state, task, if_unset) {
+                Ok(changed) => (changed, true),
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
         Event::Client(ClientMsg::RenameTask { task, title }) => {
             (rename_task(&mut state, task, &title, &mut commands), false)
         }
@@ -1279,12 +1281,15 @@ fn stamp(now: u64) -> Option<u64> {
     (now > 0).then_some(now)
 }
 
-/// Sets the active project's current task; whether it changed. A task must
-/// be one of that project's.
-fn select_task(state: &mut AppState, task: Option<u64>) -> Result<bool, String> {
+/// Sets the active project's current task (with `if_unset`, only when it
+/// has none); whether it changed. A task must be one of that project's.
+fn select_task(state: &mut AppState, task: Option<u64>, if_unset: bool) -> Result<bool, String> {
     let Some(project) = state.active.clone() else {
         return Err("there is no project to choose a task in".to_string());
     };
+    if if_unset && state.current_task.contains_key(&project) {
+        return Ok(false);
+    }
     if let Some(id) = task {
         if !state
             .tasks
@@ -1328,6 +1333,12 @@ fn can_delete(state: &AppState, task: &Task) -> Result<(), String> {
     if state.tracks_changes && has_change(task) {
         return Err(format!(
             "task {id} has a change to review: keep or revert it before deleting the task"
+        ));
+    }
+    // Not measured yet (a stop's diff in flight, or one that failed): it may hold edits.
+    if state.tracks_changes && task.baseline.is_some() && task.change.is_none() {
+        return Err(format!(
+            "task {id}'s change is not measured yet: open its changes, then try again"
         ));
     }
     Ok(())
@@ -1509,8 +1520,10 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     commands.push(Command::StopRun { task: id, run });
     task.updated_at = stamp(state.now).or(task.updated_at);
     let changed = stop_run(task);
-    // A stopped run reports no change of its own: what it left is measured now.
+    // A stopped run reports no change of its own: what it left is measured
+    // now, and unknown until then.
     if let Some(baseline) = task.baseline.clone() {
+        task.change = None;
         commands.push(Command::Diff {
             task: id,
             baseline,
@@ -2981,7 +2994,10 @@ mod tests {
     // The Tasks view: the current task, rename, delete, times.
 
     fn select(task: Option<u64>) -> Event {
-        client(ClientMsg::SelectTask { task })
+        client(ClientMsg::SelectTask {
+            task,
+            if_unset: false,
+        })
     }
 
     fn at(now: u64, s: AppState) -> AppState {
@@ -3010,8 +3026,21 @@ mod tests {
         assert_eq!(commands, rejected("there is no task 1 in examples/b"));
         assert_eq!(s.current_task.get("examples/b"), None);
         assert_eq!(s.current_task["examples/a"], Some(1));
-        let (_, commands) = update(s, select(Some(9)));
+        let (s, commands) = update(s, select(Some(9)));
         assert_eq!(commands, rejected("there is no task 9 in examples/b"));
+        // A page's default applies only where nothing is chosen yet.
+        let default = |task| {
+            client(ClientMsg::SelectTask {
+                task,
+                if_unset: true,
+            })
+        };
+        let (s, _) = update(s, switch("examples/a"));
+        let (s, _) = update(s, default(None));
+        assert_eq!(s.current_task["examples/a"], Some(1));
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, _) = update(s, default(None));
+        assert_eq!(s.current_task["examples/b"], None);
     }
 
     #[test]
@@ -3108,6 +3137,18 @@ mod tests {
             commands,
             rejected("task 1 has a change to review: keep or revert it before deleting the task")
         );
+        // A stopped run's change is unknown until measured: no delete before.
+        let (s2, _) = update(tracked(), new_task("hi"));
+        let (s2, _) = update(s2, baseline(1, 0, "tree-1"));
+        let (s2, _) = update(s2, client(ClientMsg::StopTask { task: 1 }));
+        let (s2, commands) = update(s2, delete());
+        assert_eq!(
+            commands,
+            rejected("task 1's change is not measured yet: open its changes, then try again")
+        );
+        let (s2, _) = update(s2, change(1, "tree-1", Change::default()));
+        let (s2, _) = update(s2, delete());
+        assert!(s2.tasks.is_empty());
         // Once kept it goes, leaving the files as they are (no revert).
         let (s, _) = update(s, keep(1));
         let (s, commands) = update(s, delete());
@@ -3180,12 +3221,18 @@ mod tests {
     fn task_view_messages_are_type_tagged() {
         for (json, msg) in [
             (
-                r#"{"type":"select_task","task":null}"#,
-                ClientMsg::SelectTask { task: None },
+                r#"{"type":"select_task","task":null,"if_unset":false}"#,
+                ClientMsg::SelectTask {
+                    task: None,
+                    if_unset: false,
+                },
             ),
             (
-                r#"{"type":"select_task","task":3}"#,
-                ClientMsg::SelectTask { task: Some(3) },
+                r#"{"type":"select_task","task":3,"if_unset":true}"#,
+                ClientMsg::SelectTask {
+                    task: Some(3),
+                    if_unset: true,
+                },
             ),
             (
                 r#"{"type":"rename_task","task":3,"title":"x"}"#,

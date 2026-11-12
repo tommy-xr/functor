@@ -122,9 +122,11 @@ pub enum ClientMsg {
         stacked: bool,
     },
     /// Make `task` (of the active project) the chat's current task; `None`
-    /// is a new task (`AppState::current_task`).
+    /// is a new task (`AppState::current_task`). `if_unset`: only when the
+    /// project has none yet (a page's default).
     SelectTask {
         task: Option<u64>,
+        if_unset: bool,
     },
     /// Give `task` the title the user typed ([`crate::tasks::renamed`]).
     RenameTask {

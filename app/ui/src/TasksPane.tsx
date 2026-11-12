@@ -3,7 +3,7 @@ import type { AppState, Item, Task } from "./generated/protocol";
 import { TaskBadge } from "./DiffView";
 import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
-import { deleteBlock, groupTasks, relativeTime, secondaryLine, type Group } from "./tasks-model";
+import { deleteBlock, groupTasks, relativeTime, secondaryLine, untitled, type Group } from "./tasks-model";
 
 /** The wall clock, ticking every 30 s so relative times move on. */
 export function useNow(): number {
@@ -15,7 +15,29 @@ export function useNow(): number {
   return now;
 }
 
-export const untitled = (task: Task) => task.title || "Untitled task";
+/** A task's title renamed in place: Enter or leaving the field saves, Escape does not. */
+export function RenameInput({ task, send, className = "", onDone }: { task: Task; send: Send; className?: string; onDone: () => void }) {
+  const cancel = useRef(false);
+  return (
+    <input
+      className={`task-rename ${className}`}
+      aria-label="Task title"
+      defaultValue={task.title}
+      maxLength={120}
+      autoFocus
+      onFocus={(e) => e.currentTarget.select()}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") cancel.current = true;
+        if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+      }}
+      onBlur={(e) => {
+        const next = e.currentTarget.value.split(/\s+/).filter(Boolean).join(" ");
+        if (!cancel.current && next && next !== task.title) send({ type: "rename_task", task: task.id, title: next });
+        onDone();
+      }}
+    />
+  );
+}
 
 /**
  * The rail's Tasks pane (D12): the active project's tasks by group, a
@@ -54,9 +76,9 @@ export function TasksPane({
   // A search shows its matches in Done too.
   const shown = (g: Group) => g !== "done" || doneOpen || query.trim() !== "";
   const rows = groups.flatMap((g) => (shown(g.group) ? g.tasks : []));
-  // Rows' second lines come from their transcripts; each is fetched once per connection.
+  // Shown rows' second lines come from their transcripts; each is fetched once per connection.
   useEffect(() => {
-    if (online) for (const t of all) fetchTranscript(t.id);
+    if (online) for (const t of rows) fetchTranscript(t.id);
   });
   // One row is in the tab order (roving): the last focused, else the selected, else the first.
   const [roving, setRoving] = useState<number | null>(null);
@@ -96,7 +118,7 @@ export function TasksPane({
       </div>
       <input
         type="search"
-        className="tasks-search"
+        className="text-input tasks-search"
         aria-label="Search tasks"
         placeholder="Search tasks"
         value={query}
@@ -190,7 +212,6 @@ function TaskRow({
   // A refusal that arrives after this row's delete was sent shows under it.
   const [since, setSince] = useState(Infinity);
   const main = useRef<HTMLButtonElement>(null);
-  const cancel = useRef(false);
   const title = untitled(task);
   const block = deleteBlock(task, tracks);
   const second = secondaryLine(task, items);
@@ -210,30 +231,17 @@ function TaskRow({
       setConfirming(true);
     }
   };
-  const commit = (value: string) => {
-    cancel.current = false;
-    setRenaming(false);
-    const next = value.split(/\s+/).filter(Boolean).join(" ");
-    if (next && next !== task.title) send({ type: "rename_task", task: task.id, title: next });
-    back();
-  };
   return (
     <li className={`task-row${selected ? " task-row-selected" : ""}`} data-testid="task-row">
       <div className="task-row-line">
         {renaming ? (
-          <input
-            className="task-rename"
-            aria-label="Task title"
-            defaultValue={task.title}
-            maxLength={120}
-            autoFocus
-            onFocus={(e) => e.currentTarget.select()}
-            // Enter and leaving the field save; Escape leaves it unsaved.
-            onKeyDown={(e) => {
-              if (e.key === "Escape") cancel.current = true;
-              if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur();
+          <RenameInput
+            task={task}
+            send={send}
+            onDone={() => {
+              setRenaming(false);
+              back();
             }}
-            onBlur={(e) => commit(cancel.current ? task.title : e.currentTarget.value)}
           />
         ) : (
           <button

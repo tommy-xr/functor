@@ -586,41 +586,7 @@ function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: 
         <span className="eyebrow">Walkthrough</span>
         <span>{steps[0]?.title}</span>
       </p>
-      <ol className="walk-steps">
-        {steps.map((s, i) => {
-          const where = viewPhrase(s.view);
-          return (
-            <li key={i}>
-              <button
-                type="button"
-                className="walk-step"
-                aria-current={i === current ? "step" : undefined}
-                disabled={!can || !available[i]}
-                onMouseDown={keep}
-                onClick={() => go(i)}
-              >
-                <span className="walk-n" aria-hidden="true">
-                  {i + 1}
-                </span>
-                <span className="walk-body">
-                  <span className="walk-title">{s.title}</span>
-                  {s.note && <span className="walk-note">{s.note}</span>}
-                  <span className="walk-where">
-                    {available[i] ? (
-                      <>
-                        {where.code && <code>{where.code}</code>}
-                        {where.code ? where.after : where.after?.replace(/^ /, "")}
-                      </>
-                    ) : (
-                      "No longer available"
-                    )}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ol>
+      <WalkSteps steps={steps} current={current} available={available} enabled={can} onStep={go} />
       <div className="chat-card-actions walk-nav">
         <button type="button" className="button button-small" disabled={!can || prev === null} onMouseDown={keep} onClick={() => go(prev)}>
           Prev
@@ -631,6 +597,62 @@ function WalkthroughCard({ item, index, walk }: { item: WalkthroughItem; index: 
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * A walkthrough's steps, each a button showing its view (the chat's card and
+ * the task page). A click keeps the keyboard focus where it was.
+ */
+export function WalkSteps({
+  steps,
+  current,
+  available,
+  enabled,
+  onStep,
+}: {
+  steps: WalkthroughItem["steps"];
+  current: number | null;
+  available: readonly boolean[];
+  enabled: boolean;
+  onStep: (step: number) => void;
+}) {
+  return (
+    <ol className="walk-steps">
+      {steps.map((s, i) => {
+        const where = viewPhrase(s.view);
+        return (
+          <li key={i}>
+            <button
+              type="button"
+              className="walk-step"
+              aria-current={i === current ? "step" : undefined}
+              disabled={!enabled || !available[i]}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => onStep(i)}
+            >
+              <span className="walk-n" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="walk-body">
+                <span className="walk-title">{s.title}</span>
+                {s.note && <span className="walk-note">{s.note}</span>}
+                <span className="walk-where">
+                  {available[i] ? (
+                    <>
+                      {where.code && <code>{where.code}</code>}
+                      {where.code ? where.after : where.after?.replace(/^ /, "")}
+                    </>
+                  ) : (
+                    "No longer available"
+                  )}
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 

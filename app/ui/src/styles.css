@@ -2419,17 +2419,8 @@ blockquote {
 }
 
 .tasks-search {
-  width: 100%;
   min-height: 32px;
   padding: 4px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-m);
-  background: var(--sunk);
-  font-size: 12.5px;
-}
-
-.tasks-search::placeholder {
-  color: var(--faint);
 }
 
 .tasks-list {
