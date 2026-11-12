@@ -1,6 +1,7 @@
 //! Runs the core's commands other than replies: one `functor run native`
 //! child at a time, its output read for the debug server's address, `/state`
-//! polled, input posted; and project file listings.
+//! polled, input posted; agent runs (`agent::Runner`); saving tasks; and
+//! project file listings.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -18,6 +19,8 @@ use tokio::process::Child;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+use crate::agent::{Agents, Runner};
 
 /// Each `/state` serializes the whole model on the game's loop, so a UI that
 /// keeps polling should weigh this against the model's size.
@@ -41,6 +44,9 @@ pub struct Driver {
     functor: PathBuf,
     events: UnboundedSender<Event>,
     live: Option<Live>,
+    runs: Runner,
+    /// Where tasks are saved (`store::home`).
+    home: PathBuf,
 }
 
 /// The current child's supervisor. Dropping it kills the child.
@@ -54,11 +60,18 @@ struct Live {
 }
 
 impl Driver {
-    pub fn new(functor: PathBuf, events: UnboundedSender<Event>) -> Self {
+    pub fn new(
+        functor: PathBuf,
+        agents: Agents,
+        home: PathBuf,
+        events: UnboundedSender<Event>,
+    ) -> Self {
         Self {
+            runs: Runner::new(functor.clone(), agents, events.clone()),
             functor,
             events,
             live: None,
+            home,
         }
     }
 
@@ -91,6 +104,13 @@ impl Driver {
             Command::ListFiles { path, dir } => {
                 let files = read_project_files(&dir);
                 let _ = self.events.send(Event::Files { path, files });
+            }
+            Command::StartRun(spec) => self.runs.start(*spec),
+            Command::StopRun { task, run } => self.runs.stop(task, run).await,
+            Command::SaveTask { dir, task } => {
+                if let Err(e) = crate::store::save(&self.home, &dir, &task) {
+                    eprintln!("functor-app: cannot save task {}: {e}", task.id);
+                }
             }
             // Clients are the server's (`server::run`); `--print` has none.
             Command::Reply(_) | Command::Broadcast(_) => {}
@@ -217,7 +237,10 @@ async fn supervise(
 
 /// Sends `reader`'s lines until it closes. Reads to the end whatever the
 /// bytes: a closed pipe would fail the child's next write and kill it.
-fn forward(reader: impl AsyncRead + Unpin + Send + 'static, lines: UnboundedSender<String>) {
+pub(crate) fn forward(
+    reader: impl AsyncRead + Unpin + Send + 'static,
+    lines: UnboundedSender<String>,
+) {
     tokio::spawn(async move {
         let mut reader = BufReader::new(reader).split(b'\n');
         while let Ok(Some(line)) = reader.next_segment().await {
@@ -229,7 +252,7 @@ fn forward(reader: impl AsyncRead + Unpin + Send + 'static, lines: UnboundedSend
 
 /// The first `error…` or panic line, else the last line: a failed load
 /// prints its cause, then `error: cannot load …`, then `✗ failed in 1ms`.
-fn cause(tail: &VecDeque<String>) -> Option<&str> {
+pub(crate) fn cause(tail: &VecDeque<String>) -> Option<&str> {
     let error = tail
         .iter()
         .find(|l| l.starts_with("error") || l.contains("panicked at"));
@@ -241,17 +264,27 @@ async fn kill(mut child: Child) {
     let _ = child.kill().await;
 }
 
-/// One HTTP/1.0 request (the server closes after its response): the status
-/// line's code and the body, or why it failed.
-async fn request(debug_url: &str, method: &str, path: &str, body: &str) -> Result<String, String> {
+/// One HTTP/1.0 request to `url` (`http://host:port`; the server closes
+/// after its response): the body of a 2xx response, or why it failed.
+pub async fn request(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<String, String> {
     let what = format!("{method} {path}");
-    let addr = debug_url
+    let addr = url
         .strip_prefix("http://")
-        .ok_or_else(|| format!("not an http url: {debug_url}"))?;
+        .ok_or_else(|| format!("not an http url: {url}"))?;
     let request = async {
         let mut stream = TcpStream::connect(addr).await?;
+        let headers: String = headers
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}\r\n"))
+            .collect();
         let head = format!(
-            "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.0\r\nHost: {addr}\r\n{headers}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(head.as_bytes()).await?;
@@ -266,7 +299,11 @@ async fn request(debug_url: &str, method: &str, path: &str, body: &str) -> Resul
     let text = String::from_utf8_lossy(&response);
     let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
     let status = head.lines().next().unwrap_or_default();
-    if status.split(' ').nth(1) != Some("200") {
+    if !status
+        .split(' ')
+        .nth(1)
+        .is_some_and(|code| code.starts_with('2'))
+    {
         return Err(format!("{what}: {status}: {}", body.trim()));
     }
     Ok(body.to_string())
@@ -274,7 +311,7 @@ async fn request(debug_url: &str, method: &str, path: &str, body: &str) -> Resul
 
 /// `GET /state`'s `frame` and pointer surface.
 async fn poll_state(debug_url: &str) -> Result<Polled, String> {
-    let body = request(debug_url, "GET", "/state", "").await?;
+    let body = request(debug_url, "GET", "/state", &[], "").await?;
     let state: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("GET /state: {e}"))?;
     let frame = state["frame"]
@@ -308,7 +345,7 @@ fn post_inputs(debug_url: String) -> UnboundedSender<GameInput> {
                 },
             };
             let body = serde_json::to_string(&input).expect("GameInput serializes");
-            if let Err(e) = request(&debug_url, "POST", "/input", &body).await {
+            if let Err(e) = request(&debug_url, "POST", "/input", &[], &body).await {
                 eprintln!("functor-app: {e}");
             }
         }

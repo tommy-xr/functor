@@ -13,7 +13,7 @@ ts = ["dep:ts-rs"]
 ignore = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-ts-rs = { version = "12", optional = true }
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 
 [dev-dependencies]
 tempfile = "3"

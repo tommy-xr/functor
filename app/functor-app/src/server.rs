@@ -32,6 +32,9 @@ mod assets {
 /// rather than buffered without bound; its page reconnects for a fresh state.
 const CLIENT_QUEUE: usize = 32;
 
+/// Most events the core loop takes in one batch.
+const BATCH: usize = 256;
+
 const NOT_BUILT: &str = "<!doctype html><title>Functor</title>\
     <p>UI not built — run <code>npm run build:app-ui</code>, then rebuild functor-app \
     or pass <code>--ui-dir app/ui/dist</code>.</p>";
@@ -60,7 +63,7 @@ struct Ctx {
 }
 
 /// Serves until `shutdown` resolves to a signal number, then stops the
-/// session and returns 128 + it.
+/// session and every agent run and returns 128 + it.
 pub async fn serve(
     state: AppState,
     mut driver: Driver,
@@ -115,13 +118,25 @@ async fn run(
         let (events, from) = tokio::select! {
             biased;
             signal = &mut shutdown => {
-                let (_, commands) = update(state, Event::Client(ClientMsg::StopSession));
+                let (_, commands) = update(state, Event::Shutdown);
                 for command in commands {
                     driver.run(command).await;
                 }
                 return signal;
             }
-            Some(event) = events.recv() => (vec![event], None),
+            // Everything already queued goes in one batch, so a burst of
+            // streamed pieces of one item coalesces (`queue`) instead of
+            // overflowing a client's queue.
+            Some(event) = events.recv() => {
+                let mut batch = vec![event];
+                while batch.len() < BATCH {
+                    match events.try_recv() {
+                        Ok(event) => batch.push(event),
+                        Err(_) => break,
+                    }
+                }
+                (batch, None)
+            }
             Some(input) = inputs.recv() => match input {
                 // A new client is answered with the whole state.
                 Input::Connect { id, out } => {
@@ -142,6 +157,7 @@ async fn run(
                 }
             },
         };
+        let mut outgoing = Vec::new();
         for event in events {
             let commands;
             (state, commands) = update(state, event);
@@ -157,15 +173,35 @@ async fn run(
                             }
                         }
                     }
-                    Command::Broadcast(msg) => {
-                        let text = json(&msg);
-                        clients.retain(|_, out| out.try_send(text.clone()).is_ok());
-                    }
+                    Command::Broadcast(msg) => queue(&mut outgoing, msg),
                     command => driver.run(command).await,
                 }
             }
         }
+        for msg in outgoing {
+            let text = json(&msg);
+            clients.retain(|_, out| out.try_send(text.clone()).is_ok());
+        }
     }
+}
+
+/// Queues `msg`, dropping the message just before it when `msg` replaces
+/// it: the state again, or the same transcript item again.
+fn queue(out: &mut Vec<ServerMsg>, msg: ServerMsg) {
+    let replaces = match (out.last(), &msg) {
+        (Some(ServerMsg::State { .. }), ServerMsg::State { .. }) => true,
+        (
+            Some(ServerMsg::Item { task, index, .. }),
+            ServerMsg::Item {
+                task: t, index: i, ..
+            },
+        ) => (task, index) == (t, i),
+        _ => false,
+    };
+    if replaces {
+        out.pop();
+    }
+    out.push(msg);
 }
 
 /// Records the release for a key or button `input` presses, or forgets it
@@ -340,6 +376,38 @@ mod tests {
             track(&mut held, &input);
         }
         assert_eq!(held, HashSet::from([key("w", false), left(false)]));
+    }
+
+    #[test]
+    fn a_repeated_item_or_state_replaces_the_one_before_it() {
+        use functor_app_core::Item;
+        let item = |task, index, text: &str| ServerMsg::Item {
+            task,
+            index,
+            item: Item::Agent {
+                text: text.to_string(),
+                partial: true,
+            },
+        };
+        let mut out = Vec::new();
+        for msg in [
+            item(1, 2, "a"),
+            item(1, 2, "ab"),
+            item(1, 3, "c"),
+            item(1, 2, "abc"),
+            item(2, 2, "x"),
+        ] {
+            queue(&mut out, msg);
+        }
+        assert_eq!(
+            out,
+            [
+                item(1, 2, "ab"),
+                item(1, 3, "c"),
+                item(1, 2, "abc"),
+                item(2, 2, "x")
+            ]
+        );
     }
 
     #[test]
