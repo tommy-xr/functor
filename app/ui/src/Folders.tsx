@@ -149,9 +149,11 @@ function RecentItems({ recents, online, send, role }: { recents: Recent[]; onlin
  */
 export function ProjectPicker(props: FolderProps) {
   const { state, online, send } = props;
-  const [field, setField] = useState(false);
-  useEffect(() => setField(false), [state?.folder]);
+  // The path field: 0 hidden, else a new key per Open folder…, so choosing it again refocuses a fresh field.
+  const [field, setField] = useState(0);
+  useEffect(() => setField(0), [state?.folder]);
   const menu = useMenu();
+  const focusPicker = () => menu.ref.current?.querySelector("button")?.focus();
   const projects = state?.projects ?? [];
   const recents = state?.recents ?? [];
   const where = state?.git ? "repo" : "folder";
@@ -159,7 +161,11 @@ export function ProjectPicker(props: FolderProps) {
   const label = (p: { path: string; name: string }) => (p.path === "." ? p.name : p.path);
   const active = projects.find((p) => p.path === state?.active);
   const shown = active ? label(active) : !state ? "" : state.folder ? `No projects in this ${where}` : "No folder open";
-  const close = () => menu.setOpen(false);
+  // A chosen item unmounts: focus goes back to the picker (a field or dialog it opens then takes it).
+  const close = () => {
+    menu.setOpen(false);
+    focusPicker();
+  };
   return (
     <div className="stack">
       <div className="picker" ref={menu.ref} onKeyDown={menu.onKeyDown}>
@@ -204,7 +210,7 @@ export function ProjectPicker(props: FolderProps) {
             <button
               type="button"
               role="menuitem"
-              onClick={() => (state?.native_picker ? send({ type: "pick_folder" }) : setField(true))}
+              onClick={() => (state?.native_picker ? send({ type: "pick_folder" }) : setField((n) => n + 1))}
             >
               Open folder…
             </button>
@@ -214,13 +220,14 @@ export function ProjectPicker(props: FolderProps) {
           </div>
         )}
       </div>
-      {field && (
+      {field > 0 && (
         // Escape puts the field away, back to the picker.
         <div
+          key={field}
           onKeyDown={(e) => {
             if (e.key !== "Escape") return;
-            setField(false);
-            menu.ref.current?.querySelector("button")?.focus();
+            setField(0);
+            focusPicker();
           }}
         >
           <OpenFolderForm {...props} autoFocus />

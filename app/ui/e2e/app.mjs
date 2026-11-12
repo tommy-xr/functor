@@ -126,6 +126,12 @@ export async function reopen(page, url) {
   await page.goto(url);
 }
 
+/** Chooses `name` (a project, Open folder…, New project…) from the Explorer's project picker. */
+export async function chooseProject(page, name) {
+  await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: /^Project: / }).click();
+  await page.getByRole("menu", { name: "Projects" }).getByRole("menuitem", { name, exact: true }).click();
+}
+
 /** Each pane's tab names, in reading order. */
 export function tabs(page) {
   return page.locator(".pane-box").evaluateAll((panes) =>

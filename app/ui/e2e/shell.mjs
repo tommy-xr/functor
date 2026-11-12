@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, statSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, chooseProject, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -81,8 +81,7 @@ async function run(browser, width, height) {
     );
 
     // Switching project updates the title bar and the file list.
-    await explorer.getByRole("button", { name: /^Project: / }).click();
-    await page.getByRole("menu", { name: "Projects" }).getByRole("menuitem", { name: SWITCH_TO, exact: true }).click();
+    await chooseProject(page, SWITCH_TO);
     await expect(titlebar).toContainText(nameOf(SWITCH_TO));
     await expect(explorer.getByRole("list", { name: "Files" }).getByRole("listitem")).toHaveText(
       expectedFiles(SWITCH_TO),

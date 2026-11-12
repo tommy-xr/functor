@@ -2465,7 +2465,7 @@ blockquote {
   height: 14px;
 }
 
-/* The agent picker: the project switcher's select, as a quiet inline control. */
+/* The agent picker: the boxed `.switcher` select, as a quiet inline control. */
 .model-picker select {
   width: auto;
   min-height: 40px;

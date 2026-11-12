@@ -11,7 +11,7 @@ import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { chooseProject, git, reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempHome, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 
@@ -56,10 +56,7 @@ async function folders(browser, width, height) {
   // One control: the picker names the project; its menu switches, reopens, opens, creates.
   const picker = explorer.getByRole("button", { name: /^Project: / });
   const menu = page.getByRole("menu", { name: "Projects" });
-  const choose = async (name) => {
-    await picker.click();
-    await menu.getByRole("menuitem", { name }).click();
-  };
+  const choose = (name) => chooseProject(page, name);
   try {
     await page.goto(server.url);
     await expect(titlebar).toContainText("counter");
@@ -99,7 +96,10 @@ async function folders(browser, width, height) {
     expect(app.state.tracks_changes, "a loose folder tracks no changes").toBe(false);
     await expect(field).toBeHidden();
 
-    // Escape puts the path field away, back to the picker.
+    // Open folder… again focuses the field; Escape puts it away, back to the picker.
+    await choose("Open folder…");
+    await expect(field).toBeFocused();
+    await picker.focus();
     await choose("Open folder…");
     await expect(field).toBeFocused();
     await page.keyboard.press("Escape");
@@ -143,9 +143,14 @@ async function folders(browser, width, height) {
     await expect(picker).toHaveAccessibleName("Project: games/counter");
     expect(app.state.tracks_changes, "the repo tracks changes").toBe(true);
 
-    // Switching project through the picker.
-    await choose("games/second");
+    // Switching project through the picker, by keyboard: focus comes back to it.
+    await picker.focus();
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitem", { name: "games/second" })).toBeFocused();
+    await page.keyboard.press("Enter");
     await expect(picker).toHaveAccessibleName("Project: games/second");
+    await expect(picker).toBeFocused();
     await expect.poll(() => app.state.active).toBe("games/second");
     await choose("games/counter");
     await expect(picker).toHaveAccessibleName("Project: games/counter");
