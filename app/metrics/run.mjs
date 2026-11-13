@@ -158,6 +158,10 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       answer: m.answer,
       kept: keep ? tmp : undefined,
     };
+  } catch (e) {
+    // The error record names the kept dir too: its transcript says what broke.
+    if (keep) e.kept = tmp;
+    throw e;
   } finally {
     if (!keep) fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -292,7 +296,8 @@ async function main(argv) {
     try {
       record = await runScenario(scenario, { live, keep, app, functor, rev });
     } catch (e) {
-      record = { scenario: scenario.id, mode: live ? "live" : "fake", rev, pass: false, reason: String(e), cut: "error" };
+      const mode = live ? "live" : "fake";
+      record = { scenario: scenario.id, mode, rev, pass: false, reason: String(e), cut: "error", kept: e.kept };
     }
     records.push(record);
     fs.appendFileSync(out, JSON.stringify(record) + "\n");

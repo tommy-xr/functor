@@ -42,7 +42,8 @@ use super::mcp_net::NetCoordinator;
 
 /// Tools an HTTP client loads up front (see `router`): look, run, poke,
 /// learn the language and API, and the app's views. About 2k tokens a turn,
-/// against a whole turn (some 35k) for each tool search.
+/// against a whole turn (some 35k) for each tool search. The desktop app's
+/// opening instructions name these as loaded (`app/functor-app/src/agent.rs`).
 const ALWAYS_LOADED: [&str; 10] = [
     "app_context",
     "get_state",
