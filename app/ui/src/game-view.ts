@@ -1,5 +1,9 @@
 // The game view's pure parts: which keys reach the game, where the frame sits
-// in the view, and where a pointer lands in the game.
+// in the view, where a pointer lands in the game, and the headset placement's
+// choices and note.
+
+import type { Device, Session, Transport } from "./generated/protocol";
+import { fixFor, WORDS } from "./devices-model.ts";
 
 export type Size = { w: number; h: number };
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -54,4 +58,57 @@ export function streamUrl(debugUrl: string, size: Size): string | null {
   if (url.protocol !== "http:" || !LOOPBACK.has(url.hostname)) return null;
   url.search = `w=${Math.max(1, Math.round(size.w))}&h=${Math.max(1, Math.round(size.h))}`;
   return url.href;
+}
+
+/**
+ * The placement control's headsets: each paired one that is connected, and
+ * `on` (the one the game runs on) whatever its state, so the choice stays
+ * while its link is down. Labelled by name, with the id's start when two
+ * share one.
+ */
+export function headsetChoices(devices: Device[], on: string | null): { device: string; label: string }[] {
+  const shown = devices.filter((d) => d.paired && (d.state.state === "connected" || d.id === on));
+  const named = (d: Device) => shown.filter((o) => o.name === d.name).length > 1;
+  return shown.map((d) => ({ device: d.id, label: named(d) ? `${d.name} ${d.id.slice(0, 4)}` : d.name }));
+}
+
+/** The headset placement's note in the game view: where the game is and how it is. */
+export type HeadsetNote = {
+  /** One line: `Running on Quest 3`. */
+  title: string;
+  /** Its frame and clock, the reason it stopped, or what the link is doing. */
+  detail: string | null;
+  /** The one fix, when the link is down (D27). */
+  fix: string | null;
+};
+
+export function headsetNote(device: Device | null, session: Session | null, transport: Transport | null): HeadsetNote {
+  const status = session?.status ?? { kind: "stopped" };
+  if (!device) {
+    return {
+      title: "This headset is no longer paired",
+      detail: null,
+      fix: "Choose Pane to run the game on this computer.",
+    };
+  }
+  const name = device.name;
+  if (status.kind === "failed" || status.kind === "exited") {
+    return { title: `The game stopped on ${name}`, detail: status.reason, fix: null };
+  }
+  if (status.kind === "stopped") {
+    return { title: `The game is stopped`, detail: `Start game runs it on ${name}.`, fix: null };
+  }
+  if (device.state.state !== "connected") {
+    return {
+      title: `${name}: ${WORDS[device.state.state]}`,
+      detail:
+        status.kind === "running"
+          ? "The game goes on there; this view follows it again when the headset reconnects."
+          : "The game starts there when the headset reconnects.",
+      fix: fixFor(device),
+    };
+  }
+  if (status.kind === "starting") return { title: `Starting on ${name}…`, detail: null, fix: null };
+  const clock = transport?.clock ? `Frame ${transport.frame} · ${transport.paused ? "Paused" : "Playing"}` : null;
+  return { title: `Running on ${name}`, detail: clock, fix: null };
 }

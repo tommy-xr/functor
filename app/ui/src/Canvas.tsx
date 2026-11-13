@@ -32,10 +32,12 @@ import {
   panesOf,
   shortcutFor,
   shortcutHelp,
+  tabbed,
   tabTitles,
   viewKey,
   type Shortcut,
 } from "./layout-model";
+import { headsetChoices } from "./game-view";
 import { fileKey, type DiffMsg, type FileMsg, type Notice, type Send } from "./socket";
 
 /** The drag payload of a tab: its view as JSON. */
@@ -659,15 +661,22 @@ function StartStopGame({ ctx, compact = false }: { ctx: Ctx; compact?: boolean }
   );
 }
 
-const PLACEMENTS: { placement: Placement; label: string; title: string }[] = [
+const PLACEMENTS: { placement: Exclude<Placement, "headset">; label: string; title: string }[] = [
   { placement: "pane", label: "Pane", title: "Show the game in a pane" },
   { placement: "mini", label: "Mini", title: "Float the game over the canvas" },
   { placement: "window", label: "Own window", title: "Run the game in its own window (restarts a running game)" },
 ];
 
-/** Where the game shows; to or from its own window restarts a live session. */
+/**
+ * Where the game shows; to or from its own window restarts a live session.
+ * Each connected headset is a choice too (D21), and the one the game is on
+ * while its link is down.
+ */
 function PlacementControl({ ctx }: { ctx: Ctx }) {
   const current = ctx.placement;
+  const layout = ctx.state?.active ? ctx.state.layouts[ctx.state.active] : null;
+  const on = current === "headset" ? (layout?.game.headset ?? null) : null;
+  const headsets = headsetChoices(ctx.state?.devices.list ?? [], on);
   return (
     <div className="segmented" role="group" aria-label="Where the game shows">
       {PLACEMENTS.map(({ placement, label, title }) => (
@@ -680,6 +689,18 @@ function PlacementControl({ ctx }: { ctx: Ctx }) {
           onClick={() => placement !== current && ctx.op({ type: "place", placement })}
         >
           {label}
+        </button>
+      ))}
+      {headsets.map(({ device, label }) => (
+        <button
+          key={device}
+          type="button"
+          aria-pressed={device === on}
+          title={`Run the game on ${label} (it takes the game's state there)`}
+          disabled={!ctx.online}
+          onClick={() => device !== on && ctx.op({ type: "place_on_headset", device })}
+        >
+          {headsets.length === 1 ? "Headset" : label}
         </button>
       ))}
     </div>
@@ -838,7 +859,7 @@ function offers(ctx: Ctx): { view: View; label: string }[] {
   const { state, currentTask } = ctx;
   const open = new Set(ctx.titles.keys());
   const out: { view: View; label: string }[] = [];
-  if (!open.has("game") && ctx.placement === "pane") out.push({ view: { kind: "game" }, label: "Game" });
+  if (!open.has("game") && tabbed(ctx.placement)) out.push({ view: { kind: "game" }, label: "Game" });
   for (const path of state?.files ?? []) out.push({ view: { kind: "file", path }, label: path });
   if (currentTask && hasChange(currentTask)) {
     out.push({ view: { kind: "changes", task: currentTask.id }, label: `Changes · ${currentTask.title || "Untitled task"}` });
@@ -974,7 +995,7 @@ function EmptyCanvas({ ctx }: { ctx: Ctx }) {
       <p>Nothing open</p>
       <div className="empty-actions">
         {/* In Mini or its own window the game has its own Start game. */}
-        {ctx.placement === "pane" && (
+        {tabbed(ctx.placement) && (
           <button
             type="button"
             className="button button-primary"

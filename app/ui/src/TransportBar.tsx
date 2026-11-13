@@ -57,6 +57,7 @@ export function TransportBar({
   send,
   compact,
   extrapolates,
+  hideExtrapolate = false,
 }: {
   transport: Transport;
   marks: Mark[];
@@ -64,6 +65,8 @@ export function TransportBar({
   send: Send;
   compact: boolean;
   extrapolates: boolean;
+  /** The session can never draw it (a headset): no switch at all. */
+  hideExtrapolate?: boolean;
 }) {
   const [timeline, dispatch] = useTimeline();
   const rail = useRef<HTMLDivElement>(null);
@@ -276,7 +279,7 @@ export function TransportBar({
           </span>
         )}
       </div>
-      <button
+      {!hideExtrapolate && <button
         type="button"
         className={`transport-button transport-extrapolate${transport.extrapolate ? " on" : ""}${peek.peeking ? " peeking" : ""}`}
         data-tip={EXTRAPOLATE_BUTTON.tip}
@@ -290,7 +293,7 @@ export function TransportBar({
         }}
       >
         {EXTRAPOLATE_BUTTON.glyph}
-      </button>
+      </button>}
     </div>
   );
 }

@@ -37,6 +37,11 @@ export function placementOf(layout: Layout | null | undefined): Placement {
   return layout?.game.placement ?? "pane";
 }
 
+/** The game view is a Game tab: in a pane, or saying it runs on a headset. */
+export function tabbed(placement: Placement): boolean {
+  return placement === "pane" || placement === "headset";
+}
+
 /** The pane with the focus, if any. */
 export function focusedPane(layout: Layout | null | undefined): Pane | null {
   return panesOf(layout).find((p) => p.id === layout?.focus) ?? null;

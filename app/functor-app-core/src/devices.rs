@@ -34,6 +34,10 @@ pub struct Devices {
     pub adb: bool,
     /// Headsets on a USB cable, as adb lists them.
     pub attached: Vec<Attached>,
+    /// The link has said what is paired ([`LinkEvent::Started`]).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub started: bool,
 }
 
 /// A headset on a USB cable (task 2.4). Pairing over it needs no code: the
@@ -456,6 +460,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
     let mut commands = Vec::new();
     match event {
         LinkEvent::Started { listening, paired } => {
+            devices.started = true;
             devices.listening = listening;
             devices.list.clear();
             devices.requests.clear();

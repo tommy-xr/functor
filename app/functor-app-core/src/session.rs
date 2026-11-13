@@ -1,5 +1,6 @@
 //! The active project's game session: a `functor run native` child the shell
-//! spawns and polls over its debug server.
+//! spawns and polls over its debug server, or a `functor run vr` child
+//! pushing to a paired headset, polled through its tunnel.
 
 use std::net::SocketAddr;
 
@@ -56,6 +57,8 @@ pub enum SessionMode {
     Hidden,
     /// A normal, visible game window.
     Window,
+    /// On a paired headset, through its tunnel: no native window.
+    Headset,
 }
 
 /// How the shell runs the child, from the mode and whether sessions get a GPU.
@@ -70,11 +73,13 @@ pub enum Display {
 }
 
 impl Display {
-    pub fn new(mode: SessionMode, no_gpu: bool) -> Self {
+    /// `None` for a headset session, which runs nothing natively.
+    pub fn new(mode: SessionMode, no_gpu: bool) -> Option<Self> {
         match (mode, no_gpu) {
-            (_, true) => Self::Headless,
-            (SessionMode::Hidden, false) => Self::Hidden,
-            (SessionMode::Window, false) => Self::Window,
+            (SessionMode::Headset, _) => None,
+            (_, true) => Some(Self::Headless),
+            (SessionMode::Hidden, false) => Some(Self::Hidden),
+            (SessionMode::Window, false) => Some(Self::Window),
         }
     }
 

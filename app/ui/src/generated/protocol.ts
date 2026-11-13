@@ -327,7 +327,12 @@ export type GamePlacement = { placement: Placement, mini: Mini,
 /**
  * Set when the Game tab leaves a pane; taken when it comes back.
  */
-dock: Dock | null, };
+dock: Dock | null, 
+/**
+ * The paired headset's id while placed on one; kept while its link is
+ * down. Absent from older layouts.
+ */
+headset: string | null, };
 
 export type GitInfo = { 
 /**
@@ -400,7 +405,7 @@ agent: AgentLayout, };
  * A change to the layout. Ops naming a pane or split that is gone (another
  * window changed the layout first) change nothing.
  */
-export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
+export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "place_on_headset", device: string, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
 
@@ -510,7 +515,7 @@ active: number, };
 /**
  * Where the project's one game view shows (D21).
  */
-export type Placement = "pane" | "mini" | "window";
+export type Placement = "pane" | "mini" | "window" | "headset";
 
 /**
  * What creating the project will do, for the modal and for the shell.

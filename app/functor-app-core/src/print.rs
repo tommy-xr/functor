@@ -360,8 +360,8 @@ fn clip(text: &str) -> String {
     }
 }
 
-/// The game view's placement: `pane`, `window`, or `mini` with its corner
-/// and width, `mini bottom_right 360`.
+/// The game view's placement: `pane`, `window`, `mini` with its corner
+/// and width, `mini bottom_right 360`, or `headset` with its id.
 fn print_placement(game: &GamePlacement) -> String {
     let corner = match game.mini.corner {
         Corner::TopLeft => "top_left",
@@ -373,10 +373,12 @@ fn print_placement(game: &GamePlacement) -> String {
         Placement::Pane => "pane".to_string(),
         Placement::Window => "window".to_string(),
         Placement::Mini => format!("mini {corner} {}", game.mini.width),
+        Placement::Headset => format!("headset {}", game.headset.as_deref().unwrap_or("?")),
     }
 }
 
-/// How the next (or the live) session runs: `hidden`, `window` or `headless`.
+/// How the next (or the live) session runs: `hidden`, `window`, `headless`
+/// or `headset`.
 fn mode(state: &AppState) -> &'static str {
     let placement = state
         .active
@@ -384,9 +386,10 @@ fn mode(state: &AppState) -> &'static str {
         .map(|a| crate::state::placement(state, a))
         .unwrap_or_default();
     match Display::new(placement.session_mode(), state.no_gpu) {
-        Display::Headless => "headless",
-        Display::Hidden => "hidden",
-        Display::Window => "window",
+        None => "headset",
+        Some(Display::Headless) => "headless",
+        Some(Display::Hidden) => "hidden",
+        Some(Display::Window) => "window",
     }
 }
 

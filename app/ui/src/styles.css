@@ -1706,6 +1706,20 @@ blockquote {
   font-size: 13px;
 }
 
+/* The game on a headset: where it runs, its clock, and the way back. */
+.game-headset .game-message p {
+  margin: 0;
+}
+
+.headset-title {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.headset-detail {
+  font-variant-numeric: tabular-nums;
+}
+
 .game-banner {
   position: absolute;
   left: 50%;
