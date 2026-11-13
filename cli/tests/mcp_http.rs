@@ -563,6 +563,7 @@ fn view_tools_forward_typed_requests_with_the_secret_and_relay_the_answer() {
         Some(json!({"ok": true, "message": "Opened game.fun beside your pane"})),
         Some(json!({"ok": false, "message": "notes.txt is not one of the project's files"})),
         Some(json!({"ok": true, "message": "Added a walkthrough of 2 steps"})),
+        Some(json!({"ok": true, "message": "Added a walkthrough of 2 steps"})),
     ]);
     let server = app_server(&url);
     let mut mcp = HttpMcp::connect(&server.url);
@@ -587,11 +588,26 @@ fn view_tools_forward_typed_requests_with_the_secret_and_relay_the_answer() {
         {"title": "The new step", "note": "It counts by two.", "view": {"kind": "changes", "path": "game.fun"}},
         {"title": "The game", "view": {"kind": "game"}}
     ]);
-    assert_eq!(mcp.call("present", json!({"steps": steps})), "Added a walkthrough of 2 steps");
+    assert_eq!(mcp.call("present", json!({"steps": steps.clone()})), "Added a walkthrough of 2 steps");
     let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(got.body["op"], "present");
     assert_eq!(got.body["steps"][1]["view"], json!({"kind": "game"}));
     assert_eq!(got.body["steps"][0]["note"], "It counts by two.");
+    assert_eq!(got.body["notes"], json!([]), "no report: empty");
+
+    // With the report on the change (D35), forwarded as given.
+    let report = json!({
+        "summary": "The counter counts by two.",
+        "notes": ["Not tried with a held key."],
+        "evidence": [{"ran": "functor test", "result": "3 expects pass", "ok": true}],
+    });
+    let mut args = report.clone();
+    args["steps"] = steps;
+    assert_eq!(mcp.call("present", args), "Added a walkthrough of 2 steps");
+    let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    for field in ["summary", "notes", "evidence"] {
+        assert_eq!(got.body[field], report[field], "{field}");
+    }
 }
 
 #[test]

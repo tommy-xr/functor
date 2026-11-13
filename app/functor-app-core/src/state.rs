@@ -14,6 +14,7 @@ use crate::changes::Change;
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
+use crate::decision::{decisions, Decision};
 use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent};
 use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
@@ -61,6 +62,9 @@ pub struct AppState {
     pub tasks: Vec<Task>,
     /// Per task id, what its agent is doing (D34), refreshed after every event.
     pub activity: BTreeMap<u64, Activity>,
+    /// Per task id whose change waits, its decision page's size and verdict
+    /// (D35), refreshed after every event.
+    pub decisions: BTreeMap<u64, Decision>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -171,6 +175,7 @@ impl AppState {
             start_on_open: false,
             tasks: Vec::new(),
             activity: BTreeMap::new(),
+            decisions: BTreeMap::new(),
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -883,8 +888,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     prune_highlight(&mut state);
     let activity = activities(&state.tasks);
-    let changed = changed || state.highlight != highlighted || state.activity != activity;
+    let decided = decisions(&state.tasks);
+    let changed = changed
+        || state.highlight != highlighted
+        || state.activity != activity
+        || state.decisions != decided;
     state.activity = activity;
+    state.decisions = decided;
     refresh_contexts(&mut state, &mut commands);
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
@@ -1067,6 +1077,7 @@ fn opened(
         layouts,
         // Derived from `tasks` at the end of the step.
         activity: _,
+        decisions: _,
         session: _,
         no_gpu: _,
         start_on_open: _,
@@ -1767,6 +1778,7 @@ fn new_task(
         reverting: false,
         moment: None,
         evidence: None,
+        report: None,
         created_at: stamp(state.now),
         updated_at: None,
         transcript: Vec::new(),
@@ -1855,6 +1867,8 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         usage: None,
         views: 0,
     });
+    // The report speaks for the run that made it; this one presents its own.
+    task.report = None;
     task.status = derive_status(task);
     commands.push(Command::StartRun(Box::new(RunSpec {
         task: id,
@@ -2086,9 +2100,11 @@ fn on_evidence(
     true
 }
 
-/// The review is over: the moment and the paths go with the baseline.
+/// The review is over: the moment, the paths and the report go with the
+/// baseline.
 fn end_evidence(task: &mut Task, commands: &mut Vec<Command>) {
     task.moment = None;
+    task.report = None;
     drop_files(task.evidence.take(), commands);
 }
 
@@ -3349,6 +3365,7 @@ mod tests {
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
         s.activity = activities(&s.tasks);
+        s.decisions = decisions(&s.tasks);
         s
     }
 

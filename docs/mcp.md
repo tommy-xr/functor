@@ -110,7 +110,7 @@ the flag the tools are not listed, over either transport.
 | Request (`POST <url>`) | From |
 | --- | --- |
 | `{"op": "show", "view": <view>}` | `show_view` |
-| `{"op": "present", "steps": [{"title", "note"?, "view": <view>}, …]}` | `present`, 1–8 steps |
+| `{"op": "present", "steps": [{"title", "note"?, "view": <view>}, …], "summary"?, "notes": […], "evidence": [{"ran", "result", "ok"}, …]}` | `present`, 1–8 steps; the rest is the run's report on its change |
 
 A `<view>` is `{"kind": "file", "path", "lines"?: [first, last]}` (1-based,
 inclusive), `{"kind": "changes", "path"?}` or `{"kind": "game"}`; paths are

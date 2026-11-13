@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::decision::{Check, Report};
 use crate::layout::{LayoutOp, Placed, Placement, Target, View};
 use crate::projects::check_relative;
 use crate::session::{Session, SessionMode, SessionStatus};
@@ -57,8 +58,19 @@ pub struct WalkthroughStep {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ViewRequest {
-    Show { view: ViewTarget },
-    Present { steps: Vec<WalkthroughStep> },
+    Show {
+        view: ViewTarget,
+    },
+    /// A walkthrough, and the run's report on its change (D35).
+    Present {
+        steps: Vec<WalkthroughStep>,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        notes: Vec<String>,
+        #[serde(default)]
+        evidence: Vec<Check>,
+    },
 }
 
 /// The answer the agent reads: what happened, or why nothing did.
@@ -313,12 +325,20 @@ fn handle(
             let (message, _) = agent_show(state, &project, [id, run], &view, commands)?;
             Ok((message, true))
         }
-        ViewRequest::Present { steps } => {
+        ViewRequest::Present {
+            steps,
+            summary,
+            notes,
+            evidence,
+        } => {
             check_steps(&steps)?;
             for (i, step) in steps.iter().enumerate() {
                 check_target(state, &project, id, &step.view)
                     .map_err(|e| format!("step {}: {e}; nothing was added", i + 1))?;
             }
+            let report = Report::new(summary, notes, evidence)
+                .map_err(|e| format!("{e}; nothing was added"))?;
+            let reported = report.is_some();
             let n = steps.len();
             let root = Path::new(&state.repo_root).to_path_buf();
             let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
@@ -326,6 +346,7 @@ fn handle(
                 steps,
                 current: None,
             });
+            task.report = report;
             commands.push(save(&root, task));
             broadcast_items(commands, task, vec![task.transcript.len() - 1]);
             let then = match arranges {
@@ -337,7 +358,8 @@ fn handle(
                     "Added a walkthrough of {n} step{} to the chat; {then}.",
                     plural(n)
                 ),
-                false,
+                // The report rides with the task, in the state.
+                reported,
             ))
         }
     }
@@ -680,7 +702,12 @@ mod tests {
         Event::AgentView {
             task: 1,
             run: 0,
-            request: ViewRequest::Present { steps },
+            request: ViewRequest::Present {
+                steps,
+                summary: None,
+                notes: vec![],
+                evidence: vec![],
+            },
         }
     }
 
@@ -930,6 +957,58 @@ mod tests {
             assert!(!r.ok && r.message.contains(why), "{r:?}");
             assert_eq!(after.tasks[0].transcript.len(), 1, "no card");
         }
+    }
+
+    #[test]
+    fn present_keeps_the_runs_report_until_the_next_run() {
+        let request = |notes: Vec<String>| Event::AgentView {
+            task: 1,
+            run: 0,
+            request: ViewRequest::Present {
+                steps: vec![step("The game", ViewTarget::Game)],
+                summary: Some("The agent changed one value.".into()),
+                notes,
+                evidence: vec![Check {
+                    ran: "functor test".into(),
+                    result: "4 expects pass".into(),
+                    ok: true,
+                }],
+            },
+        };
+        let (s, commands) = update(running(), request(vec!["Not tried on a pad.".into()]));
+        assert!(reply(&commands).ok);
+        let report = s.tasks[0].report.clone().expect("a report");
+        assert_eq!(
+            report.summary.as_deref(),
+            Some("The agent changed one value.")
+        );
+        assert_eq!(report.notes, ["Not tried on a pad."]);
+        assert!(commands
+            .iter()
+            .any(|c| matches!(c, Command::Broadcast(ServerMsg::State { .. }))));
+        let back = crate::tasks::from_stored(&crate::tasks::to_stored(&s.tasks[0])).unwrap();
+        assert_eq!(back.report, Some(report));
+
+        // A malformed report is refused whole: no card, the report as it was.
+        let (after, commands) = update(s.clone(), request(vec![" ".into()]));
+        assert!(!reply(&commands).ok);
+        assert_eq!(after.tasks[0].transcript, s.tasks[0].transcript);
+        assert_eq!(after.tasks[0].report, s.tasks[0].report);
+
+        // The next run starts without it.
+        let (s, _) = ended(s);
+        assert!(s.tasks[0].report.is_some());
+        let more = Event::Client(ClientMsg::SendMessage {
+            task: 1,
+            message: "And the other one".into(),
+        });
+        let (s, _) = update(s, more);
+        assert_eq!(s.tasks[0].report, None);
+
+        let wire = r#"{"op": "present", "steps": [{"title": "t", "view": {"kind": "game"}}], "summary": "s", "notes": ["n"], "evidence": [{"ran": "r", "result": "x", "ok": true}]}"#;
+        assert!(serde_json::from_str::<ViewRequest>(wire).is_ok());
+        let extra = wire.replace(r#""ok": true"#, r#""ok": true, "why": 1"#);
+        assert!(serde_json::from_str::<ViewRequest>(&extra).is_err());
     }
 
     #[test]

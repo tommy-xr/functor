@@ -99,6 +99,25 @@ pub struct PresentStep {
 pub struct PresentArgs {
     /// 1 to 8 steps, in order.
     pub steps: Vec<PresentStep>,
+    /// The whole change in one paragraph of Simplified Technical English:
+    /// sentences of at most 20 words, active voice, one word per thing.
+    pub summary: Option<String>,
+    /// What you did not verify, assumed, or changed as a side effect.
+    #[serde(default)]
+    pub notes: Vec<String>,
+    /// What you ran to check the change, and the result.
+    #[serde(default)]
+    pub evidence: Vec<PresentCheck>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PresentCheck {
+    /// e.g. `functor test`.
+    pub ran: String,
+    /// e.g. "14 expects pass".
+    pub result: String,
+    pub ok: bool,
 }
 
 /// Why `view` is malformed, before it is forwarded.
@@ -137,7 +156,8 @@ impl FunctorMcp {
     /// title, an optional note and a view (as in `show_view`) — the changed
     /// file ranges, then the game. It becomes one card in the chat that the
     /// user steps through; when your run ends, its first step opens beside
-    /// their work. Call it once, at the end of a change. Returns at once.
+    /// their work. Call it once, at the end of a change, with `summary`,
+    /// `notes` and `evidence`: the user decides from them. Returns at once.
     #[tool]
     async fn present(
         &self,
@@ -154,8 +174,14 @@ impl FunctorMcp {
                 return tool_error(format!("step {}: {e}", i + 1));
             }
         }
-        self.forward_view(json!({ "op": "present", "steps": args.steps }))
-            .await
+        self.forward_view(json!({
+            "op": "present",
+            "steps": args.steps,
+            "summary": args.summary,
+            "notes": args.notes,
+            "evidence": args.evidence,
+        }))
+        .await
     }
 }
 
