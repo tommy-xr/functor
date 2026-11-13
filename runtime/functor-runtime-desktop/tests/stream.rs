@@ -150,16 +150,19 @@ fn hidden_session_streams_parts_while_other_routes_answer() {
     assert!(head.starts_with("HTTP/1.1 200 OK\r\n"), "{head}");
     assert!(head.contains("Content-Type: multipart/x-mixed-replace; boundary=functor-frame\r\n"));
 
+    let mut first_frame = None;
     let mut last_frame = None;
     for _ in 0..5 {
         let part = read_head(&mut stream);
         assert!(part.starts_with("--functor-frame\r\n"), "{part}");
         assert_eq!(header(&part, "Content-Type"), "image/jpeg");
         let rendered: u64 = header(&part, "X-Rendered-Frame").parse().unwrap();
+        // A part no newer frame follows soon is sent again.
         assert!(
-            last_frame < Some(rendered),
-            "parts advance: {rendered} after {last_frame:?}"
+            last_frame <= Some(rendered),
+            "parts never go back: {rendered} after {last_frame:?}"
         );
+        first_frame = first_frame.or(Some(rendered));
         last_frame = Some(rendered);
         let captured: f64 = header(&part, "X-Capture-Ms").parse().unwrap();
         let now = std::time::SystemTime::now()
@@ -181,6 +184,8 @@ fn hidden_session_streams_parts_while_other_routes_answer() {
             "fitted to w=160, aspect kept"
         );
     }
+
+    assert!(first_frame < last_frame, "parts advance while playing");
 
     // With the stream open, other requests are answered promptly.
     let started = Instant::now();
