@@ -36,9 +36,12 @@ impl Drop for App {
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// No cable: `adb` is a path with nothing there, so no real headset is touched.
 async fn app() -> App {
-    app_with(&["--device-link", "127.0.0.1:0", "--no-mdns"]).await
+    app_with(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", NO_ADB]).await
 }
+
+const NO_ADB: &str = "/nonexistent/adb";
 
 async fn app_with(link: &[&str]) -> App {
     let project = tempfile::tempdir().unwrap();

@@ -562,7 +562,12 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             false,
         ),
         Event::Link(event) => {
-            if let LinkEvent::Failed { reason } = &event {
+            if let LinkEvent::Failed { reason }
+            | LinkEvent::CablePaired {
+                result: Err(reason),
+                ..
+            } = &event
+            {
                 commands.push(Command::Broadcast(ServerMsg::Rejected {
                     reason: reason.clone(),
                 }));
@@ -582,6 +587,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Client(ClientMsg::DenyPairing { request }) => {
             match devices::deny(&mut state.devices, request) {
+                Ok(command) => {
+                    commands.push(Command::Link(command));
+                    (true, false)
+                }
+                Err(reason) => (reject(&mut commands, reason), false),
+            }
+        }
+        Event::Client(ClientMsg::PairByCable { serial, replace }) => {
+            match devices::pair_by_cable(&mut state.devices, &serial, replace) {
                 Ok(command) => {
                     commands.push(Command::Link(command));
                     (true, false)

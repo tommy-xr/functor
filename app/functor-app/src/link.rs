@@ -15,18 +15,22 @@
 //! - Per paired device, a loopback port that tunnels HTTP to its debug
 //!   runtime. A device only answers requests: frames from it that would
 //!   ask the desktop for anything end its link.
+//! - Headsets on a USB cable, seen through adb and paired over it with no
+//!   code ([`cable`]).
+
+mod cable;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
-use functor_app_core::devices::{LinkCommand, LinkEvent, LinkKind, Paired};
+use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
 use functor_device_link::wire::{self, Frame, Hello, Mode, Reject, Reply};
@@ -77,6 +81,8 @@ const PUSH_TIMEOUT: Duration = Duration::from_secs(180);
 pub struct Config {
     pub bind: SocketAddr,
     pub advertise: bool,
+    /// The `adb` to look for headsets on a cable with.
+    pub adb: PathBuf,
 }
 
 #[derive(Clone)]
@@ -94,6 +100,10 @@ struct Inner {
     state: Mutex<HubState>,
     /// The advert and its full name, while registered.
     mdns: Mutex<Option<(mdns_sd::ServiceDaemon, String)>>,
+    /// `adb`, once the link listens.
+    adb: OnceLock<PathBuf>,
+    /// Look at the cable again now.
+    cable_poke: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -108,6 +118,8 @@ struct HubState {
     /// Per address: (tokens left, when last refilled).
     budgets: HashMap<IpAddr, (u64, u64)>,
     next_conn: u64,
+    /// What adb last showed on the cable.
+    attached: Vec<Attached>,
 }
 
 struct Conn {
@@ -151,6 +163,8 @@ impl Hub {
                 ..HubState::default()
             }),
             mdns: Mutex::new(None),
+            adb: OnceLock::new(),
+            cable_poke: tokio::sync::Notify::new(),
         })))
     }
 
@@ -200,6 +214,8 @@ impl Hub {
                 }
             }
         });
+        let _ = self.0.adb.set(config.adb);
+        tokio::spawn(self.clone().watch_cable());
         // States that age (cannot reach → away) need a clock.
         let hub = self.clone();
         tokio::spawn(async move {
@@ -334,6 +350,9 @@ impl Hub {
                 let hub = self.clone();
                 tokio::spawn(async move { hub.open_tunnel(device).await });
             }
+            LinkCommand::PairByCable { serial, replace } => {
+                tokio::spawn(self.clone().pair_by_cable(serial, replace));
+            }
         }
     }
 
@@ -379,31 +398,36 @@ impl Hub {
         if let Some((_, task)) = s.tunnels.remove(device) {
             task.abort();
         }
+        drop(s);
+        self.forget_on_cable(device, name.as_deref().unwrap_or("the headset"));
     }
 
-    /// Stores `secret` for the device; an error leaves nothing stored.
-    fn store_pairing(&self, hello: &Hello, secret: &Secret) -> std::io::Result<Paired> {
+    /// Stores `secret` for device `id` (hex), replacing any pairing it had;
+    /// the pairing as the core sees it, and the one replaced. An error
+    /// leaves nothing stored.
+    fn store_pairing(
+        &self,
+        id: String,
+        name: &str,
+        secret: &Secret,
+    ) -> std::io::Result<(Paired, Option<StoredPairing>)> {
         let now = wall_ms();
-        let id = hex(&hello.device);
         let mut s = self.0.state.lock().unwrap();
         let mut shown = None;
+        let mut previous = None;
         self.update_pairings(&mut s, |all| {
-            let first_seen = all
-                .iter()
-                .find(|p| p.id == id)
-                .map_or(now, |p| p.first_seen);
-            all.retain(|p| p.id != id);
+            previous = all.iter().position(|p| p.id == id).map(|i| all.remove(i));
             let pairing = StoredPairing {
                 id,
-                name: hello.name.clone(),
+                name: name.to_string(),
                 secret: secret.to_hex(),
-                first_seen,
+                first_seen: previous.as_ref().map_or(now, |p| p.first_seen),
                 last_seen: now,
             };
             shown = Some(paired(&pairing));
             all.push(pairing);
         })?;
-        Ok(shown.expect("just stored"))
+        Ok((shown.expect("just stored"), previous))
     }
 
     /// Notes that `device` was seen now, kept for its card after a restart.
@@ -790,8 +814,8 @@ impl Connection {
                 });
             }
             desktop::Event::Paired { hello, secret } => {
-                let device = match hub.store_pairing(&hello, &secret) {
-                    Ok(device) => device,
+                let device = match hub.store_pairing(hex(&hello.device), &hello.name, &secret) {
+                    Ok((device, _)) => device,
                     Err(e) => {
                         let reason = format!("cannot store the pairing with {}: {e}", hello.name);
                         hub.send(LinkEvent::Failed { reason });

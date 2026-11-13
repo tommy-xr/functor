@@ -135,6 +135,22 @@ highlight: Highlight | null,
  */
 devices: Devices, };
 
+/**
+ * A headset on a USB cable (task 2.4). Pairing over it needs no code: the
+ * cable and the user's adb authorisation are the trust.
+ */
+export type Attached = { 
+/**
+ * adb's serial for it.
+ */
+serial: string, name: string, state: CableState, 
+/**
+ * Its pairing is being written.
+ */
+pairing: boolean, };
+
+export type CableState = { "state": "unauthorized" } | { "state": "offline" } | { "state": "no_app" } | { "state": "not_debuggable" } | { "state": "ready", device: string, paired: HeadsetPairing, };
+
 export type Call = { kind: CallKind, 
 /**
  * Short: "reading weapons.fun", "running cargo test".
@@ -167,7 +183,7 @@ tree: string, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -229,7 +245,15 @@ requests: Array<PairRequest>,
 /**
  * The title bar's one word for them all.
  */
-headset: Headset, };
+headset: Headset, 
+/**
+ * `adb` runs here, so headsets on a USB cable are seen.
+ */
+adb: boolean, 
+/**
+ * Headsets on a USB cable, as adb lists them.
+ */
+attached: Array<Attached>, };
 
 export type DiffLine = { kind: LineKind, 
 /**
@@ -306,6 +330,11 @@ export type Harness = "claude" | "codex";
  * The state word for all devices: the one that most needs the user.
  */
 export type Headset = "not_paired" | "asking_to_pair" | "away" | "connected" | "needs_update" | "cannot_reach";
+
+/**
+ * The pairing a headset's app holds, as its file says.
+ */
+export type HeadsetPairing = { "with": "nobody" } | { "with": "this" } | { "with": "other", name: string, };
 
 /**
  * What the agent or a walkthrough step last pointed at, until the user

@@ -89,13 +89,17 @@ export function tempProject(project) {
  * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
  * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
- * and resolves with its address as `link`.
+ * and resolves with its address as `link`; its cable side runs `adb` (a fake,
+ * or by default none, so no real headset is touched).
  */
-export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false } = {}) {
+export function startServer(
+  port = 0,
+  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false, adb = "/nonexistent/adb" } = {},
+) {
   const args = ["--headless", "--port", String(port)];
   // No LAN listener or mDNS advert unless a test pairs a stub device.
   if (!deviceLink) args.push("--no-device-link");
-  else args.push("--device-link", "127.0.0.1:0", "--no-mdns");
+  else args.push("--device-link", "127.0.0.1:0", "--no-mdns", "--adb", adb);
   if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);

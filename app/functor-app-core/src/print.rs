@@ -162,6 +162,26 @@ pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
             r.name
         ));
     }
+    for a in &devices.attached {
+        use crate::devices::{CableState, HeadsetPairing};
+        let state = match &a.state {
+            CableState::Unauthorized => "USB debugging not allowed yet".to_string(),
+            CableState::Offline => "offline".to_string(),
+            CableState::NoApp => "no Functor app".to_string(),
+            CableState::NotDebuggable => "a release app, not pairable by cable".to_string(),
+            CableState::Ready { device, paired } => {
+                let device = device.as_deref().unwrap_or("no id yet");
+                let short = &device[..device.len().min(8)];
+                match paired {
+                    HeadsetPairing::Nobody => format!("{short}, not paired"),
+                    HeadsetPairing::This => format!("{short}, paired here"),
+                    HeadsetPairing::Other { name } => format!("{short}, paired with {name}"),
+                }
+            }
+        };
+        let pairing = if a.pairing { ", pairing" } else { "" };
+        lines.push(format!("  cable {}: {}, {state}{pairing}", a.serial, a.name));
+    }
     lines
 }
 
@@ -811,11 +831,22 @@ recents: 2
             expires_at: 9,
         };
         on_link(&mut d, ask, 0);
+        let attached = vec![crate::devices::Attached {
+            serial: "2G0YC5ZF".into(),
+            name: "Quest 3".into(),
+            state: crate::devices::CableState::Ready {
+                device: Some("0a1b2c3d4e5f".into()),
+                paired: crate::devices::HeadsetPairing::This,
+            },
+            pairing: false,
+        }];
+        on_link(&mut d, LinkEvent::Cable { adb: true, attached }, 0);
         assert_eq!(
             print_devices(&d).join("\n"),
             "headset: asking to pair (link 0.0.0.0:53122)\n  \
              Quest 3 0a1b2c3d: connected over wifi, battery 80%, build abc, running examples/hello, 12 ms; tunnel http://127.0.0.1:53130\n  \
-             Quest Pro 9f8e7d6c: asking to pair, code 482 913"
+             Quest Pro 9f8e7d6c: asking to pair, code 482 913\n  \
+             cable 2G0YC5ZF: Quest 3, 0a1b2c3d, paired here"
         );
     }
 }

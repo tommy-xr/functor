@@ -30,6 +30,55 @@ pub struct Devices {
     pub requests: Vec<PairRequest>,
     /// The title bar's one word for them all.
     pub headset: Headset,
+    /// `adb` runs here, so headsets on a USB cable are seen.
+    pub adb: bool,
+    /// Headsets on a USB cable, as adb lists them.
+    pub attached: Vec<Attached>,
+}
+
+/// A headset on a USB cable (task 2.4). Pairing over it needs no code: the
+/// cable and the user's adb authorisation are the trust.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Attached {
+    /// adb's serial for it.
+    pub serial: String,
+    pub name: String,
+    pub state: CableState,
+    /// Its pairing is being written.
+    pub pairing: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CableState {
+    /// It has not allowed USB debugging from this computer yet.
+    Unauthorized,
+    /// adb lists it but cannot reach it.
+    Offline,
+    /// The Functor app is not installed on it.
+    NoApp,
+    /// Its Functor app is a release build, whose files adb cannot reach.
+    NotDebuggable,
+    /// Its id (`None` until its app first runs), and the pairing its app
+    /// holds.
+    Ready {
+        device: Option<String>,
+        paired: HeadsetPairing,
+    },
+}
+
+/// The pairing a headset's app holds, as its file says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "with", rename_all = "snake_case")]
+pub enum HeadsetPairing {
+    Nobody,
+    /// This desktop.
+    This,
+    /// Another desktop, by the name it stored.
+    Other { name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -217,6 +266,17 @@ pub enum LinkEvent {
     },
     /// About once a second: states that age.
     Tick,
+    /// What adb sees now: whether it runs, and the headsets on a cable.
+    Cable {
+        adb: bool,
+        attached: Vec<Attached>,
+    },
+    /// A pairing over `serial`'s cable is stored on both sides and read
+    /// back from the headset, or why not (nothing is left stored then).
+    CablePaired {
+        serial: String,
+        result: Result<Paired, String>,
+    },
 }
 
 /// To the shell's device link.
@@ -235,6 +295,13 @@ pub enum LinkCommand {
     /// Serve `device`'s debug runtime on a loopback port.
     OpenTunnel {
         device: String,
+    },
+    /// Pair the headset on `serial`'s cable: a new secret, stored here and
+    /// written to it. One paired with another desktop is replaced only
+    /// with `replace`.
+    PairByCable {
+        serial: String,
+        replace: bool,
     },
 }
 
@@ -270,6 +337,68 @@ impl Devices {
             ..card(p.id, p.name, true, DeviceState::Away)
         });
     }
+
+    /// A pairing stored by either way in: its card, and its tunnel.
+    fn paired(&mut self, p: Paired, commands: &mut Vec<LinkCommand>) {
+        commands.push(LinkCommand::OpenTunnel {
+            device: p.id.clone(),
+        });
+        match self.find(&p.id) {
+            Some(d) => {
+                d.paired = true;
+                d.name = p.name;
+                d.first_seen = Some(p.first_seen);
+                d.last_seen = Some(p.last_seen);
+            }
+            None => self.insert_paired(p),
+        }
+    }
+}
+
+/// Whether the headset on this cable can be paired over it now: its app
+/// is reachable, nothing is being written, and it is not already this
+/// desktop's on both sides.
+pub fn cable_pairable(devices: &Devices, a: &Attached) -> bool {
+    let CableState::Ready { device, paired } = &a.state else {
+        return false;
+    };
+    let ours = devices
+        .list
+        .iter()
+        .any(|d| d.paired && Some(&d.id) == device.as_ref());
+    !a.pairing && !(ours && *paired == HeadsetPairing::This)
+}
+
+/// Pair the headset on `serial`'s cable. One paired with another desktop
+/// needs `replace`: the user was asked first.
+pub fn pair_by_cable(
+    devices: &mut Devices,
+    serial: &str,
+    replace: bool,
+) -> Result<LinkCommand, String> {
+    let Some(a) = devices
+        .attached
+        .iter()
+        .find(|a| a.serial == serial && cable_pairable(devices, a))
+    else {
+        return Err("that headset cannot be paired over the cable now".to_string());
+    };
+    if let CableState::Ready {
+        paired: HeadsetPairing::Other { name },
+        ..
+    } = &a.state
+    {
+        if !replace {
+            return Err(format!("{} is paired with {name}", a.name));
+        }
+    }
+    if let Some(a) = devices.attached.iter_mut().find(|a| a.serial == serial) {
+        a.pairing = true;
+    }
+    Ok(LinkCommand::PairByCable {
+        serial: serial.to_string(),
+        replace,
+    })
 }
 
 fn card(id: String, name: String, paired: bool, state: DeviceState) -> Device {
@@ -359,18 +488,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
         }
         LinkEvent::Paired { request, device } => {
             devices.end_request(request);
-            commands.push(LinkCommand::OpenTunnel {
-                device: device.id.clone(),
-            });
-            match devices.find(&device.id) {
-                Some(d) => {
-                    d.paired = true;
-                    d.name = device.name;
-                    d.first_seen = Some(device.first_seen);
-                    d.last_seen = Some(device.last_seen);
-                }
-                None => devices.insert_paired(device),
-            }
+            devices.paired(device, &mut commands);
         }
         LinkEvent::PairEnded { request } => {
             devices.end_request(request);
@@ -495,6 +613,31 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
             devices
                 .list
                 .retain(|d| d.paired || !matches!(d.state, DeviceState::Away));
+        }
+        LinkEvent::Cable { adb, attached } => {
+            // A pairing being written stays so until its outcome.
+            let busy: Vec<String> = devices
+                .attached
+                .iter()
+                .filter(|a| a.pairing)
+                .map(|a| a.serial.clone())
+                .collect();
+            devices.adb = adb;
+            devices.attached = attached;
+            for a in &mut devices.attached {
+                a.pairing = busy.contains(&a.serial);
+            }
+        }
+        LinkEvent::CablePaired { serial, result } => {
+            if let Some(a) = devices.attached.iter_mut().find(|a| a.serial == serial) {
+                a.pairing = false;
+                if let (Ok(_), CableState::Ready { paired, .. }) = (&result, &mut a.state) {
+                    *paired = HeadsetPairing::This;
+                }
+            }
+            if let Ok(device) = result {
+                devices.paired(device, &mut commands);
+            }
         }
     }
     devices.headset = headset(devices);
@@ -899,6 +1042,143 @@ mod tests {
             1,
         );
         assert_eq!(d.list[0].tunnel.as_deref(), Some("http://127.0.0.1:5000"));
+    }
+
+    fn cable(d: &mut Devices, attached: Vec<Attached>) {
+        on_link(
+            d,
+            LinkEvent::Cable {
+                adb: true,
+                attached,
+            },
+            0,
+        );
+    }
+
+    fn on_cable(serial: &str, state: CableState) -> Attached {
+        Attached {
+            serial: serial.into(),
+            name: "Quest 3".into(),
+            state,
+            pairing: false,
+        }
+    }
+
+    fn ready(device: &str, paired: HeadsetPairing) -> CableState {
+        CableState::Ready {
+            device: Some(device.into()),
+            paired,
+        }
+    }
+
+    #[test]
+    fn only_a_reachable_headset_not_already_ours_pairs_over_the_cable() {
+        let mut d = started(&["a"]);
+        cable(
+            &mut d,
+            vec![
+                on_cable("s1", CableState::Unauthorized),
+                on_cable("s2", CableState::Offline),
+                on_cable("s3", CableState::NoApp),
+                on_cable("s4", CableState::NotDebuggable),
+                on_cable("s5", ready("a", HeadsetPairing::This)),
+                on_cable("s6", ready("a", HeadsetPairing::Nobody)),
+                on_cable("s7", ready("b", HeadsetPairing::This)),
+            ],
+        );
+        assert!(d.adb);
+        for serial in ["s1", "s2", "s3", "s4", "s5"] {
+            assert!(pair_by_cable(&mut d, serial, false).is_err(), "{serial}");
+        }
+        // Paired here but its pairing gone from the headset; or the
+        // headset names us but this desktop lost it: either pairs again.
+        for serial in ["s6", "s7"] {
+            assert_eq!(
+                pair_by_cable(&mut d, serial, false),
+                Ok(LinkCommand::PairByCable {
+                    serial: serial.into(),
+                    replace: false
+                })
+            );
+        }
+        assert!(pair_by_cable(&mut d, "gone", false).is_err());
+    }
+
+    #[test]
+    fn a_headset_paired_elsewhere_is_replaced_only_when_asked() {
+        let mut d = started(&[]);
+        let other = HeadsetPairing::Other {
+            name: "Studio Mac".into(),
+        };
+        cable(&mut d, vec![on_cable("s", ready("x", other))]);
+        assert_eq!(
+            pair_by_cable(&mut d, "s", false),
+            Err("Quest 3 is paired with Studio Mac".into())
+        );
+        assert!(!d.attached[0].pairing);
+        assert!(pair_by_cable(&mut d, "s", true).is_ok());
+    }
+
+    #[test]
+    fn cable_pairing_is_one_at_a_time_and_its_outcome_adds_the_card() {
+        let mut d = started(&[]);
+        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        assert!(pair_by_cable(&mut d, "s", false).is_ok());
+        assert!(pair_by_cable(&mut d, "s", false).is_err(), "already writing");
+        // adb's next look keeps it marked as being written.
+        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        assert!(d.attached[0].pairing);
+        let (_, cmds) = on_link(
+            &mut d,
+            LinkEvent::CablePaired {
+                serial: "s".into(),
+                result: Ok(paired("x")),
+            },
+            10,
+        );
+        assert_eq!(cmds, [LinkCommand::OpenTunnel { device: "x".into() }]);
+        assert!(!d.attached[0].pairing);
+        assert_eq!(d.attached[0].state, ready("x", HeadsetPairing::This));
+        assert_eq!(state(&d, "x"), DeviceState::Away);
+        assert_eq!(d.headset, Headset::Away);
+        // Then it links over Wi-Fi as any paired headset does.
+        connect(&mut d, 3, "x", "0.1.0", 20);
+        assert!(matches!(state(&d, "x"), DeviceState::Connected { .. }));
+        assert!(pair_by_cable(&mut d, "s", false).is_err(), "ours already");
+    }
+
+    #[test]
+    fn a_failed_cable_pairing_leaves_no_card_and_can_be_tried_again() {
+        let mut d = started(&[]);
+        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        pair_by_cable(&mut d, "s", false).unwrap();
+        let (_, cmds) = on_link(
+            &mut d,
+            LinkEvent::CablePaired {
+                serial: "s".into(),
+                result: Err("read back a different file".into()),
+            },
+            10,
+        );
+        assert!(cmds.is_empty());
+        assert!(d.list.is_empty() && !d.attached[0].pairing);
+        assert!(pair_by_cable(&mut d, "s", false).is_ok());
+    }
+
+    #[test]
+    fn unplugged_headsets_go_and_no_adb_shows_none() {
+        let mut d = started(&[]);
+        cable(&mut d, vec![on_cable("s", CableState::NoApp)]);
+        let (changed, _) = on_link(
+            &mut d,
+            LinkEvent::Cable {
+                adb: false,
+                attached: vec![],
+            },
+            0,
+        );
+        assert!(changed && !d.adb && d.attached.is_empty());
+        assert_eq!(d.headset, Headset::NotPaired);
     }
 
     #[test]

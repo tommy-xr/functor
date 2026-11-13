@@ -164,6 +164,14 @@ pub enum ClientMsg {
     ForgetDevice {
         device: String,
     },
+    /// Pair the headset on adb serial `serial`'s cable (`Devices::attached`),
+    /// with no code. `replace`: the user agreed to replace its pairing with
+    /// another desktop.
+    PairByCable {
+        serial: String,
+        #[serde(default)]
+        replace: bool,
+    },
 }
 
 /// Keyboard and mouse input in the debug server's `POST /input` shape.
