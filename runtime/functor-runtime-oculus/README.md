@@ -100,6 +100,45 @@ games consume the same portable record once per fixed step through the optional
 `sampledInput(model, snapshot: Input.snapshot)` hook; `Camera3D.mapTrackedPose`
 maps its rig-local poses through the game's authored `Frame.camera`.
 
+## The device link (desktop app over Wi-Fi)
+
+The APK dials the Functor desktop app over Wi-Fi, so the desktop reaches this
+debug runtime with no cable (`functor-device-link`'s `client`). To pair, hold
+the **left menu button** for a second: the headset looks for desktops on the
+network (mDNS `_functor-link._tcp`) and shows a code over whatever runs. When
+the desktop shows the same code, press **A** (Matches) and click Allow there;
+**B** cancels. From then on the headset finds that desktop by its id and
+relinks by itself, with backoff, after a restart or a dropped network.
+`/state.link` reports the link and any pairing on screen.
+
+- Only the controllers drive the overlay. For automation, an `xr` sample
+  injected on port 8123 (over `adb forward`) does too, but only while
+  `adb shell setprop debug.functor.pair_input 1` is set; that is how
+  `npm run test:quest-link` pairs a Quest nobody wears. The desktop's requests
+  arrive on a second loopback debug listener and never count, and game code
+  (which can reach port 8123) cannot set a property: neither a desktop nor a
+  game it pushed can start or confirm a pairing.
+- mDNS answers arrive as multicast, which Android drops unless the app holds a
+  `WifiManager.MulticastLock` (`CHANGE_WIFI_MULTICAST_STATE`): held only while
+  browsing.
+- The pairing is `files/device-link.json` in the app's private storage:
+  `{"device", "desktop", "desktop_name", "secret"}` (hex ids and secret). The
+  app reads it before each connection attempt and every 5 s while unpaired, so
+  a pairing written from outside lands without a restart. Write it whole (a
+  file that does not parse is moved aside as `.bad`); on a debuggable build:
+  `adb shell run-as dev.functor.runner sh -c 'cat > files/new && mv files/new files/device-link.json'`.
+  Keep the app's `device` id: the desktop knows the headset by it.
+- A refusal in the clear (`NotPaired`) never removes the stored secret: anyone
+  on the network could forge one. Pair again to replace it.
+
+`npm run test:quest-link` runs the whole path on an attached Quest with a
+debuggable APK, on the same Wi-Fi as this machine: pair through injected
+presses (both sides must show one code), tunnel `GET /state`, check the
+tunnel's presses never reach the overlay, restart the app and relink, forget.
+It pauses Guardian (`debug.oculus.guardian_pause`), which otherwise holds the
+app at its boundary dialog, and puts the headset's own pairing back after.
+`FUNCTOR_QUEST_CAPTURES=<dir>` saves stereo captures of the overlay.
+
 ## Benchmark on the actual headset
 
 Build/install a release APK, push the game to measure, then collect the Quest's

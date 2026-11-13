@@ -43,6 +43,11 @@ pub fn init(vm: *mut std::ffi::c_void, activity: *mut std::ffi::c_void) {
     }
 }
 
+/// The VM and Application context, once [`init`] has run.
+pub fn app_context() -> Option<(&'static JavaVM, &'static JObject<'static>)> {
+    CONTEXT.get().map(|(vm, app)| (vm, app.as_obj()))
+}
+
 /// The cached reading. The first call starts the 1 Hz sampler, so it (and
 /// any call before the first sample lands) returns `None`; so does a failed
 /// sample, rather than serving a stale one.

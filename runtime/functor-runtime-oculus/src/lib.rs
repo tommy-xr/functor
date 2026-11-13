@@ -52,6 +52,7 @@ use khronos_egl as egl;
 use openxr as xr;
 
 mod battery;
+mod link;
 mod environment_depth;
 mod passthrough;
 mod passthrough_camera;
@@ -889,6 +890,15 @@ struct DebugLoopState {
     reload: ReloadIndicator,
     /// Why `Xr.streamCamera`'s camera is not open, while wanted.
     camera_error: Option<String>,
+    /// The device link to a desktop app (`None` without app storage).
+    link: Option<functor_device_link::client::Client>,
+    /// `xr_override` drives the pairing overlay too: it came from this
+    /// device's debug port, not the link's tunnel, while `adb shell setprop
+    /// debug.functor.pair_input 1` was set. Game code can reach port 8123
+    /// (`Effect.httpPost`) but cannot set a property, so neither a desktop
+    /// nor a game it pushed can start or confirm a pairing.
+    xr_override_pairs: bool,
+    link_gestures: functor_runtime_common::link_overlay::Gestures,
 }
 
 /// What the game samples: an injected `xr` sample wins over live tracking.
@@ -1017,6 +1027,8 @@ fn service_debug_request(
     scene_context: &SceneContext,
     passthrough: &passthrough::Passthrough,
     environment_depth: &environment_depth::EnvironmentDepth,
+    // Arrived through the device link's tunnel.
+    via_link: bool,
 ) {
     match request {
         DebugRequest::Capture(response) => {
@@ -1089,6 +1101,7 @@ fn service_debug_request(
             let cells = functor_runtime_common::gpu_counters::gpu_counters().frame_cells();
             let stages = debug.stages;
             let frame_stats = debug.telemetry.stats();
+            let link = debug.link.as_ref().map(link::state);
             let reload = debug.reload.state(Instant::now());
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
@@ -1138,6 +1151,7 @@ fn service_debug_request(
                     audio: None,
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
+                    link,
                 });
             });
         }
@@ -1246,10 +1260,13 @@ fn service_debug_request(
                 // Applied over the live sample just before the fixed steps.
                 InputCommand::Xr(sample) => {
                     debug.xr_override = Some(*sample);
+                    debug.xr_override_pairs = !via_link
+                        && system_property("debug.functor.pair_input").as_deref() == Some("1");
                     Ok(())
                 }
                 InputCommand::XrClear => {
                     debug.xr_override = None;
+                    debug.xr_override_pairs = false;
                     Ok(())
                 }
                 // Rejected: the device runtime does not sample pads (Quest controllers ARE the xr domain), so
@@ -1720,6 +1737,8 @@ pub fn android_main(app: AndroidApp) {
     let mut ui_target_renderer: Option<functor_runtime_common::ui::UiTargetRenderer> = None;
     // The hot-reload indicator, built on the first reload's frame.
     let mut reload_painter: Option<ReloadIndicatorPainter> = None;
+    // The pairing overlay, built the first time it shows.
+    let mut link_painter: Option<functor_runtime_common::link_overlay::LinkOverlayPainter> = None;
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
@@ -1778,6 +1797,19 @@ pub fn android_main(app: AndroidApp) {
             None
         }
     };
+    // The same endpoint for requests tunnelled from a paired desktop, on a
+    // port of its own so the shell knows where each came from.
+    let mut debug_link = None;
+    let link_rx = match functor_runtime_common::debug_http::spawn(("127.0.0.1", 0)) {
+        Ok((bound, rx)) => {
+            debug_link = link::start(app.internal_data_path(), bound, BUILD_LABEL);
+            Some(rx)
+        }
+        Err(error) => {
+            log::error!("device link: no tunnel endpoint: {error}");
+            None
+        }
+    };
 
     // `Effect.httpGet`/`httpPost`, performed off the frame thread; results
     // come back over `http_rx`.
@@ -1791,6 +1823,7 @@ pub fn android_main(app: AndroidApp) {
     let mut last_display_ns: Option<i64> = None;
     let mut debug = DebugLoopState {
         display_refresh_rate,
+        link: debug_link,
         ..DebugLoopState::default()
     };
     let mut session_running = false;
@@ -1936,7 +1969,9 @@ pub fn android_main(app: AndroidApp) {
             debug.input.xr = None;
         }
         let mut debug_active = false;
-        if let Some(rx) = &debug_rx {
+        let receivers = [(debug_rx.as_ref(), false), (link_rx.as_ref(), true)];
+        for (rx, via_link) in receivers {
+            let Some(rx) = rx else { continue };
             while let Ok(request) = rx.try_recv() {
                 debug_active = true;
                 service_debug_request(
@@ -1953,6 +1988,7 @@ pub fn android_main(app: AndroidApp) {
                     &scene_context,
                     &passthrough,
                     &environment_depth,
+                    via_link,
                 );
             }
         }
@@ -2065,6 +2101,22 @@ pub fn android_main(app: AndroidApp) {
                     })
             })
             .flatten();
+        // The pairing overlay, shown over any game. Driven by the live sample
+        // (read here, before any injected one replaces it) or by a sample
+        // injected on this device's own debug port, never the link's.
+        let pairing = debug.link.as_ref().and_then(|client| {
+            let shown = client.pairing();
+            let sample = if debug.xr_override_pairs {
+                debug.xr_override.as_ref()
+            } else {
+                debug.input.xr.as_ref()
+            };
+            if let Some(gesture) = debug.link_gestures.step(sample, shown.is_some(), Instant::now()) {
+                log::info!("device link: {gesture:?} pressed");
+                client.send(link::command(gesture));
+            }
+            shown.map(link::pairing_state)
+        });
 
         if !xr_frame_state.should_render {
             // `should_render` controls layer submission, not tracking
@@ -2134,6 +2186,10 @@ pub fn android_main(app: AndroidApp) {
             sim.post(move |g| functor_runtime_common::net::http_client::deliver(g, result));
         }
         apply_xr_override(&mut debug.input, debug.xr_override.as_ref());
+        // The overlay's presses are not the game's.
+        if let (Some(_), Some(xr)) = (&pairing, &mut debug.input.xr) {
+            functor_runtime_common::link_overlay::without_presses(xr);
+        }
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
                 debug.input_edges.apply_to(&mut debug.input);
@@ -2419,19 +2475,34 @@ images cannot be posed"
                 functor_runtime_common::DebugRenderMode::Default,
             );
             // Head-locked over the game, placed from the head center so both
-            // eyes agree on its depth.
-            if let (Some(look), Some(center)) = (reload_look, tracked_center) {
-                if let Some(eye_in_head) = tracking_pose_from_view(view).relative_to(center) {
+            // eyes agree on their depth.
+            let eye_in_head = tracked_center
+                .filter(|_| reload_look.is_some() || pairing.is_some())
+                .and_then(|center| tracking_pose_from_view(view).relative_to(center));
+            if let Some(eye_in_head) = eye_in_head {
+                let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
+                unsafe {
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
+                }
+                if let Some(look) = reload_look {
                     let painter = reload_painter
                         .get_or_insert_with(|| ReloadIndicatorPainter::new(&gl, "#version 300 es"));
-                    let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
-                    unsafe {
-                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(eye.framebuffers[image_index]));
-                    }
                     painter.draw(
                         &gl,
                         functor_runtime_common::reload_indicator::head_locked_transform(fov, eye_in_head, &look),
                         &look,
+                        (eye.width, eye.height),
+                        scene_context.output_srgb_encode(),
+                    );
+                }
+                if let Some(pairing) = &pairing {
+                    let painter = link_painter.get_or_insert_with(|| {
+                        functor_runtime_common::link_overlay::LinkOverlayPainter::new(&gl, "#version 300 es")
+                    });
+                    painter.draw(
+                        &gl,
+                        pairing,
+                        functor_runtime_common::link_overlay::head_locked_transform(fov, eye_in_head),
                         (eye.width, eye.height),
                         scene_context.output_srgb_encode(),
                     );
