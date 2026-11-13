@@ -121,6 +121,12 @@ jobs:
         env:
           FUNCTOR_APP_HOME: ${{ runner.temp }}/functor-app-home
 
+      # Functor.app's layout, Info.plist, icon and ad-hoc signature, bundled
+      # from stub binaries (no release build).
+      - name: Test the macOS app bundle
+        if: matrix.os == 'macos-latest'
+        run: npm run test:package-app
+
       # `functor mcp --http` against the real binary (cargo builds it for the
       # test; no GPU: its one launched game runs headless).
       - name: Test MCP over HTTP

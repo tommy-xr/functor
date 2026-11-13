@@ -175,6 +175,8 @@ type WindowLink = (
 fn main() -> std::io::Result<ExitCode> {
     // First, while this is the only thread: it edits the environment.
     let token = server::Token::take();
+    #[cfg(target_os = "macos")]
+    use_login_path();
     let mut args = Args::parse();
     if let Some(fixture) = &args.replay_events {
         return Ok(
@@ -727,6 +729,54 @@ async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppStat
     state
 }
 
+/// Marks where the login shell's `PATH` starts in its output, after anything
+/// its startup files print.
+#[cfg(any(target_os = "macos", test))]
+const PATH_MARK: &str = "__FUNCTOR_PATH__";
+
+/// In `Functor.app`, takes the login shell's `PATH`: Finder and the Dock
+/// start apps with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, which has no
+/// `claude`, `codex` or `adb`. Gives up after 3s, keeping the PATH it has.
+#[cfg(target_os = "macos")]
+fn use_login_path() {
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().unwrap_or_default();
+    if !exe.parent().is_some_and(|dir| dir.ends_with("Contents/MacOS")) {
+        return;
+    }
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+    let Ok(mut child) = Command::new(shell)
+        .args(["-ilc", &format!("printf '{PATH_MARK}%s' \"$PATH\"")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while matches!(child.try_wait(), Ok(None)) {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut out = String::new();
+    let _ = std::io::Read::read_to_string(&mut child.stdout.take().expect("piped"), &mut out);
+    if let Some(path) = login_path(&out) {
+        std::env::set_var("PATH", path);
+    }
+}
+
+/// The `PATH` in a login shell's output, if it printed one.
+#[cfg(any(target_os = "macos", test))]
+fn login_path(out: &str) -> Option<&str> {
+    let (_, path) = out.rsplit_once(PATH_MARK)?;
+    Some(path).filter(|p| !p.is_empty())
+}
+
 /// Resolves to the signal number on SIGINT, SIGTERM or SIGHUP (Ctrl-C off Unix).
 fn shutdown_signal() -> std::io::Result<impl Future<Output = u8>> {
     #[cfg(unix)]
@@ -748,4 +798,17 @@ fn shutdown_signal() -> std::io::Result<impl Future<Output = u8>> {
         let _ = tokio::signal::ctrl_c().await;
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_path_skips_what_startup_files_print() {
+        let out = format!("welcome {PATH_MARK} banner\n{PATH_MARK}/opt/bin:/usr/bin");
+        assert_eq!(login_path(&out), Some("/opt/bin:/usr/bin"));
+        assert_eq!(login_path("no mark"), None);
+        assert_eq!(login_path(PATH_MARK), None);
+    }
 }
