@@ -1,0 +1,4 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-review-silent", "model": "claude-review-model"}}
+{"ms": 100, "mcp": {"tool": "task_change", "arguments": {}}}
+{"ms": 600, "event": {"type": "usage", "input": 18000, "output": 40}}
+{"ms": 700, "event": {"type": "finished", "ok": true, "summary": "I could not decide."}}
