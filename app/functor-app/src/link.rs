@@ -116,6 +116,9 @@ struct Inner {
     cable_written: AtomicU64,
     /// Turns headsets' clips into text.
     speech: Speech,
+    /// One transcription at a time, app-wide, held until it finishes: a
+    /// headset that reconnects cannot start more.
+    transcribing: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Default)]
@@ -188,6 +191,7 @@ impl Hub {
             cable_writes: tokio::sync::Mutex::new(()),
             cable_written: AtomicU64::new(0),
             speech: Speech::from_env(),
+            transcribing: Arc::new(tokio::sync::Semaphore::new(1)),
         })))
     }
 
@@ -969,12 +973,18 @@ impl Connection {
                 capsule,
             } => (utterance, pcm, capsule),
         };
+        let Ok(permit) = self.hub.0.transcribing.clone().try_acquire_owned() else {
+            let _ = self.voice.transcribed(utterance);
+            let reason = "still working on another request".to_string();
+            return self.say(utterance, voice::Stage::Failed { reason });
+        };
         self.say(utterance, voice::Stage::Heard);
         let speech = self.hub.0.speech.clone();
         let me = self.me.clone();
         let name = format!("{}-{utterance}", self.linked.as_deref().unwrap_or("device"));
         let home = self.hub.0.home.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             crate::voice::keep_audio(&home, &name, &pcm);
             let text = speech.transcribe(pcm).await;
             let _ = me.send(ConnCmd::Transcribed {
@@ -987,7 +997,9 @@ impl Connection {
 
     /// Utterance `utterance`'s text: shown to the headset and handed to the core.
     fn transcribed(&mut self, utterance: u64, text: Result<String, String>, capsule: &str) {
-        self.voice.transcribed(utterance);
+        if !self.voice.transcribed(utterance) {
+            return;
+        }
         match text {
             Ok(text) if !text.is_empty() => {
                 let stage = voice::Stage::Transcribed { text: text.clone() };

@@ -1564,11 +1564,7 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
                 restart_live(state, commands);
             }
             // An ended run's reason was another placement's.
-            if let Some(s) = state
-                .session
-                .as_mut()
-                .filter(|s| restart && !s.status.is_live())
-            {
+            if let Some(s) = state.session.as_mut().filter(|s| restart && !s.status.is_live()) {
                 s.status = SessionStatus::Stopped;
             }
             true
@@ -1579,7 +1575,7 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
 }
 
 /// Paired device `id` is linked now.
-fn connected(devices: &Devices, id: &str) -> bool {
+pub(crate) fn connected(devices: &Devices, id: &str) -> bool {
     devices
         .list
         .iter()
@@ -2710,10 +2706,7 @@ mod tests {
         assert_eq!(next, with_session(4, None, SessionStatus::Starting));
         assert_eq!(
             commands,
-            vec![
-                start_cmd(4, "examples/a", Display::Hidden),
-                broadcast(&next)
-            ]
+            vec![start_cmd(4, "examples/a", Display::Hidden), broadcast(&next)]
         );
         // Ended after running, stopped, or a stale session: no restart.
         for before in [
@@ -2723,9 +2716,7 @@ mod tests {
         ] {
             let (next, commands) = update(before.clone(), session(3, SessionEvent::SourceChanged));
             assert_eq!(next, before);
-            assert!(!commands
-                .iter()
-                .any(|c| matches!(c, Command::StartSession { .. })));
+            assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
         }
     }
 
@@ -5258,14 +5249,8 @@ mod tests {
         let mut app = state();
         app.start_on_open = true;
         for (placement, expected) in [
-            (
-                Placement::Pane,
-                vec![(PathBuf::from("/other"), Display::Hidden)],
-            ),
-            (
-                Placement::Mini,
-                vec![(PathBuf::from("/other"), Display::Hidden)],
-            ),
+            (Placement::Pane, vec![(PathBuf::from("/other"), Display::Hidden)]),
+            (Placement::Mini, vec![(PathBuf::from("/other"), Display::Hidden)]),
             (Placement::Window, vec![]),
         ] {
             let (next, commands) = update(app.clone(), read(placement));
@@ -6193,9 +6178,18 @@ mod tests {
 
     /// Said while a task runs for the game: that task is stopped and
     /// resumed with it (D29's steer), and only the new utterance is followed.
+    /// Before its agent has a session to resume, it is said again later.
     #[test]
     fn an_utterance_steers_the_running_task() {
         let (s, _) = update(voice_ready(), nth_task(3, "make a ball"));
+        let (_, commands) = update(s.clone(), said("bigger", 5));
+        assert_eq!(
+            stages(&commands),
+            [(
+                5,
+                Stage::Failed("the agent is still starting: say it again in a moment".into())
+            )]
+        );
         let (s, _) = update(s, agent(3, 0, started("sess-1")));
         assert_eq!(voice::route(&s, "aa", "bigger"), Route::Steer(3));
         let (s, commands) = update(s, said("bigger", 6));
@@ -6292,13 +6286,56 @@ mod tests {
             "{commands:?}"
         );
 
+        let reason = "the game stopped on the headset".to_string();
+        let gone = [(1, Stage::Failed(reason))];
         let (_, commands) = update(voice_task_running(), client(ClientMsg::StopSession));
-        assert_eq!(
-            stages(&commands),
-            [(
-                1,
-                Stage::Failed("the game stopped on the headset".to_string())
-            )]
+        assert_eq!(stages(&commands), gone);
+        // Another project's game on the same headset, started in the same
+        // step: its reloads are not this run's.
+        let mut s = voice_task_running();
+        let placed = s.layouts["examples/a"].clone();
+        s.layouts.insert("examples/b".to_string(), placed);
+        s.start_on_open = true;
+        let (s, commands) = update(s, switch("examples/b"));
+        assert!(s.session.as_ref().is_some_and(|x| x.status.is_live()));
+        assert_eq!(stages(&commands), gone);
+    }
+
+    /// An answer that changed nothing is said at once, not after the wait
+    /// for a reload; a steer waits while a change is being reverted.
+    #[test]
+    fn an_answer_without_a_change_and_a_revert_are_reported() {
+        let mut s = voice_task_running();
+        s.tracks_changes = true;
+        let baseline = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Baseline {
+                tree: "t0".to_string(),
+            },
+        };
+        let (s, _) = update(s, baseline);
+        let (s, _) = update(s, agent(4, 0, finished()));
+        let none = Event::Change {
+            task: 4,
+            baseline: "t0".to_string(),
+            change: Change::default(),
+        };
+        let (s, _) = update(s, none);
+        let (_, commands) = update(s, ended(4, 0));
+        assert!(
+            matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("without changing")),
+            "{commands:?}"
         );
+
+        let mut s = voice_ready();
+        s.tasks.push(Task {
+            reverting: true,
+            ..task(&voice_task_running(), 4).clone()
+        });
+        assert!(matches!(
+            voice::route(&s, "aa", "go"),
+            Route::Nowhere(r) if r.contains("being reverted")
+        ));
     }
 }

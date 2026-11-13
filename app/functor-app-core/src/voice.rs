@@ -5,7 +5,7 @@
 
 use crate::devices::LinkCommand;
 use crate::layout::Placement;
-use crate::state::{can_run, AppState, Command};
+use crate::state::{can_run, connected, AppState, Command};
 use crate::tasks::{Item, Spoken};
 
 /// After a run ends ok, how long the game has to reload with its edit
@@ -40,6 +40,9 @@ pub struct Job {
     pub utterance: u64,
     pub task: u64,
     pub run: u64,
+    /// The game session it reloads: another one (a restart, a project
+    /// switch) is not this run's game.
+    session: u64,
     /// The game's program revision when the run started (`None`: not
     /// polled yet; the first poll sets it).
     revision: Option<u64>,
@@ -78,7 +81,14 @@ change. Choose it as the game's place on your computer."
         .tasks
         .iter()
         .find(|t| t.project == project && t.run.is_some());
+    if let Some(t) = state.tasks.iter().find(|t| t.reverting) {
+        return Route::Nowhere(format!("task {}'s change is being reverted", t.id));
+    }
     match running {
+        // Nothing to resume yet: a fresh run would lose the first request.
+        Some(task) if task.session_id.is_none() => {
+            Route::Nowhere("the agent is still starting: say it again in a moment".to_string())
+        }
         Some(task) if !text.trim().is_empty() => Route::Steer(task.id),
         _ => match can_run(state, project, None, text) {
             Ok(()) => Route::New,
@@ -87,17 +97,17 @@ change. Choose it as the game's place on your computer."
     }
 }
 
-/// `Some(revision)` when the app's game session runs on `device`: the
-/// active project's game is placed there and the session is live (the
-/// revision `None` until polled).
-fn on_headset(state: &AppState, device: &str) -> Option<Option<u64>> {
+/// The app's game session running on `device`, if one is: its id and
+/// program revision (`None` until polled). The active project's game is
+/// placed there and the session is live.
+fn on_headset(state: &AppState, device: &str) -> Option<(u64, Option<u64>)> {
     let project = state.active.as_deref()?;
     let game = &state.layouts.get(project)?.game;
     if game.placement != Placement::Headset || game.headset.as_deref() != Some(device) {
         return None;
     }
     let session = state.session.as_ref().filter(|s| s.status.is_live())?;
-    Some(session.status.revision())
+    Some((session.id, session.status.revision()))
 }
 
 pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, stage: Stage) {
@@ -110,12 +120,12 @@ pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, 
 
 /// Follows run `run` of `task`, started for `u`: `Working` now.
 pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &mut Vec<Command>) {
-    let Some(run) = state
+    let run = state
         .tasks
         .iter()
         .find(|t| t.id == task)
-        .and_then(|t| t.run.as_ref())
-    else {
+        .and_then(|t| t.run.as_ref());
+    let (Some(run), Some((session, revision))) = (run, on_headset(state, &u.device)) else {
         return;
     };
     // A steered task's earlier utterance is superseded, not failed.
@@ -127,7 +137,8 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
         utterance: u.utterance,
         task,
         run: run.id,
-        revision: on_headset(state, &u.device).flatten(),
+        session,
+        revision,
         reloaded: false,
         ended: None,
     });
@@ -145,9 +156,13 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             status(commands, &job.device, job.utterance, stage);
             false
         };
-        let Some(revision) = on_headset(state, &job.device) else {
-            return end(Stage::Failed("the game stopped on the headset".to_string()));
+        let revision = match on_headset(state, &job.device) {
+            Some((session, revision)) if session == job.session => revision,
+            _ => return end(Stage::Failed("the game stopped on the headset".to_string())),
         };
+        if !connected(&state.devices, &job.device) {
+            return false;
+        }
         let Some(task) = state.tasks.iter().find(|t| t.id == job.task) else {
             return end(Stage::Failed("the task was deleted".to_string()));
         };
@@ -161,6 +176,13 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
         match outcome(&task.transcript, job.run) {
             Some(Item::Finished { ok: true, .. }) if job.reloaded => end(Stage::Reloaded),
+            Some(Item::Finished { ok: true, .. })
+                if state.tracks_changes && task.change.as_ref().is_some_and(|c| c.is_empty()) =>
+            {
+                end(Stage::Failed(
+                    "the agent answered without changing the game: see the computer".to_string(),
+                ))
+            }
             Some(Item::Finished { ok: true, .. }) => {
                 let ended = *job.ended.get_or_insert(state.clock);
                 match state.clock.saturating_sub(ended) >= RELOAD_GRACE_MS {

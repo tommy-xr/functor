@@ -2,7 +2,7 @@
 //! from a link's voice channel (bounded, one utterance at a time), turned
 //! into text here, and its capsule rendered for the agent. The audio stays
 //! in memory and is dropped once transcribed, unless
-//! `FUNCTOR_APP_KEEP_AUDIO` is set (then `<home>/voice/<utterance>.wav`).
+//! `FUNCTOR_APP_KEEP_AUDIO` is set (then `<home>/voice/<device>-<utterance>.wav`).
 
 use std::sync::Arc;
 
@@ -29,6 +29,8 @@ pub enum Heard {
 pub struct Assembler {
     clip: Option<Partial>,
     transcribing: Option<u64>,
+    /// `transcribing` was cancelled: its text is dropped.
+    cancelled: bool,
     /// The utterance last refused: its later messages are dropped quietly.
     refused: Option<u64>,
 }
@@ -121,8 +123,9 @@ impl Assembler {
                     capsule: clip.capsule,
                 })
             }
-            Clip::Cancel { .. } if ours => {
+            Clip::Cancel { .. } if ours || self.transcribing == Some(u) => {
                 self.clip = None;
+                self.cancelled = self.transcribing == Some(u);
                 Some(Heard::Status(Status {
                     utterance: Some(u),
                     stage: Stage::Idle,
@@ -135,11 +138,14 @@ impl Assembler {
         }
     }
 
-    /// Utterance `utterance` is transcribed (or failed to be).
-    pub fn transcribed(&mut self, utterance: u64) {
-        if self.transcribing == Some(utterance) {
-            self.transcribing = None;
+    /// Utterance `utterance` is transcribed (or failed to be): whether its
+    /// text still counts (it was not cancelled meanwhile).
+    pub fn transcribed(&mut self, utterance: u64) -> bool {
+        if self.transcribing != Some(utterance) {
+            return true;
         }
+        self.transcribing = None;
+        !std::mem::take(&mut self.cancelled)
     }
 
     /// A clip that stopped arriving, dropped.
@@ -350,8 +356,8 @@ mod tests {
         );
         // While it is transcribed, another waits its turn: refused.
         assert_eq!(failed_with(a.receive(&start(2), 4)).0, Some(2));
-        a.transcribed(1);
-        assert_eq!(a.receive(&start(2), 5), None);
+        assert!(a.transcribed(1));
+        assert_eq!(a.receive(&start(3), 5), None);
     }
 
     #[test]
@@ -408,6 +414,19 @@ mod tests {
                 stage: Stage::Idle
             }))
         );
+        // Cancelled while transcribed: idle, and its text is dropped.
+        a.receive(&start(5), 0);
+        a.receive(&chunk(5, 0, vec![1, 0]), 0);
+        a.receive(&bytes(Clip::End { utterance: 5 }), 0);
+        let idle = a.receive(&bytes(Clip::Cancel { utterance: 5 }), 0);
+        assert!(matches!(
+            idle,
+            Some(Heard::Status(Status {
+                stage: Stage::Idle,
+                ..
+            }))
+        ));
+        assert!(!a.transcribed(5));
         a.receive(&start(2), 100);
         assert_eq!(a.check(100 + CLIP_TIMEOUT_MS - 1), None);
         assert_eq!(failed_with(a.check(100 + CLIP_TIMEOUT_MS)).0, Some(2));

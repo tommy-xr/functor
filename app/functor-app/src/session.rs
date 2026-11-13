@@ -19,8 +19,8 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, SessionCall,
-    SessionEvent, TransportCall,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -623,9 +623,7 @@ async fn unload(tunnel: String) {
     loop {
         let reply = exchange(&tunnel, "POST", "/load-project", &json, "[]").await;
         let status = reply.as_ref().ok().and_then(|(head, _)| {
-            head.split(' ')
-                .nth(1)
-                .and_then(|code| code.parse::<u16>().ok())
+            head.split(' ').nth(1).and_then(|code| code.parse::<u16>().ok())
         });
         match status {
             Some(200..=299) => return,
