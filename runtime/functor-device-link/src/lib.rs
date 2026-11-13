@@ -27,10 +27,13 @@
 //! with an implicit counter, so a tampered, replayed, reordered or dropped
 //! message fails to decrypt and ends the connection.
 
+pub mod adb;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod desktop;
 pub mod device;
+#[cfg(feature = "file")]
+pub mod file;
 pub mod wire;
 
 mod crypto;
