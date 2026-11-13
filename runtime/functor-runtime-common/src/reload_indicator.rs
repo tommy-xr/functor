@@ -257,18 +257,23 @@ pub fn corner_transform(width: u32, height: u32, look: &ReloadLook) -> Matrix4<f
 /// radians; `eye_in_head` its pose relative to the head center, so both eyes
 /// agree on where the mark is (correct stereo depth).
 pub fn head_locked_transform(fov: [f32; 4], eye_in_head: TrackingPose, look: &ReloadLook) -> Matrix4<f32> {
-    // Its own near plane: the game camera's may sit beyond 60 cm.
+    head_to_clip(fov, eye_in_head)
+        * Matrix4::from_translation(cgmath::vec3(-0.15, -0.12, -0.6))
+        * Matrix4::from_scale(0.05)
+        * look.local()
+}
+
+/// Head space (metres, -Z ahead) to one eye's clip space, for shell
+/// overlays drawn over the game: `fov` is the eye's `[left, right, down, up]`
+/// in radians, `eye_in_head` its pose relative to the head centre.
+pub fn head_to_clip(fov: [f32; 4], eye_in_head: TrackingPose) -> Matrix4<f32> {
+    // Its own near plane: the game camera's may sit beyond an overlay.
     let [left, right, down, up] = fov;
     let projection = crate::Camera { near: 0.05, far: 10.0, ..Default::default() }
         .projection_matrix_from_fov_angles(left, right, down, up);
     let [x, y, z, w] = eye_in_head.orientation;
     let eye = Matrix4::from_translation(eye_in_head.position.into()) * Matrix4::from(Quaternion::new(w, x, y, z));
-    let eye_from_head = eye.invert().unwrap_or(Matrix4::identity());
-    projection
-        * eye_from_head
-        * Matrix4::from_translation(cgmath::vec3(-0.15, -0.12, -0.6))
-        * Matrix4::from_scale(0.05)
-        * look.local()
+    projection * eye.invert().unwrap_or(Matrix4::identity())
 }
 
 /// The indicator's GL program and mark mesh, built once per context.

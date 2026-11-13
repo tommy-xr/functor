@@ -21,6 +21,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 functor_runtime_common = { path = "../functor-runtime-common" }
+# The device link to a desktop app: pairing, the tunnel, mDNS discovery.
+functor-device-link = { path = "../functor-device-link", features = ["client"] }
 # Default `loaded` feature: dlopens libopenxr_loader.so at runtime — the APK
 # must bundle Meta's loader (see README), but plain `cargo ndk build` needs
 # nothing. (shock2quest-era vendoring of openxrs is obsolete: the GLES/Android
@@ -100,6 +102,11 @@ required = false
 # without it is EPERM.
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
+
+# mDNS answers (finding the desktop app) arrive as Wi-Fi multicast, which
+# Android drops unless the app holds a MulticastLock while it browses.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.CHANGE_WIFI_MULTICAST_STATE"
 
 # Without supportedDevices, Horizon OS treats the APK as an original-Quest
 # compat app (`VrRuntimeCompatHelper: DevicesSupported : 1 devices, quest`).

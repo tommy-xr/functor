@@ -221,7 +221,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// recorded edge events labelled as the web timeline labels them. Additive:
 /// a pre-v37 runtime omits `clock` (read as running, nothing recorded) and
 /// `marks`, ignores `?model=0`, and answers `/seek` with 404.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 37;
+///
+/// 38 adds the optional `link` field on `GET /state` ([`DeviceLinkState`]):
+/// a headset's device link to a desktop app and the pairing its overlay
+/// shows. Omitted on desktop.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 38;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -612,6 +616,43 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frame_stats: Option<crate::frame_telemetry::FrameStats>,
+    /// The headset's device link to a desktop app (v38). Omitted by runtimes
+    /// without one, such as desktop.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<DeviceLinkState>,
+}
+
+/// `/state.link`: the headset's device link.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct DeviceLinkState {
+    /// The paired desktop's name.
+    pub paired: Option<String>,
+    pub linked: bool,
+    /// A pairing in progress or just ended, as the headset's overlay shows it.
+    pub pairing: Option<PairingState>,
+}
+
+/// A pairing as the headset shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum PairingState {
+    Searching,
+    /// The code to compare with the desktop's; `confirmed` once the user
+    /// pressed Matches.
+    Code {
+        desktop: String,
+        code: String,
+        confirmed: bool,
+    },
+    Paired {
+        desktop: String,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 /// `GET /state`'s `clock` (v37): whether time runs, and the recorded window
@@ -1677,6 +1718,7 @@ mod tests {
                 }],
             }),
             frame_stats: None,
+            link: None,
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();

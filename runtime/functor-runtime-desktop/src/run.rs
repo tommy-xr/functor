@@ -1287,6 +1287,7 @@ fn service_debug_request(
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
+                    link: None,
                 });
             });
         }
