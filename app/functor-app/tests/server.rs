@@ -368,7 +368,7 @@ async fn the_game_child_never_sees_the_token() {
     let seen = tmp.path().join("seen.txt");
     let fake = tmp.path().join("functor");
     let script = format!(
-        "#!/bin/sh\n{{ env; echo \"$@\"; }} > '{}'\n\
+        "#!/bin/sh\n{{ env; echo \"$@\"; }} >> '{}'\n\
          echo '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n",
         seen.display()
     );
@@ -382,8 +382,8 @@ async fn the_game_child_never_sees_the_token() {
     );
     assert!(server.ws.ends_with(token), "{}", server.ws);
     let mut socket = connect(&server.ws).await;
-    // The game starts by itself on open. A second start here would run the
-    // script again, emptying the file while the first run still reads as running.
+    // The game starts by itself on open. The script appends: the app may run
+    // `functor` for other things too, and no run of it may see the token.
     state_where(&mut socket, |s| s["session"]["status"]["kind"] == "running").await;
     let seen = std::fs::read_to_string(&seen).unwrap();
     assert!(seen.contains("--debug-port"), "{seen}");
