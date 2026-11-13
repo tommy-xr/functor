@@ -1,0 +1,17 @@
+{"ms":0,"event":{"type":"started","session":"fake-two-step","model":"claude-model"}}
+{"ms":10,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}
+{"ms":20,"event":{"type":"tool_result","content":"type Msg = | Inc"}}
+{"ms":30,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"type Msg = | Inc","new_string":"type Msg = | Inc | Dec"}}}
+{"ms":40,"edit":{"path":"game.fun","old":"type Msg = | Inc","new":"type Msg = | Inc | Dec"}}
+{"ms":50,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":60,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"  | Inc => { m with count: m.count + 1.0 }","new_string":"  | Inc => { m with count: m.count + 1.0 }\n  | Dec => { m with count: m.count - 1.0 }\n\nexpect update(init, Dec).count == -1.0"}}}
+{"ms":70,"edit":{"path":"game.fun","old":"  | Inc => { m with count: m.count + 1.0 }","new":"  | Inc => { m with count: m.count + 1.0 }\n  | Dec => { m with count: m.count - 1.0 }\n\nexpect update(init, Dec).count == -1.0"}}
+{"ms":80,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":90,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"    Ui.button(\"+1\", Inc),","new_string":"    Ui.button(\"+1\", Inc),\n    Ui.button(\"-1\", Dec),"}}}
+{"ms":100,"edit":{"path":"game.fun","old":"    Ui.button(\"+1\", Inc),","new":"    Ui.button(\"+1\", Inc),\n    Ui.button(\"-1\", Dec),"}}
+{"ms":110,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":120,"event":{"type":"tool_use","name":"Bash","input":{"command":"functor -d . test"}}}
+{"ms":130,"event":{"type":"tool_result","content":"4 expect(s): 4 passed"}}
+{"ms":140,"event":{"type":"text","text":"Added Dec, a -1 button beside +1, and an expect for Dec; functor test passes."}}
+{"ms":150,"event":{"type":"usage","input":340000,"output":2600}}
+{"ms":160,"event":{"type":"finished","ok":true,"summary":"Added Dec."}}

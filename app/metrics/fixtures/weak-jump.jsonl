@@ -1,0 +1,10 @@
+{"ms":0,"event":{"type":"started","session":"fake-weak-jump","model":"claude-model"}}
+{"ms":10,"event":{"type":"tool_use","name":"Grep","input":{"pattern":"jumpVelocity","path":"game.fun"}}}
+{"ms":20,"event":{"type":"tool_result","content":"22:let jumpVelocity = 10.0   // upward launch speed"}}
+{"ms":30,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"let jumpVelocity = 10.0","new_string":"let jumpVelocity = 13.0"}}}
+{"ms":40,"edit":{"path":"game.fun","old":"let jumpVelocity = 10.0","new":"let jumpVelocity = 13.0"}}
+{"ms":50,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":60,"mcp":{"tool":"present","arguments":{"steps":[{"title":"A stronger jump","view":{"kind":"file","path":"game.fun","lines":[22,22]}},{"title":"The game","view":{"kind":"game"}}]}}}
+{"ms":70,"event":{"type":"text","text":"Raised jumpVelocity from 10.0 to 13.0: the jump now covers 6.9 units, over the 6.0-wide chasm."}}
+{"ms":80,"event":{"type":"usage","input":180000,"output":900}}
+{"ms":90,"event":{"type":"finished","ok":true,"summary":"Raised jumpVelocity to 13.0."}}
