@@ -12,7 +12,7 @@ import { mkdtempSync, realpathSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, ROOT, requireBuilt, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { chooseProject, FUNCTOR, ROOT, requireBuilt, shot, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 if (!FUNCTOR) {
@@ -36,7 +36,6 @@ async function newProject(browser, width, height) {
   const app = watchState(page);
   const errors = watchErrors(page);
   const external = watchExternal(page);
-  const explorer = page.getByRole("complementary", { name: "Explorer" });
   const dialog = page.getByRole("dialog", { name: "New project" });
   const cards = dialog.getByRole("radiogroup", { name: "Templates" }).getByRole("radio");
   const checked = dialog.getByRole("radio", { checked: true });
@@ -46,7 +45,7 @@ async function newProject(browser, width, height) {
   try {
     await page.goto(server.url);
     await expect(page.locator(".titlebar")).toContainText("counter");
-    await explorer.getByRole("button", { name: "New project…" }).click();
+    await chooseProject(page, "New project…");
     await expect(dialog).toBeVisible();
     await expect(name).toBeFocused();
     // The CLI's list, starters first, 3d chosen.
@@ -115,7 +114,7 @@ async function newProject(browser, width, height) {
     await shot(page, `newproject-${tag}-opened`);
 
     // The same folder again: what is in the way, and no way to create.
-    await explorer.getByRole("button", { name: "New project…" }).click();
+    await chooseProject(page, "New project…");
     await name.fill("Space Race");
     await folder.fill(parent);
     await expect(dialog.locator(".np-status")).toContainText(`${parent}/Space-Race is not empty:`);
