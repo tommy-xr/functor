@@ -1,7 +1,7 @@
 //! The canvas layout (D20): a tree of splits whose leaves are panes of tabs,
 //! each tab a [`View`]. A view is open at most once in the whole layout, so a
 //! view names its tab. The game view's placement (D21) is part of it: only
-//! [`Placement::Pane`] has a Game tab. [`Layout::apply`] is the one reducer
+//! [`Placement::Pane`] and [`Placement::Headset`] have a Game tab. [`Layout::apply`] is the one reducer
 //! and [`Layout::normalize`] the one place the invariants are enforced.
 
 use std::collections::HashSet;
@@ -145,6 +145,9 @@ pub enum Placement {
     Mini,
     /// The session runs as a normal game window; no Game tab.
     Window,
+    /// The game runs on a paired headset ([`GamePlacement::headset`]), which
+    /// owns its state (D5); its Game tab says so.
+    Headset,
 }
 
 impl Placement {
@@ -154,7 +157,13 @@ impl Placement {
         match self {
             Self::Pane | Self::Mini => SessionMode::Hidden,
             Self::Window => SessionMode::Window,
+            Self::Headset => SessionMode::Headset,
         }
+    }
+
+    /// The game view is a Game tab in a pane.
+    pub fn tabbed(self) -> bool {
+        matches!(self, Self::Pane | Self::Headset)
     }
 }
 
@@ -198,13 +207,17 @@ pub struct Dock {
     pub index: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct GamePlacement {
     pub placement: Placement,
     pub mini: Mini,
     /// Set when the Game tab leaves a pane; taken when it comes back.
     pub dock: Option<Dock>,
+    /// The paired headset's id while placed on one; kept while its link is
+    /// down. Absent from older layouts.
+    #[serde(default)]
+    pub headset: Option<String>,
 }
 
 /// Where [`LayoutOp::Open`] puts a view. One already open moves only to a
@@ -265,9 +278,14 @@ pub enum LayoutOp {
     /// Back to [`Layout::initial`]'s panes; the placement stays.
     Reset,
     /// Moves the game view. Back to a pane, the Game tab goes where it left
-    /// from, or to the focused pane if that pane is gone.
+    /// from, or to the focused pane if that pane is gone. Not to a headset:
+    /// that is [`LayoutOp::PlaceOnHeadset`], which names one.
     Place {
         placement: Placement,
+    },
+    /// Runs the game on paired headset `device` (its id).
+    PlaceOnHeadset {
+        device: String,
     },
     /// The mini view's corner and width (clamped).
     SetMini {
@@ -380,7 +398,7 @@ impl Layout {
                     }
                     target => target,
                 };
-                if view == View::Game {
+                if view == View::Game && !self.game.placement.tabbed() {
                     self.game.placement = Placement::Pane;
                     self.game.dock = None;
                 }
@@ -410,12 +428,13 @@ impl Layout {
             }
             LayoutOp::Reset => {
                 *self = Self {
-                    game: self.game,
+                    game: self.game.clone(),
                     agent: std::mem::take(&mut self.agent),
                     ..Self::initial()
                 }
             }
-            LayoutOp::Place { placement } => self.place(placement),
+            LayoutOp::Place { placement } => self.place(placement, None),
+            LayoutOp::PlaceOnHeadset { device } => self.place(Placement::Headset, Some(device)),
             LayoutOp::SetMini { mini } => self.game.mini = mini,
             LayoutOp::Restore => {
                 if let Some(before) = self.agent.restore.take() {
@@ -504,7 +523,7 @@ impl Layout {
             walk(root, &mut views, &mut ids, &mut next);
         }
         // The Game tab leaving for Mini or Own window remembers its place.
-        if self.game.placement != Placement::Pane {
+        if !self.game.placement.tabbed() {
             if let Some((pane, index)) = self.find(&View::Game) {
                 self.game.dock = Some(Dock { pane, index });
                 self.take_tab(pane, index);
@@ -553,7 +572,7 @@ impl Layout {
         run: [u64; 2],
         valid: impl Fn(&View) -> Result<(), String>,
     ) -> Result<Placed, String> {
-        if *view == View::Game && self.game.placement != Placement::Pane {
+        if *view == View::Game && !self.game.placement.tabbed() {
             return Ok(Placed::GameElsewhere(self.game.placement));
         }
         let found = self.find(view);
@@ -665,13 +684,16 @@ impl Layout {
     }
 
     /// Leaving a pane, `normalize` takes the Game tab out; coming back, it
-    /// goes to its dock if that pane is still there.
-    fn place(&mut self, to: Placement) {
-        if self.game.placement == to {
+    /// goes to its dock if that pane is still there. A headset placement
+    /// names its `headset`; none is placed without one.
+    fn place(&mut self, to: Placement, headset: Option<String>) {
+        if to == Placement::Headset && headset.is_none() {
             return;
         }
+        let from = self.game.placement;
         self.game.placement = to;
-        if to != Placement::Pane {
+        self.game.headset = headset;
+        if from.tabbed() || !to.tabbed() {
             return;
         }
         match self.game.dock.take() {
@@ -1482,8 +1504,8 @@ mod tests {
             Some(f) => assert!(panes.iter().any(|p| p.id == f), "{l:?}"),
             None => assert!(l.root.is_none(), "{l:?}"),
         }
-        // A Game tab only in a pane placement.
-        if l.game.placement != Placement::Pane {
+        // A Game tab only in a tabbed placement.
+        if !l.game.placement.tabbed() {
             assert_eq!(l.find(&View::Game), None, "{l:?}");
         }
         assert!((MINI_MIN..=MINI_MAX).contains(&l.game.mini.width));
@@ -1629,7 +1651,7 @@ mod tests {
         assert_eq!(
             l,
             Layout {
-                game: l.game,
+                game: l.game.clone(),
                 ..layout(pane(2, &[file("a.fun")], 0), 2)
             }
         );
