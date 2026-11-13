@@ -240,16 +240,24 @@ export function gif({ dir, frames, length }, out, { fps, clip, hold = 2 }) {
     .join("\n");
   // The concat demuxer needs the last file named again to honour its duration.
   writeFileSync(join(dir, "frames.txt"), `${list}\nfile '${frames.at(-1).file}'\n`);
-  const crop = clip ? `crop=${clip.width}:${clip.height}:${clip.x}:${clip.y},` : "";
+  const crop = clip ? `,crop=${clip.width}:${clip.height}:${clip.x}:${clip.y}` : "";
   mkdirSync(dirname(out), { recursive: true });
+  // Resampled to stills first: the palette graph read straight off the concat
+  // input dropped a long recording's opening seconds (ffmpeg 7).
+  const stills = join(dir, "f%05d.png");
+  execFileSync(
+    "ffmpeg",
+    ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", join(dir, "frames.txt"), "-vf", `fps=${fps}${crop}`, stills],
+    { stdio: "inherit" },
+  );
   execFileSync(
     "ffmpeg",
     [
       "-y", "-loglevel", "error",
-      "-f", "concat", "-safe", "0",
-      "-i", join(dir, "frames.txt"),
+      "-framerate", String(fps),
+      "-i", stills,
       "-vf",
-      `fps=${fps},${crop}split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
+      "split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
       "-loop", "0",
       out,
     ],
