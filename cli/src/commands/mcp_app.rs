@@ -1,6 +1,8 @@
 //! `functor mcp --http --app-url <url>`: the view tools, which forward typed
-//! requests to the embedding app (docs/mcp.md). This server knows only their
-//! shapes; the app decides what they do and answers in words for the agent.
+//! requests to the embedding app (docs/mcp.md); with `--review <brief>`, a
+//! review's tools instead, which read the brief and forward its report. This
+//! server knows only their shapes; the app decides what they do and answers
+//! in words for the agent.
 
 use std::time::Duration;
 
@@ -180,6 +182,66 @@ impl FunctorMcp {
             "summary": args.summary,
             "notes": args.notes,
             "evidence": args.evidence,
+        }))
+        .await
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportArgs {
+    /// One paragraph in Simplified Technical English (ASD-STE100): what
+    /// changed, its effect, and what to check.
+    pub summary: String,
+    /// What nobody verified, what was assumed, side effects; `[]` only when
+    /// you checked and there is nothing.
+    pub notes: Vec<String>,
+    /// Checks that ran, with their real results.
+    #[serde(default)]
+    pub evidence: Vec<PresentCheck>,
+    /// Highlights: 1 to 8 changed file ranges, only when `task_change` says
+    /// the agent gave none.
+    #[serde(default)]
+    pub steps: Vec<PresentStep>,
+}
+
+#[tool_router(router = review_tool_router, vis = "pub(super)")]
+impl FunctorMcp {
+    /// The change to present: the user's request, what the agent did, each
+    /// changed file with its line counts, the diff, and the evidence so far.
+    #[tool]
+    pub(super) async fn task_change(&self) -> Result<CallToolResult, ErrorData> {
+        let Some(brief) = &self.review else {
+            return tool_error("this server has no change to present");
+        };
+        match tokio::fs::read_to_string(brief).await {
+            Ok(text) => ok_text(text),
+            Err(e) => tool_error(format!("cannot read the change: {e}")),
+        }
+    }
+
+    /// Write the decision page's report on the change: the user keeps or
+    /// reverts it from this. Call it once, when you have checked what you
+    /// can. The reply says if it was saved.
+    #[tool]
+    async fn report(
+        &self,
+        Parameters(args): Parameters<ReportArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if args.steps.len() > MAX_STEPS {
+            return tool_error(format!("at most {MAX_STEPS} steps"));
+        }
+        for (i, step) in args.steps.iter().enumerate() {
+            if let Err(e) = check_view(&step.view) {
+                return tool_error(format!("step {}: {e}", i + 1));
+            }
+        }
+        self.forward_view(json!({
+            "op": "report",
+            "summary": args.summary,
+            "notes": args.notes,
+            "evidence": args.evidence,
+            "steps": args.steps,
         }))
         .await
     }
