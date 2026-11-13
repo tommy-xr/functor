@@ -676,6 +676,61 @@ const PACKAGE: &str = "dev.functor.runner";
 const PAIRING_FILE: &str = "files/device-link.json";
 
 impl Quest {
+    /// The one Quest on adb, its pairing file saved and the properties
+    /// `props` set to 1 (both put back on drop), and its debug port
+    /// forwarded. Guardian would hold the app at its boundary dialog.
+    fn attach(props: &[&'static str]) -> Quest {
+        let devices = Command::new("adb").arg("devices").output().unwrap();
+        let serial = String::from_utf8_lossy(&devices.stdout)
+            .lines()
+            .skip(1)
+            .find_map(|l| l.strip_suffix("\tdevice").map(str::to_string))
+            .expect("a Quest attached over adb");
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut quest = Quest {
+            serial,
+            debug: format!("http://127.0.0.1:{port}"),
+            pairing: None,
+            props: Vec::new(),
+        };
+        let saved = quest.adb(&["exec-out", "run-as", PACKAGE, "cat", PAIRING_FILE]);
+        quest.pairing = saved.status.success().then_some(saved.stdout);
+        for &name in props {
+            let before = quest.shell(&format!("getprop {name}"));
+            let before = if before.is_empty() {
+                "0".into()
+            } else {
+                before
+            };
+            quest.props.push((name, before));
+            quest.shell(&format!("setprop {name} 1"));
+        }
+        quest.adb(&["forward", &format!("tcp:{port}"), "tcp:8123"]);
+        quest
+    }
+
+    /// Replaces the pairing file with `bytes`, as the app does.
+    fn put_pairing(&self, bytes: &[u8]) {
+        let mut child = Command::new("adb")
+            .args(["-s", &self.serial, "shell", functor_device_link::adb::WRITE_PAIRING])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(bytes).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    /// The pairing file (empty when there is none).
+    fn pairing_file(&self) -> headset::Stored {
+        let out = self.adb(&["shell", functor_device_link::adb::READ_PAIRING]);
+        assert!(out.status.success(), "a debuggable {PACKAGE} is installed");
+        serde_json::from_slice(&out.stdout).unwrap_or_default()
+    }
+
     fn adb(&self, args: &[&str]) -> std::process::Output {
         Command::new("adb")
             .args(["-s", &self.serial])
@@ -737,16 +792,7 @@ impl Drop for Quest {
     fn drop(&mut self) {
         let _ = post(&self.debug, "/input", r#"{"type":"xr_clear"}"#);
         match &self.pairing {
-            Some(bytes) => {
-                let mut child = Command::new("adb")
-                    .args(["-s", &self.serial, "shell"])
-                    .arg(format!("run-as {PACKAGE} sh -c 'cat > {PAIRING_FILE}'"))
-                    .stdin(Stdio::piped())
-                    .spawn()
-                    .unwrap();
-                child.stdin.take().unwrap().write_all(bytes).unwrap();
-                let _ = child.wait();
-            }
+            Some(bytes) => self.put_pairing(bytes),
             None => {
                 self.shell(&format!("run-as {PACKAGE} rm -f {PAIRING_FILE}"));
             }
@@ -771,36 +817,8 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
         eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
         return;
     }
-    let devices = Command::new("adb").arg("devices").output().unwrap();
-    let serial = String::from_utf8_lossy(&devices.stdout)
-        .lines()
-        .skip(1)
-        .find_map(|l| l.strip_suffix("\tdevice").map(str::to_string))
-        .expect("a Quest attached over adb");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let mut quest = Quest {
-        serial,
-        debug: format!("http://127.0.0.1:{port}"),
-        pairing: None,
-        props: Vec::new(),
-    };
-    let saved = quest.adb(&["exec-out", "run-as", PACKAGE, "cat", PAIRING_FILE]);
-    quest.pairing = saved.status.success().then_some(saved.stdout);
-    // Guardian would hold the app at its boundary dialog; injected presses
-    // drive the overlay only while `pair_input` is set.
-    for name in ["debug.oculus.guardian_pause", "debug.functor.pair_input"] {
-        let before = quest.shell(&format!("getprop {name}"));
-        let before = if before.is_empty() {
-            "0".into()
-        } else {
-            before
-        };
-        quest.props.push((name, before));
-    }
+    // Injected presses drive the overlay only while `pair_input` is set.
+    let quest = Quest::attach(&["debug.oculus.guardian_pause", "debug.functor.pair_input"]);
     assert!(
         quest
             .adb(&["shell", "run-as", PACKAGE, "rm", "-f", PAIRING_FILE])
@@ -808,10 +826,6 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
             .success(),
         "a debuggable {PACKAGE} is installed"
     );
-    for (name, _) in &quest.props {
-        quest.shell(&format!("setprop {name} 1"));
-    }
-    quest.adb(&["forward", &format!("tcp:{port}"), "tcp:8123"]);
 
     let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
     app.devices_where("the link starts", |d| !d["listening"].is_null())
@@ -1214,4 +1228,133 @@ mod cable {
         until("the headset is linked", || quest.view().linked.then_some(()))
             .await;
     }
+}
+
+/// The Quest attached over adb (`npm run test:quest-cable`), paired over
+/// the cable with no code: the app writes the pairing file, the headset
+/// links over Wi-Fi by itself, the tunnel reaches its debug runtime. A
+/// pairing written meanwhile by "another desktop" makes it close this
+/// link saying why; pairing again replaces it. Forget clears the file
+/// (keeping the headset's id) and the link. The headset's own pairing and
+/// properties are put back afterwards.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_pairs_over_the_cable_and_links_over_wifi() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
+    // Unpaired, keeping its id (the desktop knows it by it).
+    let mut file = quest.pairing_file();
+    let id = file.device.clone();
+    file.desktop = None;
+    file.desktop_name = None;
+    file.secret = None;
+    quest.put_pairing(file.to_json().as_bytes());
+
+    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
+    quest.launch().await;
+    let serial = quest.serial.clone();
+    let on_cable = |d: &Value| -> Option<Value> {
+        d["attached"]
+            .as_array()?
+            .iter()
+            .find(|a| a["serial"] == serial.as_str())
+            .cloned()
+    };
+    let devices = app
+        .devices_where("the Quest is on the cable, ready", |d| {
+            on_cable(d).is_some_and(|a| a["pairable"] == true)
+        })
+        .await;
+    let a = on_cable(&devices).unwrap();
+    assert_eq!(a["state"]["device"], id.as_str());
+    assert_eq!(a["state"]["paired"]["with"], "nobody");
+    assert!(app.pairings().is_empty() || !app.pairings().contains(&id));
+
+    // One click; the headset links over Wi-Fi by itself.
+    let started = Instant::now();
+    app.send(json!({"type": "pair_by_cable", "serial": serial}))
+        .await;
+    let devices = app
+        .devices_where("it connects over Wi-Fi", |d| {
+            card_by_id(d, &id).is_some_and(|c| {
+                c["state"]["state"] == "connected" && !c["tunnel"].is_null()
+            })
+        })
+        .await;
+    eprintln!("cable pairing → connected in {:?}", started.elapsed());
+    assert_eq!(card_by_id(&devices, &id).unwrap()["state"]["link"], "wifi");
+    let written = quest.pairing_file();
+    assert_eq!(written.device, id, "the headset keeps its id");
+    let secret = written.secret.clone().unwrap();
+    assert!(app.pairings().contains(&secret), "one secret on both sides");
+    let mode = quest.shell(&format!("run-as {PACKAGE} ls -l {PAIRING_FILE}"));
+    assert!(mode.starts_with("-rw-------"), "{mode}");
+    until("the headset says it is linked", || {
+        (quest.link()["linked"] == true).then_some(())
+    })
+    .await;
+
+    // The tunnel reaches the headset's own debug runtime.
+    let tunnel = card_by_id(&devices, &id).unwrap()["tunnel"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, body) = get(&tunnel, "/state").unwrap();
+    assert_eq!(status, 200, "{body}");
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["link"]["linked"], true);
+    assert!(state["views"].as_array().is_some_and(|v| v.len() == 2));
+
+    // Another desktop's pairing lands in its file: it closes this link
+    // saying why, and the cable shows whose it is now.
+    let elsewhere = headset::Stored {
+        device: id.clone(),
+        desktop: Some("ee".repeat(16)),
+        desktop_name: Some("Studio Mac".into()),
+        secret: Some("11".repeat(32)),
+    };
+    quest.put_pairing(elsewhere.to_json().as_bytes());
+    let devices = app
+        .devices_where("this desktop is told", |d| {
+            card_by_id(d, &id).is_some_and(|c| c["state"]["state"] == "cannot_reach")
+                && on_cable(d).is_some_and(|a| a["state"]["paired"]["name"] == "Studio Mac")
+        })
+        .await;
+    let reason = card_by_id(&devices, &id).unwrap()["state"]["reason"].clone();
+    assert!(
+        reason.as_str().unwrap().contains(functor_device_link::REPAIRED),
+        "{reason}"
+    );
+    app.send(json!({"type": "pair_by_cable", "serial": serial, "replace": true}))
+        .await;
+    app.devices_where("it is back", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["state"] == "connected")
+    })
+    .await;
+    assert_ne!(quest.pairing_file().desktop_name.as_deref(), Some("Studio Mac"));
+
+    // Forget: gone here, its pairing gone from the headset, its id kept.
+    app.send(json!({"type": "forget_device", "device": id}))
+        .await;
+    app.devices_where("it is forgotten", |d| card_by_id(d, &id).is_none())
+        .await;
+    until("the headset's pairing is gone", || {
+        quest.pairing_file().secret.is_none().then_some(())
+    })
+    .await;
+    assert_eq!(quest.pairing_file().device, id);
+    until("the headset is unlinked", || {
+        (quest.link()["linked"] == false).then_some(())
+    })
+    .await;
+}
+
+/// The card for device `id`, if any.
+fn card_by_id<'a>(devices: &'a Value, id: &str) -> Option<&'a Value> {
+    devices["list"]
+        .as_array()?
+        .iter()
+        .find(|d| d["id"] == id)
 }
