@@ -113,9 +113,8 @@ async fn clients_get_the_state_and_see_a_switch_broadcast() {
     let tmp = tree();
     // Opening a project starts its game: with no `functor`, it fails at once.
     let server = serve(tmp.path(), &["--functor", "/nonexistent/functor"]);
-    let failed = |s: &Value, id: u64| {
-        s["session"]["id"] == id && s["session"]["status"]["kind"] == "failed"
-    };
+    let failed =
+        |s: &Value, id: u64| s["session"]["id"] == id && s["session"]["status"]["kind"] == "failed";
     let mut one = connect(&server.ws).await;
     let mut two = connect(&server.ws).await;
     for socket in [&mut one, &mut two] {

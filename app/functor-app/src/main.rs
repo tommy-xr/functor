@@ -20,8 +20,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::metrics::run_metrics;
+use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{
     print, print_change, print_item, update, AppState, Command, Event, Harness, Item, RunEvent,
     SessionStatus,

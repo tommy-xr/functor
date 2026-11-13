@@ -242,3 +242,50 @@ its `app/spikes/s2-agent/events/`.
   `approve` tool on our server.
 - Not checked: a real refusal and ask mode, raw Codex output for MCP calls,
   image tool results.
+
+## Agent-run metrics
+
+`npm run metrics:app` (task 1.19; `app/metrics/`) runs each scenario in
+`scenarios.json` through `functor-app task --start-session` on a fresh git
+copy of its example and judges the outcome mechanically (git status, a
+regex, injected `expect`s under `functor test`, `functor build`). FakeAgent
+by default; `FUNCTOR_APP_LIVE=1 … --live` for the real agent, capped at 600k
+input tokens and 5 minutes a scenario. `--compare a.jsonl b.jsonl` prints the
+deltas.
+
+### Live run (2026-11-12, rev `c22a0b3d`, Claude `claude-fable-5-2`, the user's own settings)
+
+| scenario | outcome | wall s | first event s | tool calls | by kind | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 9.7 | 4.5 | 5 | game 3, skills 2 | 143,314 | 313 |
+| no-tools | pass | 1.8 | 0.4 | 0 | none | 33,052 | 4 |
+| weak-jump | pass | 28.1 | 0.4 | 18 | files 3, game 10, shell 1, skills 4 | 412,348 | 2,507 |
+| spawn-in-chasm | pass | 44.9 | 0.4 | 21 | files 4, game 8, shell 4, skills 5 | 545,776 | 3,437 |
+| two-step | pass | 33.1 | 0.4 | 19 | files 5, game 7, shell 3, skills 4 | 597,556 | 3,033 |
+
+"First event" is the harness's init line (its startup), not the model's
+first output. Input includes cached tokens. One run each: no variance yet.
+
+- **A turn costs about 33k input.** A one-word answer with no tools is 33k;
+  every further API turn resends about as much, so turns, not output, set
+  the bill.
+- **Tool search is a turn per lookup.** The game tools are deferred: 2–5
+  `ToolSearch` calls a scenario (14 of 63 calls; "skills" in the table), each
+  a turn.
+- **Asking for a tool that is not there costs turns.** `task` has no view
+  route, so `present`/`show_view` are not offered, but the preamble asks for
+  `present`; every edit scenario searched for it 1–2 times. The app offers
+  both, so this inflates the edit rows here.
+- **The user's settings shape the run.** Denied shell commands ("requires
+  approval", unverifiable nested commands) cost turns, and `functor test`
+  could not run; the user's own instructions surfaced in answers. Their token
+  share needs an isolated mode to measure.
+- **Edits verify by playing.** 7–10 game calls per edit (input, step,
+  capture), which is the intended behaviour, and most of the cost.
+
+Not reported by the pinned `mis-agent` (each needs an upstream change to its
+`Usage` event): cached vs uncached input (Claude's `cache_read_input_tokens` /
+`cache_creation_input_tokens`, Codex's `cached_input_tokens` are summed into
+`input`), usage per API message, the number of API turns (Claude's
+`num_turns`), cost (`total_cost_usd`), API time (`duration_api_ms`), and
+Codex's `reasoning_output_tokens`.

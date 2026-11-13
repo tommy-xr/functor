@@ -1,4 +1,4 @@
 {"ms":0,"event":{"type":"started","session":"fake-no-tools","model":"claude-model"}}
 {"ms":10,"event":{"type":"text","text":"ready"}}
-{"ms":20,"event":{"type":"usage","input":30000,"output":5}}
+{"ms":20,"event":{"type":"usage","input":33052,"output":4}}
 {"ms":30,"event":{"type":"finished","ok":true,"summary":"ready"}}
