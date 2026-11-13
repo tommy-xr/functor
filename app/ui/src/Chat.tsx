@@ -488,7 +488,17 @@ const Row = memo(function Row({
 }) {
   switch (item.kind) {
     case "user":
-      return <div className="msg msg-user">{item.text}</div>;
+      if (!item.spoken) return <div className="msg msg-user">{item.text}</div>;
+      // Said in a headset: where, and (on hover) what the user was looking at.
+      return (
+        <div className="msg msg-user" data-testid="spoken">
+          <div className="spoken-from" title={item.spoken.context}>
+            <Icon name="mic" />
+            Said in {item.spoken.headset}
+          </div>
+          {item.text}
+        </div>
+      );
     case "agent":
       return <AgentText text={item.text} partial={item.partial} />;
     case "tool":

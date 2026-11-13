@@ -58,12 +58,18 @@ async fn app_with(link: &[&str]) -> App {
 
 /// `functor-app --headless --no-gpu` on `project` with `args`.
 async fn app_in(project: &Path, args: &[&str]) -> App {
+    app_env(project, args, &[]).await
+}
+
+/// `app_in` with `envs` set too.
+async fn app_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> App {
     let home = tempfile::tempdir().unwrap();
     let mut child = Command::new(BIN)
         .args(["--headless", "--no-gpu", "--port", "0"])
         .args(args)
         .arg("-d")
         .arg(project)
+        .envs(envs.iter().copied())
         .env("FUNCTOR_APP_HOME", home.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1943,4 +1949,191 @@ async fn pair_quest_by_cable(quest: &Quest, mut app: App) -> (App, String, Value
 /// The card for device `id`, if any.
 fn card_by_id<'a>(devices: &'a Value, id: &str) -> Option<&'a Value> {
     devices["list"].as_array()?.iter().find(|d| d["id"] == id)
+}
+
+/// A `functor` for voice: `run vr --device-url <url>` says it listens there
+/// (as the real one does once its push lands) and holds; `mcp` (a run's tool
+/// server) says it listens on a port that answers 204; anything else holds.
+#[cfg(unix)]
+fn voice_functor(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let text = String::from_utf8_lossy(&head).to_ascii_lowercase();
+            let length = text
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|n| n.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0; length];
+            let _ = stream.read_exact(&mut body);
+            let _ = write!(stream, "HTTP/1.0 204 No Content\r\n\r\n");
+        }
+    });
+    let path = dir.join("functor");
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = mcp ]; then\n\
+           echo '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\n\
+           exec cat >/dev/null\n\
+         fi\n\
+         url=\n\
+         while [ $# -gt 0 ]; do [ \"$1\" = --device-url ] && url=\"$2\"; shift; done\n\
+         [ -n \"$url\" ] && echo \"[debug-server] listening on $url\" >&2\n\
+         exec sleep 600\n"
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// The clip checked in for speech-to-text (macOS `say`, 16 kHz mono).
+const CLIP: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../functor-stt/fixtures/make-the-ball-red.wav"
+);
+
+/// Voice (plan 4.2–4.4) end to end on loopback, under the fake agent and
+/// transcriber: the game placed on the stub headset, the stub says a clip,
+/// a task starts with the transcribed text marked spoken, and the stages
+/// come back in order up to `reloaded` once the game reloads. Garbage, an
+/// overlong clip and a cancel are answered and start nothing. With
+/// `FUNCTOR_STT_REAL=1` (and `--features whisper`) the clip goes through
+/// the real model instead of the fake transcriber.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("functor.json"),
+        r#"{"language": "functor-lang"}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":200,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let real = std::env::var_os("FUNCTOR_STT_REAL").is_some();
+    let mut envs = vec![("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap())];
+    if !real {
+        envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
+    }
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+
+    // Speaking with no game on the headset changes nothing.
+    let idle = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--misbehave", "voice-garbage"],
+    );
+    idle.line("linked ");
+    let failed = idle.line("voice ");
+    assert!(
+        failed.starts_with("voice - failed an unreadable voice message"),
+        "{failed}"
+    );
+    drop(idle);
+    let long = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--misbehave", "voice-too-long"],
+    );
+    assert_eq!(long.line("voice "), "voice 1 failed longer than 60 seconds");
+    drop(long);
+
+    let quest = stub(&app.link, store.path(), "Test Quest", &["--say", CLIP]);
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let card = card(&devices, "Test Quest").unwrap();
+    let (id, tunnel) = (
+        card["id"].clone(),
+        card["tunnel"].as_str().unwrap().to_string(),
+    );
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    // Said once the game runs there.
+    assert_eq!(quest.line("voice "), "voice 1 heard");
+    let transcribed = quest.line("voice ");
+    let said = transcribed
+        .strip_prefix("voice 1 transcribed ")
+        .unwrap_or_else(|| panic!("{transcribed}"))
+        .to_string();
+    match real {
+        true => assert!(said.to_lowercase().contains("ball red"), "{said}"),
+        false => assert_eq!(said, "make the ball red"),
+    }
+    assert_eq!(quest.line("voice "), "voice 1 working");
+    // The agent's edit is pushed, as `functor run vr` does after a save.
+    assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
+    assert_eq!(quest.line("voice "), "voice 1 reloaded");
+
+    // The task holds what was said, marked spoken, with the capsule.
+    let state = app
+        .state_where("the spoken task", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+        .await;
+    let task = state["tasks"][0]["id"].clone();
+    assert_eq!(state["tasks"][0]["title"], said.as_str());
+    app.send(json!({"type": "get_transcript", "task": task}))
+        .await;
+    let items = loop {
+        let msg = app.socket.next().await.unwrap().unwrap();
+        let json: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        if json["type"] == "transcript" {
+            break json["items"].clone();
+        }
+    };
+    assert_eq!(items[0]["kind"], "user");
+    assert_eq!(items[0]["text"], said.as_str());
+    assert_eq!(items[0]["spoken"]["headset"], "Test Quest");
+    let context = items[0]["spoken"]["context"].as_str().unwrap();
+    assert!(
+        context.starts_with("at frame ") && context.ends_with("pointing at \"the stub\""),
+        "{context}"
+    );
+    drop(quest);
+
+    // A cancelled clip: idle, and no second task.
+    let cancel = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--say", CLIP, "--cancel"],
+    );
+    assert_eq!(cancel.line("voice "), "voice 1 idle");
+    let state = app.state_where("the state", 10, |_| true).await;
+    assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
 }

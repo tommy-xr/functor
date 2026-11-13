@@ -17,6 +17,9 @@
 //!   ask the desktop for anything end its link.
 //! - Headsets on a USB cable, seen through adb and paired over it with no
 //!   code ([`cable`]).
+//! - A linked headset's spoken clips on the voice channel, assembled per
+//!   link ([`crate::voice`]), transcribed here and handed to the core; the
+//!   progress goes back on the status channel.
 
 mod cable;
 
@@ -34,6 +37,7 @@ use axum::Router;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
+use functor_device_link::voice;
 use functor_device_link::wire::{self, Frame, Hello, Mode, Reject, Reply};
 use functor_device_link::{hex, shared, DesktopId, End, Error, OsEntropy, Secret, VERSION};
 use functor_device_link::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE};
@@ -51,6 +55,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::server::{now_ms, wall_ms};
 use crate::store::{self, StoredPairing};
+use crate::voice::{Assembler, Heard, Speech};
 
 pub use functor_device_link::{PATH, SERVICE};
 
@@ -109,6 +114,8 @@ struct Inner {
     cable_writes: tokio::sync::Mutex<()>,
     /// Writes finished so far: a probe that overlapped one is stale.
     cable_written: AtomicU64,
+    /// Turns headsets' clips into text.
+    speech: Speech,
 }
 
 #[derive(Default)]
@@ -143,6 +150,14 @@ enum ConnCmd {
         wire::Request,
         oneshot::Sender<Result<wire::Response, String>>,
     ),
+    /// Send this frame on the link (voice status).
+    Send(Frame),
+    /// Utterance `utterance` turned into text, or why not.
+    Transcribed {
+        utterance: u64,
+        text: Result<String, String>,
+        capsule: String,
+    },
 }
 
 impl Hub {
@@ -172,6 +187,7 @@ impl Hub {
             cable_poke: tokio::sync::Notify::new(),
             cable_writes: tokio::sync::Mutex::new(()),
             cable_written: AtomicU64::new(0),
+            speech: Speech::from_env(),
         })))
     }
 
@@ -360,6 +376,25 @@ impl Hub {
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
             }
+            LinkCommand::Voice {
+                device,
+                utterance,
+                stage,
+            } => {
+                use functor_app_core::voice::Stage as Core;
+                let stage = match stage {
+                    Core::Working => voice::Stage::Working,
+                    Core::Reloaded => voice::Stage::Reloaded,
+                    Core::Failed(reason) => voice::Stage::Failed { reason },
+                };
+                let status = voice::Status {
+                    utterance: Some(utterance),
+                    stage,
+                };
+                if let Some(link) = self.link_of(&device) {
+                    let _ = link.send(ConnCmd::Send(status.frame()));
+                }
+            }
         }
     }
 
@@ -505,6 +540,7 @@ impl Hub {
             }
         };
         let (cmds, rx) = mpsc::unbounded_channel();
+        let me = cmds.clone();
         let id = {
             let mut s = self.0.state.lock().unwrap();
             s.next_conn += 1;
@@ -524,6 +560,9 @@ impl Hub {
             linked: None,
             waiting: HashMap::new(),
             next_request: 0,
+            me,
+            voice: Assembler::default(),
+            outgoing: Vec::new(),
         };
         let end = link.run(ws, rx).await;
         link.finish(end);
@@ -681,6 +720,12 @@ struct Connection {
     linked: Option<String>,
     waiting: HashMap<u32, oneshot::Sender<Result<wire::Response, String>>>,
     next_request: u32,
+    /// Its own command channel, for work it hands off (transcription).
+    me: UnboundedSender<ConnCmd>,
+    /// The clip being heard on the voice channel.
+    voice: Assembler,
+    /// Frames to send after this step's events (voice status).
+    outgoing: Vec<Frame>,
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<TcpStream>;
@@ -735,6 +780,14 @@ impl Connection {
                         let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.close(None)).await;
                         return Ok(());
                     }
+                    ConnCmd::Send(frame) => {
+                        self.outgoing.push(frame);
+                        desktop_output(Vec::new())
+                    }
+                    ConnCmd::Transcribed { utterance, text, capsule } => {
+                        self.transcribed(utterance, text, &capsule);
+                        desktop_output(Vec::new())
+                    }
                     ConnCmd::Request(mut request, reply) => {
                         // Requests whose callers gave up free their slots.
                         self.waiting.retain(|_, r| !r.is_closed());
@@ -756,10 +809,15 @@ impl Connection {
                         }
                     }
                 },
-                _ = tick.tick() => match self.machine.check(now_ms()) {
-                    Some(e) => return Err(e),
-                    None => continue,
-                },
+                _ = tick.tick() => {
+                    if let Some(e) = self.machine.check(now_ms()) {
+                        return Err(e);
+                    }
+                    if let Some(heard) = self.voice.check(now_ms()) {
+                        self.heard(heard);
+                    }
+                    desktop_output(Vec::new())
+                }
                 _ = ping.tick(), if self.machine.linked() => {
                     match self.machine.send(&Frame::Ping(now_ms())) {
                         Ok(msgs) => desktop_output(msgs),
@@ -773,6 +831,12 @@ impl Connection {
             }
             for msg in out.send {
                 put(&mut ws, msg).await?;
+            }
+            for frame in std::mem::take(&mut self.outgoing) {
+                // A link not up yet (or gone) has no one to tell.
+                for msg in self.machine.send(&frame).unwrap_or_default() {
+                    put(&mut ws, msg).await?;
+                }
             }
             match out.end {
                 None => {}
@@ -873,7 +937,15 @@ impl Connection {
                 project: s.project,
             }),
             desktop::Event::Latency(ms) => hub.send(LinkEvent::Latency { conn: self.id, ms }),
-            // No channels are defined yet.
+            // Only a linked device's frames reach here as events.
+            desktop::Event::Channel {
+                channel: voice::CLIP_CHANNEL,
+                data,
+            } => {
+                if let Some(heard) = self.voice.receive(&data, now_ms()) {
+                    self.heard(heard);
+                }
+            }
             desktop::Event::Channel { .. } => {}
             desktop::Event::Mismatch(pre) => hub.send(LinkEvent::Mismatch {
                 device: hex(&pre.device),
@@ -883,6 +955,66 @@ impl Connection {
             }),
         }
         Ok(())
+    }
+
+    /// Acts on what the voice channel heard: a status to send, or a whole
+    /// clip to transcribe (off this loop; the text comes back as
+    /// `ConnCmd::Transcribed`).
+    fn heard(&mut self, heard: Heard) {
+        let (utterance, pcm, capsule) = match heard {
+            Heard::Status(status) => return self.outgoing.push(status.frame()),
+            Heard::Clip {
+                utterance,
+                pcm,
+                capsule,
+            } => (utterance, pcm, capsule),
+        };
+        self.say(utterance, voice::Stage::Heard);
+        let speech = self.hub.0.speech.clone();
+        let me = self.me.clone();
+        let name = format!("{}-{utterance}", self.linked.as_deref().unwrap_or("device"));
+        let home = self.hub.0.home.clone();
+        tokio::spawn(async move {
+            crate::voice::keep_audio(&home, &name, &pcm);
+            let text = speech.transcribe(pcm).await;
+            let _ = me.send(ConnCmd::Transcribed {
+                utterance,
+                text,
+                capsule,
+            });
+        });
+    }
+
+    /// Utterance `utterance`'s text: shown to the headset and handed to the core.
+    fn transcribed(&mut self, utterance: u64, text: Result<String, String>, capsule: &str) {
+        self.voice.transcribed(utterance);
+        match text {
+            Ok(text) if !text.is_empty() => {
+                let stage = voice::Stage::Transcribed { text: text.clone() };
+                self.say(utterance, stage);
+                self.hub.send(LinkEvent::Utterance {
+                    conn: self.id,
+                    utterance,
+                    text,
+                    context: crate::voice::render(capsule),
+                });
+            }
+            Ok(_) => self.say(
+                utterance,
+                voice::Stage::Failed {
+                    reason: "heard no words".to_string(),
+                },
+            ),
+            Err(reason) => self.say(utterance, voice::Stage::Failed { reason }),
+        }
+    }
+
+    fn say(&mut self, utterance: u64, stage: voice::Stage) {
+        let status = voice::Status {
+            utterance: Some(utterance),
+            stage,
+        };
+        self.outgoing.push(status.frame());
     }
 
     fn unpend(&mut self) {

@@ -19,8 +19,8 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
-    SessionCall, SessionEvent, TransportCall,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, SessionCall,
+    SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -174,7 +174,12 @@ impl Driver {
 
     /// A client's new task as the core takes it: with an id reserved in
     /// the store. A task the core then rejects leaves its id unused.
-    pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
+    pub fn new_task(
+        &mut self,
+        message: String,
+        harness: Harness,
+        voice: Option<Box<functor_app_core::voice::Utterance>>,
+    ) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
         if let Ok(id) = id {
             self.next_task = id + 1;
@@ -183,6 +188,7 @@ impl Driver {
             id: id.map_err(|e| e.to_string()),
             message,
             harness,
+            voice,
         }
     }
 
@@ -289,8 +295,12 @@ impl Driver {
                     let _ = events.send(Event::Created { result, note });
                 });
             }
-            Command::ReserveTask { message, harness } => {
-                let event = self.new_task(message, harness);
+            Command::ReserveTask {
+                message,
+                harness,
+                voice,
+            } => {
+                let event = self.new_task(message, harness, voice);
                 let _ = self.events.send(event);
             }
             // Without a client to answer there is no one to check for.
@@ -613,7 +623,9 @@ async fn unload(tunnel: String) {
     loop {
         let reply = exchange(&tunnel, "POST", "/load-project", &json, "[]").await;
         let status = reply.as_ref().ok().and_then(|(head, _)| {
-            head.split(' ').nth(1).and_then(|code| code.parse::<u16>().ok())
+            head.split(' ')
+                .nth(1)
+                .and_then(|code| code.parse::<u16>().ok())
         });
         match status {
             Some(200..=299) => return,

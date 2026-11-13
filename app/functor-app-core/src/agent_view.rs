@@ -662,6 +662,7 @@ mod tests {
             id: Ok(1),
             message: "make it count by two".to_string(),
             harness: Harness::Claude,
+            voice: None,
         };
         update(s, new).0
     }

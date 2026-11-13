@@ -285,6 +285,14 @@ pub enum LinkEvent {
         serial: String,
         result: Result<Paired, String>,
     },
+    /// `conn`'s headset said `text` (transcribed), as its utterance
+    /// `utterance`; `context` is its capsule, rendered.
+    Utterance {
+        conn: u64,
+        utterance: u64,
+        text: String,
+        context: Option<String>,
+    },
 }
 
 /// To the shell's device link.
@@ -310,6 +318,12 @@ pub enum LinkCommand {
     PairByCable {
         serial: String,
         replace: bool,
+    },
+    /// Tell `device` how its utterance is going.
+    Voice {
+        device: String,
+        utterance: u64,
+        stage: crate::voice::Stage,
     },
 }
 
@@ -649,6 +663,8 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 devices.paired(device, &mut commands);
             }
         }
+        // The core's to act on (`voice::heard`): no device changes.
+        LinkEvent::Utterance { .. } => {}
     }
     refresh(devices);
     (*devices != before, commands)

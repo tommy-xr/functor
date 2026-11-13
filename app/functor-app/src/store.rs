@@ -408,7 +408,10 @@ mod tests {
             report: None,
             created_at: None,
             updated_at: Some(1),
-            transcript: vec![Item::User { text: "hi".into() }],
+            transcript: vec![Item::User {
+                text: "hi".into(),
+                spoken: None,
+            }],
         };
         let dir = root.join("a");
         save(&home, &dir, &task(1)).unwrap();
@@ -452,7 +455,10 @@ mod tests {
             report: None,
             created_at: None,
             updated_at: Some(1),
-            transcript: vec![Item::User { text: "hi".into() }],
+            transcript: vec![Item::User {
+                text: "hi".into(),
+                spoken: None,
+            }],
         }
     }
 

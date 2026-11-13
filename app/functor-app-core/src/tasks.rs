@@ -128,6 +128,19 @@ pub struct Usage {
     pub output: u64,
 }
 
+/// Where a spoken message came from (plan 4.1/4.3): the headset, and what
+/// the user was looking at when they spoke, as text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Spoken {
+    /// The headset's name.
+    pub headset: String,
+    /// The capsule, rendered: "at frame 1234 (20.5 s), head at …".
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
 /// One transcript entry, in the order the UI shows them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -135,6 +148,10 @@ pub struct Usage {
 pub enum Item {
     User {
         text: String,
+        /// Said aloud in a headset, not typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        spoken: Option<Spoken>,
     },
     /// `partial` while its text is still streaming in.
     Agent {
@@ -540,6 +557,7 @@ mod tests {
             updated_at: None,
             transcript: vec![Item::User {
                 text: message.to_string(),
+                spoken: None,
             }],
         }
     }
@@ -646,6 +664,7 @@ mod tests {
         stop_run(&mut task);
         task.transcript.push(Item::User {
             text: "two".to_string(),
+            spoken: None,
         });
         task.run = Some(Run {
             id: task.transcript.len() as u64 - 1,

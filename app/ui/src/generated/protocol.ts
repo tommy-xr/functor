@@ -403,7 +403,11 @@ seq: number, };
 /**
  * One transcript entry, in the order the UI shows them.
  */
-export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
+export type Item = { "kind": "user", text: string, 
+/**
+ * Said aloud in a headset, not typed.
+ */
+spoken?: Spoken, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -670,6 +674,20 @@ export type Size = { added: number, removed: number, files: number,
  * Each kind once, in [`Kind`]'s order.
  */
 kinds: Array<Kind>, };
+
+/**
+ * Where a spoken message came from (plan 4.1/4.3): the headset, and what
+ * the user was looking at when they spoke, as text.
+ */
+export type Spoken = { 
+/**
+ * The headset's name.
+ */
+headset: string, 
+/**
+ * The capsule, rendered: "at frame 1234 (20.5 s), head at …".
+ */
+context?: string, };
 
 export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
 

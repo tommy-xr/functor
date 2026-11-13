@@ -289,7 +289,11 @@ fn task(t: &Task) -> String {
 /// ```
 pub fn print_item(item: &Item) -> String {
     match item {
-        Item::User { text } => format!("you: {text}"),
+        Item::User { text, spoken: None } => format!("you: {text}"),
+        Item::User {
+            text,
+            spoken: Some(s),
+        } => format!("you (in {}): {text}", s.headset),
         Item::Agent { text, .. } => format!("agent: {text}"),
         Item::Tool {
             name,
@@ -708,6 +712,7 @@ recents: 2
         let transcript = vec![
             Item::User {
                 text: "What is the count?".into(),
+                spoken: None,
             },
             Item::Tool {
                 name: "mcp__mis__get_state".into(),

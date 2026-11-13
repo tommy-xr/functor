@@ -8,7 +8,10 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 clap = { version = "4.5.6", features = ["derive"] }
 functor-app-core = { path = "../functor-app-core" }
 # The device link's protocol: framing, pairing, the authenticated transport.
-functor-device-link = { path = "../../runtime/functor-device-link", features = ["file"] }
+functor-device-link = { path = "../../runtime/functor-device-link", features = ["capsule", "file"] }
+# Speech-to-text for headset clips and the composer mic (whisper.cpp with
+# the `whisper` feature; without it, voice says it is not in this build).
+functor-stt = { path = "../functor-stt" }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # Advertises the device link on the LAN (pure Rust, no async runtime).
 mdns-sd = { version = "0.21", default-features = false }
@@ -34,6 +37,12 @@ uuid = { version = "1", features = ["v4"] }
 # menu bar that gives it Quit, Open Folder and the Edit shortcuts (muda), and
 # its native folder picker (rfd: AppKit's NSOpenPanel through the objc2
 # crates wry already uses).
+[features]
+# Local speech-to-text (whisper.cpp; its model is fetched on first use).
+# Off by default so tests and CI skip the C++ build; `npm run build:app`
+# turns it on.
+whisper = ["functor-stt/whisper"]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }
 rfd = { version = "0.17", default-features = false }

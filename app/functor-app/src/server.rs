@@ -275,7 +275,7 @@ async fn run(
                     (vec![Event::Client(ClientMsg::GetState)], Some(id), None)
                 }
                 Input::Client { id, msg: ClientMsg::NewTask { message, harness } } => {
-                    (vec![driver.new_task(message, harness)], Some(id), None)
+                    (vec![driver.new_task(message, harness, None)], Some(id), None)
                 }
                 Input::Client { id, msg: ClientMsg::CanvasStacked { stacked: s } } => {
                     stacked.insert(id, s);
