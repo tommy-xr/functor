@@ -148,13 +148,19 @@ mod tests {
             result: Some("r".into()),
         };
         task.transcript = vec![
-            Item::User { text: "old".into() },
+            Item::User {
+                text: "old".into(),
+                spoken: None,
+            },
             tool("Read", json!({})),
             Item::Finished {
                 ok: false,
                 summary: None,
             },
-            Item::User { text: "new".into() },
+            Item::User {
+                text: "new".into(),
+                spoken: None,
+            },
             tool("ToolSearch", json!({"query": "x"})),
             tool("mcp__mis__get_state", json!({})),
             tool("mcp__mis__get_state", json!({})),

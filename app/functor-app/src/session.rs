@@ -174,7 +174,12 @@ impl Driver {
 
     /// A client's new task as the core takes it: with an id reserved in
     /// the store. A task the core then rejects leaves its id unused.
-    pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
+    pub fn new_task(
+        &mut self,
+        message: String,
+        harness: Harness,
+        voice: Option<Box<functor_app_core::voice::Utterance>>,
+    ) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
         if let Ok(id) = id {
             self.next_task = id + 1;
@@ -183,6 +188,7 @@ impl Driver {
             id: id.map_err(|e| e.to_string()),
             message,
             harness,
+            voice,
         }
     }
 
@@ -289,8 +295,12 @@ impl Driver {
                     let _ = events.send(Event::Created { result, note });
                 });
             }
-            Command::ReserveTask { message, harness } => {
-                let event = self.new_task(message, harness);
+            Command::ReserveTask {
+                message,
+                harness,
+                voice,
+            } => {
+                let event = self.new_task(message, harness, voice);
                 let _ = self.events.send(event);
             }
             // Without a client to answer there is no one to check for.

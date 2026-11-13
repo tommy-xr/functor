@@ -11,6 +11,7 @@ mod server;
 mod session;
 mod store;
 mod stub;
+mod voice;
 #[cfg(target_os = "macos")]
 mod window;
 
@@ -155,6 +156,13 @@ enum Cmd {
     /// answer canned debug requests.
     #[command(hide = true)]
     DeviceStub(stub::StubArgs),
+    /// Print the voice capsule (plan 4.1) a running game's state makes: its
+    /// frame, game time and, on a headset, head and controller poses, as JSON.
+    Capsule {
+        /// The game's debug server, `http://127.0.0.1:<port>`.
+        #[arg(long, value_name = "URL")]
+        from_session: String,
+    },
 }
 
 /// The window's side of the runtime thread: where to send the server's
@@ -189,6 +197,22 @@ fn main() -> std::io::Result<ExitCode> {
             unreachable!("just matched");
         };
         return Ok(runtime()?.block_on(stub::run(stub)));
+    }
+    if let Some(Cmd::Capsule { from_session }) = &args.command {
+        let read = session::request(from_session, "GET", "/state?model=0", &[], "");
+        let state = runtime()?
+            .block_on(read)
+            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+        return Ok(match state {
+            Ok(state) => {
+                println!("{}", voice::capsule_from_state(&state).to_json());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("functor-app: cannot read {from_session}: {e}");
+                ExitCode::FAILURE
+            }
+        });
     }
     if args.headless {
         return runtime()?.block_on(app(args, token, None));
@@ -521,7 +545,7 @@ async fn run_task(
             return Ok(ExitCode::from(code));
         }
     }
-    let new = driver.new_task(args.prompt, args.harness);
+    let new = driver.new_task(args.prompt, args.harness, None);
     let started = std::time::Instant::now();
     state.now = server::wall_ms();
     let (next, commands) = update(state, new);

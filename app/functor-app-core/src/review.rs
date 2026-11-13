@@ -184,7 +184,7 @@ pub fn brief(task: &Task) -> String {
     );
     let users: Vec<&str> = (task.transcript.iter())
         .filter_map(|i| match i {
-            Item::User { text } => Some(text.as_str()),
+            Item::User { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();

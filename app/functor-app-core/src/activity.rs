@@ -667,7 +667,10 @@ mod tests {
             ]
         );
         // The user's next message clears it.
-        task.transcript.push(Item::User { text: "ok".into() });
+        task.transcript.push(Item::User {
+            text: "ok".into(),
+            spoken: None,
+        });
         assert_eq!(activity(&task).error, None);
     }
 
