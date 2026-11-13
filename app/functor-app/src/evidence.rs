@@ -260,8 +260,10 @@ async fn materialize(job: &Job, tree: &str, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn failed(tail: &VecDeque<String>) -> String {
+/// Why the session at `dir` ended, its paths relative to the project.
+fn failed(tail: &VecDeque<String>, dir: &Path) -> String {
     let cause = crate::session::cause(tail).unwrap_or("it exited");
+    let cause = cause.replace(&format!("{}/", dir.display()), "");
     format!("the game did not load or replay: {cause}")
 }
 
@@ -312,7 +314,7 @@ async fn replay(
     let url = loop {
         let Some(line) = lines.recv().await else {
             let _ = child.wait().await;
-            return Err(failed(&tail.lock().unwrap()));
+            return Err(failed(&tail.lock().unwrap(), dir));
         };
         let url = listening_url(&line);
         push(&tail, line);
@@ -331,7 +333,7 @@ async fn replay(
         if let Ok(Some(_)) = child.try_wait() {
             // Lines written just before the exit may still be in the pipes.
             let _ = tokio::time::timeout(crate::session::DRAIN_TIMEOUT, reader).await;
-            return Err(failed(&tail.lock().unwrap()));
+            return Err(failed(&tail.lock().unwrap(), dir));
         }
         if let Ok(polled) = poll_state(&url).await {
             let clock = polled.clock.unwrap_or_default();

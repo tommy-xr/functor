@@ -307,7 +307,7 @@ async function gpu(browser) {
     try {
       const state = task.evidence.state;
       expect(state.kind).toBe("withheld");
-      expect(state.reason).toMatch(/^the old code: the game did not load or replay: /);
+      expect(state.reason).toMatch(/^the old code: the game did not load or replay: error: \.?\/?game\.fun:\d+/);
       await expect(page.locator(".chat").getByTestId("paths-card")).toHaveCount(0);
       await openTask(page);
       await expect(page.getByTestId("paths-note")).toContainText("No predicted path: the old code: the game did not load or replay");
