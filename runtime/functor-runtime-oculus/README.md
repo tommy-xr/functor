@@ -148,6 +148,27 @@ app at its boundary dialog, and puts the headset's own pairing back after.
 link over Wi-Fi, tunnels `GET /state`, replaces its pairing as another desktop
 would (this one is told why), pairs again and forgets.
 
+### Push-to-talk
+
+Once paired, hold the **right thumbstick click**, speak, and let go: the clip
+goes to the desktop over the link (`functor_device_link::voice`), and a toast
+low in the view shows Listening (with a level meter) → Sending → Heard → the
+transcript → Working → Reloaded, then fades. **B** while holding cancels. It
+sends by itself at 60 s, counting down the last 5. While the click is held the
+game does not see it (nor B while talking); a click shorter than 250 ms
+reaches the game on release. Unpaired, the click is the game's alone; paired
+but not linked, holding shows "Not connected to a desktop".
+
+- The microphone (AAudio, `RECORD_AUDIO`, asked for on the first hold) is
+  open only while talking and linked. Audio goes only onto the link; nothing
+  is stored. A link that cannot keep up cancels the clip, and a dropped link
+  resends nothing.
+- `/state.link.voice` reports the toast. `npm run test:quest-voice` drives it
+  on an attached Quest against a stub desktop, with injected presses (under
+  `debug.functor.pair_input`) and, instead of the microphone, a 440 Hz test
+  tone: `adb shell setprop debug.functor.voice_tone 1`, honoured by debug
+  builds only.
+
 ## Benchmark on the actual headset
 
 Build/install a release APK, push the game to measure, then collect the Quest's
