@@ -124,7 +124,11 @@ paired: string | null, linked: boolean,
 /**
  * A pairing in progress or just ended, as the headset's overlay shows it.
  */
-pairing: PairingState | null, };
+pairing: PairingState | null, 
+/**
+ * The push-to-talk toast, while it shows (v42).
+ */
+voice?: VoiceToast, };
 
 /**
  * A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -954,6 +958,12 @@ export type TrackingPose = { position: [number, number, number], orientation: [n
  * new value (a slider / text input).
  */
 export type UiEventKind = "Clicked" | { "SliderChanged": number } | { "TextChanged": string };
+
+/**
+ * The headset's push-to-talk toast: where an utterance is, and what the
+ * desktop heard while it is recent.
+ */
+export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 /**
  * `config`'s XR knobs, read before the XR session starts rendering the game.

@@ -33,6 +33,9 @@ openxr = "0.21"
 android-activity = { version = "0.6", features = ["native-activity"] }
 # For the ndk_context activity swap in android_main (see the comment there).
 ndk-context = "0.1"
+# Push-to-talk's microphone: AAudio, from the `ndk` android-activity already
+# links (no other audio stack is in the APK).
+ndk = { version = "0.9", features = ["audio", "api-level-28"] }
 # `/state.battery`: BatteryManager over JNI (the version android-activity uses).
 jni = "0.22"
 khronos-egl = { version = "6.0", features = ["dynamic"] }
@@ -102,6 +105,10 @@ required = false
 # without it is EPERM.
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
+
+# Push-to-talk. A runtime permission, asked for on the first hold.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
 
 # mDNS answers (finding the desktop app) arrive as Wi-Fi multicast, which
 # Android drops unless the app holds a MulticastLock while it browses.

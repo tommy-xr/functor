@@ -56,6 +56,7 @@ mod link;
 mod environment_depth;
 mod passthrough;
 mod passthrough_camera;
+mod voice;
 
 /// GLES version to request. Quest 3 supports 3.2.
 /// Display refresh rate to aim for at startup, in Hz.
@@ -899,6 +900,8 @@ struct DebugLoopState {
     /// nor a game it pushed can start or confirm a pairing.
     xr_override_pairs: bool,
     link_gestures: functor_runtime_common::link_overlay::Gestures,
+    /// Push-to-talk and its toast, while paired.
+    voice: voice::Voice,
 }
 
 /// What the game samples: an injected `xr` sample wins over live tracking.
@@ -1101,7 +1104,8 @@ fn service_debug_request(
             let cells = functor_runtime_common::gpu_counters::gpu_counters().frame_cells();
             let stages = debug.stages;
             let frame_stats = debug.telemetry.stats();
-            let link = debug.link.as_ref().map(link::state);
+            let toast = debug.voice.toast(Instant::now()).map(|(toast, _)| toast.clone());
+            let link = debug.link.as_ref().map(|client| link::state(client, toast));
             let reload = debug.reload.state(Instant::now());
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
@@ -2028,6 +2032,9 @@ pub fn android_main(app: AndroidApp) {
         debug.reload.poll(Instant::now(), debug.rendered_frames);
 
         if !session_running {
+            if let Some(client) = &debug.link {
+                debug.voice.pause(client, Instant::now());
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
             // A doze is not frame time.
             last_rendered = Instant::now();
@@ -2063,6 +2070,9 @@ pub fn android_main(app: AndroidApp) {
             && view_state.contains(xr::ViewStateFlags::ORIENTATION_VALID);
         if !tracking_valid {
             debug.input.xr = None;
+            if let Some(client) = &debug.link {
+                debug.voice.pause(client, Instant::now());
+            }
             // OpenXR leaves the view poses undefined when either validity bit
             // is absent. Do not read those poses or submit them for compositor
             // reprojection; a mono authored-camera fallback would be actively
@@ -2137,6 +2147,22 @@ pub fn android_main(app: AndroidApp) {
             }
             shown.map(link::pairing_state)
         });
+        // Push-to-talk, from the same sample as pairing.
+        if let Some(client) = &debug.link {
+            let sample = if debug.xr_override_pairs {
+                debug.xr_override.as_ref()
+            } else {
+                debug.input.xr.as_ref()
+            };
+            let (frame, tts) = (debug.frame_count, clock.current_tts());
+            let capsule = || {
+                let frame = sim.call(|g| g.state_frame()).unwrap_or(frame);
+                voice::capsule(frame, tts.into(), sample)
+            };
+            // Not while the pairing panel hides the toast.
+            let armed = client.paired() && pairing.is_none();
+            debug.voice.frame(client, sample, armed, capsule, Instant::now());
+        }
 
         if !xr_frame_state.should_render {
             // `should_render` controls layer submission, not tracking
@@ -2207,8 +2233,11 @@ pub fn android_main(app: AndroidApp) {
         }
         apply_xr_override(&mut debug.input, debug.xr_override.as_ref());
         // The overlay's presses are not the game's.
-        if let (Some(_), Some(xr)) = (&pairing, &mut debug.input.xr) {
-            functor_runtime_common::link_overlay::without_presses(xr);
+        if let Some(xr) = &mut debug.input.xr {
+            if pairing.is_some() {
+                functor_runtime_common::link_overlay::without_presses(xr);
+            }
+            debug.voice.game_view(xr, !sub_frames.is_empty());
         }
         for sub_frame in &sub_frames {
             if caps.samples_input || sim.is_threaded() {
@@ -2443,6 +2472,21 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
+        // The pairing panel or, under it, the voice toast: lines, opacity
+        // and head-space placement, worked out once for both eyes.
+        let panel = match &pairing {
+            Some(pairing) => Some((
+                functor_runtime_common::link_overlay::lines(pairing),
+                1.0,
+                None,
+            )),
+            None => tracked_center.and_then(|head| {
+                let (toast, alpha) = debug.voice.toast(Instant::now())?;
+                let lines = functor_runtime_common::link_overlay::toast_lines(toast);
+                let place = debug.voice.follow.transform(head.orientation, real_delta);
+                Some((lines, alpha, Some(place)))
+            }),
+        };
 
         for (index, (eye, view)) in eyes.iter_mut().zip(views.iter()).enumerate() {
             use glow::HasContext;
@@ -2497,7 +2541,7 @@ images cannot be posed"
             // Head-locked over the game, placed from the head center so both
             // eyes agree on their depth.
             let eye_in_head = tracked_center
-                .filter(|_| reload_look.is_some() || pairing.is_some())
+                .filter(|_| reload_look.is_some() || panel.is_some())
                 .and_then(|center| tracking_pose_from_view(view).relative_to(center));
             if let Some(eye_in_head) = eye_in_head {
                 let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
@@ -2515,14 +2559,19 @@ images cannot be posed"
                         scene_context.output_srgb_encode(),
                     );
                 }
-                if let Some(pairing) = &pairing {
+                if let Some((lines, alpha, place)) = &panel {
                     let painter = link_painter.get_or_insert_with(|| {
                         functor_runtime_common::link_overlay::LinkOverlayPainter::new(&gl, "#version 300 es")
                     });
+                    let transform = match place {
+                        Some(place) => functor_runtime_common::reload_indicator::head_to_clip(fov, eye_in_head) * place,
+                        None => functor_runtime_common::link_overlay::head_locked_transform(fov, eye_in_head),
+                    };
                     painter.draw(
                         &gl,
-                        pairing,
-                        functor_runtime_common::link_overlay::head_locked_transform(fov, eye_in_head),
+                        lines,
+                        *alpha,
+                        transform,
                         (eye.width, eye.height),
                         scene_context.output_srgb_encode(),
                     );

@@ -26,6 +26,10 @@
 //! After the handshake every message is a Noise transport message: AEAD
 //! with an implicit counter, so a tampered, replayed, reordered or dropped
 //! message fails to decrypt and ends the connection.
+//!
+//! Other traffic rides [`wire::Frame::Channel`] on a numbered channel; a side
+//! drops channels it does not know. Channels 1 and 2 carry voice feedback:
+//! see [`voice`].
 
 pub mod adb;
 #[cfg(feature = "client")]
@@ -34,6 +38,8 @@ pub mod desktop;
 pub mod device;
 #[cfg(feature = "file")]
 pub mod file;
+pub mod talk;
+pub mod voice;
 pub mod wire;
 
 mod crypto;
