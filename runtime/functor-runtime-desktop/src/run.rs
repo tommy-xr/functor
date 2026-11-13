@@ -1030,8 +1030,9 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
 /// below), and every event delivered here counts DOWN. Counting in that order
 /// means the gauge can read high for an instant but never reads 0 while
 /// something already received is still undelivered — which is the only
-/// direction a driver waiting for quiescence can safely trust. Whether any
-/// arrived.
+/// direction a driver waiting for quiescence can safely trust.
+///
+/// Whether any arrived.
 fn deliver_net_ws(
     sim: &mut SimDriver,
     net_rx: &std::sync::mpsc::Receiver<net_dispatch::NetResult>,
@@ -1111,15 +1112,16 @@ fn evict_changed_assets(
 }
 
 /// What can change a paused game's picture without a request or a delivery:
-/// a reload (landed, or `true` while one is in flight), a branch, a fold.
-fn paused_revision(sim: &mut SimDriver) -> (u64, u64, u64, bool) {
+/// a landed reload, a branch, a fold. `None` while a reload is in flight.
+fn paused_revision(sim: &mut SimDriver) -> Option<(u64, u64, u64)> {
     sim.call(|g| {
-        (
-            g.scene_program_revision(),
-            g.scene_timeline_generation(),
-            g.model_revision(),
-            g.load_pending(),
-        )
+        (!g.load_pending()).then(|| {
+            (
+                g.scene_program_revision(),
+                g.scene_timeline_generation(),
+                g.model_revision(),
+            )
+        })
     })
 }
 
@@ -2467,7 +2469,8 @@ Escape releases while captured"
         // Built on the first reload's frame.
         let mut reload_painter: Option<ReloadIndicatorPainter> = None;
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
-        // The request that woke a quiet session (see `quiet`).
+        // The request that woke a quiet session (see `quiet`), answered on
+        // this frame or, if something changed its picture first, the next.
         let mut woken: Option<debug_server::DebugRequest> = None;
 
         while !window.should_close() {
@@ -4212,8 +4215,8 @@ Escape again to quit"
             let mut picture_request = false;
             // Whether `/stream` has this frame.
             let mut streamed = false;
-            // Time spent asleep below, which is not frame time.
-            let mut slept = std::time::Duration::ZERO;
+            // When this frame began waiting below.
+            let mut waited_from: Option<Instant> = None;
             // The sources no request signals are polled at least this often,
             // however many requests arrive.
             const IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -4371,33 +4374,39 @@ Escape again to quit"
                 // what arrives (reads, captures, stream clients) until
                 // something can change its picture: a request that may ends
                 // the wait at once, and the other sources are polled every
-                // `IDLE_POLL`, so a saved edit still reloads within ~50 ms.
+                // `IDLE_POLL` (and before answering a request), so a saved
+                // edit still reloads within ~50 ms.
                 if !quiet || picture_request || snapshot.seq != sim.posted() {
                     break;
                 }
-                let revision = paused_revision(&mut sim);
-                if revision.3 {
+                let Some(revision) = paused_revision(&mut sim) else {
                     break;
-                }
-                let sleep_started = Instant::now();
+                };
+                waited_from.get_or_insert_with(Instant::now);
                 // Whether what ended the wait is answered on this frame.
                 let answer = loop {
                     let wait = next_poll.saturating_duration_since(Instant::now());
                     if !wait.is_zero() {
-                        match &debug_requests {
+                        let requested = match &debug_requests {
                             Some(rx) => match rx.recv_timeout(wait) {
                                 Ok(req) => {
                                     woken = Some(req);
-                                    break true;
+                                    true
                                 }
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
                                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                                    std::thread::sleep(wait)
+                                    std::thread::sleep(wait);
+                                    false
                                 }
                             },
-                            None => std::thread::sleep(wait),
+                            None => {
+                                std::thread::sleep(wait);
+                                false
+                            }
+                        };
+                        if !requested {
+                            continue;
                         }
-                        continue;
                     }
                     next_poll = Instant::now() + IDLE_POLL;
                     sim.post(move |g| g.check_hot_reload(time));
@@ -4413,22 +4422,30 @@ Escape again to quit"
                             audio_player.as_mut(),
                         )
                     };
+                    // A changed picture renders first; a request that woke
+                    // the wait is then answered on the next frame.
                     if assets_changed
                         || window.should_close()
                         || deliver_net_ws(&mut sim, &net_rx, &ws_rx)
                         || deliver_audio_finished(&mut sim, &audio_rx)
-                        || paused_revision(&mut sim) != revision
+                        || paused_revision(&mut sim) != Some(revision)
                     {
                         break false;
                     }
-                    if !streamed && stream_tap.as_ref().is_some_and(|tap| tap.is_requested()) {
+                    if woken.is_some()
+                        || (!streamed && stream_tap.as_ref().is_some_and(|tap| tap.is_requested()))
+                    {
                         break true;
                     }
                 };
-                slept += sleep_started.elapsed();
                 if !answer {
                     break;
                 }
+            }
+            // The wait, and the polls made during it, are not this frame's cost.
+            let slept = waited_from.map_or(std::time::Duration::ZERO, |from| from.elapsed());
+            if waited_from.is_some() {
+                sim.forget_busy();
             }
             reload.poll(Instant::now(), rendered_frames);
 

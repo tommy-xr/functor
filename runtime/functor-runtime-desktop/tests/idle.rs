@@ -49,12 +49,13 @@ impl Drop for Session {
     }
 }
 
-fn launch(functor: &Path, project: &Path) -> Session {
+fn launch(functor: &Path, project: &Path, extra: &[&str]) -> Session {
     let mut child = Command::new(functor)
         .arg("-d")
         .arg(project)
         .args(["run", "native", "--hidden", "--paused", "--debug-port", "0"])
         .args(["--capture-size", "320x180"])
+        .args(extra)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -150,20 +151,40 @@ fn part_after(parts: &Mutex<Vec<(Instant, u64)>>, after: u64, within: Duration) 
     None
 }
 
+/// A temp directory, removed on drop.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 #[ignore = "needs a GL display"]
 fn a_paused_hidden_session_sleeps_until_its_picture_can_change() {
+    sleeps_until_its_picture_can_change(&[]);
+}
+
+#[test]
+#[ignore = "needs a GL display"]
+fn a_pipelined_one_does_too() {
+    sleeps_until_its_picture_can_change(&["--pipelined"]);
+}
+
+fn sleeps_until_its_picture_can_change(extra: &[&str]) {
     let Some(functor) = functor_bin() else {
         return;
     };
     // A copy, so the edit below leaves the example alone.
-    let project = std::env::temp_dir().join(format!("functor-idle-{}", std::process::id()));
-    std::fs::create_dir_all(&project).unwrap();
+    let name = format!("functor-idle-{}-{}", std::process::id(), extra.join(""));
+    let project = TempDir(std::env::temp_dir().join(name));
+    std::fs::create_dir_all(&project.0).unwrap();
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/primitives");
     for file in ["functor.json", "game.fun"] {
-        std::fs::copy(example.join(file), project.join(file)).unwrap();
+        std::fs::copy(example.join(file), project.0.join(file)).unwrap();
     }
-    let session = launch(&functor, &project);
+    let session = launch(&functor, &project.0, extra);
     let port = session.port;
     state(port);
     std::thread::sleep(Duration::from_secs(1));
@@ -208,23 +229,21 @@ fn a_paused_hidden_session_sleeps_until_its_picture_can_change() {
     let late = stream_parts(port);
     assert!(part_after(&late, 0, Duration::from_secs(1)).is_some(), "a later client gets a part");
     call(port, "POST", "/time", r#"{"type":"advance","dts":0.016}"#);
-    assert!(
-        part_after(&parts, first, Duration::from_millis(500)).is_some(),
-        "a step streams its frame"
-    );
+    let stepped = part_after(&parts, first, Duration::from_millis(500)).expect("a step streams its frame");
 
-    // A saved edit reloads without any request to wake it.
+    // A saved edit reloads, and streams its frame, with no request to wake it.
     std::thread::sleep(Duration::from_millis(500));
-    let before = state(port);
-    let mut source = std::fs::read_to_string(project.join("game.fun")).unwrap();
-    source.push_str("\n// edited\n");
-    std::fs::write(project.join("game.fun"), source).unwrap();
-    std::thread::sleep(Duration::from_millis(300));
-    let after = state(port);
     let revision = |s: &serde_json::Value| s["clock"]["program_revision"].as_u64().unwrap();
-    assert_eq!(revision(&after), revision(&before) + 1, "the edit reloaded");
-    let woke = after["rendered_frames"].as_u64().unwrap() - before["rendered_frames"].as_u64().unwrap();
-    assert!(woke >= 1, "the edit woke the session");
+    let before = revision(&state(port));
+    let last = parts.lock().unwrap().last().unwrap().1.max(stepped);
+    let mut source = std::fs::read_to_string(project.0.join("game.fun")).unwrap();
+    source.push_str("\n// edited\n");
+    std::fs::write(project.0.join("game.fun"), source).unwrap();
+    assert!(
+        part_after(&parts, last, Duration::from_millis(300)).is_some(),
+        "the edit woke the session"
+    );
+    assert_eq!(revision(&state(port)), before + 1, "the edit reloaded");
 
     // Resumed after a long wait, the clock goes on from where it was rather
     // than catching up on the wait (up to 8 steps at once).
@@ -233,7 +252,5 @@ fn a_paused_hidden_session_sleeps_until_its_picture_can_change() {
     call(port, "POST", "/time", r#"{"type":"resume"}"#);
     let resumed = state(port)["frame"].as_u64().unwrap() - paused_at;
     assert!(resumed <= 3, "resuming ran {resumed} steps at once");
-
     drop(session);
-    let _ = std::fs::remove_dir_all(&project);
 }

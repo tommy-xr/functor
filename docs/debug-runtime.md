@@ -112,7 +112,9 @@ nothing can change it, the last frame waits and answers what arrives — `/state
 that can change it (a step, seek, resume, `/input`, `/camera`, `/preview`, a
 push) and anything else that can (a saved project or asset file, a network or
 audio event, a load or the extrapolation's fade still running) renders the
-next frame; file and event sources are checked every 50 ms. A webview, the
+next frame. Project files and network and audio events are checked every
+50 ms and before answering a request; asset files and window events every
+250 ms. A webview, the
 timeline, a fusing room or head tracking keeps the usual 60 Hz.
 
 ```sh
@@ -734,8 +736,9 @@ X-Capture-Ms: 1762890000123.4
 <JPEG bytes>
 ```
 
-followed by `\r\n`. A part no newer frame follows within 50 ms (or one `fps`
-interval) is sent once more, since a browser `<img>` shows a part only when the next one arrives.
+followed by `\r\n`. A multipart part no newer frame follows within 50 ms (or
+one `fps` interval) is sent once more, headers unchanged, since a browser
+`<img>` shows a part only when the next one arrives.
 `X-Rendered-Frame` is the `rendered_frames` that `GET
 /state` reports when answered on the frame the image shows; `X-Capture-Ms` is
 the readback's Unix time in milliseconds, so a client on the same machine

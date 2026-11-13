@@ -284,6 +284,14 @@ impl SimDriver {
         std::mem::take(&mut self.wait_ns)
     }
 
+    /// Drop the producer and wait time counted so far, so calls made between
+    /// frames (an idle session's polls) do not count toward the next frame.
+    /// The sim thread's own count is kept.
+    pub fn forget_busy(&mut self) {
+        self.busy_ns = 0;
+        self.wait_ns = 0;
+    }
+
     pub fn key_event(&mut self, code: i32, is_down: bool) {
         self.post(move |g| g.key_event(code, is_down));
     }

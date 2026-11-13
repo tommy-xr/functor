@@ -983,9 +983,10 @@ fn respond_report<T: serde::Serialize>(
 const STREAM_IDLE_CHECK: Duration = Duration::from_secs(1);
 /// An uncapped stream's read-ahead frame older than this is skipped.
 const STREAM_STALE_MS: f64 = 100.0;
-/// A part no newer frame follows within this is sent again: a browser
-/// `<img>` shows a part only once the next one arrives, and a paused hidden
-/// session renders only when its picture can change.
+/// A multipart part no newer frame follows within this is sent again, with
+/// its original headers: a browser `<img>` shows a part only once the next
+/// one arrives, and a paused hidden session renders only when its picture
+/// can change.
 const STREAM_REPEAT_AFTER: Duration = Duration::from_millis(50);
 
 /// Serve `GET /stream` until the client goes away (see [`frame_stream`]).
@@ -1068,7 +1069,8 @@ fn stream_frames(
         if stream.write_all(&part).is_err() {
             return;
         }
-        unrepeated = Some(part);
+        // Only an `<img>` (multipart) needs it.
+        unrepeated = (!params.octet).then_some(part);
     }
 }
 
