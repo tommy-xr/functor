@@ -61,7 +61,6 @@ impl Default for Voice {
 }
 
 impl Voice {
-
     /// One frame: `sample` drives the gesture; `capsule` (JSON) is made
     /// only when an utterance starts.
     pub fn frame(
@@ -201,8 +200,7 @@ impl Voice {
     /// The desktop's progress. Ignored while the user is talking, and for an
     /// earlier utterance than the last.
     fn status(&mut self, status: Status, now: Instant) {
-        if self.talk.utterance().is_some()
-            || status.utterance.is_some_and(|u| Some(u) != self.last)
+        if self.talk.utterance().is_some() || status.utterance.is_some_and(|u| Some(u) != self.last)
         {
             return;
         }
@@ -299,7 +297,9 @@ impl Mic {
                     .open_stream()
             })
             .map_err(|e| failed(format!("{e:?}")))?;
-        stream.request_start().map_err(|e| failed(format!("{e:?}")))?;
+        stream
+            .request_start()
+            .map_err(|e| failed(format!("{e:?}")))?;
         let rate = stream.sample_rate().max(1) as u32;
         let channels = stream.channel_count().max(1) as usize;
         Ok(Mic {

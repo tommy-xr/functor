@@ -127,15 +127,17 @@ impl Talk {
             return self.refused(sink);
         }
         let open = self.open.take()?;
-        Some(match sink.send(
-            Clip::End {
-                utterance: open.utterance,
+        Some(
+            match sink.send(
+                Clip::End {
+                    utterance: open.utterance,
+                },
+                false,
+            ) {
+                true => Stopped::Sent,
+                false => Stopped::Lost,
             },
-            false,
-        ) {
-            true => Stopped::Sent,
-            false => Stopped::Lost,
-        })
+        )
     }
 
     /// The user cancelled.
@@ -296,14 +298,18 @@ mod tests {
     fn a_held_button_becomes_start_chunks_and_end() {
         let mut link = Link::new();
         let mut talk = Talk::new(100);
-        let id = talk.start(48_000, b"{\"frame\":1}".to_vec(), &mut link).unwrap();
+        let id = talk
+            .start(48_000, b"{\"frame\":1}".to_vec(), &mut link)
+            .unwrap();
         assert_eq!(id, 100);
         for callback in mic(48_000, 1.3, 480) {
             assert_eq!(talk.push(&callback, &mut link), None);
         }
         assert!(talk.level() > 0.5, "a loud tone: {}", talk.level());
         assert_eq!(talk.finish(&mut link), Some(Stopped::Sent));
-        assert!(matches!(&link.sent[0], Clip::Start { utterance: 100, capsule, .. } if capsule == b"{\"frame\":1}"));
+        assert!(
+            matches!(&link.sent[0], Clip::Start { utterance: 100, capsule, .. } if capsule == b"{\"frame\":1}")
+        );
         assert_eq!(link.sent.last(), Some(&Clip::End { utterance: 100 }));
         // 1.3 s at 48 kHz is 1.3 s at 16 kHz: five whole chunks and the rest.
         assert_eq!(link.audio(100).len(), 20_800 * 2);

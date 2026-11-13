@@ -122,7 +122,11 @@ fn a_dropped_link_resends_nothing_and_a_full_queue_refuses_audio() {
     until("relinked", || client.view().linked.then_some(()));
     assert!(client.send_channel(CLIP_CHANNEL, vec![2], false));
     let (link, _, data) = stub.received.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!((link, data), (2, vec![2]), "only what was sent on this link");
+    assert_eq!(
+        (link, data),
+        (2, vec![2]),
+        "only what was sent on this link"
+    );
 
     // Audio past the limit is refused; control messages still queue.
     let big = vec![0u8; functor_device_link::client::OUTBOX_LIMIT];

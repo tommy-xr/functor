@@ -121,7 +121,12 @@ pub struct PushToTalk {
 
 impl PushToTalk {
     /// One sample; `armed` while paired. Unarmed, the click is the game's.
-    pub fn step(&mut self, xr: Option<&XrInputSnapshot>, armed: bool, now: Instant) -> Option<Talk> {
+    pub fn step(
+        &mut self,
+        xr: Option<&XrInputSnapshot>,
+        armed: bool,
+        now: Instant,
+    ) -> Option<Talk> {
         let (click, b) = xr.map_or((false, false), |xr| {
             (xr.right.thumbstick_pressed, xr.right.secondary_pressed)
         });
@@ -314,9 +319,7 @@ impl Toast {
                 self.transcript_until = None;
                 return None;
             }
-            Some(at) if now > at => {
-                1.0 - now.duration_since(at).as_secs_f32() / FADE.as_secs_f32()
-            }
+            Some(at) if now > at => 1.0 - now.duration_since(at).as_secs_f32() / FADE.as_secs_f32(),
             _ => 1.0,
         };
         self.shown.as_ref().map(|t| (t, alpha))
@@ -648,7 +651,6 @@ impl LinkOverlayPainter {
     /// framebuffer, unoccluded; `transform` maps panel metres to clip space
     /// ([`head_locked_transform`]). Restores the capabilities it toggles, but
     /// leaves the viewport and blend function set.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         gl: &glow::Context,
@@ -850,15 +852,28 @@ mod tests {
             ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD),
             Some(Talk::Start)
         );
-        assert_eq!(ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD * 4), None);
+        assert_eq!(
+            ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD * 4),
+            None
+        );
         // B is ours while talking.
         assert_eq!(seen(&mut ptt, true, true), (false, false));
-        assert_eq!(ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 5), Some(Talk::Send));
-        assert_eq!(seen(&mut ptt, false, true), (false, true), "released: no tap");
+        assert_eq!(
+            ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 5),
+            Some(Talk::Send)
+        );
+        assert_eq!(
+            seen(&mut ptt, false, true),
+            (false, true),
+            "released: no tap"
+        );
 
         // A short click reaches the game on release, once.
         assert_eq!(ptt.step(Some(&stick(true, false)), true, t), None);
-        assert_eq!(ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD / 2), None);
+        assert_eq!(
+            ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD / 2),
+            None
+        );
         let mut xr = stick(false, false);
         ptt.game_view(&mut xr, false);
         assert!(!xr.right.thumbstick_pressed, "kept for a frame that steps");
@@ -867,7 +882,10 @@ mod tests {
 
         // Unpaired, the click is the game's alone.
         assert_eq!(ptt.step(Some(&stick(true, false)), false, t), None);
-        assert_eq!(ptt.step(Some(&stick(true, false)), false, t + TALK_HOLD * 2), None);
+        assert_eq!(
+            ptt.step(Some(&stick(true, false)), false, t + TALK_HOLD * 2),
+            None
+        );
         assert_eq!(seen(&mut ptt, true, false), (true, false));
     }
 
@@ -876,14 +894,23 @@ mod tests {
         let t = Instant::now();
         let mut ptt = PushToTalk::default();
         ptt.step(Some(&stick(true, false)), true, t);
-        assert_eq!(ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD), Some(Talk::Start));
+        assert_eq!(
+            ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD),
+            Some(Talk::Start)
+        );
         assert_eq!(
             ptt.step(Some(&stick(true, true)), true, t + TALK_HOLD * 2),
             Some(Talk::Cancel)
         );
-        assert_eq!(ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD * 9), None);
+        assert_eq!(
+            ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD * 9),
+            None
+        );
         // Released after a cancel: neither a send nor a tap.
-        assert_eq!(ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 10), None);
+        assert_eq!(
+            ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 10),
+            None
+        );
         let mut xr = stick(false, false);
         ptt.game_view(&mut xr, true);
         assert!(!xr.right.thumbstick_pressed);
@@ -891,7 +918,10 @@ mod tests {
         ptt.step(Some(&stick(true, false)), true, t);
         ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD);
         ptt.stop();
-        assert_eq!(ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 2), None);
+        assert_eq!(
+            ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 2),
+            None
+        );
     }
 
     #[test]

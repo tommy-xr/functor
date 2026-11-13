@@ -58,7 +58,10 @@ impl Quest {
             props: Vec::new(),
         };
         let saved = quest.adb(&["shell", adb::READ_PAIRING]);
-        assert!(saved.status.success(), "a debuggable {PACKAGE} is installed");
+        assert!(
+            saved.status.success(),
+            "a debuggable {PACKAGE} is installed"
+        );
         quest.pairing = saved.stdout;
         for name in PROPS {
             let before = quest.shell(&format!("getprop {name}"));
@@ -94,7 +97,9 @@ impl Quest {
 
     fn launch(&self) {
         self.shell("am broadcast -a com.oculus.vrpowermanager.prox_close");
-        self.shell(&format!("am start -S -n {PACKAGE}/android.app.NativeActivity"));
+        self.shell(&format!(
+            "am start -S -n {PACKAGE}/android.app.NativeActivity"
+        ));
         let rendered = || self.state().ok()?["rendered_frames"].as_u64();
         let first = until("the app answers", rendered);
         until("it renders", || rendered().filter(|n| *n > first));
@@ -102,9 +107,10 @@ impl Quest {
 
     fn state(&self) -> Result<Value, String> {
         let (status, body) = http(&self.debug, "GET", "/state?model=0", b"")?;
-        (status == 200)
-            .then(|| serde_json::from_slice(&body).map_err(|e| e.to_string()))
-            .unwrap_or_else(|| Err(format!("{status}")))
+        if status != 200 {
+            return Err(format!("{status}"));
+        }
+        serde_json::from_slice(&body).map_err(|e| e.to_string())
     }
 
     fn voice(&self) -> Value {
@@ -114,7 +120,10 @@ impl Quest {
     /// The right controller with `fields` set.
     fn hold(&self, fields: Value) {
         let mut right = json!({"active": true});
-        right.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        right
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
         let sample = json!({"type": "xr", "right": right}).to_string();
         let (status, body) = http(&self.debug, "POST", "/input", sample.as_bytes()).unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
@@ -157,7 +166,9 @@ fn http(addr: &str, method: &str, path: &str, body: &[u8]) -> Result<(u16, Vec<u
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(head.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(head.as_bytes())
+        .map_err(|e| e.to_string())?;
     stream.write_all(body).map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
@@ -262,14 +273,14 @@ fn quest_talks_to_a_desktop() {
     std::thread::sleep(Duration::from_secs(2).saturating_sub(held.elapsed()));
     quest.hold(json!({}));
     let released = held.elapsed();
-    until("sending", || (quest.voice()["stage"]["stage"] == "sending").then_some(()));
+    until("sending", || {
+        (quest.voice()["stage"]["stage"] == "sending").then_some(())
+    });
     quest.capture("voice-sending.png");
 
     let clips = receive(&stub);
     let Clip::Start {
-        utterance,
-        capsule,
-        ..
+        utterance, capsule, ..
     } = &clips[0]
     else {
         panic!("starts with Start: {:?}", clips[0]);
@@ -277,7 +288,10 @@ fn quest_talks_to_a_desktop() {
     let utterance = *utterance;
     let capsule_json: Value = serde_json::from_slice(capsule).unwrap();
     let capsule = Capsule::from_json(capsule).expect("a capsule");
-    assert!(capsule.frame.is_some() && capsule.tts.is_some(), "{capsule_json}");
+    assert!(
+        capsule.frame.is_some() && capsule.tts.is_some(),
+        "{capsule_json}"
+    );
     assert_eq!(clips.last(), Some(&Clip::End { utterance }));
     let mut pcm = Vec::new();
     for (seq, clip) in clips[1..clips.len() - 1].iter().enumerate() {
@@ -295,7 +309,10 @@ fn quest_talks_to_a_desktop() {
     // Held about 2 s, the first quarter second the gesture's.
     let seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
     let most = released.as_secs_f64();
-    assert!(seconds > 1.0 && seconds <= most, "{seconds} s of {most} s held");
+    assert!(
+        seconds > 1.0 && seconds <= most,
+        "{seconds} s of {most} s held"
+    );
     // The test tone: 440 Hz, so 880 zero crossings a second.
     let crossings = pcm.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
     let rate = crossings as f64 / seconds;
@@ -310,7 +327,9 @@ fn quest_talks_to_a_desktop() {
         stub.send.send(Some(status.frame())).unwrap();
     };
     let shows = |what: &str, stage: &str| {
-        until(what, || (quest.voice()["stage"]["stage"] == stage).then_some(()));
+        until(what, || {
+            (quest.voice()["stage"]["stage"] == stage).then_some(())
+        });
     };
     say(Stage::Heard);
     shows("heard", "heard");
@@ -342,7 +361,10 @@ fn quest_talks_to_a_desktop() {
     quest.capture("voice-cancelled.png");
     quest.hold(json!({}));
     let clips = receive(&stub);
-    assert!(matches!(clips.last(), Some(Clip::Cancel { .. })), "{clips:?}");
+    assert!(
+        matches!(clips.last(), Some(Clip::Cancel { .. })),
+        "{clips:?}"
+    );
 
     // Paired with a desktop that is not there: holding says so.
     let mut away = stored.clone();
