@@ -121,13 +121,19 @@ relinks by itself, with backoff, after a restart or a dropped network.
 - mDNS answers arrive as multicast, which Android drops unless the app holds a
   `WifiManager.MulticastLock` (`CHANGE_WIFI_MULTICAST_STATE`): held only while
   browsing.
+- **Over the cable**, with no code: plug the headset in and click "Pair over
+  the cable" in the desktop app's Devices pane. The cable and your adb
+  authorisation are the trust, so it needs a debuggable build (`run-as`); a
+  release build pairs with the code. The desktop writes the pairing file and
+  reads it back; the secret travels only on adb's stdin and stdout.
 - The pairing is `files/device-link.json` in the app's private storage:
   `{"device", "desktop", "desktop_name", "secret"}` (hex ids and secret). The
-  app reads it before each connection attempt and every 5 s while unpaired, so
-  a pairing written from outside lands without a restart. Write it whole (a
-  file that does not parse is moved aside as `.bad`); on a debuggable build:
-  `adb shell run-as dev.functor.runner sh -c 'cat > files/new && mv files/new files/device-link.json'`.
-  Keep the app's `device` id: the desktop knows the headset by it.
+  app re-reads it every 5 s (and before each connection attempt), so a
+  pairing written from outside lands without a restart; one that replaces the
+  pairing of a live link closes that link, telling its desktop why. Write it
+  whole (a file that does not parse is moved aside as `.bad`) and keep the
+  app's `device` id: the desktop knows the headset by it. The commands are
+  `functor_device_link::adb::{READ_PAIRING, WRITE_PAIRING}`.
 - A refusal in the clear (`NotPaired`) never removes the stored secret: anyone
   on the network could forge one. Pair again to replace it.
 
@@ -138,6 +144,9 @@ tunnel's presses never reach the overlay, restart the app and relink, forget.
 It pauses Guardian (`debug.oculus.guardian_pause`), which otherwise holds the
 app at its boundary dialog, and puts the headset's own pairing back after.
 `FUNCTOR_QUEST_CAPTURES=<dir>` saves stereo captures of the overlay.
+`npm run test:quest-cable` pairs it over the cable instead, waits for it to
+link over Wi-Fi, tunnels `GET /state`, replaces its pairing as another desktop
+would (this one is told why), pairs again and forgets.
 
 ## Benchmark on the actual headset
 
