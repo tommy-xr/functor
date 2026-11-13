@@ -2302,14 +2302,15 @@ fn on_review(
         // The shell measured the files after it: a change since its start
         // has already failed it (`on_change`), so its report stands.
         ReviewEvent::Ended { error } => {
-            let reported = publish_review(task, commands);
-            task.review.as_mut().expect("found").state = match (reported, error) {
-                (true, _) => ReviewState::Prepared,
-                (false, Some(reason)) => ReviewState::Failed { reason },
-                (false, None) => ReviewState::Failed {
+            // A failure (a cut, the agent's, an unmeasured tree) voids its report.
+            let state = match error {
+                Some(reason) => ReviewState::Failed { reason },
+                None if publish_review(task, commands) => ReviewState::Prepared,
+                None => ReviewState::Failed {
                     reason: "the review ended without a report".to_string(),
                 },
             };
+            task.review.as_mut().expect("found").state = state;
             commands.push(save(&root, task));
             true
         }
@@ -4652,7 +4653,9 @@ mod tests {
 
     #[test]
     fn a_failed_or_cut_review_leaves_the_page_as_it_was() {
-        let (s, _) = update(review_of(one_file(2), true).0, review_ended(Some("cut: over 300000 input tokens")));
+        // Cut after it reported: its report goes with it.
+        let (s, _) = update(review_of(one_file(2), true).0, report_from(true));
+        let (s, _) = update(s, review_ended(Some("cut: over 300000 input tokens")));
         let reason = "cut: over 300000 input tokens".to_string();
         assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
         let report = task(&s, 1).report.as_ref().expect("the agent's stays");

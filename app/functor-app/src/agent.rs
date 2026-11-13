@@ -616,7 +616,19 @@ async fn run_review(
         Ok(None) => return,
         Err(_) => Some("the review panicked".to_string()),
     };
-    crate::changes::measure(&git, spec.task, spec.baseline.clone(), &events).await;
+    // Its report is published only on a tree measured as unchanged.
+    let error = match git.change(&spec.baseline).await {
+        Ok(change) => {
+            let (task, baseline) = (spec.task, spec.baseline.clone());
+            let _ = events.send(Event::Change {
+                task,
+                baseline,
+                change,
+            });
+            error
+        }
+        Err(e) => Some(format!("cannot measure the files after the review: {e}")),
+    };
     send(ReviewEvent::Ended { error });
 }
 

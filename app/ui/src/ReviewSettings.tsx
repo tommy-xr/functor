@@ -26,7 +26,8 @@ export function ReviewSettings({
     setModel(setting.model ?? "");
     setInstructions(setting.instructions ?? "");
   }, [open, setting.model, setting.instructions]);
-  const save = (change: Partial<ReviewSetting>) => onChange({ ...setting, ...change });
+  // Reviews run on Claude: no agent is saved, so a stored one never blocks a save.
+  const save = (change: Partial<ReviewSetting>) => onChange({ ...setting, harness: null, ...change });
   const text = (value: string) => value.trim() || null;
   const editable = online && setting.on;
   return (

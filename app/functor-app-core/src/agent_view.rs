@@ -378,10 +378,13 @@ pub(crate) fn publish_review(task: &mut crate::tasks::Task, commands: &mut Vec<C
     // First, so the cap never drops them.
     let mut evidence: Vec<Check> = (task.report.iter())
         .flat_map(|r| &r.evidence)
-        .filter(|c| !c.ok && !report.evidence.contains(c))
+        .filter(|c| !c.ok)
         .cloned()
         .collect();
-    evidence.append(&mut report.evidence);
+    let reviews: Vec<Check> = (std::mem::take(&mut report.evidence).into_iter())
+        .filter(|c| !evidence.contains(c))
+        .collect();
+    evidence.extend(reviews);
     evidence.truncate(crate::decision::MAX_ITEMS);
     report.evidence = evidence;
     task.report = Some(Report {
