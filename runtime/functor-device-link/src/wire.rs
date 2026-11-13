@@ -371,13 +371,13 @@ impl Frame {
                 method: r.text16(MAX_METHOD)?,
                 target: r.text16(MAX_TARGET)?,
                 headers: r.headers()?,
-                body: r.blob()?,
+                body: r.blob(MAX_FRAME)?,
             }),
             2 => Frame::Response(Response {
                 id: r.u32()?,
                 status: r.u16()?,
                 headers: r.headers()?,
-                body: r.blob()?,
+                body: r.blob(MAX_FRAME)?,
             }),
             3 => Frame::Status(Status {
                 battery: match r.u8()? {
@@ -396,7 +396,7 @@ impl Frame {
             5 => Frame::Pong(r.u64()?),
             6 => Frame::Channel {
                 channel: r.u16()?,
-                data: r.blob()?,
+                data: r.blob(MAX_FRAME)?,
             },
             7 => Frame::Close(r.text16(MAX_REASON)?),
             16 => Frame::PairNonce(r.array()?),
@@ -447,7 +447,7 @@ impl Writer {
     pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
-    pub(crate) fn u16(&mut self, v: u16) {
+    fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
     pub(crate) fn u32(&mut self, v: u32) {
@@ -456,7 +456,7 @@ impl Writer {
     pub(crate) fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    pub(crate) fn bytes(&mut self, v: &[u8]) {
+    fn bytes(&mut self, v: &[u8]) {
         self.0.extend_from_slice(v);
     }
     /// Callers keep these within their limits; longer is cut, never wrapped.
@@ -486,11 +486,14 @@ impl Writer {
 
 /// Text a peer may send: no control characters, and no invisible ones
 /// that reorder or hide text (a name that reads like another's).
-pub(crate) fn allowed(text: &str) -> bool {
-    !text.chars().any(|c| {
-        c.is_control()
-            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
-    })
+fn allowed(text: &str) -> bool {
+    !text.chars().any(refused)
+}
+
+/// A character [`allowed`] refuses.
+pub(crate) fn refused(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 /// `s` cut to at most `max` bytes, on a character boundary.
@@ -511,7 +514,7 @@ impl<'a> Reader<'a> {
     pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
     }
-    pub(crate) fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
         let end = self.at.checked_add(n).filter(|e| *e <= self.bytes.len());
         let end = end.ok_or(Error::Malformed("truncated"))?;
         let out = &self.bytes[self.at..end];
@@ -531,7 +534,7 @@ impl<'a> Reader<'a> {
             _ => Err(Error::Malformed("flag")),
         }
     }
-    pub(crate) fn u16(&mut self) -> Result<u16, Error> {
+    fn u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes(self.array()?))
     }
     pub(crate) fn u32(&mut self) -> Result<u32, Error> {
@@ -558,9 +561,10 @@ impl<'a> Reader<'a> {
         let len = self.u16()? as usize;
         self.text(len, max)
     }
-    fn blob(&mut self) -> Result<Vec<u8>, Error> {
+    /// Bytes with a length prefix, at most `max` of them.
+    pub(crate) fn blob(&mut self, max: usize) -> Result<Vec<u8>, Error> {
         let len = self.u32()? as usize;
-        if len > MAX_FRAME {
+        if len > max {
             return Err(Error::TooLarge);
         }
         Ok(self.take(len)?.to_vec())
