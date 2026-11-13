@@ -288,7 +288,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/state",
-        description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused), tts, pending_steps (queued clock steps not yet run), clock (paused, the recorded window {oldest, newest} numbered as frame, its generation, program_revision), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text); ?model=0 leaves model null and model_debug empty, for a cheap poll",
+        description: "runtime state JSON: frame, rendered_frames (frames rendered and submitted; advances while paused, except in a hidden session with nothing to change its picture), tts, pending_steps (queued clock steps not yet run), clock (paused, the recorded window {oldest, newest} numbered as frame, its generation, program_revision), model_revision (model replacements so far — the version label for a networked model, since pause freezes the clock and not the network), pending_net (inbound network events accepted but not yet delivered to the game), viewport, views, input snapshot (held_keys + mouse position/logical surface/buttons + optional xr/gamepad/touch), model (structured lossy JSON view of the model), model_debug (Rust Debug text); ?model=0 leaves model null and model_debug empty, for a cheap poll",
     },
     DebugRoute {
         method: "GET",
