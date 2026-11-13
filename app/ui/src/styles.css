@@ -2723,8 +2723,8 @@ blockquote {
 }
 
 /* The review setting (D31): a quiet word beside the agent picker, its
-   panel opening upward over the chat. */
-.review-menu {
+   panel opening upward over the chat, as wide as the composer's row. */
+.composer-row:has(.review-menu) {
   position: relative;
 }
 
@@ -2747,9 +2747,10 @@ blockquote {
 .review-panel {
   position: absolute;
   left: 0;
+  right: 0;
   bottom: calc(100% + 6px);
   z-index: 3;
-  width: min(300px, calc(100vw - 48px));
+  max-width: 360px;
   padding: 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-l);
@@ -2781,7 +2782,12 @@ blockquote {
   font-size: 12px;
 }
 
-.review-field textarea {
+/* Inside the composer, whose own textarea rule would strip its box. */
+.review-field textarea.text-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--sunk);
+  font-size: 12.5px;
   resize: vertical;
 }
 

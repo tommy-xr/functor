@@ -373,26 +373,28 @@ separate review run prepares the decision page's report (D31):
   the review's tool server; the user's settings are not loaded, as their
   rules could allow writes, so reviews are isolated from D19). Checked live:
   `Edit`, `Write` and a `sed -i` through `Bash` were each denied, the file
-  unchanged. Codex: `exec` with no sandbox override (read-only), refused
-  when its config sets another `sandbox_mode`. The tool server runs
-  `--review`: read-only tools and games it launches itself, never the
-  user's (`--attach` is refused). The tree is measured after the review: an
-  edit anyway voids its report.
+  unchanged. **Claude only:** the pinned `mis-agent` cannot force Codex's
+  sandbox read-only (its config may choose another, or approve other MCP
+  servers), so a Codex task's review runs on Claude and a setting naming
+  Codex is refused. The tool server runs `--review`: the language and API
+  tools and its own two, no game (launching one can rewrite a stale
+  `assets.fun`) and never the user's (`--attach` is refused). The report is
+  held until the review ends and the files are measured: a change since it
+  started (an edit anyway, or the user's) voids it.
 - **Tools:** `task_change` (the app's brief: request, the run's calls and
   last words, files, evidence so far, the agent's report, the diff up to
   48 KB) and `report` (summary, notes, evidence, highlights when the agent
   gave none), both loaded up front.
 - **Setting per project** (`review.json`; the composer's "Review" panel): on
-  by default; agent = the task's; model = `sonnet` for Claude, Codex's own
-  default; optional instructions. Off: the agent's own report is shown.
+  by default; model `sonnet` (cheaper and faster than the task's); optional
+  instructions. Off: the agent's own report is shown.
 - **Precedence:** the review's report replaces the agent's and is labelled
-  "Prepared by a separate review"; the app's own path evidence stays. While
-  it prepares, the page stands on what it has, with "Preparing the
-  summary…"; Keep and Revert work at once and stop it. A failed or cut
-  review leaves the page as it was and says why. A new run, Keep, Revert or
-  a different change ends it.
-- **Bounds:** one per change; cut at 300k input tokens (Claude only reports
-  as it goes) or 180 s.
+  "Prepared by a separate review"; the agent's failed checks and the app's
+  own path evidence stay. While it prepares, the page stands on what it
+  has, with "Preparing the summary…"; Keep and Revert work at once and stop
+  it. A failed or cut review leaves the page as it was and says why. A new
+  run, Keep, Revert or a different change ends it.
+- **Bounds:** one per change; cut at 300k input tokens or 180 s.
 - **Style check:** sentences over 20 words, over 120 words, or more than one
   paragraph are flagged on the page and in `report`'s answer; never blocked.
 
@@ -417,5 +419,7 @@ The working runs, then the reviews of the three that changed a file:
   (no user settings), but it still reads the brief and the files.
 - **Every report was concrete:** 4–5 notes each, naming what nobody ran
   (`functor test`, the jump from the new spawn), and only checks that ran,
-  credited to the agent. None launched its own game.
-- One run each; not measured: Codex reviews, a review cut by its bounds.
+  credited to the agent. None launched a game.
+- One run each, at `c4436f3c`. Since then the report waits for the
+  review's end and the game tools are gone; neither changes what these
+  reviews did. Not measured: a review cut by its bounds.
