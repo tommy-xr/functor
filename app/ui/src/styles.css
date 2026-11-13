@@ -2722,6 +2722,75 @@ blockquote {
   right: 8px;
 }
 
+/* The review setting (D31): a quiet word beside the agent picker, its
+   panel opening upward over the chat, as wide as the composer's row. */
+.composer-row:has(.review-menu) {
+  position: relative;
+}
+
+.review-toggle {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.review-toggle:hover:not(:disabled),
+.review-toggle[aria-expanded="true"] {
+  color: var(--text);
+}
+
+.review-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 3;
+  max-width: 360px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-bar);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-on {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.review-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* Inside the composer, whose own textarea rule would strip its box. */
+.review-field textarea.text-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--sunk);
+  font-size: 12.5px;
+  resize: vertical;
+}
+
 /* The agent's views (D25): its tab mark, the floating restore bar, the
    highlighted lines it points at, and its walkthrough card. */
 
@@ -3531,6 +3600,23 @@ blockquote {
   color: var(--text);
   font-size: 14px;
   line-height: 1.55;
+}
+
+/* Who prepared the summary, that it is being prepared, or why it was not;
+   and what a mechanical style check found. Quiet: facts about the text. */
+.first-review,
+.first-style {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.first-review-failed,
+.first-style {
+  color: var(--warn);
 }
 
 .first-lines {
