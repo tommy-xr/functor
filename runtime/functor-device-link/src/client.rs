@@ -131,8 +131,11 @@ struct Outbox {
 #[derive(Default)]
 struct Shared {
     shown: Mutex<Shown>,
-    /// A pairing is shown: the shell's fast path.
+    /// A pairing is shown, the link is up, a desktop is paired: the shell's
+    /// fast paths.
     pairing: AtomicBool,
+    linked: AtomicBool,
+    paired: AtomicBool,
     outbox: Mutex<Outbox>,
     inbox: Mutex<VecDeque<(u16, Vec<u8>)>>,
     /// The inbox holds something: the shell's fast path.
@@ -154,6 +157,9 @@ impl Shared {
         }
         self.pairing
             .store(shown.view.pairing.is_some(), Ordering::Release);
+        self.linked.store(shown.view.linked, Ordering::Release);
+        self.paired
+            .store(shown.view.paired.is_some(), Ordering::Release);
     }
 
     fn view(&self) -> View {
@@ -208,12 +214,21 @@ impl Client {
         self.shared.view()
     }
 
+    pub fn linked(&self) -> bool {
+        self.shared.linked.load(Ordering::Acquire)
+    }
+
+    /// A desktop is paired, linked or not.
+    pub fn paired(&self) -> bool {
+        self.shared.paired.load(Ordering::Acquire)
+    }
+
     /// Queues `data` on `channel` for the linked desktop. `false` (dropped)
     /// when not linked, or when `bounded` and the queue already holds
     /// [`OUTBOX_LIMIT`] bytes of bounded data. A link drop empties the queue:
     /// nothing is resent on the next link.
     pub fn send_channel(&self, channel: u16, data: Vec<u8>, bounded: bool) -> bool {
-        if !self.shared.view().linked {
+        if !self.linked() {
             return false;
         }
         let mut outbox = self.shared.outbox.lock().unwrap();
@@ -308,6 +323,8 @@ impl<H: Host> Worker<H> {
                 continue;
             }
             let Some((desktop, secret)) = stored.pairing() else {
+                // Forgotten: push-to-talk stands down.
+                self.shared.update(|v| v.paired = None);
                 if !self.wait(IDLE_RECHECK) {
                     return;
                 }

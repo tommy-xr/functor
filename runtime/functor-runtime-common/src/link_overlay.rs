@@ -273,7 +273,12 @@ impl Toast {
             VoiceStage::Sending | VoiceStage::Heard | VoiceStage::Working => Some(now + STALE),
             _ => Some(now + OUTCOME),
         };
-        let transcript = self.shown.take().and_then(|t| t.transcript);
+        // A new utterance starts clean.
+        let transcript = self
+            .shown
+            .take()
+            .and_then(|t| t.transcript)
+            .filter(|_| !matches!(stage, VoiceStage::Listening { .. }));
         self.shown = Some(VoiceToast { stage, transcript });
     }
 
