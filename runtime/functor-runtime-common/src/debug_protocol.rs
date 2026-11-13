@@ -664,6 +664,7 @@ pub struct DeviceLinkState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct VoiceToast {
+    #[serde(flatten)]
     pub stage: VoiceStage,
     pub transcript: Option<String>,
 }

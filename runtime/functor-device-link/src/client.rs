@@ -126,6 +126,21 @@ struct Shown {
 struct Outbox {
     queue: VecDeque<(u16, Vec<u8>)>,
     bounded: usize,
+    /// The link they are for, numbered from 1, while one is up.
+    link: Option<u64>,
+    links: u64,
+}
+
+impl Outbox {
+    /// A link came up or went: nothing queued carries over.
+    fn reset(&mut self, up: bool) {
+        self.queue.clear();
+        self.bounded = 0;
+        self.link = up.then(|| {
+            self.links += 1;
+            self.links
+        });
+    }
 }
 
 #[derive(Default)]
@@ -223,15 +238,20 @@ impl Client {
         self.shared.paired.load(Ordering::Acquire)
     }
 
-    /// Queues `data` on `channel` for the linked desktop. `false` (dropped)
-    /// when not linked, or when `bounded` and the queue already holds
-    /// [`OUTBOX_LIMIT`] bytes of bounded data. A link drop empties the queue:
-    /// nothing is resent on the next link.
-    pub fn send_channel(&self, channel: u16, data: Vec<u8>, bounded: bool) -> bool {
-        if !self.linked() {
+    /// The current link's number, while one is up; a new link has a new one.
+    pub fn link(&self) -> Option<u64> {
+        self.shared.outbox.lock().unwrap().link
+    }
+
+    /// Queues `data` on `channel` for the desktop on `link` ([`Client::link`]).
+    /// `false` (dropped) once that link is gone, or when `bounded` and the
+    /// queue already holds [`OUTBOX_LIMIT`] bytes of bounded data. A link
+    /// drop empties the queue: nothing is resent on the next link.
+    pub fn send_channel(&self, link: u64, channel: u16, data: Vec<u8>, bounded: bool) -> bool {
+        let mut outbox = self.shared.outbox.lock().unwrap();
+        if outbox.link != Some(link) {
             return false;
         }
-        let mut outbox = self.shared.outbox.lock().unwrap();
         if bounded {
             if outbox.bounded >= OUTBOX_LIMIT {
                 return false;
@@ -251,11 +271,14 @@ impl Client {
     }
 }
 
-/// Push-to-talk's messages go on the voice clip channel; audio is bounded.
-impl crate::talk::Sink for &Client {
+/// Push-to-talk's messages, on the voice clip channel of one link (the
+/// `u64`, [`Client::link`]); audio is bounded.
+impl crate::talk::Sink for (&Client, u64) {
     fn send(&mut self, clip: crate::voice::Clip, audio: bool) -> bool {
-        clip.encode()
-            .is_ok_and(|data| self.send_channel(crate::voice::CLIP_CHANNEL, data, audio))
+        clip.encode().is_ok_and(|data| {
+            self.0
+                .send_channel(self.1, crate::voice::CLIP_CHANNEL, data, audio)
+        })
     }
 }
 
@@ -344,7 +367,7 @@ impl<H: Host> Worker<H> {
             };
             self.shared.update(|v| v.linked = false);
             // Nothing queued for this link reaches the next one.
-            *self.shared.outbox.lock().unwrap() = Outbox::default();
+            self.shared.outbox.lock().unwrap().reset(false);
             match ended {
                 Ended::Gone => return,
                 Ended::PairRequested => {
@@ -621,8 +644,12 @@ impl<H: Host> Worker<H> {
                     }
                 }
                 if machine.linked() {
-                    let queued = std::mem::take(&mut *self.shared.outbox.lock().unwrap());
-                    for (channel, data) in queued.queue {
+                    let queued = {
+                        let mut outbox = self.shared.outbox.lock().unwrap();
+                        outbox.bounded = 0;
+                        std::mem::take(&mut outbox.queue)
+                    };
+                    for (channel, data) in queued {
                         let msgs = machine
                             .send(&Frame::Channel { channel, data })
                             .map_err(|e| Ended::over(true, e.to_string()))?;
@@ -770,8 +797,7 @@ impl Connection<'_> {
                 device::Event::Linked { desktop_name, .. } => {
                     log::info!("device link: linked to {desktop_name}");
                     self.linked = true;
-                    // Queued in the moment the last link dropped: not for this one.
-                    *worker.shared.outbox.lock().unwrap() = Outbox::default();
+                    worker.shared.outbox.lock().unwrap().reset(true);
                     worker.shared.update(|v| {
                         v.linked = true;
                         v.paired = Some(desktop_name);

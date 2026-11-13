@@ -172,8 +172,3 @@ pub fn state(client: &Client, voice: Option<VoiceToast>) -> DeviceLinkState {
         voice,
     }
 }
-
-/// The running project's name, if its load declared one.
-pub fn project() -> Option<String> {
-    PROJECT.lock().unwrap().clone()
-}

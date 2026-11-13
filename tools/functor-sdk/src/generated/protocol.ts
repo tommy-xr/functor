@@ -959,13 +959,11 @@ export type TrackingPose = { position: [number, number, number], orientation: [n
  */
 export type UiEventKind = "Clicked" | { "SliderChanged": number } | { "TextChanged": string };
 
-export type VoiceStage = { "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, };
-
 /**
  * The headset's push-to-talk toast: where an utterance is, and what the
  * desktop heard while it is recent.
  */
-export type VoiceToast = { stage: VoiceStage, transcript: string | null, };
+export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 /**
  * `config`'s XR knobs, read before the XR session starts rendering the game.

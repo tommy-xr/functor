@@ -12,6 +12,18 @@ use functor_device_link::wire::Frame;
 use functor_device_link::{shared, DesktopId, OsEntropy, Secret};
 use tungstenite::Message;
 
+/// Polls `f` until it has an answer, within 30 s.
+pub fn until<T>(what: &str, f: impl Fn() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(t) = f() {
+            return t;
+        }
+        assert!(Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 pub struct Stub {
     /// `host:port` it listens on.
     pub addr: String,

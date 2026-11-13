@@ -2032,6 +2032,9 @@ pub fn android_main(app: AndroidApp) {
         debug.reload.poll(Instant::now(), debug.rendered_frames);
 
         if !session_running {
+            if let Some(client) = &debug.link {
+                debug.voice.pause(client, Instant::now());
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
             // A doze is not frame time.
             last_rendered = Instant::now();
@@ -2067,6 +2070,9 @@ pub fn android_main(app: AndroidApp) {
             && view_state.contains(xr::ViewStateFlags::ORIENTATION_VALID);
         if !tracking_valid {
             debug.input.xr = None;
+            if let Some(client) = &debug.link {
+                debug.voice.pause(client, Instant::now());
+            }
             // OpenXR leaves the view poses undefined when either validity bit
             // is absent. Do not read those poses or submit them for compositor
             // reprojection; a mono authored-camera fallback would be actively
@@ -2153,7 +2159,9 @@ pub fn android_main(app: AndroidApp) {
                 let frame = sim.call(|g| g.state_frame()).unwrap_or(frame);
                 voice::capsule(frame, tts.into(), sample)
             };
-            debug.voice.frame(client, sample, capsule, Instant::now());
+            // Not while the pairing panel hides the toast.
+            let armed = client.paired() && pairing.is_none();
+            debug.voice.frame(client, sample, armed, capsule, Instant::now());
         }
 
         if !xr_frame_state.should_render {

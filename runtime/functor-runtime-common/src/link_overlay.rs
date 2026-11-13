@@ -117,6 +117,8 @@ pub struct PushToTalk {
     /// A short click to hand the game.
     tap: bool,
     b: bool,
+    /// B cancelled: it is not the game's until released.
+    keep_b: bool,
 }
 
 impl PushToTalk {
@@ -130,7 +132,19 @@ impl PushToTalk {
         let (click, b) = xr.map_or((false, false), |xr| {
             (xr.right.thumbstick_pressed, xr.right.secondary_pressed)
         });
-        let b = !std::mem::replace(&mut self.b, b) && b;
+        let pressed_b = !std::mem::replace(&mut self.b, b) && b;
+        self.keep_b &= b;
+        // Before a release in the same sample: B wins. No sample (focus
+        // went to the system) cancels too.
+        if self.talking && (pressed_b || xr.is_none()) {
+            self.talking = false;
+            self.done = click;
+            self.keep_b = true;
+            if !click {
+                self.since = None;
+            }
+            return Some(Talk::Cancel);
+        }
         if !click {
             let held = self.since.take().is_some();
             let done = std::mem::take(&mut self.done);
@@ -144,10 +158,6 @@ impl PushToTalk {
             return None;
         }
         let since = *self.since.get_or_insert(now);
-        if self.talking && b {
-            self.stop();
-            return Some(Talk::Cancel);
-        }
         if !self.talking && !self.done && now.duration_since(since) >= TALK_HOLD {
             self.talking = true;
             return Some(Talk::Start);
@@ -166,9 +176,9 @@ impl PushToTalk {
     pub fn game_view(&mut self, xr: &mut XrInputSnapshot, stepping: bool) {
         if self.since.is_some() {
             xr.right.thumbstick_pressed = false;
-            if self.talking || self.done {
-                xr.right.secondary_pressed = false;
-            }
+        }
+        if self.talking || self.keep_b {
+            xr.right.secondary_pressed = false;
         }
         if self.tap && stepping {
             self.tap = false;
@@ -255,8 +265,10 @@ const OUTCOME: Duration = Duration::from_secs(4);
 const FADE: Duration = Duration::from_millis(500);
 /// How long the transcript shows.
 const TRANSCRIPT: Duration = Duration::from_secs(5);
-/// A stage waiting on the desktop stops showing after this.
+/// A stage waiting on the desktop stops showing after this; sent but not
+/// yet heard, sooner (a desktop without voice never answers).
 const STALE: Duration = Duration::from_secs(120);
+const UNHEARD: Duration = Duration::from_secs(10);
 /// Transcript characters per line, and its most lines.
 const WRAP: usize = 34;
 const WRAP_LINES: usize = 3;
@@ -275,7 +287,8 @@ impl Toast {
     pub fn show(&mut self, stage: VoiceStage, now: Instant) {
         self.fade_at = match stage {
             VoiceStage::Listening { .. } => None,
-            VoiceStage::Sending | VoiceStage::Heard | VoiceStage::Working => Some(now + STALE),
+            VoiceStage::Sending => Some(now + UNHEARD),
+            VoiceStage::Heard | VoiceStage::Working => Some(now + STALE),
             _ => Some(now + OUTCOME),
         };
         // A new utterance starts clean.
@@ -914,6 +927,28 @@ mod tests {
         let mut xr = stick(false, false);
         ptt.game_view(&mut xr, true);
         assert!(!xr.right.thumbstick_pressed);
+        // B and the release in one sample: still a cancel, and B stays ours
+        // until it is let go.
+        ptt.step(Some(&stick(true, false)), true, t);
+        ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD);
+        assert_eq!(
+            ptt.step(Some(&stick(false, true)), true, t + TALK_HOLD * 2),
+            Some(Talk::Cancel)
+        );
+        let mut xr = stick(false, true);
+        ptt.game_view(&mut xr, true);
+        assert!(!xr.right.secondary_pressed && !xr.right.thumbstick_pressed);
+        ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 3);
+        let mut xr = stick(false, true);
+        ptt.game_view(&mut xr, true);
+        assert!(
+            xr.right.secondary_pressed,
+            "released, B is the game's again"
+        );
+        // Focus lost mid-sentence: cancelled, not sent.
+        ptt.step(Some(&stick(true, false)), true, t);
+        ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD);
+        assert_eq!(ptt.step(None, true, t + TALK_HOLD * 2), Some(Talk::Cancel));
         // The shell's own stop (the time limit) waits for release too.
         ptt.step(Some(&stick(true, false)), true, t);
         ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD);

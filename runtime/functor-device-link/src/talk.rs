@@ -3,7 +3,7 @@
 //! or `Cancel`). Pure: the shell owns the microphone, the clock and the link,
 //! and nothing is kept once a message is handed to the [`Sink`].
 
-use crate::voice::{Clip, Format, CHANNELS, MAX_CLIP, SAMPLE_RATE};
+use crate::voice::{Clip, MAX_CLIP, SAMPLE_RATE};
 
 /// Audio bytes per `Chunk`: 250 ms.
 pub const CHUNK: usize = SAMPLE_RATE as usize / 4 * 2;
@@ -57,17 +57,11 @@ impl Talk {
 
     /// Starts an utterance of audio sampled at `rate`; `None` if the link
     /// refused its `Start`. Ends any open one first, as cancelled.
-    pub fn start(&mut self, rate: u32, capsule: Vec<u8>, sink: &mut impl Sink) -> Option<u64> {
+    pub fn start(&mut self, rate: u32, capsule: String, sink: &mut impl Sink) -> Option<u64> {
         self.cancel(sink);
         let utterance = self.next;
         self.next += 1;
-        let start = Clip::Start {
-            utterance,
-            sample_rate: SAMPLE_RATE,
-            channels: CHANNELS,
-            format: Format::Pcm16Le,
-            capsule,
-        };
+        let start = Clip::Start { utterance, capsule };
         if !sink.send(start, false) {
             return None;
         }
@@ -299,7 +293,7 @@ mod tests {
         let mut link = Link::new();
         let mut talk = Talk::new(100);
         let id = talk
-            .start(48_000, b"{\"frame\":1}".to_vec(), &mut link)
+            .start(48_000, r#"{"frame":1}"#.into(), &mut link)
             .unwrap();
         assert_eq!(id, 100);
         for callback in mic(48_000, 1.3, 480) {
@@ -308,7 +302,7 @@ mod tests {
         assert!(talk.level() > 0.5, "a loud tone: {}", talk.level());
         assert_eq!(talk.finish(&mut link), Some(Stopped::Sent));
         assert!(
-            matches!(&link.sent[0], Clip::Start { utterance: 100, capsule, .. } if capsule == b"{\"frame\":1}")
+            matches!(&link.sent[0], Clip::Start { utterance: 100, capsule, .. } if capsule == r#"{"frame":1}"#)
         );
         assert_eq!(link.sent.last(), Some(&Clip::End { utterance: 100 }));
         // 1.3 s at 48 kHz is 1.3 s at 16 kHz: five whole chunks and the rest.
@@ -320,14 +314,14 @@ mod tests {
         }
         assert_eq!(talk.utterance(), None);
         // The next utterance has its own id.
-        assert_eq!(talk.start(16_000, Vec::new(), &mut link), Some(101));
+        assert_eq!(talk.start(16_000, String::new(), &mut link), Some(101));
     }
 
     #[test]
     fn resampling_keeps_the_tone() {
         let mut link = Link::new();
         let mut talk = Talk::new(1);
-        talk.start(48_000, Vec::new(), &mut link);
+        talk.start(48_000, String::new(), &mut link);
         for callback in mic(48_000, 0.5, 333) {
             talk.push(&callback, &mut link);
         }
@@ -347,7 +341,7 @@ mod tests {
     fn it_ends_by_itself_at_the_limit() {
         let mut link = Link::new();
         let mut talk = Talk::new(1);
-        talk.start(16_000, Vec::new(), &mut link);
+        talk.start(16_000, String::new(), &mut link);
         let mut stopped = None;
         for callback in mic(16_000, MAX_SECONDS as f64 + 2.0, 1600) {
             stopped = stopped.or(talk.push(&callback, &mut link));
@@ -362,7 +356,7 @@ mod tests {
         let mut link = Link::new();
         link.room = 3;
         let mut talk = Talk::new(1);
-        talk.start(16_000, Vec::new(), &mut link);
+        talk.start(16_000, String::new(), &mut link);
         let stopped = mic(16_000, 2.0, 1600)
             .iter()
             .find_map(|callback| talk.push(callback, &mut link));
@@ -371,7 +365,7 @@ mod tests {
         assert_eq!(talk.utterance(), None);
 
         let mut link = Link::new();
-        talk.start(16_000, Vec::new(), &mut link);
+        talk.start(16_000, String::new(), &mut link);
         talk.push(&mic(16_000, 0.5, 8000)[0], &mut link);
         link.linked = false;
         let sent = link.sent.len();
@@ -379,7 +373,7 @@ mod tests {
         assert_eq!(talk.finish(&mut link), None);
         assert_eq!(link.sent.len(), sent, "nothing resent");
         // Refused at the start: no utterance opens.
-        assert_eq!(talk.start(16_000, Vec::new(), &mut link), None);
+        assert_eq!(talk.start(16_000, String::new(), &mut link), None);
         assert_eq!(talk.utterance(), None);
     }
 
@@ -387,7 +381,7 @@ mod tests {
     fn cancelling_sends_cancel() {
         let mut link = Link::new();
         let mut talk = Talk::new(1);
-        talk.start(16_000, Vec::new(), &mut link);
+        talk.start(16_000, String::new(), &mut link);
         talk.push(&mic(16_000, 0.3, 4800)[0], &mut link);
         assert_eq!(talk.cancel(&mut link), Some(Stopped::Cancelled));
         assert_eq!(link.sent.last(), Some(&Clip::Cancel { utterance: 1 }));

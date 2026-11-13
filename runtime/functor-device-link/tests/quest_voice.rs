@@ -11,6 +11,8 @@
 
 mod stub;
 
+use stub::until;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -184,17 +186,6 @@ fn http(addr: &str, method: &str, path: &str, body: &[u8]) -> Result<(u16, Vec<u
     Ok((status, bytes[split + 4..].to_vec()))
 }
 
-fn until<T>(what: &str, f: impl Fn() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if let Some(t) = f() {
-            return t;
-        }
-        assert!(Instant::now() < deadline, "timed out: {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// The stub's clip messages until `End` or `Cancel`.
 fn receive(stub: &stub::Stub) -> Vec<Clip> {
     let mut got = Vec::new();
@@ -265,16 +256,15 @@ fn quest_talks_to_a_desktop() {
     quest.hold(json!({"thumbstick_pressed": true}));
     let listening = until("listening", || {
         let voice = quest.voice();
-        (voice["stage"]["stage"] == "listening" && voice["stage"]["level"].as_u64()? > 0)
-            .then_some(voice)
+        (voice["stage"] == "listening" && voice["level"].as_u64()? > 0).then_some(voice)
     });
-    assert!(listening["stage"]["seconds_left"].is_null());
+    assert!(listening["seconds_left"].is_null());
     quest.capture("voice-listening.png");
     std::thread::sleep(Duration::from_secs(2).saturating_sub(held.elapsed()));
     quest.hold(json!({}));
     let released = held.elapsed();
     until("sending", || {
-        (quest.voice()["stage"]["stage"] == "sending").then_some(())
+        (quest.voice()["stage"] == "sending").then_some(())
     });
     quest.capture("voice-sending.png");
 
@@ -286,7 +276,7 @@ fn quest_talks_to_a_desktop() {
         panic!("starts with Start: {:?}", clips[0]);
     };
     let utterance = *utterance;
-    let capsule_json: Value = serde_json::from_slice(capsule).unwrap();
+    let capsule_json = capsule.clone();
     let capsule = Capsule::from_json(capsule).expect("a capsule");
     assert!(
         capsule.frame.is_some() && capsule.tts.is_some(),
@@ -327,9 +317,7 @@ fn quest_talks_to_a_desktop() {
         stub.send.send(Some(status.frame())).unwrap();
     };
     let shows = |what: &str, stage: &str| {
-        until(what, || {
-            (quest.voice()["stage"]["stage"] == stage).then_some(())
-        });
+        until(what, || (quest.voice()["stage"] == stage).then_some(()));
     };
     say(Stage::Heard);
     shows("heard", "heard");
@@ -352,11 +340,11 @@ fn quest_talks_to_a_desktop() {
     // B while talking cancels.
     quest.hold(json!({"thumbstick_pressed": true}));
     until("listening again", || {
-        (quest.voice()["stage"]["stage"] == "listening").then_some(())
+        (quest.voice()["stage"] == "listening").then_some(())
     });
     quest.hold(json!({"thumbstick_pressed": true, "secondary_pressed": true}));
     until("cancelled", || {
-        (quest.voice()["stage"]["reason"] == "Cancelled").then_some(())
+        (quest.voice()["reason"] == "Cancelled").then_some(())
     });
     quest.capture("voice-cancelled.png");
     quest.hold(json!({}));
@@ -376,7 +364,7 @@ fn quest_talks_to_a_desktop() {
     });
     quest.hold(json!({"thumbstick_pressed": true}));
     until("not connected", || {
-        (quest.voice()["stage"]["stage"] == "not_connected").then_some(())
+        (quest.voice()["stage"] == "not_connected").then_some(())
     });
     quest.capture("voice-not-connected.png");
     quest.hold(json!({}));

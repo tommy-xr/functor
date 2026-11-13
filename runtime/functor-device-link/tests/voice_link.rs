@@ -5,7 +5,9 @@
 
 mod stub;
 
-use std::time::{Duration, Instant};
+use stub::until;
+
+use std::time::Duration;
 
 use functor_device_link::client::{Client, Config, Host, Stored};
 use functor_device_link::talk::{Stopped, Talk, CHUNK};
@@ -48,24 +50,13 @@ fn linked(dir: &std::path::Path) -> (Client, stub::Stub) {
     (client, stub)
 }
 
-fn until<T>(what: &str, f: impl Fn() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Some(t) = f() {
-            return t;
-        }
-        assert!(Instant::now() < deadline, "timed out: {what}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 #[test]
 fn a_clip_crosses_and_the_status_comes_back() {
     let dir = tempfile::tempdir().unwrap();
     let (client, stub) = linked(dir.path());
     let mut talk = Talk::new(1);
-    let mut sink = &client;
-    let id = talk.start(16_000, b"{}".to_vec(), &mut sink).unwrap();
+    let mut sink = (&client, client.link().unwrap());
+    let id = talk.start(16_000, "{}".into(), &mut sink).unwrap();
     // One second of a ramp, in 10 ms callbacks.
     let audio: Vec<i16> = (0..16_000).map(|i| i as i16).collect();
     for callback in audio.chunks(160) {
@@ -112,15 +103,21 @@ fn a_clip_crosses_and_the_status_comes_back() {
 fn a_dropped_link_resends_nothing_and_a_full_queue_refuses_audio() {
     let dir = tempfile::tempdir().unwrap();
     let (client, stub) = linked(dir.path());
+    let first = client.link().unwrap();
     // Gone without a close: the client notices and relinks.
     stub.send.send(None).unwrap();
-    until("unlinked", || (!client.view().linked).then_some(()));
+    until("unlinked", || client.link().is_none().then_some(()));
     assert!(
-        !client.send_channel(CLIP_CHANNEL, vec![1], false),
+        !client.send_channel(first, CLIP_CHANNEL, vec![1], false),
         "nothing queues while unlinked"
     );
-    until("relinked", || client.view().linked.then_some(()));
-    assert!(client.send_channel(CLIP_CHANNEL, vec![2], false));
+    let second = until("relinked", || client.link());
+    assert_ne!(first, second);
+    assert!(
+        !client.send_channel(first, CLIP_CHANNEL, vec![1], false),
+        "nor for the last link on this one"
+    );
+    assert!(client.send_channel(second, CLIP_CHANNEL, vec![2], false));
     let (link, _, data) = stub.received.recv_timeout(Duration::from_secs(10)).unwrap();
     assert_eq!(
         (link, data),
@@ -132,8 +129,8 @@ fn a_dropped_link_resends_nothing_and_a_full_queue_refuses_audio() {
     let big = vec![0u8; functor_device_link::client::OUTBOX_LIMIT];
     let mut refused = false;
     for _ in 0..64 {
-        refused |= !client.send_channel(CLIP_CHANNEL, big.clone(), true);
+        refused |= !client.send_channel(second, CLIP_CHANNEL, big.clone(), true);
     }
     assert!(refused, "a link that cannot keep up refuses audio");
-    assert!(client.send_channel(CLIP_CHANNEL, vec![3], false));
+    assert!(client.send_channel(second, CLIP_CHANNEL, vec![3], false));
 }
