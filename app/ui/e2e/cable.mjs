@@ -12,7 +12,7 @@
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { ROOT, requireBuilt, shot, startServer, stopServer, stub, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { ROOT, requireBuilt, shot, startServer, stopServer, storedPairings, stub, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 
@@ -61,13 +61,7 @@ async function cableView(browser, width, height) {
   const pane = page.getByRole("complementary", { name: "Devices" });
   const cable = pane.getByTestId("cable-card");
   const card = pane.getByTestId("device-card").filter({ hasText: "Quest 3" });
-  const pairings = () => {
-    try {
-      return readFileSync(join(server.home, "devices.json"), "utf8");
-    } catch {
-      return "";
-    }
-  };
+  const pairings = () => storedPairings(server);
   try {
     await page.goto(server.url);
     await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Devices" }).click();

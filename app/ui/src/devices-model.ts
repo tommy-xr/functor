@@ -76,10 +76,9 @@ export function cableFor(d: Device, attached: Attached[]): Attached | null {
   return attached.find((a) => a.state.state === "ready" && a.state.device === d.id) ?? null;
 }
 
-/** Headsets on a cable with no paired card of their own. */
+/** Headsets on a cable with no card of their own. */
 export function cableOnly(devices: Devices): Attached[] {
-  const paired = devices.list.filter((d) => d.paired);
-  return devices.attached.filter((a) => !paired.some((d) => cableFor(d, [a])));
+  return devices.attached.filter((a) => !devices.list.some((d) => cableFor(d, [a])));
 }
 
 /** A paired card's cable row: how the headset on it is. */

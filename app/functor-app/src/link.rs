@@ -23,6 +23,7 @@ mod cable;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -104,6 +105,10 @@ struct Inner {
     adb: OnceLock<PathBuf>,
     /// Look at the cable again now.
     cable_poke: tokio::sync::Notify,
+    /// One write to a headset's pairing file at a time.
+    cable_writes: tokio::sync::Mutex<()>,
+    /// Writes finished so far: a probe that overlapped one is stale.
+    cable_written: AtomicU64,
 }
 
 #[derive(Default)]
@@ -165,6 +170,8 @@ impl Hub {
             mdns: Mutex::new(None),
             adb: OnceLock::new(),
             cable_poke: tokio::sync::Notify::new(),
+            cable_writes: tokio::sync::Mutex::new(()),
+            cable_written: AtomicU64::new(0),
         })))
     }
 
@@ -373,22 +380,34 @@ impl Hub {
         Ok(())
     }
 
-    /// Deletes `device`'s pairing (its secret with it), then closes its
-    /// links, half-open ones too, and its tunnel. If that cannot be
-    /// written, nothing changes and the core is told.
+    /// Forget: [`Hub::drop_pairing`], then the same pairing off the
+    /// headset if it is on a cable. If the pairing cannot be deleted here,
+    /// nothing changes and the core is told.
     fn forget(&self, device: &str) {
-        let mut s = self.0.state.lock().unwrap();
-        let name = s
-            .pairings
-            .iter()
-            .find(|p| p.id == device)
-            .map(|p| p.name.clone());
-        if let Err(e) = self.update_pairings(&mut s, |all| all.retain(|p| p.id != device)) {
-            let name = name.unwrap_or_else(|| "the headset".into());
-            let reason = format!("cannot forget {name}: {e}");
-            self.send(LinkEvent::Failed { reason });
-            return;
+        match self.drop_pairing(device) {
+            Ok(Some(p)) => self.forget_on_cable(device, &p.name, p.secret),
+            Ok(None) => {}
+            Err(e) => {
+                let s = self.0.state.lock().unwrap();
+                let p = s.pairings.iter().find(|p| p.id == device);
+                let name = p.map_or("the headset", |p| p.name.as_str());
+                let reason = format!("cannot forget {name}: {e}");
+                self.send(LinkEvent::Failed { reason });
+            }
         }
+    }
+
+    /// Deletes `device`'s pairing (its secret with it), then closes its
+    /// links, half-open ones too, and its tunnel; the pairing deleted.
+    fn drop_pairing(&self, device: &str) -> std::io::Result<Option<StoredPairing>> {
+        let mut s = self.0.state.lock().unwrap();
+        let mut gone = None;
+        self.update_pairings(&mut s, |all| {
+            gone = all
+                .iter()
+                .position(|p| p.id == device)
+                .map(|i| all.remove(i));
+        })?;
         self.send(LinkEvent::Forgotten {
             device: device.to_string(),
         });
@@ -398,36 +417,32 @@ impl Hub {
         if let Some((_, task)) = s.tunnels.remove(device) {
             task.abort();
         }
-        drop(s);
-        self.forget_on_cable(device, name.as_deref().unwrap_or("the headset"));
+        Ok(gone)
     }
 
     /// Stores `secret` for device `id` (hex), replacing any pairing it had;
-    /// the pairing as the core sees it, and the one replaced. An error
-    /// leaves nothing stored.
-    fn store_pairing(
-        &self,
-        id: String,
-        name: &str,
-        secret: &Secret,
-    ) -> std::io::Result<(Paired, Option<StoredPairing>)> {
+    /// the pairing as the core sees it. An error leaves nothing stored.
+    fn store_pairing(&self, id: String, name: &str, secret: &Secret) -> std::io::Result<Paired> {
         let now = wall_ms();
         let mut s = self.0.state.lock().unwrap();
         let mut shown = None;
-        let mut previous = None;
         self.update_pairings(&mut s, |all| {
-            previous = all.iter().position(|p| p.id == id).map(|i| all.remove(i));
+            let first_seen = all
+                .iter()
+                .find(|p| p.id == id)
+                .map_or(now, |p| p.first_seen);
+            all.retain(|p| p.id != id);
             let pairing = StoredPairing {
                 id,
                 name: name.to_string(),
                 secret: secret.to_hex(),
-                first_seen: previous.as_ref().map_or(now, |p| p.first_seen),
+                first_seen,
                 last_seen: now,
             };
             shown = Some(paired(&pairing));
             all.push(pairing);
         })?;
-        Ok((shown.expect("just stored"), previous))
+        Ok(shown.expect("just stored"))
     }
 
     /// Notes that `device` was seen now, kept for its card after a restart.
@@ -815,7 +830,7 @@ impl Connection {
             }
             desktop::Event::Paired { hello, secret } => {
                 let device = match hub.store_pairing(hex(&hello.device), &hello.name, &secret) {
-                    Ok((device, _)) => device,
+                    Ok(device) => device,
                     Err(e) => {
                         let reason = format!("cannot store the pairing with {}: {e}", hello.name);
                         hub.send(LinkEvent::Failed { reason });

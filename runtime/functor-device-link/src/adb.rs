@@ -103,6 +103,14 @@ mod tests {
     }
 
     #[test]
+    fn the_file_commands_name_the_app() {
+        for command in [READ_PAIRING, WRITE_PAIRING] {
+            assert!(command.starts_with(&format!("run-as {PACKAGE} ")));
+            assert!(command.contains("files/device-link.json"));
+        }
+    }
+
+    #[test]
     fn installed_only_for_the_exact_package() {
         assert!(installed("package:dev.functor.runner\n"));
         assert!(!installed("package:dev.functor.runner.other\n"));

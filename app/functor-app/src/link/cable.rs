@@ -10,13 +10,14 @@
 
 use std::io;
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use functor_app_core::devices::{Attached, CableState, HeadsetPairing, LinkEvent, Paired};
 use functor_device_link::adb::{self, Entry, READ_PAIRING, WRITE_PAIRING};
 use functor_device_link::file::Stored;
-use functor_device_link::{hex, Entropy, OsEntropy, Secret};
-use tokio::io::AsyncWriteExt;
+use functor_device_link::{hex, os_random, Secret};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{ConnCmd, Hub};
 
@@ -81,27 +82,26 @@ impl Hub {
     /// Looks at the cable until the runtime ends, telling the core when what
     /// it sees changes.
     pub(super) async fn watch_cable(self) {
+        let client = self.client_version().await;
         let mut seen: Option<Vec<Entry>> = None;
         let mut attached = Vec::new();
         let mut told = None;
         let mut probe = true;
         let mut looks = 0u32;
         loop {
-            let (found, entries) = match self.adb(None, &["devices", "-l"], None).await {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => (false, Vec::new()),
-                Err(_) => (true, Vec::new()),
-                Ok(ran) => {
-                    let all = adb::devices(&String::from_utf8_lossy(&ran.stdout));
-                    // adb over the network is not a cable.
-                    (true, all.into_iter().filter(|e| e.usb).collect())
-                }
-            };
+            // A probe that overlaps a write may have read the file before it.
+            let generation = self.0.cable_written.load(Ordering::Acquire);
+            let (found, entries) = self.list(client).await;
             if probe || seen.as_ref() != Some(&entries) {
                 attached = Vec::new();
                 for entry in &entries {
                     attached.push(self.probe(entry).await);
                 }
                 seen = Some(entries);
+            }
+            if self.0.cable_written.load(Ordering::Acquire) != generation {
+                probe = true;
+                continue;
             }
             let now = (found, attached.clone());
             if told.as_ref() != Some(&now) {
@@ -118,6 +118,35 @@ impl Hub {
                 _ = self.0.cable_poke.notified() => true,
             };
         }
+    }
+
+    /// Whether adb runs here, and the headsets on a USB cable (adb over the
+    /// network is not a cable). An adb server of another version (one that
+    /// another tool started) is left alone: asking it would make this adb
+    /// kill it and start its own, dropping that tool's port forwards.
+    async fn list(&self, client: Option<u32>) -> (bool, Vec<Entry>) {
+        if let (Some(ours), Some(running)) = (client, server_version().await) {
+            if ours != running {
+                return (true, Vec::new());
+            }
+        }
+        match self.adb(None, &["devices", "-l"], None).await {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (false, Vec::new()),
+            Err(_) => (true, Vec::new()),
+            Ok(ran) => {
+                let all = adb::devices(&String::from_utf8_lossy(&ran.stdout));
+                (true, all.into_iter().filter(|e| e.usb).collect())
+            }
+        }
+    }
+
+    /// adb's own version (`adb version`: `… version 1.0.41` is 41), which
+    /// starts no server.
+    async fn client_version(&self) -> Option<u32> {
+        let ran = self.adb(None, &["version"], None).await.ok()?;
+        let out = String::from_utf8_lossy(&ran.stdout);
+        let line = out.lines().next()?;
+        line.rsplit('.').next()?.trim().parse().ok()
     }
 
     async fn probe(&self, entry: &Entry) -> Attached {
@@ -147,7 +176,7 @@ impl Hub {
         }
         match self.read_pairing(serial).await {
             Ok(Some(raw)) => {
-                let stored = parse(&raw);
+                let stored = Stored::parse(&raw);
                 CableState::Ready {
                     device: stored.device().map(|_| stored.device.clone()),
                     paired: self.whose(&stored),
@@ -159,34 +188,38 @@ impl Hub {
     }
 
     /// The app's pairing file as it is (empty when there is none);
-    /// `Ok(None)` when `run-as` refuses (a release build); `Err` when adb
-    /// fails.
+    /// `Ok(None)` when `run-as` says the app is not debuggable (a release
+    /// build); `Err` for any other failure.
     async fn read_pairing(&self, serial: &str) -> Result<Option<Vec<u8>>, String> {
         let ran = self
             .adb(Some(serial), &["shell", READ_PAIRING], None)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(ran.ok.then_some(ran.stdout))
+        match (ran.ok, ran.stderr.contains("not debuggable")) {
+            (true, _) => Ok(Some(ran.stdout)),
+            (false, true) => Ok(None),
+            (false, false) => Err(or(ran.stderr, "adb could not read it")),
+        }
+    }
+
+    /// The pairing file, or why it cannot be read.
+    async fn pairing_file(&self, serial: &str) -> Result<Vec<u8>, String> {
+        self.read_pairing(serial)
+            .await?
+            .ok_or_else(|| "its Functor app is not a debuggable build".to_string())
     }
 
     /// Replaces the app's pairing file with `file`, then reads it back.
-    async fn write_pairing(&self, serial: &str, file: &str) -> Result<(), String> {
+    async fn write_pairing(&self, serial: &str, file: &[u8]) -> Result<(), String> {
         let ran = self
-            .adb(
-                Some(serial),
-                &["shell", WRITE_PAIRING],
-                Some(file.as_bytes()),
-            )
+            .adb(Some(serial), &["shell", WRITE_PAIRING], Some(file))
             .await
             .map_err(|e| e.to_string())?;
         if !ran.ok {
-            return Err(match ran.stderr.is_empty() {
-                true => "the headset refused the write".to_string(),
-                false => ran.stderr,
-            });
+            return Err(or(ran.stderr, "the headset refused the write"));
         }
-        match self.read_pairing(serial).await? {
-            Some(back) if back == file.as_bytes() => Ok(()),
+        match self.pairing_file(serial).await? {
+            back if back == file => Ok(()),
             _ => Err("it read back differently".to_string()),
         }
     }
@@ -206,13 +239,27 @@ impl Hub {
 
     /// Pairs the headset on `serial`'s cable, then tells the core.
     pub(super) async fn pair_by_cable(self, serial: String, replace: bool) {
-        let result = self.cable_pair(&serial, replace).await;
+        let result = {
+            let _one = self.0.cable_writes.lock().await;
+            self.cable_pair(&serial, replace).await
+        };
+        let device = result.as_ref().ok().map(|p| p.id.clone());
+        self.wrote();
         self.send(LinkEvent::CablePaired { serial, result });
-        self.0.cable_poke.notify_one();
+        // A link made during the read-back came before its card: it links
+        // again, now that the core has one.
+        if let Some(device) = device {
+            for c in self.0.state.lock().unwrap().conns.values() {
+                if c.linked.as_deref() == Some(device.as_str()) {
+                    let _ = c.cmds.send(ConnCmd::Close);
+                }
+            }
+        }
     }
 
     /// Stores a new pairing here first, then writes it to the headset and
-    /// reads it back; on any failure the desktop's is undone.
+    /// reads it back. On a failure after the store, nothing is left: the
+    /// pairing goes from here, and the headset gets back what it held.
     async fn cable_pair(&self, serial: &str, replace: bool) -> Result<Paired, String> {
         let name = {
             let s = self.0.state.lock().unwrap();
@@ -220,9 +267,8 @@ impl Hub {
             a.map_or_else(|| "Headset".to_string(), |a| a.name.clone())
         };
         let cannot = |e: String| format!("cannot pair {name} over the cable: {e}");
-        let raw = self.read_pairing(serial).await.map_err(cannot)?;
-        let raw = raw.ok_or_else(|| cannot("its Functor app is not a debuggable build".into()))?;
-        let mut stored = parse(&raw);
+        let raw = self.pairing_file(serial).await.map_err(cannot)?;
+        let mut stored = Stored::parse(&raw);
         // Asked about before; checked again in case it paired meanwhile.
         if let HeadsetPairing::Other { name: other } = self.whose(&stored) {
             if !replace {
@@ -232,11 +278,11 @@ impl Hub {
         // Its own id, which the desktop knows it by; one made here if its
         // app has not run yet.
         if stored.device().is_none() {
-            stored.device = hex(&random::<16>());
+            stored.device = hex(&os_random::<16>());
         }
         let device = stored.device.clone();
-        let secret = Secret(random::<32>());
-        let (paired, previous) = self
+        let secret = Secret(os_random::<32>());
+        let paired = self
             .store_pairing(device.clone(), &name, &secret)
             .map_err(|e| cannot(format!("cannot store it here: {e}")))?;
         let file = Stored {
@@ -246,33 +292,48 @@ impl Hub {
             secret: Some(secret.to_hex()),
         }
         .to_json();
-        if let Err(e) = self.write_pairing(serial, &file).await {
-            self.unstore(&device, previous);
-            return Err(cannot(format!("writing it to the headset failed: {e}")));
-        }
-        Ok(paired)
-    }
-
-    /// Puts back `device`'s pairing as it was before a failed cable pairing
-    /// and closes any link made with the new one.
-    fn unstore(&self, device: &str, previous: Option<crate::store::StoredPairing>) {
-        let mut s = self.0.state.lock().unwrap();
-        let undone = self.update_pairings(&mut s, |all| {
-            all.retain(|p| p.id != device);
-            all.extend(previous);
-        });
-        if let Err(e) = undone {
+        let Err(e) = self.write_pairing(serial, file.as_bytes()).await else {
+            return Ok(paired);
+        };
+        if let Err(e) = self.drop_pairing(&device) {
             eprintln!("functor-app: cannot undo a failed cable pairing: {e}");
         }
-        for conn in s.conns.values() {
-            let _ = conn.cmds.send(ConnCmd::Forgotten(device.to_string()));
-        }
+        // What it held before, unless something else has replaced ours.
+        let before = match raw.is_empty() {
+            true => Stored {
+                device,
+                ..Stored::default()
+            }
+            .to_json()
+            .into_bytes(),
+            false => raw,
+        };
+        let undone = match self.pairing_file(serial).await {
+            Ok(now) if Stored::parse(&now).secret == Some(secret.to_hex()) => {
+                self.write_pairing(serial, &before).await
+            }
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        };
+        Err(cannot(match undone {
+            Ok(()) => format!("writing it to the headset failed: {e}"),
+            Err(again) => format!(
+                "writing it to the headset failed ({e}), and so did putting its old \
+                 pairing back ({again}); forget it here and pair again"
+            ),
+        }))
     }
 
-    /// After Forget: removes this desktop's pairing from `device`'s app if
-    /// it is on a cable, keeping its id. Best effort; the user is told when
-    /// it could not.
-    pub(super) fn forget_on_cable(&self, device: &str, name: &str) {
+    /// A cable write finished: probes from before it are stale.
+    fn wrote(&self) {
+        self.0.cable_written.fetch_add(1, Ordering::AcqRel);
+        self.0.cable_poke.notify_one();
+    }
+
+    /// After Forget: removes the forgotten pairing (its `secret`) from
+    /// `device`'s app if it is on a cable, keeping its id. Best effort; the
+    /// user is told when it could not.
+    pub(super) fn forget_on_cable(&self, device: &str, name: &str, secret: String) {
         let serial = {
             let s = self.0.state.lock().unwrap();
             s.attached
@@ -286,40 +347,65 @@ impl Hub {
         let hub = self.clone();
         let name = name.to_string();
         tokio::spawn(async move {
-            if let Err(e) = hub.clear_pairing(&serial).await {
+            let cleared = {
+                let _one = hub.0.cable_writes.lock().await;
+                hub.clear_pairing(&serial, &secret).await
+            };
+            if let Err(e) = cleared {
                 let reason = format!(
                     "forgot {name} here, but could not remove its pairing from the headset: {e}"
                 );
                 hub.send(LinkEvent::Failed { reason });
             }
-            hub.0.cable_poke.notify_one();
+            hub.wrote();
         });
     }
 
-    async fn clear_pairing(&self, serial: &str) -> Result<(), String> {
-        let raw = self.read_pairing(serial).await?;
-        let raw = raw.ok_or("its Functor app is not a debuggable build")?;
-        let stored = parse(&raw);
-        // Another desktop's pairing is not ours to remove.
-        if self.whose(&stored) != HeadsetPairing::This {
+    /// Removes the pairing with `secret` from the headset's file; any other
+    /// (a newer one, another desktop's) is not this Forget's to remove.
+    async fn clear_pairing(&self, serial: &str, secret: &str) -> Result<(), String> {
+        let stored = Stored::parse(&self.pairing_file(serial).await?);
+        if stored.secret.as_deref() != Some(secret) {
             return Ok(());
         }
         let cleared = Stored {
             device: stored.device,
             ..Stored::default()
         };
-        self.write_pairing(serial, &cleared.to_json()).await
+        self.write_pairing(serial, cleared.to_json().as_bytes())
+            .await
     }
 }
 
-/// A pairing file's contents; one that does not parse counts as empty, as
-/// the headset app treats it (it moves it aside and starts afresh).
-fn parse(raw: &[u8]) -> Stored {
-    serde_json::from_slice(raw).unwrap_or_default()
+/// The running adb server's version, asked over its socket (`host:version`)
+/// so none is started; `None` when none answers.
+async fn server_version() -> Option<u32> {
+    let port = std::env::var("ANDROID_ADB_SERVER_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(5037u16);
+    let ask = async {
+        let mut s = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+        s.write_all(b"000chost:version").await?;
+        let mut reply = [0u8; 12];
+        s.read_exact(&mut reply).await?;
+        Ok::<_, io::Error>(reply)
+    };
+    let reply = tokio::time::timeout(Duration::from_secs(1), ask)
+        .await
+        .ok()?
+        .ok()?;
+    // `OKAY`, the length (`0004`), the version in hex.
+    if &reply[..4] != b"OKAY" {
+        return None;
+    }
+    u32::from_str_radix(std::str::from_utf8(&reply[8..]).ok()?, 16).ok()
 }
 
-fn random<const N: usize>() -> [u8; N] {
-    let mut out = [0; N];
-    OsEntropy.fill(&mut out);
-    out
+/// `text`, or `fallback` when it is empty.
+fn or(text: String, fallback: &str) -> String {
+    match text.is_empty() {
+        true => fallback.to_string(),
+        false => text,
+    }
 }

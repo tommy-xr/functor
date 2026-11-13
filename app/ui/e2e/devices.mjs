@@ -11,10 +11,8 @@
 //
 // APP_UI_SHOTS=<dir> saves stills of each state and the prompt at both
 // widths, and the frames of a pair → connected loop at 1440×900.
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { requireBuilt, shot, startServer, stopServer, stub, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { requireBuilt, shot, startServer, stopServer, storedPairings, stub, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
 
@@ -33,13 +31,7 @@ async function devicesView(browser, width, height) {
   const pane = page.getByRole("complementary", { name: "Devices" });
   const card = (name) => pane.getByTestId("device-card").filter({ hasText: name });
   const prompt = page.getByTestId("pair-prompt");
-  const pairings = () => {
-    try {
-      return readFileSync(join(server.home, "devices.json"), "utf8");
-    } catch {
-      return "";
-    }
-  };
+  const pairings = () => storedPairings(server);
   try {
     await page.goto(server.url);
     await expect(pill).toHaveText("Headset · Not paired");

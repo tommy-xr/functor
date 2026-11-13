@@ -170,8 +170,9 @@ pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
             CableState::NoApp => "no Functor app".to_string(),
             CableState::NotDebuggable => "a release app, not pairable by cable".to_string(),
             CableState::Ready { device, paired } => {
-                let device = device.as_deref().unwrap_or("no id yet");
-                let short = &device[..device.len().min(8)];
+                let short = device
+                    .as_deref()
+                    .map_or("no id yet", |d| &d[..d.len().min(8)]);
                 match paired {
                     HeadsetPairing::Nobody => format!("{short}, not paired"),
                     HeadsetPairing::This => format!("{short}, paired here"),

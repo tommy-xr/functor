@@ -256,7 +256,7 @@ function DeviceCard({
       {lost && <p className="device-reason">{lost}</p>}
       {/* Pairing again over the cable is the fix then. */}
       {fix && !lost && <p className="hint">{fix}</p>}
-      {d.paired && cable && <CablePair cable={cable} online={online} send={send} />}
+      {cable && <CablePair cable={cable} online={online} send={send} />}
       {d.paired &&
         (confirming ? (
           <div className="task-confirm device-confirm" role="group" aria-label={`Forget ${d.name}`}>

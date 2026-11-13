@@ -2,7 +2,7 @@
 // with a throwaway home (so no test reads or writes the user's saved tasks),
 // and watching a page for console errors and non-loopback requests.
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,6 +185,15 @@ export function watchExternal(page) {
     if (!LOOPBACK.has(hostname)) external.push(r.url());
   });
   return external;
+}
+
+/** The server's stored pairings (`devices.json`, secrets and all), or "" before any. */
+export function storedPairings(server) {
+  try {
+    return readFileSync(join(server.home, "devices.json"), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 // A failed step must not leave stubs retrying a gone desktop.

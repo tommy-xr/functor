@@ -672,7 +672,7 @@ struct Quest {
     props: Vec<(&'static str, String)>,
 }
 
-const PACKAGE: &str = "dev.functor.runner";
+use functor_device_link::adb::PACKAGE;
 const PAIRING_FILE: &str = "files/device-link.json";
 
 impl Quest {
@@ -681,11 +681,11 @@ impl Quest {
     /// forwarded. Guardian would hold the app at its boundary dialog.
     fn attach(props: &[&'static str]) -> Quest {
         let devices = Command::new("adb").arg("devices").output().unwrap();
-        let serial = String::from_utf8_lossy(&devices.stdout)
-            .lines()
-            .skip(1)
-            .find_map(|l| l.strip_suffix("\tdevice").map(str::to_string))
-            .expect("a Quest attached over adb");
+        let serial = functor_device_link::adb::devices(&String::from_utf8_lossy(&devices.stdout))
+            .into_iter()
+            .find(|e| e.state == "device")
+            .expect("a Quest attached over adb")
+            .serial;
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -733,7 +733,7 @@ impl Quest {
     fn pairing_file(&self) -> headset::Stored {
         let out = self.adb(&["shell", functor_device_link::adb::READ_PAIRING]);
         assert!(out.status.success(), "a debuggable {PACKAGE} is installed");
-        serde_json::from_slice(&out.stdout).unwrap_or_default()
+        headset::Stored::parse(&out.stdout)
     }
 
     fn adb(&self, args: &[&str]) -> std::process::Output {
@@ -1194,6 +1194,38 @@ mod cable {
             assert!(devices["list"].as_array().unwrap().is_empty());
             fake.flag(flag, false);
         }
+    }
+
+    /// The write lands but its read-back is lost: nothing is left paired
+    /// on either side, and the headset gets back the pairing it held (here
+    /// another desktop's, which the user had agreed to replace).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_lost_read_back_puts_the_headset_back() {
+        let fake = FakeAdb::new();
+        let mut app = app_on(&fake).await;
+        let elsewhere = headset::Stored {
+            device: "ab".repeat(16),
+            desktop: Some("ee".repeat(16)),
+            desktop_name: Some("Studio Mac".into()),
+            secret: Some("11".repeat(32)),
+        };
+        let path = fake.store().join("device-link.json");
+        std::fs::write(&path, elsewhere.to_json()).unwrap();
+        app.devices_where("paired elsewhere", |d| {
+            attached(d)["state"]["paired"]["name"] == "Studio Mac"
+        })
+        .await;
+        fake.flag("lose-read-back", true);
+        app.send(json!({"type": "pair_by_cable", "serial": SERIAL, "replace": true}))
+            .await;
+        let reason = app.rejected().await;
+        assert!(reason.contains("error: closed"), "{reason}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), elsewhere.to_json());
+        assert!(!app.pairings().contains("ab".repeat(16).as_str()));
+        app.devices_where("no card", |d| {
+            attached(d)["pairing"] == false && d["list"].as_array().unwrap().is_empty()
+        })
+        .await;
     }
 
     /// Desktop B finds the headset paired with desktop A: it asks before

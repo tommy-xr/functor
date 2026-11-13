@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use crate::{hex, unhex, DesktopId, DeviceId, OsEntropy, Secret};
+use crate::{hex, os_random, unhex, DesktopId, DeviceId, Secret};
 
 /// The pairing file, JSON:
 /// `{"device": "<32 hex>", "desktop": "<32 hex>", "desktop_name": "…", "secret": "<64 hex>"}`.
@@ -54,9 +54,7 @@ impl Stored {
             }
         };
         if unhex::<16>(&stored.device).is_none() {
-            let mut id = [0u8; 16];
-            crate::Entropy::fill(&mut OsEntropy, &mut id);
-            stored.device = hex(&id);
+            stored.device = hex(&os_random::<16>());
             stored.save(path)?;
         }
         Ok(stored)
@@ -74,6 +72,12 @@ impl Stored {
         file.write_all(self.to_json().as_bytes())?;
         file.sync_all()?;
         std::fs::rename(tmp, path)
+    }
+
+    /// A file's contents; one that does not parse is empty, as the app
+    /// treats it.
+    pub fn parse(raw: &[u8]) -> Stored {
+        serde_json::from_slice(raw).unwrap_or_default()
     }
 
     pub fn to_json(&self) -> String {

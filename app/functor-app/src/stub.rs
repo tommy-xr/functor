@@ -12,7 +12,7 @@ use std::time::Duration;
 use functor_device_link::device::{self, Device, Identity};
 use functor_device_link::file::Stored;
 use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
-use functor_device_link::{hex, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
+use functor_device_link::{hex, os_random, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
 use functor_device_link::{HEARTBEAT_MS, MAX_MESSAGE, VERSION};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -76,15 +76,10 @@ fn say(line: &str) {
 pub async fn run(args: StubArgs) -> std::process::ExitCode {
     // The headset app's pairing file and format.
     let file = args.store.join("device-link.json");
-    let load = || -> Stored {
-        std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
-    };
+    let load = || Stored::parse(&std::fs::read(&file).unwrap_or_default());
     let mut stored = load();
     if unhex::<16>(&stored.device).is_none() {
-        stored.device = hex(uuid::Uuid::new_v4().as_bytes());
+        stored.device = hex(&os_random::<16>());
     }
     // Private, as a headset's pairing would be.
     let save = |stored: &Stored| {
@@ -155,7 +150,7 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
     let entropy: SharedEntropy = shared(OsEntropy);
     let now = now_ms();
     let secret = match args.misbehave {
-        Some(Misbehave::WrongSecret) => Some(Secret(rand32())),
+        Some(Misbehave::WrongSecret) => Some(Secret(os_random())),
         _ => stored.secret.as_deref().and_then(Secret::from_hex),
     };
     if args.protocol != VERSION {
@@ -324,12 +319,6 @@ fn canned(id: u32, method: &str, target: &str, name: &str, served: u64) -> Respo
         headers: vec![("content-type".into(), kind.into())],
         body: body.into_bytes(),
     }
-}
-
-fn rand32() -> [u8; 32] {
-    let mut out = [0; 32];
-    functor_device_link::Entropy::fill(&mut OsEntropy, &mut out);
-    out
 }
 
 /// A desktop's link address by mDNS, preferring `desktop` (its id).

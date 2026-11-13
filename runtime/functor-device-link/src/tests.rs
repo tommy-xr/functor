@@ -623,7 +623,9 @@ fn a_clean_close_is_done() {
         to_desktop(&mut desktop, &bye, 11, None).end,
         Some(End::Done)
     );
-    // Except a pairing replaced: the desktop's user is told why.
+    // Except a pairing replaced: the desktop's user is told why. The
+    // reason is matched exactly, so it is pinned.
+    assert_eq!(crate::REPAIRED, "the headset's pairing changed");
     let (mut desktop, mut device) = linked(540, &secret);
     let bye = device.send(&Frame::Close(crate::REPAIRED.into())).unwrap();
     assert_eq!(
