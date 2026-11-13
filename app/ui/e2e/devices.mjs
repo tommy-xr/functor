@@ -11,51 +11,12 @@
 //
 // APP_UI_SHOTS=<dir> saves stills of each state and the prompt at both
 // widths, and the frames of a pair → connected loop at 1440×900.
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { APP, requireBuilt, shot, startServer, stopServer, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { requireBuilt, shot, startServer, stopServer, stub, tempDir, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 requireBuilt();
-
-// A failed step must not leave stubs retrying a gone desktop.
-const stubs = [];
-process.on("exit", () => stubs.forEach((c) => c.exitCode === null && c.kill()));
-
-/** A stub headset; `line(prefix)` waits for its next line starting so. */
-function stub(link, store, name, extra = []) {
-  const child = spawn(APP, ["device-stub", "--desktop", link, "--name", name, "--store", store, ...extra], {
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-  stubs.push(child);
-  const lines = [];
-  let buf = "";
-  child.stdout.on("data", (d) => {
-    buf += d;
-    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(buf.slice(0, i));
-  });
-  let seen = 0;
-  return {
-    async line(prefix) {
-      let found;
-      await expect
-        .poll(
-          () => {
-            const i = lines.slice(seen).findIndex((l) => l.startsWith(prefix));
-            if (i < 0) return false;
-            found = lines[seen + i];
-            seen += i + 1;
-            return true;
-          },
-          { timeout: 20_000, message: `stub ${name}: ${prefix}` },
-        )
-        .toBe(true);
-      return found;
-    },
-    stop: () => stopServer({ child }),
-  };
-}
 
 let frame = 0;
 async function step(page, width) {
@@ -84,7 +45,7 @@ async function devicesView(browser, width, height) {
     await expect(pill).toHaveText("Headset · Not paired");
     await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Devices" }).click();
     await expect(pane.getByTestId("devices-empty")).toContainText("Open Functor in the headset on the same Wi-Fi");
-    await expect(pane.getByTestId("devices-empty")).toContainText("a cable comes later");
+    await expect(pane.getByTestId("devices-empty")).toContainText("install Android platform-tools (adb)");
     await shot(page, `devices-empty-${width}`);
     await step(page, width);
 

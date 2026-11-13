@@ -22,7 +22,7 @@ use super::{ConnCmd, Hub};
 
 /// How often adb is asked what is attached.
 const EVERY: Duration = Duration::from_secs(2);
-/// Headsets' apps are probed on every change adb lists, after a pairing or
+/// Headsets' apps are probed on every change adb lists (a replug too), after a pairing or
 /// Forget, and otherwise every this many looks.
 const PROBE_EVERY: u32 = 5;
 /// One adb command's limit.
@@ -126,6 +126,7 @@ impl Hub {
             name: entry.model.clone().unwrap_or_else(|| "Headset".into()),
             state,
             pairing: false,
+            pairable: false,
         }
     }
 

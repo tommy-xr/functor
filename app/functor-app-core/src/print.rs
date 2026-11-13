@@ -839,6 +839,7 @@ recents: 2
                 paired: crate::devices::HeadsetPairing::This,
             },
             pairing: false,
+            pairable: false,
         }];
         on_link(&mut d, LinkEvent::Cable { adb: true, attached }, 0);
         assert_eq!(

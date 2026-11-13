@@ -30,6 +30,8 @@ pub struct Entry {
     pub usb: bool,
     /// `model:Quest_3` as `Quest 3` (`-l` only).
     pub model: Option<String>,
+    /// New on every reconnect (`-l` only).
+    pub transport: Option<String>,
 }
 
 /// The entries `adb devices [-l]` lists.
@@ -45,11 +47,13 @@ pub fn devices(out: &str) -> Vec<Entry> {
                 state,
                 usb: false,
                 model: None,
+                transport: None,
             };
             for field in fields {
                 match field.split_once(':') {
                     Some(("usb", _)) => entry.usb = true,
                     Some(("model", m)) => entry.model = Some(m.replace('_', " ")),
+                    Some(("transport_id", t)) => entry.transport = Some(t.to_string()),
                     _ => {}
                 }
             }
@@ -84,6 +88,7 @@ mod tests {
                 state: "device".into(),
                 usb: true,
                 model: Some("Quest 3".into()),
+                transport: Some("1".into()),
             }
         );
         assert_eq!((list[1].state.as_str(), list[1].usb), ("unauthorized", true));

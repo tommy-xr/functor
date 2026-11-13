@@ -47,6 +47,8 @@ pub struct Attached {
     pub state: CableState,
     /// Its pairing is being written.
     pub pairing: bool,
+    /// "Pair over the cable" is offered ([`cable_pairable`]).
+    pub pairable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +397,7 @@ pub fn pair_by_cable(
     if let Some(a) = devices.attached.iter_mut().find(|a| a.serial == serial) {
         a.pairing = true;
     }
+    refresh(devices);
     Ok(LinkCommand::PairByCable {
         serial: serial.to_string(),
         replace,
@@ -640,8 +643,21 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
             }
         }
     }
-    devices.headset = headset(devices);
+    refresh(devices);
     (*devices != before, commands)
+}
+
+/// The state derived from the rest: the title word, what can pair by cable.
+fn refresh(devices: &mut Devices) {
+    devices.headset = headset(devices);
+    let pairable: Vec<bool> = devices
+        .attached
+        .iter()
+        .map(|a| cable_pairable(devices, a))
+        .collect();
+    for (a, p) in devices.attached.iter_mut().zip(pairable) {
+        a.pairable = p;
+    }
 }
 
 /// Allow request `request`, unless it has ended or expired; it then waits
@@ -1061,6 +1077,7 @@ mod tests {
             name: "Quest 3".into(),
             state,
             pairing: false,
+            pairable: false,
         }
     }
 
@@ -1123,7 +1140,9 @@ mod tests {
     fn cable_pairing_is_one_at_a_time_and_its_outcome_adds_the_card() {
         let mut d = started(&[]);
         cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        assert!(d.attached[0].pairable);
         assert!(pair_by_cable(&mut d, "s", false).is_ok());
+        assert!(!d.attached[0].pairable);
         assert!(pair_by_cable(&mut d, "s", false).is_err(), "already writing");
         // adb's next look keeps it marked as being written.
         cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
@@ -1144,7 +1163,11 @@ mod tests {
         // Then it links over Wi-Fi as any paired headset does.
         connect(&mut d, 3, "x", "0.1.0", 20);
         assert!(matches!(state(&d, "x"), DeviceState::Connected { .. }));
+        assert!(!d.attached[0].pairable);
         assert!(pair_by_cable(&mut d, "s", false).is_err(), "ours already");
+        // Forgotten here: it can pair again.
+        on_link(&mut d, LinkEvent::Forgotten { device: "x".into() }, 30);
+        assert!(d.attached[0].pairable);
     }
 
     #[test]

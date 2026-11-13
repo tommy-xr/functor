@@ -1,15 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import type { Device, Devices, PairRequest } from "./generated/protocol";
+import type { Attached, Device, Devices, PairRequest } from "./generated/protocol";
 import type { Send } from "./socket";
-import { clock, details, fixFor, secondsLeft, spacedCode, WORDS } from "./devices-model";
+import {
+  CABLE_ROW,
+  cableFor,
+  cableOnly,
+  cableWords,
+  clock,
+  details,
+  fixFor,
+  pairedWith,
+  secondsLeft,
+  spacedCode,
+  WORDS,
+} from "./devices-model";
 import { relativeTime } from "./tasks-model";
 import { useNow } from "./TasksPane";
 
-/** Rail → Devices: a card per paired device (and per request), each with its state's one fix. */
+/**
+ * Rail → Devices: a card per paired device (and per request, and per
+ * headset on a USB cable that has no card), each with its state's one fix.
+ */
 export function DevicesPane({ devices, online, send }: { devices: Devices | undefined; online: boolean; send: Send }) {
   const now = useNow(1000);
   const list = devices?.list ?? [];
   const requests = devices?.requests ?? [];
+  const attached = devices?.attached ?? [];
+  const loose = devices ? cableOnly(devices) : [];
   return (
     <aside className="pane pane-devices" aria-label="Devices">
       <h2 className="pane-title">Devices</h2>
@@ -17,14 +34,19 @@ export function DevicesPane({ devices, online, send }: { devices: Devices | unde
         <RequestCard key={r.request} request={r} now={now} online={online} send={send} />
       ))}
       {list.map((d) => (
-        <DeviceCard key={d.id} device={d} now={now} online={online} send={send} />
+        <DeviceCard key={d.id} device={d} cable={cableFor(d, attached)} now={now} online={online} send={send} />
       ))}
-      {list.length === 0 && requests.length === 0 && <NoDevices listening={devices?.listening ?? null} />}
+      {loose.map((a) => (
+        <CableCard key={a.serial} cable={a} online={online} send={send} />
+      ))}
+      {list.length === 0 && requests.length === 0 && loose.length === 0 && (
+        <NoDevices listening={devices?.listening ?? null} adb={devices?.adb ?? false} />
+      )}
     </aside>
   );
 }
 
-function NoDevices({ listening }: { listening: string | null }) {
+function NoDevices({ listening, adb }: { listening: string | null; adb: boolean }) {
   return (
     <section className="card device-card" data-testid="devices-empty">
       <div className="device-head">
@@ -34,7 +56,12 @@ function NoDevices({ listening }: { listening: string | null }) {
       {listening ? (
         <>
           <p>Open Functor in the headset on the same Wi-Fi. It finds this computer and shows a code; you allow it here.</p>
-          <p className="hint">Nothing to type in the headset. Pairing over a cable comes later.</p>
+          <p className="hint">Nothing to type in the headset.</p>
+          <p className="hint">
+            {adb
+              ? "Or plug it into this computer with a USB cable: it pairs with no code."
+              : "To pair over a USB cable instead, install Android platform-tools (adb)."}
+          </p>
         </>
       ) : (
         <p className="hint">The device link is off, so headsets cannot find this computer. Start the app without --no-device-link.</p>
@@ -103,10 +130,96 @@ function RequestCard({ request: r, now, online, send }: { request: PairRequest; 
   );
 }
 
-function DeviceCard({ device: d, now, online, send }: { device: Device; now: number; online: boolean; send: Send }) {
+/**
+ * "Pair over the cable": one click, no code. A headset paired with another
+ * desktop asks first, in place, before its pairing is replaced.
+ */
+function CablePair({ cable: a, online, send }: { cable: Attached; online: boolean; send: Send }) {
+  const [confirming, setConfirming] = useState(false);
+  const held = pairedWith(a);
+  const other = held?.with === "other" ? held.name : null;
+  const pair = (replace: boolean) => {
+    setConfirming(false);
+    send({ type: "pair_by_cable", serial: a.serial, replace });
+  };
+  if (a.pairing) {
+    return (
+      <div className="actions device-actions">
+        <button type="button" className="button button-primary" disabled>
+          Pairing…
+        </button>
+      </div>
+    );
+  }
+  if (!a.pairable) return null;
+  if (confirming && other) {
+    return (
+      <div className="task-confirm device-confirm" role="group" aria-label={`Replace the pairing with ${other}`}>
+        <p>Pair it with this computer instead? {other} will no longer reach it.</p>
+        <div className="actions device-actions">
+          <button type="button" className="button" onClick={() => setConfirming(false)}>
+            Keep
+          </button>
+          <button type="button" className="button button-danger" disabled={!online} onClick={() => pair(true)}>
+            Replace
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="actions device-actions">
+      <button
+        type="button"
+        className="button button-primary"
+        disabled={!online}
+        onClick={() => (other ? setConfirming(true) : pair(false))}
+      >
+        Pair over the cable
+      </button>
+    </div>
+  );
+}
+
+/** A headset on a USB cable with no card of its own: not paired here. */
+function CableCard({ cable: a, online, send }: { cable: Attached; online: boolean; send: Send }) {
+  const { line, fix } = cableWords(a);
+  return (
+    <section className="card device-card" data-testid="cable-card" data-state={a.state.state} aria-label={`${a.name}, on the USB cable`}>
+      <div className="device-head">
+        <span className="device-name">{a.name}</span>
+        <span className="pill pill-hs-not_paired">{WORDS.not_paired}</span>
+      </div>
+      <dl className="rows">
+        <div>
+          <dt>Found on</dt>
+          <dd>USB cable</dd>
+        </div>
+      </dl>
+      <p>{line}</p>
+      {fix && <p className="hint">{fix}</p>}
+      <CablePair cable={a} online={online} send={send} />
+    </section>
+  );
+}
+
+function DeviceCard({
+  device: d,
+  cable,
+  now,
+  online,
+  send,
+}: {
+  device: Device;
+  /** The headset on a USB cable, if it is. */
+  cable: Attached | null;
+  now: number;
+  online: boolean;
+  send: Send;
+}) {
   const [confirming, setConfirming] = useState(false);
   const word = d.state.state;
-  const fix = fixFor(d);
+  const fix = fixFor(d, cable);
   const rows: [string, string][] =
     d.state.state === "connected"
       ? details(d)
@@ -114,8 +227,17 @@ function DeviceCard({ device: d, now, online, send }: { device: Device; now: num
           ["Last seen", relativeTime(d.last_seen, now) || "never"],
           ["Headset app", d.app_version ?? "—"],
         ];
+  if (cable) rows.push(["Cable", CABLE_ROW[cable.state.state]]);
   const reason =
     d.state.state === "cannot_reach" ? `Last error: ${d.state.reason}` : d.state.state === "needs_update" ? d.state.reason : null;
+  // On the cable, its own file says whether it still holds this pairing.
+  const held = cable && pairedWith(cable);
+  const lost =
+    !d.paired || !held || held.with === "this"
+      ? null
+      : held.with === "other"
+        ? `The headset is now paired with ${held.name}.`
+        : "The headset no longer holds this pairing.";
   return (
     <section className="card device-card" data-testid="device-card" data-state={word} aria-label={`${d.name}, ${WORDS[word]}`}>
       <div className="device-head">
@@ -131,7 +253,10 @@ function DeviceCard({ device: d, now, online, send }: { device: Device; now: num
         ))}
       </dl>
       {reason && <p className="device-reason">{reason}</p>}
-      {fix && <p className="hint">{fix}</p>}
+      {lost && <p className="device-reason">{lost}</p>}
+      {/* Pairing again over the cable is the fix then. */}
+      {fix && !lost && <p className="hint">{fix}</p>}
+      {d.paired && cable && <CablePair cable={cable} online={online} send={send} />}
       {d.paired &&
         (confirming ? (
           <div className="task-confirm device-confirm" role="group" aria-label={`Forget ${d.name}`}>

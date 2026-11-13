@@ -147,9 +147,13 @@ serial: string, name: string, state: CableState,
 /**
  * Its pairing is being written.
  */
-pairing: boolean, };
+pairing: boolean, 
+/**
+ * "Pair over the cable" is offered ([`cable_pairable`]).
+ */
+pairable: boolean, };
 
-export type CableState = { "state": "unauthorized" } | { "state": "offline" } | { "state": "no_app" } | { "state": "not_debuggable" } | { "state": "ready", device: string, paired: HeadsetPairing, };
+export type CableState = { "state": "unauthorized" } | { "state": "offline" } | { "state": "no_app" } | { "state": "not_debuggable" } | { "state": "ready", device: string | null, paired: HeadsetPairing, };
 
 export type Call = { kind: CallKind, 
 /**
