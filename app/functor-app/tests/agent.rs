@@ -411,6 +411,23 @@ fn cli_task_over_its_input_budget_stops_and_writes_metrics() {
     assert_eq!(m["calls"], serde_json::json!({"game": 1}));
     assert_eq!(m["model"], "claude-model");
     assert!(m["first_event_ms"].as_u64().unwrap() <= m["wall_ms"].as_u64().unwrap());
+
+    // Over budget on its final usage, a run that finishes is not cut.
+    let lines = [
+        lines[0],
+        lines[2],
+        r#"{"ms":200,"event":{"type":"finished","ok":true,"summary":null}}"#,
+    ];
+    std::fs::write(&fixture, lines.join("\n")).unwrap();
+    let out = task_command(repo.path(), home.path(), &functor, &fixture, "hi")
+        .arg("--max-input=5")
+        .arg("--metrics")
+        .arg(&metrics)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+    assert_eq!((&m["ended"], &m["cut"]), (&Value::from("ok"), &Value::Null));
 }
 
 /// Runs a task through the CLI with `functor` as the tool server; checks

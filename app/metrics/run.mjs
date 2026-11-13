@@ -49,7 +49,9 @@ export function workspace(scenario, tmp) {
     if (!text.includes(old)) throw new Error(`${scenario.id}: ${file} has no ${JSON.stringify(old)}`);
     fs.writeFileSync(path.join(ws, file), text.replace(old, replacement));
   }
-  for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "scenario"]]) {
+  // Tagged, so the checks also see edits the agent commits.
+  const steps = [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "scenario"], ["tag", "scenario"]];
+  for (const args of steps) {
     const out = git(ws, ...args);
     if (out.status !== 0) throw new Error(`git ${args.join(" ")}: ${out.stderr}`);
   }
@@ -67,14 +69,19 @@ export function judge(checks, ws, metrics, functor) {
   return failures;
 }
 
+/** Files that differ from the scenario's start, committed or not. */
+function changedFiles(ws) {
+  const lines = (...args) => git(ws, ...args).stdout.split("\n").filter(Boolean);
+  return [...lines("diff", "--name-only", "scenario"), ...lines("ls-files", "--others", "--exclude-standard")];
+}
+
 function checkOne(check, ws, metrics, functor) {
   if (check.unchanged) {
-    const status = git(ws, "status", "--porcelain").stdout.trim();
-    return status && `files changed: ${status.split("\n").map((l) => l.slice(3)).join(", ")}`;
+    const changed = changedFiles(ws);
+    return changed.length > 0 && `files changed: ${changed.join(", ")}`;
   }
   if (check.changed) {
-    const diff = git(ws, "status", "--porcelain", "--", check.changed).stdout.trim();
-    return !diff && `${check.changed} unchanged`;
+    return !changedFiles(ws).includes(check.changed) && `${check.changed} unchanged`;
   }
   if (check.matches) {
     const { file, pattern } = check.matches;
@@ -93,7 +100,9 @@ function checkOne(check, ws, metrics, functor) {
     fs.writeFileSync(file, check.expect.map((e) => `expect ${e}\n`).join(""));
     const out = spawnSync(functor, ["-d", ws, "test"], { encoding: "utf8" });
     fs.rmSync(file);
-    return out.status !== 0 && `expect failed: ${check.expect.join("; ")}`;
+    // `functor test` runs the agent's expects too: name the first error.
+    const error = `${out.stdout}${out.stderr}`.split("\n").find((l) => l.startsWith("error:"));
+    return out.status !== 0 && `expect failed: ${check.expect.join("; ")}: ${error ?? `exit ${out.status}`}`;
   }
   if (check.functor) {
     const out = spawnSync(functor, ["-d", ws, check.functor], { encoding: "utf8" });
@@ -118,8 +127,10 @@ async function runScenario(scenario, { live, app, functor, rev }) {
     args.push("--metrics", metricsFile, "--max-input", String(MAX_INPUT));
     const timeout = live ? LIVE_TIMEOUT_S : FAKE_TIMEOUT_S;
     const { code, timedOut } = await run(app, args, env, timeout);
-    if (!fs.existsSync(metricsFile)) throw new Error(`${scenario.id}: no metrics (exit ${code})`);
-    const m = JSON.parse(fs.readFileSync(metricsFile, "utf8"));
+    // None when the run never started (its session failed, say): a failed record.
+    const m = fs.existsSync(metricsFile)
+      ? JSON.parse(fs.readFileSync(metricsFile, "utf8"))
+      : { ended: `without metrics (exit ${code})` };
     if (timedOut) m.cut = `over ${timeout} s`;
     const failures = m.ended === "ok" ? judge(scenario.checks, ws, m, functor) : [`the run ended ${m.ended}`];
     return {
@@ -150,20 +161,24 @@ async function runScenario(scenario, { live, app, functor, rev }) {
 }
 
 /** Runs `cmd`, its output passed through to stderr; SIGINT after `timeout`
- *  seconds (the app then stops the run and still writes its metrics). */
+ *  seconds (the app then stops the run and still writes its metrics), and
+ *  SIGKILL if it has not exited 15 s later. */
 function run(cmd, args, env, timeout) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.pipe(process.stderr);
     child.stderr.pipe(process.stderr);
     let timedOut = false;
+    let kill;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGINT");
+      kill = setTimeout(() => child.kill("SIGKILL"), 15_000);
     }, timeout * 1000);
     child.on("error", reject);
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(kill);
       resolve({ code, timedOut });
     });
   });
@@ -195,7 +210,7 @@ export function table(records) {
   return lines.join("\n") + "\n";
 }
 
-/** `b` against `a`, per scenario both ran. */
+/** `b` against `a`, per scenario either ran. */
 export function compare(a, b) {
   const delta = (x, y) => {
     if (x == null || y == null) return `${x ?? "–"} → ${y ?? "–"}`;
@@ -208,19 +223,20 @@ export function compare(a, b) {
     "| scenario | outcome | wall ms | tool calls | input tokens | output tokens |",
     "| --- | --- | --- | --- | --- | --- |",
   ];
-  for (const x of a) {
-    const y = b.find((r) => r.scenario === x.scenario);
-    if (!y) continue;
-    const outcome = `${x.pass ? "pass" : "fail"} → ${y.pass ? "pass" : "fail"}`;
+  const outcome = (r) => (!r ? "(missing)" : r.pass ? "pass" : "fail");
+  for (const id of new Set([...a, ...b].map((r) => r.scenario))) {
+    const x = a.find((r) => r.scenario === id);
+    const y = b.find((r) => r.scenario === id);
+    const d = (key) => delta(x?.[key], y?.[key]);
     lines.push(
-      `| ${x.scenario} | ${outcome} | ${delta(x.wall_ms, y.wall_ms)} | ${delta(x.tool_calls, y.tool_calls)} | ` +
-        `${delta(x.input_tokens, y.input_tokens)} | ${delta(x.output_tokens, y.output_tokens)} |`,
+      `| ${id} | ${outcome(x)} → ${outcome(y)} | ${d("wall_ms")} | ${d("tool_calls")} | ` +
+        `${d("input_tokens")} | ${d("output_tokens")} |`,
     );
   }
   return lines.join("\n") + "\n";
 }
 
-const readJsonl = (file) =>
+export const readJsonl = (file) =>
   fs
     .readFileSync(file, "utf8")
     .split("\n")
@@ -234,6 +250,10 @@ async function main(argv) {
   };
   if (argv.includes("--compare")) {
     const i = argv.indexOf("--compare");
+    if (!argv[i + 2]) {
+      console.error("usage: --compare a.jsonl b.jsonl");
+      return 2;
+    }
     process.stdout.write(compare(readJsonl(argv[i + 1]), readJsonl(argv[i + 2])));
     return 0;
   }
@@ -264,7 +284,12 @@ async function main(argv) {
   const records = [];
   for (const scenario of scenarios) {
     console.error(`[metrics] ${scenario.id}`);
-    const record = await runScenario(scenario, { live, app, functor, rev });
+    let record;
+    try {
+      record = await runScenario(scenario, { live, app, functor, rev });
+    } catch (e) {
+      record = { scenario: scenario.id, mode: live ? "live" : "fake", rev, pass: false, reason: String(e), cut: "error" };
+    }
     records.push(record);
     fs.appendFileSync(out, JSON.stringify(record) + "\n");
     if (live && record.cut) {

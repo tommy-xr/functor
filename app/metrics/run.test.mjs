@@ -10,7 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { compare, judge, workspace } from "./run.mjs";
+import { compare, judge, readJsonl, workspace } from "./run.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const scenarios = JSON.parse(fs.readFileSync(path.join(here, "scenarios.json"), "utf8"));
@@ -19,11 +19,7 @@ const functor = process.env.FUNCTOR_BIN ?? path.join(here, "../../target/debug",
 
 /** What a fixture records: tool calls by name, text blocks, the last usage. */
 function recorded(id) {
-  const lines = fs
-    .readFileSync(path.join(here, "fixtures", `${id}.jsonl`), "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l));
+  const lines = readJsonl(path.join(here, "fixtures", `${id}.jsonl`));
   const tools = {};
   let messages = 0;
   let usage = {};
@@ -36,16 +32,19 @@ function recorded(id) {
   return { tools, messages, input: usage.input, output: usage.output };
 }
 
-test("every scenario reproduces its fixture's numbers and passes", () => {
+/** A temp dir removed after test `t`. */
+function tempDir(t) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "functor-metrics-test-"));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  return tmp;
+}
+
+test("every scenario reproduces its fixture's numbers and passes", (t) => {
+  const tmp = tempDir(t);
   const out = path.join(tmp, "fake.jsonl");
   const run = spawnSync(process.execPath, [path.join(here, "run.mjs"), "--out", out], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  const records = fs
-    .readFileSync(out, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => JSON.parse(l));
+  const records = readJsonl(out);
   assert.deepEqual(
     records.map((r) => r.scenario),
     scenarios.map((s) => s.id),
@@ -65,24 +64,36 @@ test("every scenario reproduces its fixture's numbers and passes", () => {
     assert.equal(r.messages, want.messages, r.scenario);
     assert.equal(r.input_tokens, want.input, r.scenario);
     assert.equal(r.output_tokens, want.output, r.scenario);
-    assert.ok(r.first_event_ms <= r.wall_ms, r.scenario);
+    assert.ok(r.first_event_ms != null && r.first_event_ms <= r.wall_ms, r.scenario);
   }
   const md = fs.readFileSync(path.join(tmp, "fake.md"), "utf8");
   for (const s of scenarios) assert.match(md, new RegExp(`^\\| ${s.id} \\| pass \\|`, "m"));
-  assert.doesNotMatch(compare(records, records), /\(\+[1-9]|\(-/);
-  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-test("checks fail on the wrong outcome, with the reason", () => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "functor-metrics-test-"));
+test("compare shows each scenario's deltas, and those on one side only", () => {
+  const a = [{ scenario: "x", pass: true, rev: "a", wall_ms: 1000, tool_calls: 4, input_tokens: 200, output_tokens: 10 }];
+  const b = [
+    { scenario: "x", pass: false, rev: "b", wall_ms: 500, tool_calls: 4, input_tokens: 300, output_tokens: 10 },
+    { scenario: "y", pass: true, rev: "b" },
+  ];
+  const rows = compare(a, b).split("\n");
+  assert.ok(rows.includes("| x | pass → fail | 1000 → 500 (-50%) | 4 → 4 (+0%) | 200 → 300 (+50%) | 10 → 10 (+0%) |"));
+  assert.ok(rows.includes("| y | (missing) → pass | – → – | – → – | – → – | – → – |"));
+});
+
+test("checks fail on the wrong outcome, with the reason", (t) => {
+  const tmp = tempDir(t);
   const byId = Object.fromEntries(scenarios.map((s) => [s.id, s]));
   const ws = workspace(byId["two-step"], tmp);
   // Nothing changed: every check of an edit fails.
-  assert.deepEqual(judge(byId["two-step"].checks, ws, {}, functor), [
+  const failed = judge(byId["two-step"].checks, ws, {}, functor);
+  assert.deepEqual(failed.slice(0, 3), [
     "game.fun unchanged",
-    'game.fun has no /Ui\\.button\\("-1"/',
-    "expect failed: Game.update(Game.init, Game.Dec).count == Game.init.count - 1.0",
+    'game.fun has no /Ui\\.button\\("-1", *Dec\\)/',
+    "game.fun has no /expect[^\\n]*\\bDec\\b/",
   ]);
+  assert.match(failed[3], /^expect failed: Game\.update\(Game\.init, Game\.Dec\)\S* .*: error: /);
+  assert.equal(failed.length, 4);
   // A wrong answer, a tool call and a stray file fail the question's checks.
   fs.writeFileSync(path.join(ws, "notes.txt"), "x");
   const metrics = { answer: "ready, I guess not", tool_calls: 1 };
@@ -91,5 +102,10 @@ test("checks fail on the wrong outcome, with the reason", () => {
     "1 tool calls (max 0)",
     "the answer has no /^\\W*ready\\W*$/i",
   ]);
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // A file the agent commits still counts as changed.
+  const git = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" };
+  spawnSync("git", [...git, "add", "-A"], { cwd: ws, env });
+  assert.equal(spawnSync("git", [...git, "commit", "-qm", "agent"], { cwd: ws, env }).status, 0);
+  assert.deepEqual(judge([{ unchanged: true }], ws, {}, functor), ["files changed: notes.txt"]);
 });

@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::activity::{classify, CallKind};
 use crate::tasks::{Harness, Item, Task};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct RunMetrics {
     pub harness: Harness,
     /// As the agent reported it.

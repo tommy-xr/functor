@@ -45,7 +45,8 @@
     "prompt": "Add a Dec message that subtracts 1 from the count, a \"-1\" button next to the \"+1\" button that sends it, and an expect test for Dec.",
     "checks": [
       { "changed": "game.fun" },
-      { "matches": { "file": "game.fun", "pattern": "Ui\\.button\\(\"-1\"" } },
+      { "matches": { "file": "game.fun", "pattern": "Ui\\.button\\(\"-1\", *Dec\\)" } },
+      { "matches": { "file": "game.fun", "pattern": "expect[^\\n]*\\bDec\\b" } },
       { "expect": ["Game.update(Game.init, Game.Dec).count == Game.init.count - 1.0"] },
       { "functor": "test" }
     ]

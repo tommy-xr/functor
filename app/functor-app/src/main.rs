@@ -33,6 +33,8 @@ use session::Driver;
 
 /// How long `--start-session` waits for the first `/state`.
 const START_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a `task` run over `--max-input` has to finish before it is cut.
+const CUT_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Parser, Debug)]
 #[command(about = "The Functor desktop app")]
@@ -136,7 +138,8 @@ enum Cmd {
         #[arg(long, value_name = "PATH")]
         metrics: Option<PathBuf>,
 
-        /// Stop the run once its cumulative input tokens pass this.
+        /// Stop the run once its cumulative input tokens pass this. Claude
+        /// reports usage as it goes; Codex only at the end, too late to stop.
         #[arg(long, value_name = "TOKENS")]
         max_input: Option<u64>,
     },
@@ -519,6 +522,8 @@ async fn run_task(
     let mut first_event = None;
     // Why the run was stopped before it ended.
     let mut cut = None;
+    // When the run went over `--max-input` without finishing.
+    let mut over: Option<std::time::Instant> = None;
     let signal = loop {
         if args.follow {
             printed = print_settled(&transcript(&state), printed);
@@ -527,8 +532,13 @@ async fn run_task(
         let Some(run) = &task.run else {
             break None;
         };
-        if let (Some(usage), Some(max)) = (run.usage, args.max_input) {
-            if usage.input > max {
+        let finished = matches!(task.transcript.last(), Some(Item::Finished { .. }));
+        if let (Some(usage), Some(max), false) = (run.usage, args.max_input, finished) {
+            // A finishing run's last usage comes just before its `finished`,
+            // so a run over budget gets a moment to finish before it is cut.
+            if usage.input > max
+                && over.get_or_insert_with(std::time::Instant::now).elapsed() >= CUT_GRACE
+            {
                 cut = Some(format!("over {max} input tokens"));
                 break None;
             }
@@ -536,6 +546,7 @@ async fn run_task(
         tokio::select! {
             biased;
             signal = &mut shutdown => break Some(signal),
+            _ = tokio::time::sleep(CUT_GRACE), if over.is_some() => {}
             Some(event) = events.recv() => {
                 let agent = matches!(&event, Event::Run { task, event: RunEvent::Agent(_), .. } if *task == id);
                 if agent && first_event.is_none() {

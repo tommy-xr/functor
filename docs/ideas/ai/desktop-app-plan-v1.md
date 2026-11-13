@@ -287,5 +287,5 @@ Not reported by the pinned `mis-agent` (each needs an upstream change to its
 `Usage` event): cached vs uncached input (Claude's `cache_read_input_tokens` /
 `cache_creation_input_tokens`, Codex's `cached_input_tokens` are summed into
 `input`), usage per API message, the number of API turns (Claude's
-`num_turns`), cost (`total_cost_usd`), API time (`duration_api_ms`), and
+`num_turns`; agent messages and tool calls stand in), cost (`total_cost_usd`), API time (`duration_api_ms`), and
 Codex's `reasoning_output_tokens`.
