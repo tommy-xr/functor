@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::activity::{classify, CallKind};
+use crate::decision::{style_flags, Check, Report};
+use crate::review::{Review, ReviewState};
 use crate::tasks::{Harness, Item, Task};
 
 #[derive(Debug, Serialize)]
@@ -28,6 +30,43 @@ pub struct RunMetrics {
     pub output_tokens: Option<u64>,
     /// The last agent text block.
     pub answer: Option<String>,
+}
+
+/// A task's review (D31): its outcome, usage and the report it wrote.
+#[derive(Debug, Serialize)]
+pub struct ReviewMetrics {
+    pub harness: Harness,
+    pub model: Option<String>,
+    /// `preparing`, `prepared` or `failed: <reason>`.
+    pub ended: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// The review's report, verbatim, when it wrote one.
+    pub summary: Option<String>,
+    pub notes: Option<Vec<String>>,
+    pub evidence: Vec<Check>,
+    /// [`style_flags`] on its summary.
+    pub style: Vec<String>,
+}
+
+/// `review`'s numbers, with `report` when the review wrote it.
+pub fn review_metrics(review: &Review, report: Option<&Report>) -> ReviewMetrics {
+    let report = report.filter(|r| r.reviewed).cloned().unwrap_or_default();
+    ReviewMetrics {
+        harness: review.harness,
+        model: review.model.clone(),
+        ended: match &review.state {
+            ReviewState::Preparing => "preparing".to_string(),
+            ReviewState::Prepared => "prepared".to_string(),
+            ReviewState::Failed { reason } => format!("failed: {reason}"),
+        },
+        input_tokens: review.usage.map(|u| u.input),
+        output_tokens: review.usage.map(|u| u.output),
+        style: report.summary.as_deref().map(style_flags).unwrap_or_default(),
+        summary: report.summary,
+        notes: report.notes,
+        evidence: report.evidence,
+    }
 }
 
 /// `task`'s last run: the items after its last user message.
@@ -96,6 +135,7 @@ mod tests {
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             change: None,
             reverting: false,
             created_at: None,

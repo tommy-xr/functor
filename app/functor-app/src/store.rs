@@ -1,7 +1,8 @@
 //! Tasks on disk: one JSON file per task (`tasks::to_stored`) under
 //! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
-//! agent in `<home>/projects/<project key>/harness.json` and its canvas
-//! layout in `layout.json` beside it, where home is
+//! agent in `<home>/projects/<project key>/harness.json`, its canvas
+//! layout in `layout.json` and its review setting in `review.json` beside
+//! it, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`; the recent projects, app-wide,
 //! in `<home>/recents.json`. Never inside the user's repo.
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Harness, Layout, Recent, Task};
+use functor_app_core::{AppState, Harness, Layout, Recent, ReviewSetting, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -40,6 +41,10 @@ fn harness_file(home: &Path, dir: &Path) -> PathBuf {
 
 fn layout_file(home: &Path, dir: &Path) -> PathBuf {
     project_home(home, dir).join("layout.json")
+}
+
+fn review_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("review.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -183,6 +188,17 @@ pub fn load_layouts(home: &Path, state: &AppState) -> BTreeMap<String, Layout> {
 /// Writes `layout` for the project at `dir`.
 pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
     save_json(&layout_file(home, dir), layout)
+}
+
+/// Each discovered project's review setting; a missing or unreadable file
+/// is the default.
+pub fn load_reviews(home: &Path, state: &AppState) -> BTreeMap<String, ReviewSetting> {
+    load_each(home, state, review_file)
+}
+
+/// Writes `setting` for the project at `dir`.
+pub fn save_review(home: &Path, dir: &Path, setting: &ReviewSetting) -> io::Result<()> {
+    save_json(&review_file(home, dir), setting)
 }
 
 /// Each discovered project's value from its `file`, by project path;
@@ -406,6 +422,7 @@ mod tests {
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User {
@@ -453,6 +470,7 @@ mod tests {
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User {

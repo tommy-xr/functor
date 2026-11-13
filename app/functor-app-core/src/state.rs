@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::activity::{activities, Activity};
 use crate::agent_view::{
-    agent_view, app_context, auto_apply, prune_highlight, refresh_contexts, step_clicked,
-    AppContext, Highlight, ViewReply, ViewRequest,
+    agent_view, app_context, auto_apply, prune_highlight, publish_review, refresh_contexts,
+    step_clicked, AppContext, Highlight, ViewReply, ViewRequest,
 };
 use crate::changes::Change;
 use crate::creation::{
@@ -21,10 +21,14 @@ use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
+use crate::review::{
+    brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
+    ReviewState,
+};
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
-    apply, derive_status, end_run, has_change, renamed, stop_run, title, Harness, Item, Run,
-    RunEvent, Spoken, Task, TaskStatus,
+    apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
+    Item, Run, RunEvent, Spoken, Task, TaskStatus, Usage,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
 use crate::voice::{self, Route, Stage, Utterance};
@@ -74,6 +78,14 @@ pub struct AppState {
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
     pub harness_choice: BTreeMap<String, Harness>,
+    /// Per project path, how its changes are reviewed (D31); absent: the
+    /// default.
+    pub review_settings: BTreeMap<String, ReviewSetting>,
+    /// The shell can run reviews (off for a fake agent without a review
+    /// fixture, and for `task` without `--review`).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub can_review: bool,
     /// Per project path, its canvas layout; every project has one.
     pub layouts: BTreeMap<String, Layout>,
     /// Recent projects, most recent first; kept for the app, not the folder.
@@ -185,6 +197,8 @@ impl AppState {
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
+            review_settings: BTreeMap::new(),
+            can_review: false,
             layouts,
             recents: Vec::new(),
             native_picker: false,
@@ -295,11 +309,19 @@ pub enum Event {
         state: EvidenceState,
     },
     /// Run `run` of task `task`'s tool server asks to change the view
-    /// (`POST /agent/view` with the run's secret); answered with `ViewReply`.
+    /// (`POST /agent/view` with the run's secret) or, from its `review`,
+    /// to report; answered with `ViewReply`.
     AgentView {
         task: u64,
         run: u64,
+        review: bool,
         request: ViewRequest,
+    },
+    /// From the shell, about task `task`'s review of run `run`'s change.
+    Review {
+        task: u64,
+        run: u64,
+        event: ReviewEvent,
     },
     /// From the shell's device link.
     Link(LinkEvent),
@@ -411,6 +433,14 @@ pub enum Command {
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
     StopRun { task: u64, run: u64 },
+    /// Start a review (D31), answering with `Event::Review`s that end in
+    /// `Ended`.
+    StartReview(Box<ReviewSpec>),
+    /// Cancel task `task`'s review of run `run`, without waiting: it edits
+    /// nothing.
+    StopReview { task: u64, run: u64 },
+    /// Remember `setting` for the project at `dir`.
+    SaveReview { dir: PathBuf, setting: ReviewSetting },
     /// Write `task` (with its transcript) to the store for the project at `dir`.
     SaveTask { dir: PathBuf, task: Box<Task> },
     /// Remove task `task`'s file from the store for the project at `dir`;
@@ -563,6 +593,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::SetHarness { harness }) => {
             (set_harness(&mut state, harness, &mut commands), true)
         }
+        Event::Client(ClientMsg::SetReview { setting }) => {
+            (set_review(&mut state, setting, &mut commands), true)
+        }
         Event::Client(ClientMsg::Layout { op }) => {
             let changed = layout_op(&mut state, op, &mut commands);
             if changed {
@@ -599,8 +632,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::DeleteTask { task }) => {
             (delete_task(&mut state, task, &mut commands), false)
         }
-        Event::AgentView { task, run, request } => (
-            agent_view(&mut state, task, run, request, &mut commands),
+        Event::AgentView {
+            task,
+            run,
+            review,
+            request,
+        } => (
+            agent_view(&mut state, task, run, review, request, &mut commands),
             false,
         ),
         Event::Link(LinkEvent::Utterance {
@@ -612,6 +650,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             heard(&mut state, conn, utterance, text, context, &mut commands),
             false,
         ),
+        Event::Review { task, run, event } => {
+            (on_review(&mut state, task, run, event, &mut commands), false)
+        }
         Event::Link(event) => {
             if let LinkEvent::Failed { reason }
             | LinkEvent::CablePaired {
@@ -870,7 +911,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
             let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
-            (changed || shown || evidence, false)
+            let review = changed && ended && start_review(&mut state, task, run, &mut commands);
+            (changed || shown || evidence || review, false)
         }
         Event::TasksLoaded { tasks } => {
             state.tasks = tasks
@@ -886,6 +928,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                     {
                         e.state = EvidenceState::Withheld {
                             reason: "the app closed before the paths were taken".to_string(),
+                        };
+                    }
+                    if let Some(r) = t
+                        .review
+                        .as_mut()
+                        .filter(|r| r.state == ReviewState::Preparing)
+                    {
+                        r.state = ReviewState::Failed {
+                            reason: "the app closed before the review finished".to_string(),
                         };
                     }
                     t.status = derive_status(&t);
@@ -914,6 +965,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 .collect();
             for id in running {
                 stop_task(&mut state, id, &mut commands);
+            }
+            for task in &state.tasks {
+                stop_review(task, &mut commands);
             }
             (false, false)
         }
@@ -1094,6 +1148,10 @@ fn opened(
         return true;
     }
     stop(state, commands);
+    // Their results would land on the old folder's tasks.
+    for task in &state.tasks {
+        stop_review(task, commands);
+    }
     state.open_error = None;
     // Every workspace field, by name, so a new one is not left behind.
     let AppState {
@@ -1107,6 +1165,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        review_settings,
         layouts,
         // Derived from `tasks` at the end of the step.
         activity: _,
@@ -1115,6 +1174,7 @@ fn opened(
         no_gpu: _,
         start_on_open: _,
         harnesses: _,
+        can_review: _,
         recents: _,
         native_picker: _,
         open_error: _,
@@ -1148,6 +1208,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        review_settings,
         layouts,
         // The old folder's highlight could name a project of the same path.
         highlight: None,
@@ -1492,8 +1553,7 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
         return false;
     };
     if !state.harnesses.contains(&harness) {
-        let name = harness.name();
-        return reject(commands, format!("{name} is not available on this machine"));
+        return reject(commands, unavailable(harness));
     }
     if state.harness_choice.get(path) == Some(&harness) {
         return false;
@@ -1818,6 +1878,7 @@ fn new_task(
         moment: None,
         evidence: None,
         report: None,
+        review: None,
         created_at: stamp(state.now),
         updated_at: None,
         transcript: Vec::new(),
@@ -1920,6 +1981,7 @@ fn start_run(
     });
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
+    drop_review(task, commands);
     task.status = derive_status(task);
     commands.push(Command::StartRun(Box::new(RunSpec {
         task: id,
@@ -2128,6 +2190,11 @@ fn revert(state: &mut AppState, id: u64, tree: &str, commands: &mut Vec<Command>
     }
     let paths = change.paths();
     task.reverting = true;
+    // One preparing would read a tree half put back; a prepared one stays
+    // with its report until the revert ends.
+    if task.review.as_ref().is_some_and(|r| r.state == ReviewState::Preparing) {
+        drop_review(task, commands);
+    }
     commands.push(Command::Revert {
         task: id,
         baseline: task.baseline.clone().expect("reviewable"),
@@ -2187,9 +2254,20 @@ fn on_change(
         return false;
     }
     // Files changed after the run that reported on them: its report no
-    // longer speaks for the change.
+    // longer speaks for the change, nor does a review of it.
     if task.run.is_none() && task.change.as_ref().is_some_and(|c| c.tree != change.tree) {
         task.report = None;
+        // One still preparing says why it stopped.
+        stop_review(task, commands);
+        match &mut task.review {
+            Some(r) if r.state == ReviewState::Preparing => {
+                r.state = ReviewState::Failed {
+                    reason: "the files changed while the review ran".to_string(),
+                };
+                r.staged = None;
+            }
+            _ => task.review = None,
+        }
     }
     task.change = Some(change);
     task.status = derive_status(task);
@@ -2251,7 +2329,157 @@ fn on_evidence(
 fn end_evidence(task: &mut Task, commands: &mut Vec<Command>) {
     task.moment = None;
     task.report = None;
+    drop_review(task, commands);
     drop_files(task.evidence.take(), commands);
+}
+
+fn unavailable(harness: Harness) -> String {
+    format!("{} is not available on this machine", harness.name())
+}
+
+/// Records `setting` as the active project's review setting.
+fn set_review(state: &mut AppState, setting: ReviewSetting, commands: &mut Vec<Command>) -> bool {
+    let Some(path) = state.active.clone() else {
+        return false;
+    };
+    let setting = match setting.checked() {
+        Ok(setting) => setting,
+        Err(reason) => return reject(commands, reason),
+    };
+    if let Err(reason) = review_harness(setting.harness) {
+        return reject(commands, reason.to_string());
+    }
+    if let Some(h) = setting.harness.filter(|h| !state.harnesses.contains(h)) {
+        return reject(commands, unavailable(h));
+    }
+    if state.review_settings.get(&path) == Some(&setting) {
+        return false;
+    }
+    commands.push(Command::SaveReview {
+        dir: project_dir(Path::new(&state.repo_root), &path),
+        setting: setting.clone(),
+    });
+    state.review_settings.insert(path, setting);
+    true
+}
+
+/// Starts task `id`'s review of run `run`'s change (D31), once the run ended
+/// ok with a change for the user and the project's setting is on. A harness
+/// that is not installed fails it at once, saying so.
+fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Command>) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
+        return false;
+    };
+    let setting = (state.review_settings.get(&task.project).cloned()).unwrap_or_default();
+    let ready = task.status == TaskStatus::ReadyForReview && state.tracks_changes;
+    let (Some(baseline), Some(change)) = (&task.baseline, &task.change) else {
+        return false;
+    };
+    if !state.can_review || !setting.on || !ready {
+        return false;
+    }
+    // Only Claude's can be held read-only (`review_harness`), whatever the task's.
+    let harness = Harness::Claude;
+    let model = setting.model.or(default_model(harness).map(String::from));
+    let spec = ReviewSpec {
+        task: id,
+        run,
+        harness,
+        model: model.clone(),
+        instructions: setting.instructions,
+        dir: project_dir(&root, &task.project),
+        repo_root: root.clone(),
+        baseline: baseline.clone(),
+        tree: change.tree.clone(),
+        brief: brief(task),
+    };
+    let review_state = match (!state.harnesses.contains(&harness)).then(|| unavailable(harness)) {
+        None => {
+            commands.push(Command::StartReview(Box::new(spec)));
+            ReviewState::Preparing
+        }
+        Some(reason) => ReviewState::Failed { reason },
+    };
+    let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
+    task.review = Some(Review {
+        run,
+        harness,
+        model,
+        state: review_state,
+        usage: None,
+        staged: None,
+    });
+    commands.push(save(&root, task));
+    true
+}
+
+/// Applies a review's event; true when the task's summary changed.
+fn on_review(
+    state: &mut AppState,
+    id: u64,
+    run: u64,
+    event: ReviewEvent,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    // A cancelled or superseded review's late events find none preparing.
+    let Some(task) = state.tasks.iter_mut().find(|t| {
+        t.id == id && t.review.as_ref().is_some_and(|r| r.preparing(run))
+    }) else {
+        return false;
+    };
+    let review = task.review.as_mut().expect("found");
+    match event {
+        ReviewEvent::Agent(AgentEvent::Started { model, .. }) => {
+            review.model = model.or(review.model.take());
+            true
+        }
+        // Kept with the task, sent with the next change.
+        ReviewEvent::Agent(AgentEvent::Usage { input, output }) => {
+            review.usage = Some(Usage { input, output });
+            false
+        }
+        ReviewEvent::Agent(_) => false,
+        // The shell measured the files after it: a change since its start
+        // has already failed it (`on_change`), so its report stands.
+        ReviewEvent::Ended { error } => {
+            // A failure (a cut, the agent's, an unmeasured tree) voids its report.
+            let state = match error {
+                Some(reason) => ReviewState::Failed { reason },
+                None if publish_review(task, commands) => ReviewState::Prepared,
+                None => ReviewState::Failed {
+                    reason: "the review ended without a report".to_string(),
+                },
+            };
+            let review = task.review.as_mut().expect("found");
+            review.state = state;
+            review.staged = None;
+            commands.push(save(&root, task));
+            true
+        }
+    }
+}
+
+/// Cancels `task`'s review while it prepares; the shell drops its results.
+fn stop_review(task: &Task, commands: &mut Vec<Command>) {
+    if let Some(Review {
+        run,
+        state: ReviewState::Preparing,
+        ..
+    }) = &task.review
+    {
+        commands.push(Command::StopReview {
+            task: task.id,
+            run: *run,
+        });
+    }
+}
+
+/// `task`'s review is over, its change decided or replaced.
+fn drop_review(task: &mut Task, commands: &mut Vec<Command>) {
+    stop_review(task, commands);
+    task.review = None;
 }
 
 fn drop_files(evidence: Option<Evidence>, commands: &mut Vec<Command>) {
@@ -4339,6 +4567,297 @@ mod tests {
         assert_eq!(s.decisions[&1].reason, "The agent gave no report.");
     }
 
+    // Reviews (D31).
+
+    /// Task 1's first run, ended with `with` where reviews run; the end's
+    /// commands. Its agent reported first, when `agent_report`.
+    fn review_of(with: Change, agent_report: bool) -> (AppState, Vec<Command>) {
+        let s = AppState {
+            can_review: true,
+            ..tracked()
+        };
+        let (s, _) = update(s, new_task("Make it spin"));
+        let (mut s, _) = update(s, baseline(1, 0, "tree-1"));
+        if agent_report {
+            s.tasks[0].report = Some(crate::decision::Report {
+                summary: Some("I made it spin.".into()),
+                notes: Some(vec![]),
+                ..Default::default()
+            });
+        }
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", with));
+        update(s, ended(1, 0))
+    }
+
+    fn review_specs(commands: &[Command]) -> Vec<&ReviewSpec> {
+        (commands.iter())
+            .filter_map(|c| match c {
+                Command::StartReview(spec) => Some(&**spec),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn review_stops(commands: &[Command]) -> usize {
+        (commands.iter())
+            .filter(|c| matches!(c, Command::StopReview { task: 1, run: 0 }))
+            .count()
+    }
+
+    fn reviewed_event(event: ReviewEvent) -> Event {
+        Event::Review {
+            task: 1,
+            run: 0,
+            event,
+        }
+    }
+
+    fn review_ended(error: Option<&str>) -> Event {
+        let error = error.map(String::from);
+        reviewed_event(ReviewEvent::Ended { error })
+    }
+
+    /// The review's `report` (or, not `review`, the working run's).
+    fn report_from(review: bool) -> Event {
+        Event::AgentView {
+            task: 1,
+            run: 0,
+            review,
+            request: crate::agent_view::ViewRequest::Report {
+                summary: "The cube spins at 2 turns per second. Check the speed in the game."
+                    .into(),
+                notes: vec!["Nobody tried it with a gamepad.".into()],
+                evidence: vec![],
+                steps: vec![],
+            },
+        }
+    }
+
+    fn view_reply(commands: &[Command]) -> &crate::agent_view::ViewReply {
+        (commands.iter())
+            .find_map(|c| match c {
+                Command::ViewReply(reply) => Some(reply),
+                _ => None,
+            })
+            .expect("a reply")
+    }
+
+    fn review_state(s: &AppState) -> Option<&ReviewState> {
+        task(s, 1).review.as_ref().map(|r| &r.state)
+    }
+
+    #[test]
+    fn a_change_for_the_user_starts_one_review_whose_report_replaces_the_agents() {
+        let (s, commands) = review_of(one_file(2), true);
+        let specs = review_specs(&commands);
+        assert_eq!(specs.len(), 1, "{commands:?}");
+        let spec = specs[0];
+        assert_eq!((spec.task, spec.run, spec.harness), (1, 0, Harness::Claude));
+        assert_eq!(spec.model.as_deref(), Some("sonnet"), "a cheaper model");
+        assert_eq!((spec.baseline.as_str(), spec.tree.as_str()), ("tree-1", "now-2"));
+        assert_eq!(spec.dir, PathBuf::from("/repo/examples/a"));
+        assert!(spec.brief.contains("> Make it spin"), "{}", spec.brief);
+        assert!(spec.brief.contains("Summary: I made it spin."), "{}", spec.brief);
+        assert_eq!(review_state(&s), Some(&ReviewState::Preparing));
+        // While it prepares, the page stands on the agent's report.
+        assert_eq!(
+            s.decisions[&1].reason,
+            "No check was reported and no path was compared."
+        );
+
+        // Only the review reports; its report waits for its end (the files
+        // measured unchanged), then replaces the agent's.
+        let (same, commands) = update(s.clone(), report_from(false));
+        assert!(!view_reply(&commands).ok);
+        assert_eq!(task(&same, 1).report, task(&s, 1).report);
+        let (s, commands) = update(s, report_from(true));
+        let reply = view_reply(&commands);
+        assert!(reply.ok, "{reply:?}");
+        assert!(!task(&s, 1).report.as_ref().unwrap().reviewed, "held");
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, review_ended(None));
+        assert_eq!(review_state(&s), Some(&ReviewState::Prepared));
+        assert!(commands.iter().any(|c| matches!(c, Command::SaveTask { .. })));
+        let report = task(&s, 1).report.clone().expect("the review's");
+        assert!(report.reviewed);
+        assert_eq!(report.notes, Some(vec!["Nobody tried it with a gamepad.".into()]));
+        assert_eq!(s.decisions[&1].reason, "The review notes 1 thing.");
+        assert!(s.decisions[&1].style.is_empty());
+        // Late events and reports find no review preparing.
+        let (late, commands) = update(s.clone(), report_from(true));
+        assert!(!view_reply(&commands).ok);
+        assert_eq!(late.tasks, s.tasks);
+        // It comes back from the store as it was.
+        let back = crate::tasks::from_stored(&crate::tasks::to_stored(task(&s, 1))).unwrap();
+        assert_eq!(back.review, task(&s, 1).review);
+    }
+
+    #[test]
+    fn no_review_without_a_change_or_when_off_and_a_missing_agent_says_so() {
+        // An answer: no change.
+        let (s, commands) = review_of(Change::from_files(vec![], "tree-1".into()), false);
+        assert!(review_specs(&commands).is_empty());
+        assert_eq!(task(&s, 1).review, None);
+        // Turned off: the agent's own report is the page's.
+        let off = ReviewSetting {
+            on: false,
+            ..Default::default()
+        };
+        let (mut s, _) = update(
+            AppState {
+                can_review: true,
+                ..tracked()
+            },
+            client(ClientMsg::SetReview {
+                setting: off.clone(),
+            }),
+        );
+        assert_eq!(s.review_settings["examples/a"], off);
+        s.can_review = true;
+        let (s, _) = update(s, new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(review_specs(&commands).is_empty());
+        assert_eq!(task(&s, 1).review, None);
+        // Claude not installed fails it at once, with the reason.
+        let s = AppState {
+            can_review: true,
+            harnesses: vec![Harness::Codex],
+            ..tracked()
+        };
+        let (s, _) = update(s, new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(review_specs(&commands).is_empty());
+        let reason = "claude is not available on this machine".to_string();
+        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+        // Codex cannot be held read-only: refused as a setting, and a stored
+        // one is reviewed on Claude anyway.
+        let codex = ReviewSetting {
+            harness: Some(Harness::Codex),
+            ..Default::default()
+        };
+        let set = client(ClientMsg::SetReview {
+            setting: codex.clone(),
+        });
+        let (_, commands) = update(s, set);
+        assert_eq!(commands[..1], rejected(crate::review::NO_CODEX));
+        let mut s = AppState {
+            can_review: true,
+            ..tracked()
+        };
+        s.review_settings.insert("examples/a".into(), codex);
+        let (s, _) = update(s, new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(review_specs(&commands)[0].harness, Harness::Claude);
+        assert_eq!(review_state(&s), Some(&ReviewState::Preparing));
+    }
+
+    /// A Codex task's change is reviewed on Claude, and a check the agent
+    /// reported failed stays, so the verdict still leads with it.
+    #[test]
+    fn a_codex_tasks_review_runs_on_claude_and_keeps_failed_checks() {
+        let s = AppState {
+            can_review: true,
+            ..tracked()
+        };
+        let codex_task = Event::NewTask {
+            id: Ok(1),
+            message: "Make it spin".into(),
+            harness: Harness::Codex,
+            voice: None,
+        };
+        let (s, _) = update(s, codex_task);
+        let (mut s, _) = update(s, baseline(1, 0, "tree-1"));
+        s.tasks[0].report = Some(crate::decision::Report {
+            summary: Some("Done.".into()),
+            notes: Some(vec![]),
+            evidence: vec![crate::decision::Check {
+                ran: "functor test".into(),
+                result: "1 of 3 expects pass".into(),
+                ok: false,
+            }],
+            reviewed: false,
+        });
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(review_specs(&commands)[0].harness, Harness::Claude);
+        let (s, _) = update(s, report_from(true));
+        let (s, _) = update(s, review_ended(None));
+        let report = task(&s, 1).report.clone().unwrap();
+        assert!(report.reviewed);
+        assert_eq!(report.evidence[0].ran, "functor test");
+        assert_eq!(s.decisions[&1].reason, "A check failed: functor test.");
+    }
+
+    #[test]
+    fn a_failed_or_cut_review_leaves_the_page_as_it_was() {
+        // Cut after it reported: its report goes with it.
+        let (s, _) = update(review_of(one_file(2), true).0, report_from(true));
+        let (s, _) = update(s, review_ended(Some("cut: over 300000 input tokens")));
+        let reason = "cut: over 300000 input tokens".to_string();
+        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+        let report = task(&s, 1).report.as_ref().expect("the agent's stays");
+        assert!(!report.reviewed);
+        // One that ended without reporting says so.
+        let (s, _) = update(review_of(one_file(2), false).0, review_ended(None));
+        let reason = "the review ended without a report".to_string();
+        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+        assert_eq!(s.decisions[&1].reason, "The agent gave no report.");
+        // Usage is kept; a reload marks one in flight as cut by the close.
+        let (s, _) = review_of(one_file(2), false);
+        let usage = AgentEvent::Usage {
+            input: 41_000,
+            output: 900,
+        };
+        let (s, _) = update(s, reviewed_event(ReviewEvent::Agent(usage)));
+        let review = task(&s, 1).review.clone().unwrap();
+        assert_eq!(review.usage.map(|u| u.input), Some(41_000));
+        let tasks = s.tasks.clone();
+        let (s, _) = update(s, Event::TasksLoaded { tasks });
+        let reason = "the app closed before the review finished".to_string();
+        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+    }
+
+    #[test]
+    fn keep_revert_a_follow_up_or_an_edit_end_the_review() {
+        // Keep works at once, mid-review, and stops it.
+        let (s, _) = review_of(one_file(2), true);
+        let (kept, commands) = update(s.clone(), keep(1));
+        assert_eq!(task(&kept, 1).status, TaskStatus::Kept);
+        assert_eq!(review_stops(&commands), 1);
+        assert_eq!(task(&kept, 1).review, None);
+        // So does Revert, as it starts writing.
+        let (s2, commands) = update(s.clone(), revert(1));
+        assert!(task(&s2, 1).reverting, "{commands:?}");
+        assert_eq!(review_stops(&commands), 1);
+        assert_eq!(task(&s2, 1).review, None);
+        // A follow-up supersedes it.
+        let (s2, commands) = update(s.clone(), send(1, "Slower"));
+        assert_eq!(review_stops(&commands), 1);
+        assert_eq!(task(&s2, 1).review, None);
+        // Files changed while it ran (by hand, or by the review itself):
+        // stopped, its report void, and it says why.
+        let (s2, _) = update(s.clone(), report_from(true));
+        let (s2, commands) = update(s2, change(1, "tree-1", one_file(3)));
+        assert_eq!(review_stops(&commands), 1);
+        assert_eq!(task(&s2, 1).report, None);
+        let reason = "the files changed while the review ran".to_string();
+        assert_eq!(review_state(&s2), Some(&ReviewState::Failed { reason }));
+        // Late events of the stopped review change nothing.
+        let (late, _) = update(s2.clone(), review_ended(None));
+        assert_eq!(late.tasks, s2.tasks);
+    }
+
     // Path evidence (D38).
 
     fn moment(task: u64, moment: crate::evidence::Moment) -> Event {
@@ -6299,6 +6818,23 @@ mod tests {
         let (s, commands) = update(s, switch("examples/b"));
         assert!(s.session.as_ref().is_some_and(|x| x.status.is_live()));
         assert_eq!(stages(&commands), gone);
+    }
+
+    /// A task whose review is preparing has no run of its own to steer:
+    /// what is said starts a new task.
+    #[test]
+    fn a_review_is_never_steered() {
+        let (s, _) = update(voice_task_running(), agent(4, 0, finished()));
+        let (mut s, _) = update(s, ended(4, 0));
+        s.tasks[0].review = Some(Review {
+            run: 0,
+            harness: Harness::Claude,
+            model: None,
+            state: ReviewState::Preparing,
+            usage: None,
+            staged: None,
+        });
+        assert_eq!(voice::route(&s, "aa", "and blue"), Route::New);
     }
 
     /// An answer that changed nothing is said at once, not after the wait

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::changes::FileDiff;
 use crate::creation::{NewProjectRequest, Plan};
 use crate::layout::LayoutOp;
+use crate::review::ReviewSetting;
 use crate::tasks::{Harness, Item};
 use crate::transport::{Mark, Transport, TransportCall};
 use crate::AppState;
@@ -58,6 +59,10 @@ pub enum ClientMsg {
     /// per project.
     SetHarness {
         harness: Harness,
+    },
+    /// How the active project's changes are reviewed (D31); remembered.
+    SetReview {
+        setting: ReviewSetting,
     },
     /// Answered with [`ServerMsg::Diff`]; also refreshes the task's change.
     GetDiff {

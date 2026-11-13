@@ -1295,3 +1295,79 @@ async fn views_through_the_real_tool_server() {
     assert_eq!(functor_app_core::print_layout(&layout), ">#1[*game]");
     assert!(!layout.agent.arranges);
 }
+
+/// A review's fake run: it reads the change and reports through the real
+/// tool server, after `extra` lines (an edit, say).
+#[cfg(unix)]
+fn review_fixture(dir: &Path, extra: &[&str]) -> PathBuf {
+    let path = dir.join("review.jsonl");
+    let mut lines = vec![
+        r#"{"ms":0,"event":{"type":"started","session":"fake-review-1","model":"claude-review-model"}}"#,
+        r#"{"ms":0,"mcp":{"tool":"task_change","arguments":{}}}"#,
+    ];
+    lines.extend(extra);
+    lines.extend([
+        r#"{"ms":0,"mcp":{"tool":"report","arguments":{"summary":"The agent renamed `x` to `xx` in game.fun. Check the places that use `x`.","notes":["Nobody ran the game after the change."],"evidence":[]}}}"#,
+        r#"{"ms":0,"event":{"type":"usage","input":21000,"output":300}}"#,
+        r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Reported."}}"#,
+    ]);
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
+/// `task --review` under the fake agent with the real tool server: a run
+/// that changes a file is reviewed after it, and the review's report and
+/// numbers go in the metrics. A review that edits anyway (the fake agent
+/// can; a real one is denied by its permissions) has its report voided.
+#[cfg(unix)]
+#[test]
+fn a_change_is_reviewed_through_the_real_tool_server() {
+    let Some(functor) = std::env::var_os("FUNCTOR_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    else {
+        eprintln!("SKIPPED: set FUNCTOR_BIN to a built `functor` to use the real tool server");
+        return;
+    };
+    let edit = r#"{"ms":0,"edit":{"path":"game.fun","old":"xx","new":"xxx"}}"#;
+    for (extra, ended) in [
+        (&[][..], "prepared"),
+        (&[edit][..], "failed: the files changed while the review ran"),
+    ] {
+        let repo = git_tree();
+        let home = tempfile::tempdir().unwrap();
+        let metrics = home.path().join("metrics.json");
+        let run = edit_fixture(home.path());
+        let out = task_command(repo.path(), home.path(), &functor, &run, "Rename x")
+            .arg("--review")
+            .arg("--metrics")
+            .arg(&metrics)
+            .env("FUNCTOR_APP_FAKE_REVIEW", review_fixture(home.path(), extra))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let m: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+        let review = &m["review"];
+        assert_eq!(review["ended"], ended, "{m}");
+        assert_eq!(review["model"], "claude-review-model");
+        assert_eq!(review["input_tokens"], 21000);
+        assert!(review["wall_ms"].as_u64().is_some(), "{m}");
+        // The working run's numbers are its own.
+        assert_eq!(m["ended"], "ok");
+        assert_eq!(m["input_tokens"], Value::Null);
+        match ended {
+            "prepared" => {
+                assert!(review["summary"].as_str().unwrap().starts_with("The agent renamed"));
+                assert_eq!(review["notes"][0], "Nobody ran the game after the change.");
+                assert_eq!(review["style"], serde_json::json!([]));
+            }
+            _ => assert_eq!(review["summary"], Value::Null, "voided: {m}"),
+        }
+        // No brief is left behind.
+        assert!(
+            !files(home.path()).iter().any(|f| f.starts_with("reviews/")),
+            "{:?}",
+            files(home.path())
+        );
+    }
+}
