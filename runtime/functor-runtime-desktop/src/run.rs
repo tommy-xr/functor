@@ -4253,6 +4253,9 @@ Escape again to quit"
                                 break;
                             }
                             debug_server::DebugRequest::Stream(resp) => {
+                                // A new client gets this frame, even from a
+                                // tap that has it (it would skip it as stale).
+                                streamed = false;
                                 let tap = stream_tap.get_or_insert_with(Default::default);
                                 let _ = resp.send(Ok(tap.share()));
                                 continue;
@@ -4479,6 +4482,8 @@ Escape again to quit"
             // does). `--capture-frame` runs are exempt: they exit at the
             // capture, and `--capture-at-frame N` counts sim frames, so the
             // cap would stretch a near-instant scripted capture to N/60 s.
+            // The wait is not real time the next frame catches up on.
+            last_time += slept.as_secs_f32();
             if let Some(pacer) = &mut hidden_pacer {
                 // A frame that waited above goes on at once.
                 if slept.is_zero() {

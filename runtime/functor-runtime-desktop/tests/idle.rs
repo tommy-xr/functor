@@ -204,6 +204,9 @@ fn a_paused_hidden_session_sleeps_until_its_picture_can_change() {
     let sent = parts.lock().unwrap().len();
     // The first, sent again so a browser shows it.
     assert!(sent <= 2, "a quiet stream sent {sent} parts");
+    // A client joining later gets it too, though it is no longer fresh.
+    let late = stream_parts(port);
+    assert!(part_after(&late, 0, Duration::from_secs(1)).is_some(), "a later client gets a part");
     call(port, "POST", "/time", r#"{"type":"advance","dts":0.016}"#);
     assert!(
         part_after(&parts, first, Duration::from_millis(500)).is_some(),
@@ -222,6 +225,14 @@ fn a_paused_hidden_session_sleeps_until_its_picture_can_change() {
     assert_eq!(revision(&after), revision(&before) + 1, "the edit reloaded");
     let woke = after["rendered_frames"].as_u64().unwrap() - before["rendered_frames"].as_u64().unwrap();
     assert!(woke >= 1, "the edit woke the session");
+
+    // Resumed after a long wait, the clock goes on from where it was rather
+    // than catching up on the wait (up to 8 steps at once).
+    std::thread::sleep(Duration::from_secs(1));
+    let paused_at = state(port)["frame"].as_u64().unwrap();
+    call(port, "POST", "/time", r#"{"type":"resume"}"#);
+    let resumed = state(port)["frame"].as_u64().unwrap() - paused_at;
+    assert!(resumed <= 3, "resuming ran {resumed} steps at once");
 
     drop(session);
     let _ = std::fs::remove_dir_all(&project);

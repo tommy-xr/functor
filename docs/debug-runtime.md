@@ -734,8 +734,8 @@ X-Capture-Ms: 1762890000123.4
 <JPEG bytes>
 ```
 
-followed by `\r\n`. A part no newer frame follows within 50 ms is sent once
-more, since a browser `<img>` shows a part only when the next one arrives.
+followed by `\r\n`. A part no newer frame follows within 50 ms (or one `fps`
+interval) is sent once more, since a browser `<img>` shows a part only when the next one arrives.
 `X-Rendered-Frame` is the `rendered_frames` that `GET
 /state` reports when answered on the frame the image shows; `X-Capture-Ms` is
 the readback's Unix time in milliseconds, so a client on the same machine
