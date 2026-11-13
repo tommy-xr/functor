@@ -15,3 +15,14 @@ getrandom = "0.3"
 # Noise (NN for pairing, NNpsk0 after): pure-Rust X25519, ChaChaPoly and
 # BLAKE2s only. Not `std`: it would pull in `ring`.
 snow = { version = "0.10", default-features = false, features = ["use-blake2", "use-chacha20poly1305", "use-curve25519"] }
+
+# `client`: the headset's running client (std::net, sync WebSocket, mDNS),
+# for the Quest runtime and the tests that drive it against the desktop.
+log = { version = "0.4", optional = true }
+mdns-sd = { version = "0.21", default-features = false, optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tungstenite = { version = "0.29", optional = true }
+
+[features]
+client = ["dep:log", "dep:mdns-sd", "dep:serde", "dep:serde_json", "dep:tungstenite"]
