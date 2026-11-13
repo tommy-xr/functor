@@ -22,7 +22,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use functor_app_core::metrics::run_metrics;
+use functor_app_core::metrics::{review_metrics, run_metrics};
 use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{
     print, print_change, print_item, update, AppState, Command, Event, Harness, Item, RunEvent,
@@ -144,6 +144,13 @@ enum Cmd {
         /// reports usage as it goes; Codex only at the end, too late to stop.
         #[arg(long, value_name = "TOKENS")]
         max_input: Option<u64>,
+
+        /// When the run leaves a change, review it as the app does (D31, as
+        /// the project's setting says) and wait for that too; its numbers go
+        /// in the metrics as `review`. `FUNCTOR_APP_FAKE_REVIEW=<fixture>`
+        /// replays one under the fake agent.
+        #[arg(long)]
+        review: bool,
     },
     /// Speak the device side of the device link, for tests: pair, link,
     /// answer canned debug requests.
@@ -256,13 +263,25 @@ async fn app(
         _ => std::path::absolute(functor)?,
     };
     // Absolute: the fake agent's child runs in the project directory.
-    let agents = match std::env::var_os("FUNCTOR_APP_FAKE_AGENT").filter(|f| !f.is_empty()) {
-        Some(fixture) => Agents::Fake(std::path::absolute(fixture)?),
+    let fixture = |var| std::env::var_os(var).filter(|f: &std::ffi::OsString| !f.is_empty());
+    let agents = match fixture("FUNCTOR_APP_FAKE_AGENT") {
+        Some(run) => Agents::Fake {
+            run: std::path::absolute(run)?,
+            review: fixture("FUNCTOR_APP_FAKE_REVIEW")
+                .map(std::path::absolute)
+                .transpose()?,
+        },
         None => Agents::Real,
     };
     let mut state = AppState::none();
     state.no_gpu = args.no_gpu;
     state.harnesses = agents.available();
+    // `task` reviews only when asked; `--print` runs nothing.
+    let asked = match &args.command {
+        Some(Cmd::Task { review, .. }) => *review,
+        _ => !args.print,
+    };
+    state.can_review = asked && agents.can_review();
     state.native_picker = window.is_some();
     state.recents = store::load_recents(&home);
     let dir = args.dir.map(std::fs::canonicalize).transpose()?;
@@ -319,11 +338,16 @@ async fn app(
         start_session,
         metrics,
         max_input,
+        review,
     }) = args.command
     {
         let harness = match harness.as_str() {
             "codex" => Harness::Codex,
             _ => Harness::Claude,
+        };
+        let calls = match review {
+            true => Some(server::serve_views(views.clone(), driver.home()).await?),
+            false => None,
         };
         let task = TaskArgs {
             prompt,
@@ -332,6 +356,7 @@ async fn app(
             start_session,
             metrics,
             max_input,
+            calls,
         };
         return run_task(state, driver, events, task).await;
     }
@@ -348,7 +373,7 @@ async fn app(
     let signal = shutdown_signal()?;
     let (listener, origin) = server::bind(args.port).await?;
     // Runs started from here on can show views (`task` and `--print` have no route).
-    views.listen(&origin);
+    views.listen(&origin, false);
     // The rest of the app works without the link; why it is off is said
     // after the `listening on` line, which launchers read first.
     let link = match args.no_device_link {
@@ -497,6 +522,8 @@ struct TaskArgs {
     start_session: bool,
     metrics: Option<PathBuf>,
     max_input: Option<u64>,
+    /// With `--review`: the view route its reviews report through.
+    calls: Option<UnboundedReceiver<server::ViewCall>>,
 }
 
 /// `task`: runs one task to its end, printing its transcript. Exits 0 if it
@@ -550,12 +577,34 @@ async fn run_task(
     let mut cut = None;
     // When the run went over `--max-input` without finishing.
     let mut over: Option<std::time::Instant> = None;
+    // The run's time, and the review's start (`--review`).
+    let mut wall = None;
+    let mut review_started = None;
+    let mut calls = args.calls;
     let signal = loop {
         if args.follow {
             printed = print_settled(&transcript(&state), printed);
         }
         let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
+        let preparing = (task.review.as_ref())
+            .is_some_and(|r| r.state == functor_app_core::review::ReviewState::Preparing);
+        if task.run.is_none() {
+            wall.get_or_insert_with(|| started.elapsed());
+        }
+        if preparing {
+            review_started.get_or_insert_with(std::time::Instant::now);
+        }
         let Some(run) = &task.run else {
+            if preparing {
+                // Bounded by the review's own limits.
+                tokio::select! {
+                    biased;
+                    signal = &mut shutdown => break Some(signal),
+                    Some(call) = next_call(&mut calls) => state = answer(state, call, &mut driver).await,
+                    Some(event) = events.recv() => state = step(state, event, &mut driver).await,
+                }
+                continue;
+            }
             break None;
         };
         let finished = matches!(task.transcript.last(), Some(Item::Finished { .. }));
@@ -582,8 +631,9 @@ async fn run_task(
             }
         }
     };
-    let wall = started.elapsed();
-    // Stops the run (on a signal or a cut) and the session.
+    let wall = wall.unwrap_or_else(|| started.elapsed());
+    let review_ms = review_started.map(|t| t.elapsed().as_millis() as u64);
+    // Stops the run (on a signal or a cut), a review and the session.
     state = step(state, Event::Shutdown, &mut driver).await;
     if let Some(path) = &args.metrics {
         let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
@@ -591,6 +641,12 @@ async fn run_task(
         record["wall_ms"] = (wall.as_millis() as u64).into();
         record["first_event_ms"] = first_event.map(|d| d.as_millis() as u64).into();
         record["cut"] = cut.or(signal.map(|s| format!("signal {s}"))).into();
+        if let Some(review) = &task.review {
+            let mut r = serde_json::to_value(review_metrics(review, task.report.as_ref()))
+                .expect("metrics serialize");
+            r["wall_ms"] = review_ms.into();
+            record["review"] = r;
+        }
         if let Err(e) = std::fs::write(path, format!("{record}\n")) {
             eprintln!("functor-app: cannot write {}: {e}", path.display());
         }
@@ -634,6 +690,32 @@ fn print_settled(items: &[Item], from: usize) -> usize {
 fn say(item: &Item) {
     use std::io::Write;
     let _ = writeln!(std::io::stdout(), "{}", print_item(item));
+}
+
+/// The next view request to `task`'s route, if it serves one.
+async fn next_call(calls: &mut Option<UnboundedReceiver<server::ViewCall>>) -> Option<server::ViewCall> {
+    match calls {
+        Some(calls) => calls.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Steps `call`'s event, sending the core's answer back to its caller.
+async fn answer(mut state: AppState, call: server::ViewCall, driver: &mut Driver) -> AppState {
+    state.now = server::wall_ms();
+    let (state, commands) = update(state, call.event);
+    let mut reply = Some(call.reply);
+    for command in commands {
+        match command {
+            Command::ViewReply(answer) => {
+                if let Some(reply) = reply.take() {
+                    let _ = reply.send(answer);
+                }
+            }
+            command => driver.run(command).await,
+        }
+    }
+    state
 }
 
 async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppState {

@@ -314,6 +314,13 @@ impl Driver {
             Command::ListDirs { .. } => {}
             Command::StartRun(spec) => self.runs.start(*spec),
             Command::StopRun { task, run } => self.runs.stop(task, run).await,
+            Command::StartReview(spec) => self.runs.start_review(*spec),
+            Command::StopReview { task, run } => self.runs.stop_review(task, run),
+            Command::SaveReview { dir, setting } => {
+                if let Err(e) = crate::store::save_review(&self.home, &dir, &setting) {
+                    eprintln!("functor-app: cannot save the review setting: {e}");
+                }
+            }
             Command::SaveTask { dir, task } => {
                 if let Err(e) = crate::store::save(&self.home, &dir, &task) {
                     eprintln!("functor-app: cannot save task {}: {e}", task.id);

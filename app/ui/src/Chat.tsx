@@ -35,6 +35,7 @@ import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { PathCard } from "./PathEvidence";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
+import { ReviewSettings } from "./ReviewSettings";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { transcribe } from "./socket";
 import { record, type Recording } from "./mic";
@@ -283,6 +284,9 @@ export function ChatDock({
           // A task keeps the agent it started with.
           pickable={current === null}
           onHarness={(h) => send({ type: "set_harness", harness: h })}
+          review={
+            <ReviewSettings state={state} online={online} onChange={(setting) => send({ type: "set_review", setting })} />
+          }
           running={running}
           busy={pending !== null}
           onSubmit={submit}
@@ -818,6 +822,7 @@ function Composer({
   harness,
   pickable,
   onHarness,
+  review,
   running,
   busy,
   onSubmit,
@@ -833,6 +838,8 @@ function Composer({
   harness: Harness;
   pickable: boolean;
   onHarness: (h: Harness) => void;
+  /** The review setting's control, beside the agent picker. */
+  review: ReactNode;
   running: boolean;
   busy: boolean;
   onSubmit: () => void;
@@ -904,6 +911,7 @@ function Composer({
           </select>
           <Icon name="chevron" />
         </span>
+        {review}
         <span className="spacer" />
         {state?.speech && (
           <button

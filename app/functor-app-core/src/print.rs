@@ -357,10 +357,14 @@ const CLIP_CHARS: usize = 200;
 
 /// `text` on one line, cut to [`CLIP_CHARS`] with `…`.
 fn clip(text: &str) -> String {
-    let line = text.replace('\n', "\\n");
-    match line.char_indices().nth(CLIP_CHARS) {
-        Some((at, _)) => format!("{}…", &line[..at]),
-        None => line,
+    cut(&text.replace('\n', "\\n"), CLIP_CHARS)
+}
+
+/// `text`'s first `max` characters, `…` marking a cut.
+pub(crate) fn cut(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
     }
 }
 
@@ -426,6 +430,13 @@ mod tests {
     use crate::changes::FileChange;
     use crate::projects::{Project, Role};
     use crate::Session;
+
+    #[test]
+    fn cuts_mark_themselves() {
+        assert_eq!(cut("abcdef", 3), "abc…");
+        assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("ééé", 2), "éé…");
+    }
 
     /// A timeline polled once at `frame`.
     fn polled_at(frame: u64) -> crate::transport::Timeline {
@@ -768,6 +779,7 @@ recents: 2
                 moment: None,
                 evidence: None,
                 report: None,
+                review: None,
                 created_at: None,
                 updated_at: None,
                 transcript: transcript.clone(),

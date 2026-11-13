@@ -12,6 +12,7 @@ import type { DiffMsg, Notice, Send } from "./socket";
 import { taskPage, usageTable, type RunSteps, type TaskPage as Page } from "./task-page-model";
 import { relativeTime, untitled } from "./tasks-model";
 import { RenameInput, useNow } from "./TasksPane";
+import { reviewLines } from "./review-model";
 
 /**
  * A task's page (the `Task` tab): a read view of what the agent was given,
@@ -302,11 +303,14 @@ function FirstPage({
   highlights: boolean;
   onTab: (tab: Tab) => void;
 }) {
-  const { size, depth, reason } = decision;
+  const { size, depth, reason, style } = decision;
   const report = task.report;
   const kind = task.evidence?.state.kind;
   const pair = kind === "shown" || kind === "taking";
   const summary = report?.summary ?? null;
+  // The review's lines sit with the summary, held even before there is one.
+  const review = reviewLines(task);
+  const told = !!summary || review.length > 0;
   const id = (part: string) => `task-${task.id}-first-${part}`;
   // Alone, the pair or the summary takes the whole row.
   const wide = (on: boolean) => (on ? "" : " first-wide");
@@ -326,21 +330,34 @@ function FirstPage({
         <p className="first-verdict-reason">{reason}</p>
       </section>
       {pair && (
-        <section className={`first-pair${wide(!!summary)}`} aria-labelledby={id("pair")}>
+        <section className={`first-pair${wide(told)}`} aria-labelledby={id("pair")}>
           <h3 id={id("pair")} className="eyebrow first-head">
             Before and after
           </h3>
           <PairFrames task={task} onOpen={() => onTab("captures")} />
         </section>
       )}
-      {summary && (
+      {told && (
         <section className={`first-summary${wide(pair)}`} aria-labelledby={id("summary")}>
           <h3 id={id("summary")} className="eyebrow first-head">
             Summary
           </h3>
-          <p className="first-summary-text" data-testid="first-summary">
-            {summary}
-          </p>
+          {summary && (
+            <p className="first-summary-text" data-testid="first-summary">
+              {summary}
+            </p>
+          )}
+          {summary && style.length > 0 && (
+            <p className="first-style" data-testid="first-style">
+              Style check: {style.join(" ")}
+            </p>
+          )}
+          {review.map((line) => (
+            <p key={line.kind} className={`first-review first-review-${line.kind}`} data-testid={`first-review-${line.kind}`}>
+              {line.kind === "preparing" && <span className="step-dot step-dot-busy" aria-hidden="true" />}
+              {line.text}
+            </p>
+          ))}
           {highlights && <TabLink tab="highlights" onTab={onTab} />}
         </section>
       )}

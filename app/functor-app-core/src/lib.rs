@@ -16,6 +16,7 @@ pub mod metrics;
 pub mod print;
 pub mod projects;
 pub mod protocol;
+pub mod review;
 pub mod session;
 pub mod state;
 pub mod tasks;
@@ -29,6 +30,7 @@ pub use folders::Recent;
 pub use layout::{Layout, LayoutOp, View};
 pub use print::{print, print_change, print_item, print_layout};
 pub use projects::discover;
+pub use review::{ReviewEvent, ReviewSetting, ReviewSpec};
 pub use session::{
     listening_url, Display, Polled, PolledClock, Session, SessionEvent, SessionMode, SessionStatus,
 };

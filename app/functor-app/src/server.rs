@@ -46,7 +46,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
-use crate::agent::{ViewRoute, VIEW_PATH};
+use crate::agent::{Caller, ViewRoute, VIEW_PATH};
 use crate::session::Driver;
 
 mod assets {
@@ -94,10 +94,9 @@ enum Input {
     Disconnect {
         id: u64,
     },
-    /// From run `run` of `task`'s tool server, authenticated by its secret.
+    /// From a run's (or review's) tool server, authenticated by its secret.
     AgentView {
-        task: u64,
-        run: u64,
+        caller: Caller,
         request: ViewRequest,
         reply: oneshot::Sender<ViewReply>,
     },
@@ -317,8 +316,8 @@ async fn run(
                 }
                 // One whose caller gave up (timed out) is not applied late.
                 Input::AgentView { reply, .. } if reply.is_closed() => (vec![], None, None),
-                Input::AgentView { task, run, request, reply } => {
-                    (vec![Event::AgentView { task, run, request }], None, Some(reply))
+                Input::AgentView { caller, request, reply } => {
+                    (vec![view_event(caller, request)], None, Some(reply))
                 }
             },
         };
@@ -456,6 +455,68 @@ pub(crate) fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// The core's event for `caller`'s view request.
+fn view_event(caller: Caller, request: ViewRequest) -> Event {
+    Event::AgentView {
+        task: caller.task,
+        run: caller.run,
+        review: caller.review,
+        request,
+    }
+}
+
+/// A view request to `task`, which has no UI: the core's event, and where
+/// its `ViewReply` goes.
+pub struct ViewCall {
+    pub event: Event,
+    pub reply: oneshot::Sender<ViewReply>,
+}
+
+/// For `task`: `POST /agent/view` alone on loopback, for its reviews only
+/// (its runs show no views); each request comes out of the receiver.
+pub async fn serve_views(
+    views: Arc<ViewRoute>,
+    home: &Path,
+) -> std::io::Result<UnboundedReceiver<ViewCall>> {
+    let (listener, origin) = bind(0).await?;
+    let (inputs, mut inputs_rx) = mpsc::unbounded_channel();
+    let ctx = Arc::new(Ctx {
+        inputs,
+        next_id: AtomicU64::new(1),
+        token: Token(crate::agent::token()),
+        origins: [origin.clone(), origin.clone()],
+        ui: Ui::Embedded,
+        views: views.clone(),
+        in_flight: Default::default(),
+        evidence: crate::store::evidence_dir(home),
+    });
+    let app = Router::new()
+        .route(
+            VIEW_PATH,
+            post(agent_view).layer(DefaultBodyLimit::max(MAX_VIEW_BYTES)),
+        )
+        .with_state(ctx);
+    tokio::spawn(axum::serve(listener, app).into_future());
+    views.listen(&origin, true);
+    let (calls, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(input) = inputs_rx.recv().await {
+            if let Input::AgentView {
+                caller,
+                request,
+                reply,
+            } = input
+            {
+                let event = view_event(caller, request);
+                if calls.send(ViewCall { event, reply }).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    Ok(rx)
+}
+
 /// A run's view request: see the module docs. The answer is the core's
 /// `ViewReply` (`200`), else `401` / `403` / `400` / `413` / `429` / `503`.
 async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes) -> Response {
@@ -467,7 +528,7 @@ async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes
         .and_then(|v| v.as_bytes().split_at_checked(7))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case(b"bearer "))
         .map(|(_, secret)| secret);
-    let Some((task, run)) = presented.and_then(|secret| ctx.views.find(secret)) else {
+    let Some(caller) = presented.and_then(|secret| ctx.views.find(secret)) else {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
@@ -498,8 +559,7 @@ async fn agent_view(State(ctx): State<Arc<Ctx>>, headers: HeaderMap, body: Bytes
     let _slot = Slot(&ctx.in_flight);
     let (reply, answer) = oneshot::channel();
     let input = Input::AgentView {
-        task,
-        run,
+        caller,
         request,
         reply,
     };

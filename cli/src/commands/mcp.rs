@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io;
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
@@ -41,10 +41,11 @@ use tokio::process::{Child, Command};
 use super::mcp_net::NetCoordinator;
 
 /// Tools an HTTP client loads up front (see `router`): look, run, poke,
-/// learn the language and API, and the app's views. About 2k tokens a turn,
-/// against a whole turn (some 35k) for each tool search. The desktop app's
-/// opening instructions name these as loaded (`app/functor-app/src/agent.rs`).
-const ALWAYS_LOADED: [&str; 10] = [
+/// learn the language and API, the app's views, and a review's two tools
+/// (each only where it exists). About 2k tokens a turn, against a whole turn
+/// (some 35k) for each tool search. The desktop app's opening instructions
+/// name these as loaded (`app/functor-app/src/agent.rs`).
+const ALWAYS_LOADED: [&str; 12] = [
     "app_context",
     "get_state",
     "step",
@@ -55,7 +56,15 @@ const ALWAYS_LOADED: [&str; 10] = [
     "api_reference",
     "show_view",
     "present",
+    "task_change",
+    "report",
 ];
+
+/// What a review (`--review`: a separate agent preparing an app's decision
+/// page) keeps besides its own tools: the language and the API. No game
+/// tools: launching one can rewrite the project's generated `assets.fun`,
+/// and the app compares the two versions itself (D38).
+const REVIEW_TOOLS: [&str; 2] = ["language_guide", "api_reference"];
 
 /// How often the background routing pump drains and delivers a live group's
 /// traffic. Between `step_all` rounds a group still runs on wall-clock time,
@@ -151,12 +160,14 @@ const QUICK_FACTS_SLUG: &str = "quick-facts";
 /// (`http` = port) until signalled or stdin closes. `attach` URLs become
 /// attached sessions first, exactly as `connect_game` would make them.
 /// `no_unsafe_code` drops `run_game_code_unsafe` from the tools; `app_url`
-/// adds the view tools, forwarding to that app.
+/// adds the view tools, forwarding to that app; `review` (a brief's file)
+/// makes the tools a review's instead (`REVIEW_TOOLS` and its own two).
 pub async fn execute(
     http: Option<u16>,
     attach: &[String],
     no_unsafe_code: bool,
     app_url: Option<&str>,
+    review: Option<PathBuf>,
 ) -> io::Result<()> {
     // Read the secrets before anything else so a misconfigured start fails fast.
     let token = http.map(|_| super::mcp_http::token_from_env()).transpose()?;
@@ -168,6 +179,7 @@ pub async fn execute(
         http_mode: http.is_some(),
         no_unsafe_code,
         app,
+        review,
         ..FunctorMcp::new()
     };
     for raw in attach {
@@ -958,6 +970,8 @@ pub struct FunctorMcp {
     no_unsafe_code: bool,
     /// `--app-url`: the view tools exist and forward there.
     pub(super) app: Option<super::mcp_app::AppLink>,
+    /// `--review`: the brief `task_change` returns; the tools are a review's.
+    pub(super) review: Option<PathBuf>,
 }
 
 pub(super) fn ok_text(text: impl Into<String>) -> Result<CallToolResult, ErrorData> {
@@ -1204,6 +1218,7 @@ impl FunctorMcp {
             http_mode: false,
             no_unsafe_code: false,
             app: None,
+            review: None,
         }
     }
 
@@ -2308,7 +2323,12 @@ impl FunctorMcp {
         if !self.http_mode {
             router.remove_route("app_context");
         }
-        if self.app.is_some() {
+        if self.review.is_some() {
+            router
+                .map
+                .retain(|name, _| REVIEW_TOOLS.contains(&name.as_ref()));
+            router.merge(Self::review_tool_router());
+        } else if self.app.is_some() {
             router.merge(Self::app_tool_router());
         }
         // Over HTTP the client is an embedding app's agent: the tools nearly
@@ -5644,7 +5664,10 @@ mod tests {
     #[test]
     fn no_tool_uses_a_name_an_embedding_agent_runner_reserves() {
         // An embedding agent runner reserves these for its own tools and hides them.
-        let names: Vec<String> = (FunctorMcp::tool_router() + FunctorMcp::app_tool_router())
+        let all = FunctorMcp::tool_router()
+            + FunctorMcp::app_tool_router()
+            + FunctorMcp::review_tool_router();
+        let names: Vec<String> = all
             .list_all()
             .into_iter()
             .map(|tool| tool.name.to_string())
@@ -5712,9 +5735,82 @@ mod tests {
             }),
             ..FunctorMcp::new()
         });
-        let mut want = ALWAYS_LOADED.map(String::from).to_vec();
+        let review = ["task_change", "report"];
+        let mut want: Vec<String> = (ALWAYS_LOADED.iter())
+            .filter(|name| !review.contains(name))
+            .map(|name| name.to_string())
+            .collect();
         want.sort();
         assert_eq!(linked, want);
+        // A review's: all four it has.
+        let want = ["api_reference", "language_guide", "report", "task_change"];
+        assert_eq!(eager(reviewer()), want);
+    }
+
+    /// An HTTP server for a review, its brief at `brief.md` in no directory.
+    fn reviewer() -> FunctorMcp {
+        FunctorMcp {
+            http_mode: true,
+            app: Some(super::super::mcp_app::AppLink {
+                url: "http://127.0.0.1:9/view".into(),
+                token: "t".into(),
+            }),
+            review: Some("brief.md".into()),
+            ..FunctorMcp::new()
+        }
+    }
+
+    /// A review reads: nothing that writes the project, runs a game or code,
+    /// or shows the user views.
+    #[test]
+    fn a_review_gets_read_only_tools_and_its_own_two() {
+        let mut names: Vec<String> = reviewer()
+            .router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        names.sort();
+        let mut want: Vec<String> = super::REVIEW_TOOLS.map(String::from).to_vec();
+        want.extend(["task_change".to_string(), "report".to_string()]);
+        want.sort();
+        assert_eq!(names, want);
+        for writes in [
+            "save_project",
+            "init_game",
+            "reload_project",
+            "reload_source",
+            "connect_game",
+            "launch_game",
+            "run_game_code_unsafe",
+            "present",
+            "show_view",
+            "app_context",
+        ] {
+            assert!(!names.iter().any(|n| n == writes), "{writes}");
+        }
+    }
+
+    /// `task_change` returns the brief as written; a missing one is a tool error.
+    #[tokio::test]
+    async fn task_change_returns_the_brief() {
+        let dir = tempfile::tempdir().unwrap();
+        let brief = dir.path().join("brief.md");
+        std::fs::write(&brief, "# The change\n+1 −1").unwrap();
+        let server = FunctorMcp {
+            review: Some(brief.clone()),
+            ..reviewer()
+        };
+        let text = |r: rmcp::model::CallToolResult| {
+            let block = serde_json::to_value(&r.content[0]).unwrap();
+            (block["text"].as_str().unwrap().to_string(), r.is_error)
+        };
+        let read = server.task_change().await.unwrap();
+        assert_eq!(text(read), ("# The change\n+1 −1".to_string(), Some(false)));
+        std::fs::remove_file(&brief).unwrap();
+        let (message, error) = text(server.task_change().await.unwrap());
+        assert_eq!(error, Some(true));
+        assert!(message.starts_with("cannot read the change"), "{message}");
     }
 
     #[test]
