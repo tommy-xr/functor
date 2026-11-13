@@ -346,7 +346,7 @@ async fn app(
             _ => Harness::Claude,
         };
         let calls = match review {
-            true => Some(server::serve_views(views.clone(), driver.home()).await?),
+            true => Some(server::serve_views(views.clone(), driver.home(), hub.clone()).await?),
             false => None,
         };
         let task = TaskArgs {

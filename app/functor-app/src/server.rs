@@ -477,6 +477,7 @@ pub struct ViewCall {
 pub async fn serve_views(
     views: Arc<ViewRoute>,
     home: &Path,
+    hub: crate::link::Hub,
 ) -> std::io::Result<UnboundedReceiver<ViewCall>> {
     let (listener, origin) = bind(0).await?;
     let (inputs, mut inputs_rx) = mpsc::unbounded_channel();
@@ -489,6 +490,7 @@ pub async fn serve_views(
         views: views.clone(),
         in_flight: Default::default(),
         evidence: crate::store::evidence_dir(home),
+        hub,
     });
     let app = Router::new()
         .route(
