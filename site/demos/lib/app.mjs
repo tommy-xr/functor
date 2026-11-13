@@ -98,15 +98,32 @@ export async function untilState(debugUrl, test, what, timeout = 20_000) {
   }
 }
 
-/** Opens the app, starts the project's game and resolves with its bar, view and debug server. */
+/**
+ * Opens the app (its game opens paused on frame 0), plays the game and
+ * resolves with its bar, view and debug server.
+ */
 export async function startGame(page, app, server) {
   await page.goto(server.url);
   const view = page.getByTestId("game-view");
-  await view.getByRole("button", { name: "Start game" }).click();
   const bar = page.getByRole("group", { name: "Transport" });
   await bar.waitFor({ timeout: 60_000 });
   await view.locator("img").waitFor({ timeout: 60_000 });
-  return { bar, view, debugUrl: app.state.session.status.debug_url };
+  const debugUrl = app.state.session.status.debug_url;
+  await bar.getByRole("button", { name: "Play" }).click();
+  await untilState(debugUrl, (s) => !s.clock.paused, "play");
+  // The page has seen it play (a click on the view now captures input); the
+  // pointer leaves the bar so no tip stays up.
+  await bar.getByRole("button", { name: "Pause" }).waitFor();
+  await page.mouse.move(0, 0);
+  return { bar, view, debugUrl };
+}
+
+/** Sets the bar's Extrapolate switch to `on`. */
+export async function extrapolate(bar, on) {
+  const button = bar.getByRole("button", { name: /^Extrapolate/ });
+  if ((await button.getAttribute("aria-pressed")) === String(on)) return;
+  await button.click();
+  await bar.locator(`.transport-extrapolate[aria-pressed="${on}"]`).waitFor();
 }
 
 /**
@@ -153,17 +170,21 @@ export async function dragPlayhead(page, bar, unit) {
 }
 
 /**
- * Paused: drags the playhead back to the last `Right down` mark, then walks
- * to a frame before it, where the hero still stands at the spawn point.
+ * Paused: drags the playhead back to the first `Right down` mark (the run;
+ * `land` taps Right after it), then walks to a frame before it, where the
+ * hero still stands at the spawn point.
  */
 export async function dragBeforeRun(page, bar, debugUrl) {
   const rail = await bar.locator(".transport-rail").boundingBox();
-  const mark = await bar.getByRole("button", { name: /^frame \d+, Right down/ }).last().boundingBox();
+  const down = bar.getByRole("button", { name: /^frame \d+, Right down/ }).first();
+  const pressed = Number((await down.getAttribute("aria-label")).match(/^frame (\d+)/)[1]);
+  const mark = await down.boundingBox();
   await dragPlayhead(page, bar, (mark.x + mark.width / 2 - rail.x) / rail.width);
   await bar.getByRole("slider", { name: "Selected frame" }).focus();
   for (let i = 0; i < 120; i++) {
     const { frame, model } = await gameState(debugUrl);
-    if (!model.rightHeld && model.grounded && model.x === -6) return;
+    // Before the press: a respawn after it also stands at the spawn point.
+    if (frame < pressed && !model.rightHeld && model.grounded && model.x === -6) return;
     await page.keyboard.press("ArrowLeft");
     await untilState(debugUrl, (s) => s.frame !== frame, "a frame step");
   }
