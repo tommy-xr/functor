@@ -926,3 +926,326 @@ async fn quest_pairs_over_wifi_tunnels_and_relinks() {
     })
     .await;
 }
+
+/// Cable pairing (task 2.4) against a fake `adb`: a shell script that plays
+/// one headset from files in its own directory, with its app's private
+/// storage as `app/` (where the headset's real client keeps its file).
+#[cfg(unix)]
+mod cable {
+    use super::*;
+
+    const SERIAL: &str = "2G0FAKE";
+
+    struct FakeAdb {
+        dir: tempfile::TempDir,
+    }
+
+    /// `adb devices -l`, `pm list packages`, and the `run-as` commands the
+    /// app runs (evaluated in `app/`); `not-debuggable`, `write-fails` and
+    /// `mangle` (a write lands, then something else replaces the file) make
+    /// them fail. Each call's arguments are appended to `calls`.
+    const SCRIPT: &str = r#"#!/bin/sh
+root=$(cd "$(dirname "$0")" && pwd)
+printf '%s\n' "$*" >> "$root/calls"
+if [ "$1" = "-s" ]; then shift 2; fi
+case "$1" in
+  devices) echo "List of devices attached"; cat "$root/devices"; exit 0 ;;
+  shell) shift ;;
+  *) echo "fake adb: $*" >&2; exit 1 ;;
+esac
+cmd="$*"
+case "$cmd" in
+  "pm list packages "*) cat "$root/pm"; exit 0 ;;
+  "run-as dev.functor.runner "*)
+    if [ -e "$root/not-debuggable" ]; then
+      echo "run-as: package not debuggable: dev.functor.runner" >&2; exit 1
+    fi
+    case "$cmd" in *" mv "*)
+      if [ -e "$root/write-fails" ]; then
+        cat > /dev/null; echo "mv: Read-only file system" >&2; exit 1
+      fi ;;
+    esac
+    cd "$root/app" || exit 1
+    eval "${cmd#run-as dev.functor.runner }"
+    status=$?
+    case "$cmd" in *" mv "*)
+      if [ -e "$root/mangle" ]; then printf '{"device":"00"}' > files/device-link.json; fi ;;
+    esac
+    exit $status ;;
+esac
+echo "fake adb: unknown shell command: $cmd" >&2
+exit 1
+"#;
+
+    impl FakeAdb {
+        fn new() -> FakeAdb {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let adb = dir.path().join("adb");
+            std::fs::write(&adb, SCRIPT).unwrap();
+            std::fs::set_permissions(&adb, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::create_dir_all(dir.path().join("app/files")).unwrap();
+            let fake = FakeAdb { dir };
+            fake.devices("device usb:1-1 product:eureka model:Quest_3 transport_id:1");
+            fake.set("pm", "package:dev.functor.runner\n");
+            fake
+        }
+
+        fn program(&self) -> String {
+            self.dir.path().join("adb").to_string_lossy().into_owned()
+        }
+
+        /// The one headset's `adb devices -l` line after its serial.
+        fn devices(&self, rest: &str) {
+            self.set("devices", &format!("{SERIAL}\t{rest}\n"));
+        }
+
+        fn set(&self, name: &str, contents: &str) {
+            std::fs::write(self.dir.path().join(name), contents).unwrap();
+        }
+
+        fn flag(&self, name: &str, on: bool) {
+            match on {
+                true => self.set(name, ""),
+                false => {
+                    let _ = std::fs::remove_file(self.dir.path().join(name));
+                }
+            }
+        }
+
+        /// The headset app's storage, as the client is given it.
+        fn store(&self) -> std::path::PathBuf {
+            self.dir.path().join("app/files")
+        }
+
+        fn file(&self) -> headset::Stored {
+            let text = std::fs::read_to_string(self.store().join("device-link.json")).unwrap();
+            serde_json::from_str(&text).unwrap()
+        }
+
+        fn calls(&self) -> String {
+            std::fs::read_to_string(self.dir.path().join("calls")).unwrap_or_default()
+        }
+    }
+
+    async fn app_on(adb: &FakeAdb) -> App {
+        let program = adb.program();
+        app_with(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", &program]).await
+    }
+
+    fn attached(devices: &Value) -> Value {
+        devices["attached"][0].clone()
+    }
+
+    impl App {
+        /// The next refusal's reason, within 20s.
+        async fn rejected(&mut self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let msg = tokio::time::timeout(left, self.socket.next())
+                    .await
+                    .expect("no refusal")
+                    .unwrap()
+                    .unwrap();
+                let json: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+                if json["type"] == "rejected" {
+                    return json["reason"].as_str().unwrap().to_string();
+                }
+            }
+        }
+
+        async fn cable_state(&mut self, want: &str) -> Value {
+            let devices = self
+                .devices_where(want, |d| attached(d)["state"]["state"] == want)
+                .await;
+            attached(&devices)
+        }
+    }
+
+    fn client_to(app: &App, fake: &FakeAdb, debug: std::net::SocketAddr) -> headset::Client {
+        headset_client(app, &fake.store(), debug)
+    }
+
+    /// Plugged in: shown, never paired by itself. One click pairs it with
+    /// no code; the headset's own client then links by itself. The secret
+    /// is in no command line and not in the page's state. Forget clears
+    /// the headset's pairing but keeps its id.
+    #[tokio::test(flavor = "current_thread")]
+    async fn one_click_pairs_a_headset_on_the_cable_and_it_links() {
+        let fake = FakeAdb::new();
+        let runtime = fake_runtime();
+        let mut app = app_on(&fake).await;
+        let quest = client_to(&app, &fake, runtime);
+        let id = fake.file().device;
+        let devices = app
+            .devices_where("the headset is on the cable", |d| {
+                attached(d)["state"]["state"] == "ready" && attached(d)["state"]["device"] == id
+            })
+            .await;
+        assert_eq!(devices["adb"], true);
+        let a = attached(&devices);
+        assert_eq!(a["name"], "Quest 3");
+        assert_eq!(a["state"]["paired"]["with"], "nobody");
+        assert!(card(&devices, "Quest 3").is_none());
+        // Never by itself: several looks later, nothing is paired.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(fake.file().secret.is_none() && !app.pairings().contains(&id));
+
+        app.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+            .await;
+        let devices = app
+            .devices_where("it links over the link", |d| {
+                state_of(d, "Client Quest") == "connected"
+                    && !card(d, "Client Quest").unwrap()["tunnel"].is_null()
+            })
+            .await;
+        until("the headset is linked", || quest.view().linked.then_some(()))
+            .await;
+        let file = fake.file();
+        assert_eq!(file.device, id, "the headset keeps its id");
+        let secret = file.secret.clone().unwrap();
+        assert!(app.pairings().contains(&secret), "one secret on both sides");
+        assert!(!fake.calls().contains(&secret), "{}", fake.calls());
+        assert!(!devices.to_string().contains(&secret));
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(fake.store().join("device-link.json")).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+        let devices = app
+            .devices_where("the cable shows it paired here", |d| {
+                attached(d)["state"]["paired"]["with"] == "this"
+            })
+            .await;
+        let tunnel = card(&devices, "Client Quest").unwrap()["tunnel"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(get(&tunnel, "/state").unwrap().0, 200);
+        // Ours on both sides: nothing more to pair.
+        app.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+            .await;
+        assert!(app.rejected().await.contains("cannot be paired"));
+
+        let device = card(&devices, "Client Quest").unwrap()["id"].clone();
+        app.send(json!({"type": "forget_device", "device": device}))
+            .await;
+        app.devices_where("it is forgotten", |d| card(d, "Client Quest").is_none())
+            .await;
+        until("the headset's pairing is gone", || {
+            fake.file().secret.is_none().then_some(())
+        })
+        .await;
+        assert_eq!(fake.file().device, id);
+        until("the link ends", || (!quest.view().linked).then_some(())).await;
+        app.devices_where("it can pair again", |d| {
+            attached(d)["state"]["paired"]["with"] == "nobody"
+        })
+        .await;
+    }
+
+    /// Each state that cannot pair says so, and pairing it is refused.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_headset_that_cannot_pair_says_why() {
+        let fake = FakeAdb::new();
+        let mut app = app_on(&fake).await;
+        app.cable_state("ready").await;
+        fake.devices("unauthorized usb:1-1 transport_id:1");
+        let a = app.cable_state("unauthorized").await;
+        assert_eq!(a["name"], "Headset", "unauthorised: adb gives no model");
+        fake.devices("offline usb:1-1 transport_id:1");
+        app.cable_state("offline").await;
+        fake.devices("device usb:1-1 model:Quest_3 transport_id:1");
+        fake.set("pm", "");
+        app.cable_state("no_app").await;
+        fake.set("pm", "package:dev.functor.runner\n");
+        fake.flag("not-debuggable", true);
+        app.cable_state("not_debuggable").await;
+        app.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+            .await;
+        assert!(app.rejected().await.contains("cannot be paired"));
+        // Over the network is not a cable.
+        fake.devices("device product:eureka model:Quest_3 transport_id:1");
+        app.devices_where("nothing on the cable", |d| {
+            d["attached"].as_array().is_some_and(|a| a.is_empty())
+        })
+        .await;
+        // No adb at all: no cable, said as such.
+        let mut none = super::app().await;
+        none.devices_where("no adb", |d| d["adb"] == false && !d["listening"].is_null())
+            .await;
+    }
+
+    /// A write that fails, or a file that reads back differently, leaves
+    /// nothing paired on this desktop and says why.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_write_or_read_back_stores_nothing() {
+        let fake = FakeAdb::new();
+        let mut app = app_on(&fake).await;
+        app.cable_state("ready").await;
+        for (flag, why) in [
+            ("write-fails", "Read-only file system"),
+            ("mangle", "read back differently"),
+        ] {
+            fake.flag(flag, true);
+            app.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+                .await;
+            let reason = app.rejected().await;
+            assert!(reason.contains(why), "{flag}: {reason}");
+            assert!(!app.pairings().contains("secret"), "{}", app.pairings());
+            let devices = app
+                .devices_where("not pairing", |d| attached(d)["pairing"] == false)
+                .await;
+            assert!(devices["list"].as_array().unwrap().is_empty());
+            fake.flag(flag, false);
+        }
+    }
+
+    /// Desktop B finds the headset paired with desktop A: it asks before
+    /// replacing. Once replaced, the headset closes A's link saying why (A
+    /// keeps its pairing, but its card shows the reason) and links to B.
+    #[tokio::test(flavor = "current_thread")]
+    async fn replacing_another_desktops_pairing_is_asked_and_the_first_is_told() {
+        let fake = FakeAdb::new();
+        let runtime = fake_runtime();
+        let mut a = app_on(&fake).await;
+        let quest = client_to(&a, &fake, runtime);
+        a.cable_state("ready").await;
+        a.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+            .await;
+        a.devices_where("A has it", |d| state_of(d, "Client Quest") == "connected")
+            .await;
+
+        let mut b = app_on(&fake).await;
+        let devices = b
+            .devices_where("B sees it paired elsewhere", |d| {
+                attached(d)["state"]["paired"]["with"] == "other"
+            })
+            .await;
+        assert!(attached(&devices)["state"]["paired"]["name"].is_string());
+        b.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
+            .await;
+        assert!(b.rejected().await.contains("is paired with"));
+        assert!(fake.file().secret.is_some_and(|s| a.pairings().contains(&s)));
+        b.send(json!({"type": "pair_by_cable", "serial": SERIAL, "replace": true}))
+            .await;
+        b.devices_where("B has it", |d| card(d, "Quest 3").is_some())
+            .await;
+        let devices = a
+            .devices_where("A is told", |d| state_of(d, "Client Quest") == "cannot_reach")
+            .await;
+        let reason = card(&devices, "Client Quest").unwrap()["state"]["reason"].clone();
+        assert!(
+            reason.as_str().unwrap().contains(functor_device_link::REPAIRED),
+            "{reason}"
+        );
+        // This client dials A by address; the real one finds B by mDNS.
+        drop(quest);
+        let quest = client_to(&b, &fake, runtime);
+        b.devices_where("it links to B", |d| state_of(d, "Client Quest") == "connected")
+            .await;
+        until("the headset is linked", || quest.view().linked.then_some(()))
+            .await;
+    }
+}

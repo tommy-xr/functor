@@ -23,7 +23,7 @@ use crate::device::{self, Device, Identity};
 use crate::wire::{Frame, Request, Response, Status};
 pub use crate::file::Stored;
 use crate::{hex, shared, DesktopId, DeviceId, End, Error, OsEntropy, Output, Secret};
-use crate::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE, PATH, SERVICE};
+use crate::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE, PATH, REPAIRED, SERVICE};
 
 /// How long one mDNS browse looks for a desktop.
 const BROWSE: Duration = Duration::from_secs(10);
@@ -34,8 +34,6 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// or linked), so one written from outside (the cable path) is picked up
 /// without a restart.
 const IDLE_RECHECK: Duration = Duration::from_secs(5);
-/// Why a link closes when its pairing was replaced: the desktop shows it.
-pub const REPAIRED: &str = "the headset was paired again";
 /// Socket read timeout while requests are in flight (how soon an answer is
 /// sent) and while none are (how soon a command or heartbeat is handled).
 const POLL_BUSY: Duration = Duration::from_millis(5);

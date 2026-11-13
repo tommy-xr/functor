@@ -48,6 +48,11 @@ pub const SERVICE: &str = "_functor-link._tcp.local.";
 /// The one path the desktop's link listener answers.
 pub const PATH: &str = "/link";
 
+/// A linked device's close reason once its pairing file holds another
+/// pairing: the one close a desktop reports as a failure, so its user
+/// learns why the headset left.
+pub const REPAIRED: &str = "the headset was paired again";
+
 /// The link protocol's version, in every hello. Peers of other versions are
 /// refused with [`wire::Reject::Version`]; neither side guesses.
 pub const VERSION: u16 = 1;

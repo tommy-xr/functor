@@ -623,6 +623,13 @@ fn a_clean_close_is_done() {
         to_desktop(&mut desktop, &bye, 11, None).end,
         Some(End::Done)
     );
+    // Except a pairing replaced: the desktop's user is told why.
+    let (mut desktop, mut device) = linked(540, &secret);
+    let bye = device.send(&Frame::Close(crate::REPAIRED.into())).unwrap();
+    assert_eq!(
+        to_desktop(&mut desktop, &bye, 11, None).end,
+        Some(End::Failed(Error::Closed(crate::REPAIRED.into())))
+    );
 }
 
 #[test]
