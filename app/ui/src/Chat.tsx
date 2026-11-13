@@ -37,6 +37,8 @@ import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import { ReviewSettings } from "./ReviewSettings";
 import type { Accepted, Conn, Notice, Send } from "./socket";
+import { transcribe } from "./socket";
+import { record, type Recording } from "./mic";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
 
@@ -79,6 +81,71 @@ type Walk = {
 
 /** A line the dock shows for a connection or session change, at the conversation's length when it happened. */
 type Line = { id: number; project: string | null; task: number | null; at: number; text: string };
+
+const MIC_LABEL = {
+  idle: "Speak a message",
+  starting: "Starting the mic…",
+  recording: "Stop and transcribe",
+  transcribing: "Transcribing…",
+} as const;
+
+type MicStage = keyof typeof MIC_LABEL;
+
+/**
+ * The composer's mic (D15): a click records, the next one transcribes it on
+ * this machine and adds the words to the draft, for the user to send.
+ */
+function useMic(draft: string, onDraft: (d: string) => void, onNotice: (reason: string) => void) {
+  const [stage, setStage] = useState<MicStage>("idle");
+  // The stage as clicks see it: set at once, so a second click cannot start twice.
+  const now = useRef<MicStage>("idle");
+  const go = (s: MicStage) => {
+    now.current = s;
+    setStage(s);
+  };
+  const recording = useRef<Recording | null>(null);
+  const mounted = useRef(true);
+  // The draft as it is when the words arrive, not when recording began.
+  const latest = useRef(draft);
+  latest.current = draft;
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      recording.current?.cancel();
+    },
+    [],
+  );
+  const failed = (e: unknown) => onNotice(`The mic did not work: ${e instanceof Error ? e.message : String(e)}`);
+  const toggle = async () => {
+    if (now.current === "idle") {
+      go("starting");
+      try {
+        const r = await record();
+        // Gone while the microphone was being granted: free it.
+        if (!mounted.current) return r.cancel();
+        recording.current = r;
+        go("recording");
+      } catch (e) {
+        failed(e);
+        go("idle");
+      }
+      return;
+    }
+    if (now.current !== "recording") return;
+    const r = recording.current!;
+    recording.current = null;
+    go("transcribing");
+    try {
+      const text = (await transcribe(await r.stop())).trim();
+      if (!text) onNotice("Heard no words.");
+      else onDraft(latest.current.trim() ? `${latest.current.trimEnd()} ${text}` : text);
+    } catch (e) {
+      failed(e);
+    }
+    if (mounted.current) go("idle");
+  };
+  return { stage, toggle };
+}
 
 /** The chat dock: one task's conversation (the current task) and the composer. */
 export function ChatDock({
@@ -224,6 +291,7 @@ export function ChatDock({
           busy={pending !== null}
           onSubmit={submit}
           onStop={stop}
+          onNotice={setShownNotice}
           canvasWord={canvasWord}
           placeholder={current ? "Reply in this task" : "Ask for a change, or about the running game"}
         />
@@ -759,6 +827,7 @@ function Composer({
   busy,
   onSubmit,
   onStop,
+  onNotice,
   canvasWord,
   placeholder,
 }: {
@@ -775,10 +844,12 @@ function Composer({
   busy: boolean;
   onSubmit: () => void;
   onStop: () => void;
+  onNotice: (reason: string) => void;
   canvasWord: string;
   placeholder: string;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const mic = useMic(draft, onDraft, onNotice);
   // Grows with its text up to MAX_INPUT_PX.
   useLayoutEffect(() => {
     const el = input.current;
@@ -842,15 +913,19 @@ function Composer({
         </span>
         {review}
         <span className="spacer" />
-        <button
-          type="button"
-          className="round round-plain"
-          aria-label="Hold to talk (coming later)"
-          title="Voice input comes later"
-          aria-disabled="true"
-        >
-          <Icon name="mic" />
-        </button>
+        {state?.speech && (
+          <button
+            type="button"
+            className={`round round-plain${mic.stage === "recording" ? " recording" : ""}`}
+            aria-label={MIC_LABEL[mic.stage]}
+            title={MIC_LABEL[mic.stage]}
+            aria-pressed={mic.stage === "recording"}
+            disabled={mic.stage === "starting" || mic.stage === "transcribing"}
+            onClick={mic.toggle}
+          >
+            <Icon name="mic" />
+          </button>
+        )}
         {running ? (
           <button type="button" className="round round-stop" aria-label="Stop" disabled={!online} onClick={onStop}>
             <Icon name="stop" />

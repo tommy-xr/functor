@@ -298,6 +298,7 @@ async fn app(
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;
+    state.speech = hub.speaks();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
     let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
     driver.link = Some(hub.clone());
@@ -345,7 +346,7 @@ async fn app(
             _ => Harness::Claude,
         };
         let calls = match review {
-            true => Some(server::serve_views(views.clone(), driver.home()).await?),
+            true => Some(server::serve_views(views.clone(), driver.home(), hub.clone()).await?),
             false => None,
         };
         let task = TaskArgs {

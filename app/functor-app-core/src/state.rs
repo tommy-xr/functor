@@ -58,6 +58,8 @@ pub struct AppState {
     pub session: Option<Session>,
     /// Sessions run `--headless` (`functor-app --no-gpu`), so there are no frames.
     pub no_gpu: bool,
+    /// This app turns speech into text, so the composer has a mic.
+    pub speech: bool,
     /// Opening a project starts its game, paused on frame 0 (D37). Off for
     /// `--print` and `task`, which start one only when asked.
     #[serde(skip)]
@@ -190,6 +192,7 @@ impl AppState {
             tracks_changes: false,
             session: None,
             no_gpu: false,
+            speech: false,
             start_on_open: false,
             tasks: Vec::new(),
             activity: BTreeMap::new(),
@@ -1195,6 +1198,7 @@ fn opened(
         devices: _,
         headset_waits: _,
         voice: _,
+        speech: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {

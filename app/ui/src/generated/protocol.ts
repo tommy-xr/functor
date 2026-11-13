@@ -77,6 +77,10 @@ session: Session | null,
  */
 no_gpu: boolean, 
 /**
+ * This app turns speech into text, so the composer has a mic.
+ */
+speech: boolean, 
+/**
  * Every project's tasks, by id; their transcripts travel separately.
  */
 tasks: Array<Task>, 

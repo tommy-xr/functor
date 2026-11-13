@@ -13,6 +13,10 @@
 //! in argv, and never in a child's environment. The UI's static files are
 //! the same for everyone and are served without it.
 //!
+//! `POST /transcribe` takes the composer's recording (16 kHz mono 16-bit
+//! PCM) with the token and our own `Origin`, as `/ws` does, and answers its
+//! text, transcribed on this machine.
+//!
 //! `POST /agent/view` takes view requests from agent runs' tool servers:
 //! a run's own secret as its bearer token (compared in constant time; it
 //! names one task and run and dies with the run), no `Origin` (no page
@@ -168,6 +172,8 @@ struct Ctx {
     in_flight: std::sync::atomic::AtomicUsize,
     /// Where path evidence captures are kept (`store::evidence_dir`).
     evidence: PathBuf,
+    /// Turns the composer's recordings into text.
+    hub: crate::link::Hub,
 }
 
 /// Serves until `shutdown` resolves to an exit code, then stops the session
@@ -197,6 +203,7 @@ pub async fn serve(
         views,
         in_flight: Default::default(),
         evidence: crate::store::evidence_dir(driver.home()),
+        hub: driver.link.clone().expect("the app's link hub"),
     });
     let app = Router::new()
         .route("/ws", get(ws))
@@ -204,6 +211,10 @@ pub async fn serve(
         .route(
             VIEW_PATH,
             post(agent_view).layer(DefaultBodyLimit::max(MAX_VIEW_BYTES)),
+        )
+        .route(
+            "/transcribe",
+            post(transcribe).layer(DefaultBodyLimit::max(functor_device_link::voice::MAX_CLIP)),
         )
         .fallback(get(asset))
         .with_state(ctx);
@@ -466,6 +477,7 @@ pub struct ViewCall {
 pub async fn serve_views(
     views: Arc<ViewRoute>,
     home: &Path,
+    hub: crate::link::Hub,
 ) -> std::io::Result<UnboundedReceiver<ViewCall>> {
     let (listener, origin) = bind(0).await?;
     let (inputs, mut inputs_rx) = mpsc::unbounded_channel();
@@ -478,6 +490,7 @@ pub async fn serve_views(
         views: views.clone(),
         in_flight: Default::default(),
         evidence: crate::store::evidence_dir(home),
+        hub,
     });
     let app = Router::new()
         .route(
@@ -571,15 +584,19 @@ async fn ws(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // The token, and from a browser our own page (a non-browser client sends
-    // no Origin): see the module docs.
-    let own_origin = headers
-        .get(header::ORIGIN)
-        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
-    if !own_origin || !ctx.token.presented_in(uri.query()) {
+    if !from_our_page(&ctx, &headers, &uri) {
         return StatusCode::FORBIDDEN.into_response();
     }
     upgrade.on_upgrade(move |socket| client(ctx, socket))
+}
+
+/// The token, and from a browser our own page (a non-browser client sends
+/// no Origin): see the module docs.
+fn from_our_page(ctx: &Ctx, headers: &HeaderMap, uri: &Uri) -> bool {
+    let own_origin = headers
+        .get(header::ORIGIN)
+        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
+    own_origin && ctx.token.presented_in(uri.query())
 }
 
 async fn client(ctx: Arc<Ctx>, socket: WebSocket) {
@@ -644,6 +661,36 @@ async fn evidence(
         )
             .into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The composer's recording (`?token=`, 16 kHz mono 16-bit little-endian
+/// PCM) as `{"text": …}`, or why not as plain text.
+async fn transcribe(
+    State(ctx): State<Arc<Ctx>>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !from_our_page(&ctx, &headers, &uri) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if body.is_empty() || body.len() % 2 == 1 {
+        return (StatusCode::BAD_REQUEST, "not 16-bit audio").into_response();
+    }
+    let pcm = body
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|s| i16::from_le_bytes(*s))
+        .collect();
+    match ctx.hub.transcribe(pcm).await {
+        Ok(text) => (
+            [(header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({ "text": text }).to_string(),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
