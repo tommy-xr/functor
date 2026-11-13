@@ -142,54 +142,105 @@ function RecentItems({ recents, online, send, role }: { recents: Recent[]; onlin
   );
 }
 
-/** "Open folder…" (the window's native picker, else a path field) and "Recent", for the project switcher. */
-export function FolderActions(props: FolderProps) {
+/**
+ * The project picker: shows the active project; its menu lists the folder's
+ * projects, then recent ones, then Open folder… (the window's native picker,
+ * else a path field under the picker) and New project….
+ */
+export function ProjectPicker(props: FolderProps) {
   const { state, online, send } = props;
-  const [field, setField] = useState(false);
-  useEffect(() => setField(false), [state?.folder]);
+  // The path field: 0 hidden, else a new key per Open folder…, so choosing it again refocuses a fresh field.
+  const [field, setField] = useState(0);
+  useEffect(() => setField(0), [state?.folder]);
   const menu = useMenu();
+  const focusPicker = () => menu.ref.current?.querySelector("button")?.focus();
+  const projects = state?.projects ?? [];
   const recents = state?.recents ?? [];
+  const where = state?.git ? "repo" : "folder";
+  // The folder itself: its name, not `.`.
+  const label = (p: { path: string; name: string }) => (p.path === "." ? p.name : p.path);
+  const active = projects.find((p) => p.path === state?.active);
+  const shown = active ? label(active) : !state ? "" : state.folder ? `No projects in this ${where}` : "No folder open";
+  // A chosen item unmounts: focus goes back to the picker (a field or dialog it opens then takes it).
+  const close = () => {
+    menu.setOpen(false);
+    focusPicker();
+  };
   return (
-    <>
-      <button
-        type="button"
-        className="button button-compact"
-        disabled={!online}
-        onClick={() => send({ type: "show_new_project", here: false })}
-      >
-        New project…
-      </button>
-      <div className="folder-actions">
+    <div className="stack">
+      <div className="picker" ref={menu.ref} onKeyDown={menu.onKeyDown}>
         <button
           type="button"
-          className="button button-compact"
+          className="picker-button"
+          aria-label={`Project: ${shown}`}
+          aria-haspopup="menu"
+          aria-expanded={menu.open}
           disabled={!online}
-          aria-expanded={state?.native_picker ? undefined : field}
-          onClick={() => (state?.native_picker ? send({ type: "pick_folder" }) : setField((f) => !f))}
+          onClick={() => menu.setOpen((o) => !o)}
         >
-          Open folder…
+          {/* A project's path in mono; "No folder open" and the like muted, not mistaken for one. */}
+          <span className={active ? "picker-name mono" : "picker-name picker-none"}>{shown}</span>
+          <Icon name="chevron" />
         </button>
-        <div className="recent-menu" ref={menu.ref} onKeyDown={menu.onKeyDown}>
-          <button
-            type="button"
-            className="button button-compact"
-            aria-haspopup="menu"
-            aria-expanded={menu.open}
-            disabled={!online || recents.length === 0}
-            onClick={() => menu.setOpen((o) => !o)}
-          >
-            Recent <Icon name="chevron" />
-          </button>
-          {menu.open && (
-            <div className="menu" role="menu" aria-label="Recent projects" onClick={() => menu.setOpen(false)}>
-              <RecentItems recents={recents} online={online} send={send} role="menuitem" />
-            </div>
-          )}
-        </div>
+        {menu.open && (
+          <div className="menu" role="menu" aria-label="Projects" onClick={close}>
+            {projects.length > 0 && (
+              <div role="group" aria-label={`Projects in this ${where}`}>
+                {/* Visible group labels; the groups' aria-labels name them for screen readers. */}
+                <p className="menu-help" aria-hidden="true">{`${projects.length === 1 ? "The only project" : `${projects.length} projects`} in this ${where}`}</p>
+                {projects.map((p) => (
+                  <button
+                    key={p.path}
+                    type="button"
+                    role="menuitem"
+                    aria-current={p.path === state?.active || undefined}
+                    disabled={!online}
+                    onClick={() => send({ type: "set_active_project", path: p.path })}
+                  >
+                    <span className="menu-title mono">{label(p)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {recents.length > 0 && (
+              <div role="group" aria-label="Recent projects">
+                {projects.length > 0 && <hr className="menu-rule" />}
+                <p className="menu-help" aria-hidden="true">
+                  Recent
+                </p>
+                <RecentItems recents={recents} online={online} send={send} role="menuitem" />
+              </div>
+            )}
+            {(projects.length > 0 || recents.length > 0) && <hr className="menu-rule" />}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!online}
+              onClick={() => (state?.native_picker ? send({ type: "pick_folder" }) : setField((n) => n + 1))}
+            >
+              Open folder…
+            </button>
+            <button type="button" role="menuitem" disabled={!online} onClick={() => send({ type: "show_new_project", here: false })}>
+              New project…
+            </button>
+          </div>
+        )}
       </div>
-      {field && <OpenFolderForm {...props} autoFocus />}
+      {field > 0 && (
+        // Escape puts the field away, back to the picker.
+        <div
+          key={field}
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            setField(0);
+            focusPicker();
+          }}
+        >
+          <OpenFolderForm {...props} autoFocus />
+        </div>
+      )}
       {state?.open_error && <p className="reason">{state.open_error}</p>}
-    </>
+    </div>
   );
 }
 

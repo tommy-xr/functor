@@ -394,7 +394,7 @@ blockquote {
 .file-button {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 8px;
+  padding: 7px 8px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -945,41 +945,76 @@ blockquote {
   font-size: 12.5px;
 }
 
-/* Folders: open one by path (with the server's suggestions), recent projects. */
+/* Folders: the project picker, opening one by path (with the server's suggestions), recent projects. */
 
-.folder-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.folder-actions > .button,
-.recent-menu {
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.recent-menu {
+.picker {
   position: relative;
 }
 
-.recent-menu > .button {
+.picker-button {
   width: 100%;
-  display: inline-flex;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
+  gap: 8px;
+  text-align: left;
 }
 
-.recent-menu .icon {
+.picker-button:hover:not(:disabled),
+.picker-button[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.picker-button:disabled {
+  color: var(--muted);
+}
+
+.picker-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+
+.picker-none {
+  color: var(--muted);
+}
+
+.picker-button .icon {
+  flex: none;
   width: 14px;
   height: 14px;
+  color: var(--muted);
 }
 
-.recent-menu .menu {
+/* As wide as the picker: the side pane scrolls, so a wider menu would too. */
+.picker .menu {
   left: 0;
-  right: auto;
-  max-height: 320px;
+  right: 0;
+  width: auto;
+  max-height: min(420px, 70vh);
   overflow: auto;
+}
+
+/* Its items as wide as the menu, so a long recent path ellipsises. */
+.picker .menu [role="group"] {
+  display: flex;
+  flex-direction: column;
+}
+
+.files-heading {
+  margin: 0;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--faint);
 }
 
 .open-folder-form {
@@ -2525,7 +2560,7 @@ blockquote {
   height: 14px;
 }
 
-/* The agent picker: the project switcher's select, as a quiet inline control. */
+/* The agent picker: the boxed `.switcher` select, as a quiet inline control. */
 .model-picker select {
   width: auto;
   min-height: 40px;
@@ -3354,6 +3389,10 @@ blockquote {
   .pane {
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+  /* As tall as its content here, so the project menu hangs over the canvas, not clipped. */
+  .explorer {
+    overflow: visible;
   }
   /* Bounded, so a long file scrolls inside its pane rather than the page;
      the panes scroll, so the mini view stays put over them. */
