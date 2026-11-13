@@ -1843,7 +1843,7 @@ fn refresh_manifest(working_directory: &str) {
 // --- `run vr` plumbing -------------------------------------------------------
 
 /// The functor VR runtime tool APK (runtime/functor-runtime-oculus).
-const VR_PACKAGE: &str = "dev.functor.runner";
+const VR_PACKAGE: &str = functor_device_link::adb::PACKAGE;
 const VR_COMPONENT: &str = "dev.functor.runner/android.app.NativeActivity";
 /// Its device-loopback push port (`adb forward` bridges it to this machine).
 const VR_PORT: u16 = 8123;
@@ -1889,15 +1889,11 @@ async fn adb_device() -> Result<String, Error> {
         return Ok(serial);
     }
     let out = adb_output(None, &["devices"]).await?;
-    let devices: Vec<String> = out
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            match (fields.next(), fields.next()) {
-                (Some(serial), Some("device")) => Some(serial.to_string()),
-                _ => None,
-            }
-        })
+    let entries = functor_device_link::adb::devices(&out);
+    let devices: Vec<String> = entries
+        .iter()
+        .filter(|e| e.state == "device")
+        .map(|e| e.serial.clone())
         .collect();
     match devices.as_slice() {
         [one] => Ok(one.clone()),
@@ -1905,15 +1901,10 @@ async fn adb_device() -> Result<String, Error> {
             // The common first-connect states deserve their real diagnosis,
             // not "none": `unauthorized` = the USB-debugging prompt hasn't
             // been accepted; `offline` = a wedged connection.
-            let stuck = out.lines().find_map(|line| {
-                let mut fields = line.split_whitespace();
-                match (fields.next(), fields.next()) {
-                    (Some(serial), Some(state @ ("unauthorized" | "offline"))) => {
-                        Some(format!("{serial} is {state}"))
-                    }
-                    _ => None,
-                }
-            });
+            let stuck = entries
+                .iter()
+                .find(|e| e.state == "unauthorized" || e.state == "offline")
+                .map(|e| format!("{} is {}", e.serial, e.state));
             Err(Error::other(match stuck {
                 Some(stuck) => format!(
                     "device attached but not ready ({stuck}) — put the headset on and \
@@ -1939,10 +1930,7 @@ async fn adb_require_runtime(serial: &str) -> Result<(), Error> {
         &["shell", "pm", "list", "packages", VR_PACKAGE],
     )
     .await?;
-    let installed = out
-        .lines()
-        .any(|line| line.trim() == format!("package:{VR_PACKAGE}"));
-    if installed {
+    if functor_device_link::adb::installed(&out) {
         Ok(())
     } else {
         Err(Error::other(format!(

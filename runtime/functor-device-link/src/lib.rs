@@ -27,10 +27,13 @@
 //! with an implicit counter, so a tampered, replayed, reordered or dropped
 //! message fails to decrypt and ends the connection.
 
+pub mod adb;
 #[cfg(feature = "client")]
 pub mod client;
 pub mod desktop;
 pub mod device;
+#[cfg(feature = "file")]
+pub mod file;
 pub mod wire;
 
 mod crypto;
@@ -44,6 +47,12 @@ pub use crypto::code;
 pub const SERVICE: &str = "_functor-link._tcp.local.";
 /// The one path the desktop's link listener answers.
 pub const PATH: &str = "/link";
+
+/// A linked device's close reason once its pairing file no longer holds
+/// that link's pairing (paired again, here or over the cable, or removed):
+/// the one close a desktop reports as a failure, so its user learns why the
+/// headset left. Matched exactly by both sides: part of the wire protocol.
+pub const REPAIRED: &str = "the headset's pairing changed";
 
 /// The link protocol's version, in every hello. Peers of other versions are
 /// refused with [`wire::Reject::Version`]; neither side guesses.
@@ -132,6 +141,13 @@ impl Entropy for OsEntropy {
     fn fill(&mut self, out: &mut [u8]) {
         getrandom::fill(out).expect("the OS has randomness");
     }
+}
+
+/// `N` bytes of the operating system's randomness.
+pub fn os_random<const N: usize>() -> [u8; N] {
+    let mut out = [0; N];
+    OsEntropy.fill(&mut out);
+    out
 }
 
 /// One `Entropy` for a connection's machine and the Noise handshake it runs.

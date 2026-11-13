@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use functor_device_link::device::{self, Device, Identity};
+use functor_device_link::file::Stored;
 use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
-use functor_device_link::{hex, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
+use functor_device_link::{hex, os_random, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
 use functor_device_link::{HEARTBEAT_MS, MAX_MESSAGE, VERSION};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -47,6 +48,11 @@ pub struct StubArgs {
     /// Exit when the first link ends instead of reconnecting.
     #[arg(long)]
     once: bool,
+
+    /// Never ask to pair: wait until a pairing appears in the store (as
+    /// one written over the cable does), then link with it.
+    #[arg(long)]
+    wait_for_pairing: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,14 +67,6 @@ enum Misbehave {
     Oversize,
 }
 
-/// `<store>/device.json`.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct Stored {
-    id: String,
-    secret: Option<String>,
-    desktop: Option<String>,
-}
-
 fn say(line: &str) {
     let mut out = std::io::stdout();
     let _ = writeln!(out, "{line}");
@@ -76,18 +74,17 @@ fn say(line: &str) {
 }
 
 pub async fn run(args: StubArgs) -> std::process::ExitCode {
-    let file = args.store.join("device.json");
-    let mut stored: Stored = std::fs::read_to_string(&file)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default();
-    if unhex::<16>(&stored.id).is_none() {
-        stored.id = hex(uuid::Uuid::new_v4().as_bytes());
+    // The headset app's pairing file and format.
+    let file = args.store.join("device-link.json");
+    let load = || Stored::parse(&std::fs::read(&file).unwrap_or_default());
+    let mut stored = load();
+    if unhex::<16>(&stored.device).is_none() {
+        stored.device = hex(&os_random::<16>());
     }
     // Private, as a headset's pairing would be.
     let save = |stored: &Stored| {
         let _ = crate::store::make_private(&args.store);
-        let _ = crate::store::write_whole(&file, &serde_json::to_string(stored).unwrap());
+        let _ = crate::store::write_whole(&file, &stored.to_json());
     };
     save(&stored);
     let Ok(signal) = crate::shutdown_signal() else {
@@ -95,6 +92,18 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
     };
     tokio::pin!(signal);
     loop {
+        if args.wait_for_pairing {
+            loop {
+                stored = load();
+                if stored.pairing().is_some() {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                    _ = &mut signal => return std::process::ExitCode::SUCCESS,
+                }
+            }
+        }
         let addr = match &args.desktop {
             Some(a) => a.clone(),
             None => match discover(stored.desktop.clone()).await {
@@ -109,7 +118,10 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
             r = session(&args, &mut stored, &addr) => r,
             _ = &mut signal => return std::process::ExitCode::SUCCESS,
         };
-        save(&stored);
+        // Waiting for pairings written from outside, the file is theirs.
+        if !args.wait_for_pairing {
+            save(&stored);
+        }
         match result {
             // Paired: link at once with the new secret.
             Ok(true) => continue,
@@ -131,14 +143,14 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
         .await
         .map_err(|e| e.to_string())?;
     let identity = Identity {
-        device: unhex(&stored.id).expect("a valid id"),
+        device: unhex(&stored.device).expect("a valid id"),
         name: args.name.clone(),
         app_version: args.app_version.clone(),
     };
     let entropy: SharedEntropy = shared(OsEntropy);
     let now = now_ms();
     let secret = match args.misbehave {
-        Some(Misbehave::WrongSecret) => Some(Secret(rand32())),
+        Some(Misbehave::WrongSecret) => Some(Secret(os_random())),
         _ => stored.secret.as_deref().and_then(Secret::from_hex),
     };
     if args.protocol != VERSION {
@@ -200,6 +212,7 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
                 } => {
                     stored.secret = Some(secret.to_hex());
                     stored.desktop = Some(hex(&desktop));
+                    stored.desktop_name = Some(desktop_name.clone());
                     paired = true;
                     say(&format!("paired {desktop_name}"));
                 }
@@ -306,12 +319,6 @@ fn canned(id: u32, method: &str, target: &str, name: &str, served: u64) -> Respo
         headers: vec![("content-type".into(), kind.into())],
         body: body.into_bytes(),
     }
-}
-
-fn rand32() -> [u8; 32] {
-    let mut out = [0; 32];
-    functor_device_link::Entropy::fill(&mut OsEntropy, &mut out);
-    out
 }
 
 /// A desktop's link address by mDNS, preferring `desktop` (its id).

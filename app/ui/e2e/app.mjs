@@ -2,10 +2,11 @@
 // with a throwaway home (so no test reads or writes the user's saved tasks),
 // and watching a page for console errors and non-loopback requests.
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect } from "@playwright/test";
 
 export const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const EXE = process.platform === "win32" ? ".exe" : "";
@@ -89,13 +90,17 @@ export function tempProject(project) {
  * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
  * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
- * and resolves with its address as `link`.
+ * and resolves with its address as `link`; its cable side runs `adb` (a fake,
+ * or by default none, so no real headset is touched).
  */
-export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false } = {}) {
+export function startServer(
+  port = 0,
+  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false, adb = "/nonexistent/adb" } = {},
+) {
   const args = ["--headless", "--port", String(port)];
   // No LAN listener or mDNS advert unless a test pairs a stub device.
   if (!deviceLink) args.push("--no-device-link");
-  else args.push("--device-link", "127.0.0.1:0", "--no-mdns");
+  else args.push("--device-link", "127.0.0.1:0", "--no-mdns", "--adb", adb);
   if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
   if (FUNCTOR) args.push("--functor", FUNCTOR);
@@ -180,4 +185,51 @@ export function watchExternal(page) {
     if (!LOOPBACK.has(hostname)) external.push(r.url());
   });
   return external;
+}
+
+/** The server's stored pairings (`devices.json`, secrets and all), or "" before any. */
+export function storedPairings(server) {
+  try {
+    return readFileSync(join(server.home, "devices.json"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+// A failed step must not leave stubs retrying a gone desktop.
+const stubs = [];
+process.on("exit", () => stubs.forEach((c) => c.exitCode === null && c.kill()));
+
+/** A `device-stub` headset on `link`; `line(prefix)` waits for its next line starting so. */
+export function stub(link, store, name, extra = []) {
+  const child = spawn(APP, ["device-stub", "--desktop", link, "--name", name, "--store", store, ...extra], {
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  stubs.push(child);
+  const lines = [];
+  let buf = "";
+  child.stdout.on("data", (d) => {
+    buf += d;
+    for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) lines.push(buf.slice(0, i));
+  });
+  let seen = 0;
+  return {
+    async line(prefix) {
+      let found;
+      await expect
+        .poll(
+          () => {
+            const i = lines.slice(seen).findIndex((l) => l.startsWith(prefix));
+            if (i < 0) return false;
+            found = lines[seen + i];
+            seen += i + 1;
+            return true;
+          },
+          { timeout: 20_000, message: `stub ${name}: ${prefix}` },
+        )
+        .toBe(true);
+      return found;
+    },
+    stop: () => stopServer({ child }),
+  };
 }

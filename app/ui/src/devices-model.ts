@@ -2,7 +2,7 @@
 // pill and the card say the same), its one fix, the code as people read it,
 // and when the pairing prompt may open.
 
-import type { Device, Headset, PairRequest } from "./generated/protocol";
+import type { Attached, Device, Devices, Headset, HeadsetPairing, PairRequest } from "./generated/protocol";
 
 /** The title pill's and the cards' word for each state. */
 export const WORDS: Record<Headset, string> = {
@@ -15,11 +15,13 @@ export const WORDS: Record<Headset, string> = {
 };
 
 /** The one thing that fixes a card's state, said plainly (nothing to click
- *  unless it is built). */
-export function fixFor(d: Device): string {
+ *  unless it is built). `cable`: the headset on a USB cable, if it is. */
+export function fixFor(d: Device, cable: Attached | null = null): string {
   switch (d.state.state) {
     case "away":
-      return "Put the headset on and open Functor. It reconnects by itself.";
+      return cable && pairedWith(cable)?.with === "this"
+        ? "Paired over the cable. Open Functor in the headset: it connects over Wi-Fi by itself."
+        : "Put the headset on and open Functor. It reconnects by itself.";
     case "connected":
       return "";
     case "needs_update":
@@ -62,6 +64,60 @@ export function mayOpen(typedAt: number, now: number, pointerDown: boolean): boo
 /** The request the prompt opens by itself: the oldest not put off with "Later". */
 export function autoOpen(requests: PairRequest[], later: number[]): PairRequest | null {
   return requests.find((r) => !later.includes(r.request)) ?? null;
+}
+
+/** The pairing a headset on the cable holds, once its app is readable. */
+export function pairedWith(a: Attached): HeadsetPairing | null {
+  return a.state.state === "ready" ? a.state.paired : null;
+}
+
+/** The headset on a cable that is this paired card's (by its id). */
+export function cableFor(d: Device, attached: Attached[]): Attached | null {
+  return attached.find((a) => a.state.state === "ready" && a.state.device === d.id) ?? null;
+}
+
+/** Headsets on a cable with no card of their own. */
+export function cableOnly(devices: Devices): Attached[] {
+  return devices.attached.filter((a) => !devices.list.some((d) => cableFor(d, [a])));
+}
+
+/** A paired card's cable row: how the headset on it is. */
+export const CABLE_ROW: Record<Attached["state"]["state"], string> = {
+  unauthorized: "Plugged in, USB debugging not allowed",
+  offline: "Plugged in, not responding",
+  no_app: "Plugged in, no Functor app",
+  not_debuggable: "Plugged in, release app",
+  ready: "Plugged in",
+};
+
+/**
+ * A headset on the cable, said plainly: what it is, and the one thing that
+ * makes it pairable (`fix`), or nothing when "Pair over the cable" is it.
+ */
+export function cableWords(a: Attached): { line: string; fix: string } {
+  switch (a.state.state) {
+    case "unauthorized":
+      return {
+        line: "It has not allowed USB debugging from this computer.",
+        fix: "Put the headset on and choose Allow on its USB debugging prompt.",
+      };
+    case "offline":
+      return { line: "adb lists it but cannot reach it.", fix: "Unplug the cable and plug it in again." };
+    case "no_app":
+      return {
+        line: "The Functor app is not installed on it.",
+        fix: "Install it over the cable (adb install functor_runtime_oculus.apk), then it can pair here.",
+      };
+    case "not_debuggable":
+      return {
+        line: "Its Functor app is a release build, which cannot pair over a cable.",
+        fix: "Pair over Wi-Fi instead: in the headset, hold the left menu button to show a code.",
+      };
+    case "ready":
+      return a.state.paired.with === "other"
+        ? { line: `It is paired with ${a.state.paired.name}.`, fix: "" }
+        : { line: "Plugged in. Pairing over the cable needs no code.", fix: "" };
+  }
 }
 
 /** A connected card's rows: link and latency, battery, build, project. */

@@ -310,6 +310,9 @@ impl Desktop {
             Frame::Pong(t) if t <= now => Event::Latency(now - t),
             Frame::Pong(_) => return Output::default(),
             Frame::Channel { channel, data } => Event::Channel { channel, data },
+            Frame::Close(reason) if reason == crate::REPAIRED => {
+                return Output::failed(Error::Closed(reason))
+            }
             Frame::Close(_) => {
                 return Output {
                     end: Some(End::Done),

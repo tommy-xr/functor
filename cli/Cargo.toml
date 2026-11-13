@@ -25,6 +25,9 @@ functor-prelude = { path = "../functor-prelude" }
 # Mesh + STL writing for `functor export`.
 functor-solid = { path = "../functor-solid" }
 functor-docgen = { path = "../tools/functor-docgen" }
+# `adb devices` parsing and the headset app's package, shared with the app's
+# cable pairing.
+functor-device-link = { path = "../runtime/functor-device-link" }
 clap = { version = "4.5.6", features = ["derive"] }
 colored = "2.1.0"
 # The `log` facade: the CLI installs a logger that turns any `log!` (its own or

@@ -10,7 +10,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -20,17 +20,19 @@ use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
 use crate::device::{self, Device, Identity};
+pub use crate::file::Stored;
 use crate::wire::{Frame, Request, Response, Status};
-use crate::{hex, shared, unhex, DesktopId, DeviceId, End, Error, OsEntropy, Output, Secret};
-use crate::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE, PATH, SERVICE};
+use crate::{hex, shared, DesktopId, DeviceId, End, Error, OsEntropy, Output, Secret};
+use crate::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE, PATH, REPAIRED, SERVICE};
 
 /// How long one mDNS browse looks for a desktop.
 const BROWSE: Duration = Duration::from_secs(10);
 /// Reconnect backoff: doubles from the first to the last.
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
-/// Unpaired and idle: how often the pairing file is re-read, so one written
-/// from outside (the cable path) is picked up without a restart.
+/// How often the pairing file is re-read (unpaired, waiting to reconnect,
+/// or linked), so one written from outside (the cable path) is picked up
+/// without a restart.
 const IDLE_RECHECK: Duration = Duration::from_secs(5);
 /// Socket read timeout while requests are in flight (how soon an answer is
 /// sent) and while none are (how soon a command or heartbeat is handled).
@@ -103,76 +105,6 @@ pub struct View {
     pub paired: Option<String>,
     pub linked: bool,
     pub pairing: Option<Pairing>,
-}
-
-/// The pairing file, JSON:
-/// `{"device": "<32 hex>", "desktop": "<32 hex>", "desktop_name": "…", "secret": "<64 hex>"}`.
-/// `device` is made once and kept; the other three are written together by
-/// a pairing (here, or from outside before the client reads it again).
-#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
-pub struct Stored {
-    #[serde(default)]
-    pub device: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desktop: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub desktop_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-}
-
-impl Stored {
-    /// The file at `path`; a missing one is created with a new device id.
-    /// One that does not parse is moved aside (`.bad`) and started afresh,
-    /// so the headset can still pair.
-    pub fn load(path: &Path) -> io::Result<Stored> {
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(e),
-        };
-        let mut stored: Stored = match serde_json::from_str(&text) {
-            Ok(stored) => stored,
-            Err(_) if text.is_empty() => Stored::default(),
-            Err(e) => {
-                log::error!("device link: {path:?} does not parse ({e}); moved aside");
-                std::fs::rename(path, path.with_extension("bad"))?;
-                Stored::default()
-            }
-        };
-        if unhex::<16>(&stored.device).is_none() {
-            let mut id = [0u8; 16];
-            crate::Entropy::fill(&mut OsEntropy, &mut id);
-            stored.device = hex(&id);
-            stored.save(path)?;
-        }
-        Ok(stored)
-    }
-
-    /// Whole or not at all, readable by this user only.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        let tmp = path.with_extension("tmp");
-        let mut file = std::fs::File::create(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(serde_json::to_string(self).unwrap().as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(tmp, path)
-    }
-
-    pub fn device(&self) -> Option<DeviceId> {
-        unhex(&self.device)
-    }
-
-    /// The desktop and secret, when all of the pairing is present.
-    pub fn pairing(&self) -> Option<(DesktopId, Secret)> {
-        let desktop = unhex(self.desktop.as_deref()?)?;
-        let secret = Secret::from_hex(self.secret.as_deref()?)?;
-        Some((desktop, secret))
-    }
 }
 
 #[derive(Default)]
@@ -275,6 +207,12 @@ enum Ended {
     Gone,
 }
 
+enum Waited {
+    Out,
+    Changed,
+    Gone,
+}
+
 enum Found {
     /// Its addresses, to try in turn.
     At(Vec<String>),
@@ -350,10 +288,40 @@ impl<H: Host> Worker<H> {
                 }
                 Ended::Paired | Ended::Cancelled => {}
             }
-            if !self.wait(backoff) {
-                return;
+            match self.wait_paired(backoff, &secret) {
+                Waited::Gone => return,
+                // A pairing written from outside: try it now.
+                Waited::Changed => backoff = BACKOFF_MIN,
+                Waited::Out => backoff = (backoff * 2).min(BACKOFF_MAX),
             }
-            backoff = (backoff * 2).min(BACKOFF_MAX);
+        }
+    }
+
+    /// Whether the pairing file no longer holds `secret` (re-paired, here
+    /// or over the cable, or its pairing removed). An unreadable file
+    /// changes nothing.
+    fn pairing_changed(&self, secret: &Secret) -> bool {
+        match Stored::load(&self.config.store) {
+            Ok(stored) => stored.pairing().map(|(_, s)| s).as_ref() != Some(secret),
+            Err(_) => false,
+        }
+    }
+
+    /// Waits `d` as [`Worker::wait`] does, looking at the pairing file every
+    /// [`IDLE_RECHECK`] so a new one is not left waiting out the backoff.
+    fn wait_paired(&mut self, d: Duration, secret: &Secret) -> Waited {
+        let until = Instant::now() + d;
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() || self.wants_pairing {
+                return Waited::Out;
+            }
+            if !self.wait(left.min(IDLE_RECHECK)) {
+                return Waited::Gone;
+            }
+            if self.pairing_changed(secret) {
+                return Waited::Changed;
+            }
         }
     }
 
@@ -504,6 +472,7 @@ impl<H: Host> Worker<H> {
         let result = (|| -> Result<std::convert::Infallible, Ended> {
             conn.apply(first, self)?;
             let mut next_beat = now() + HEARTBEAT_MS;
+            let mut next_recheck = now() + IDLE_RECHECK.as_millis() as u64;
             loop {
                 let poll = if conn.in_flight > 0 {
                     POLL_BUSY
@@ -567,6 +536,17 @@ impl<H: Host> Worker<H> {
                     }
                 }
                 let t = now();
+                // Linked, and the file was paired again meanwhile: say so to
+                // this desktop and start over with the new pairing.
+                if let Some(secret) = secret.filter(|_| t >= next_recheck) {
+                    next_recheck = t + IDLE_RECHECK.as_millis() as u64;
+                    if self.pairing_changed(secret) {
+                        if let Ok(msgs) = machine.send(&Frame::Close(REPAIRED.into())) {
+                            let _ = conn.send_all(msgs);
+                        }
+                        return Err(Ended::over(true, "the pairing file changed"));
+                    }
+                }
                 if machine.linked() && t >= next_beat {
                     next_beat = t + HEARTBEAT_MS;
                     let msgs = machine

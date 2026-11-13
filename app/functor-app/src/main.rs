@@ -88,6 +88,16 @@ struct Args {
     #[arg(long, hide = true, global = true)]
     no_mdns: bool,
 
+    /// The `adb` that finds headsets on a USB cable (tests pass a fake).
+    #[arg(
+        long,
+        hide = true,
+        value_name = "PATH",
+        default_value = "adb",
+        global = true
+    )]
+    adb: PathBuf,
+
     /// The fake agent's child: print a recorded run's events, then exit.
     #[arg(long, value_name = "FIXTURE", hide = true)]
     replay_events: Option<PathBuf>,
@@ -304,6 +314,7 @@ async fn app(
             let config = link::Config {
                 bind: args.device_link,
                 advertise: !args.no_mdns,
+                adb: args.adb,
             };
             hub.listen(config).await.map(|addr| Some(addr.to_string()))
         }

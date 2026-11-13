@@ -1,7 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoOpen, clock, details, fixFor, mayOpen, secondsLeft, spacedCode, TYPING_IDLE_MS, WORDS } from "./devices-model.ts";
-import type { Device, PairRequest } from "./generated/protocol";
+import {
+  autoOpen,
+  cableFor,
+  cableOnly,
+  cableWords,
+  clock,
+  details,
+  fixFor,
+  mayOpen,
+  secondsLeft,
+  spacedCode,
+  TYPING_IDLE_MS,
+  WORDS,
+} from "./devices-model.ts";
+import type { Attached, Device, Devices, PairRequest } from "./generated/protocol";
 
 const device = (state: Device["state"]): Device => ({
   id: "ab",
@@ -66,4 +79,44 @@ test("a connected card's details", () => {
     ["Running", "examples/hello"],
   ]);
   assert.deepEqual(details(device({ state: "away" })), []);
+});
+
+const onCable = (serial: string, state: Attached["state"]): Attached => ({
+  serial,
+  name: "Quest 3",
+  state,
+  pairing: false,
+  pairable: state.state === "ready",
+});
+
+test("a headset on the cable joins its paired card, or has its own", () => {
+  const ours = onCable("s1", { state: "ready", device: "ab", paired: { with: "this" } });
+  const stranger = onCable("s2", { state: "ready", device: "zz", paired: { with: "nobody" } });
+  const noId = onCable("s3", { state: "unauthorized" });
+  const devices: Devices = {
+    listening: "0.0.0.0:1",
+    list: [device({ state: "away" })],
+    requests: [],
+    headset: "away",
+    adb: true,
+    attached: [ours, stranger, noId],
+  };
+  assert.equal(cableFor(devices.list[0], devices.attached), ours);
+  assert.deepEqual(cableOnly(devices), [stranger, noId]);
+  // Away and paired over this cable: says how it connects.
+  assert.match(fixFor(devices.list[0], ours), /connects over Wi-Fi by itself/);
+  assert.match(fixFor(devices.list[0], null), /reconnects by itself/);
+});
+
+test("each cable state says one thing and its fix", () => {
+  const states: Attached["state"][] = [{ state: "unauthorized" }, { state: "offline" }, { state: "no_app" }, { state: "not_debuggable" }];
+  for (const s of states) {
+    const { line, fix } = cableWords(onCable("s", s));
+    assert.ok(line && fix, s.state);
+  }
+  assert.match(cableWords(onCable("s", { state: "not_debuggable" })).fix, /hold the left menu button/);
+  const ready = cableWords(onCable("s", { state: "ready", device: null, paired: { with: "nobody" } }));
+  assert.deepEqual([/no code/.test(ready.line), ready.fix], [true, ""]);
+  const other = cableWords(onCable("s", { state: "ready", device: "x", paired: { with: "other", name: "Studio" } }));
+  assert.equal(other.line, "It is paired with Studio.");
 });
