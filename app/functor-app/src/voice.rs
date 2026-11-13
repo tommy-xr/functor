@@ -239,6 +239,7 @@ pub enum Speech {
     #[cfg(feature = "whisper")]
     Whisper(Arc<tokio::sync::OnceCell<Arc<functor_stt::Whisper>>>),
     /// Not in this build.
+    #[cfg(not(feature = "whisper"))]
     Off,
 }
 
@@ -277,6 +278,7 @@ impl Speech {
                 })
                 .await?
                 .clone(),
+            #[cfg(not(feature = "whisper"))]
             Speech::Off => {
                 return Err(
                     "speech-to-text is not in this build of the app: build it with \

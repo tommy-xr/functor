@@ -2106,7 +2106,9 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
         })
         .await;
     let task = state["tasks"][0]["id"].clone();
-    assert_eq!(state["tasks"][0]["title"], said.as_str());
+    // A long one is cut to a title.
+    let title = state["tasks"][0]["title"].as_str().unwrap();
+    assert!(said.starts_with(title.trim_end_matches('…')), "{title}");
     app.send(json!({"type": "get_transcript", "task": task}))
         .await;
     let items = loop {
