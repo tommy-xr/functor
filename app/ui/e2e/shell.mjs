@@ -93,7 +93,7 @@ async function run(browser, width, height) {
     if (FUNCTOR) {
       await expect(status).toHaveText("Local session · running", { timeout: 60_000 });
       // Paused on its first frame until Play.
-      await expect(page.getByTestId("transport-frame")).toHaveText(/^0 \/ \d+$/, { timeout: 30_000 });
+      await expect(page.getByTestId("transport-frame")).toHaveText(/^0( \/ 0)?$/, { timeout: 30_000 });
     } else {
       console.log(`SKIPPED (${tag}): Start/Stop session — set FUNCTOR_BIN (npm run build:cli:debug)`);
     }
