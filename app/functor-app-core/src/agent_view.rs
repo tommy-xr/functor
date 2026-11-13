@@ -495,7 +495,7 @@ pub(crate) fn step_clicked(
         .clone();
     available(state, &project, id, &target)?;
     let view = view_of(&target, id);
-    let in_sight = view == View::Game && placement(state, &project) != Placement::Pane;
+    let in_sight = view == View::Game && !placement(state, &project).tabbed();
     let mut changed = false;
     if !in_sight {
         let open = LayoutOp::Open {

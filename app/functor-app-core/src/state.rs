@@ -1335,7 +1335,8 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
 }
 
 /// Starts the session waiting on a headset once its tunnel is known; fails
-/// it if the headset is not paired here. Whether anything changed.
+/// it if the headset is not paired here or the link is off. Whether
+/// anything changed.
 fn start_headset(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     let (Some(id), Some(path)) = (state.headset_waits, state.active.clone()) else {
         return false;
@@ -1346,6 +1347,11 @@ fn start_headset(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
         .and_then(|l| l.game.headset.clone());
     let card = headset.and_then(|h| state.devices.list.iter().find(|d| d.id == h && d.paired));
     let outcome = match (card.and_then(|d| d.tunnel.clone()), card) {
+        _ if state.devices.started && state.devices.listening.is_none() => Err(
+            "The device link is off in this app, so no headset can be reached. Choose Pane to run \
+the game here."
+                .to_string(),
+        ),
         (Some(tunnel), _) => Ok(tunnel),
         // Its tunnel opens just after the link starts.
         (None, Some(_)) => return false,
@@ -1463,6 +1469,10 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
             save_layout(state, &project, layout, commands);
             if restart {
                 restart_live(state, commands);
+            }
+            // An ended run's reason was another placement's.
+            if let Some(s) = state.session.as_mut().filter(|s| restart && !s.status.is_live()) {
+                s.status = SessionStatus::Stopped;
             }
             true
         }
@@ -5536,7 +5546,7 @@ mod tests {
         let (s, _) = update(
             s,
             Event::Link(LinkEvent::Started {
-                listening: None,
+                listening: Some("0.0.0.0:7000".into()),
                 paired: vec![crate::devices::Paired {
                     id: "aa".into(),
                     name: "Quest aa".into(),
@@ -5554,6 +5564,18 @@ mod tests {
         assert!(commands.contains(&start_headset(1, "http://127.0.0.1:6000")));
         assert_eq!(s.headset_waits, None);
         assert_eq!(s.session.as_ref().unwrap().status, SessionStatus::Starting);
+
+        // The link off: no headset can be reached.
+        let (s, _) = update(placed("aa"), client(ClientMsg::StartSession));
+        let off = LinkEvent::Started {
+            listening: None,
+            paired: vec![],
+        };
+        let (s, _) = update(s, Event::Link(off));
+        assert!(matches!(
+            &s.session.as_ref().unwrap().status,
+            SessionStatus::Failed { reason } if reason.contains("link is off")
+        ));
 
         // Forgotten: the link has started and does not list it.
         let s = with_headsets(

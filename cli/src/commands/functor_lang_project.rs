@@ -1611,6 +1611,7 @@ project root, not from {}/",
                         emit(Event::Warning {
                             message: format!("the headset restarted; load failed ({e}); retrying…"),
                         });
+                        tokio::time::sleep(RESTART_PROBE).await;
                         continue;
                     }
                 }
