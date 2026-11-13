@@ -93,6 +93,8 @@ mod tests {
             session_id: None,
             run: None,
             baseline: None,
+            moment: None,
+            evidence: None,
             change: None,
             reverting: false,
             created_at: None,
