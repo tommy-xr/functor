@@ -21,8 +21,10 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use functor_app_core::protocol::{ClientMsg, ServerMsg};
+use functor_app_core::metrics::run_metrics;
 use functor_app_core::{
-    print, print_change, print_item, update, AppState, Command, Event, Harness, Item, SessionStatus,
+    print, print_change, print_item, update, AppState, Command, Event, Harness, Item, RunEvent,
+    SessionStatus,
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 
@@ -129,6 +131,14 @@ enum Cmd {
         /// Start the project's game session first, for the agent's tools.
         #[arg(long)]
         start_session: bool,
+
+        /// Write the run's metrics here as JSON when it ends (plan 1.19).
+        #[arg(long, value_name = "PATH")]
+        metrics: Option<PathBuf>,
+
+        /// Stop the run once its cumulative input tokens pass this.
+        #[arg(long, value_name = "TOKENS")]
+        max_input: Option<u64>,
     },
     /// Speak the device side of the device link, for tests: pair, link,
     /// answer canned debug requests.
@@ -278,6 +288,8 @@ async fn app(
         harness,
         follow,
         start_session,
+        metrics,
+        max_input,
     }) = args.command
     {
         let harness = match harness.as_str() {
@@ -289,6 +301,8 @@ async fn app(
             harness,
             follow,
             start_session,
+            metrics,
+            max_input,
         };
         return run_task(state, driver, events, task).await;
     }
@@ -452,6 +466,8 @@ struct TaskArgs {
     harness: Harness,
     follow: bool,
     start_session: bool,
+    metrics: Option<PathBuf>,
+    max_input: Option<u64>,
 }
 
 /// `task`: runs one task to its end, printing its transcript. Exits 0 if it
@@ -475,6 +491,7 @@ async fn run_task(
         }
     }
     let new = driver.new_task(args.prompt, args.harness);
+    let started = std::time::Instant::now();
     state.now = server::wall_ms();
     let (next, commands) = update(state, new);
     state = next;
@@ -499,21 +516,48 @@ async fn run_task(
         task.transcript.clone()
     };
     let mut printed = 0;
+    let mut first_event = None;
+    // Why the run was stopped before it ended.
+    let mut cut = None;
     let signal = loop {
         if args.follow {
             printed = print_settled(&transcript(&state), printed);
         }
-        if state.tasks.iter().any(|t| t.id == id && t.run.is_none()) {
+        let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
+        let Some(run) = &task.run else {
             break None;
+        };
+        if let (Some(usage), Some(max)) = (run.usage, args.max_input) {
+            if usage.input > max {
+                cut = Some(format!("over {max} input tokens"));
+                break None;
+            }
         }
         tokio::select! {
             biased;
             signal = &mut shutdown => break Some(signal),
-            Some(event) = events.recv() => state = step(state, event, &mut driver).await,
+            Some(event) = events.recv() => {
+                let agent = matches!(&event, Event::Run { task, event: RunEvent::Agent(_), .. } if *task == id);
+                if agent && first_event.is_none() {
+                    first_event = Some(started.elapsed());
+                }
+                state = step(state, event, &mut driver).await
+            }
         }
     };
-    // Stops the run (on a signal) and the session.
+    let wall = started.elapsed();
+    // Stops the run (on a signal or a cut) and the session.
     state = step(state, Event::Shutdown, &mut driver).await;
+    if let Some(path) = &args.metrics {
+        let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
+        let mut record = serde_json::to_value(run_metrics(task)).expect("metrics serialize");
+        record["wall_ms"] = (wall.as_millis() as u64).into();
+        record["first_event_ms"] = first_event.map(|d| d.as_millis() as u64).into();
+        record["cut"] = cut.or(signal.map(|s| format!("signal {s}"))).into();
+        if let Err(e) = std::fs::write(path, format!("{record}\n")) {
+            eprintln!("functor-app: cannot write {}: {e}", path.display());
+        }
+    }
     let items = transcript(&state);
     for item in &items[if args.follow { printed } else { 0 }..] {
         say(item);

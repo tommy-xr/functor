@@ -10,6 +10,7 @@ pub mod creation;
 pub mod devices;
 pub mod folders;
 pub mod layout;
+pub mod metrics;
 pub mod print;
 pub mod projects;
 pub mod protocol;

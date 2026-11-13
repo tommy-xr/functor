@@ -38,7 +38,7 @@ pub enum Stance {
 }
 
 /// What a call touches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CallKind {
@@ -154,7 +154,7 @@ fn cut(text: &str) -> String {
 /// The kind and label of a call to tool `name` with `input`, as either
 /// harness names it (Codex runs commands as `shell`; both name MCP tools
 /// `mcp__<server>__<tool>`).
-fn classify(name: &str, input: &Value) -> Call {
+pub fn classify(name: &str, input: &Value) -> Call {
     let s = |key: &str| input[key].as_str().unwrap_or("");
     let file = |key: &str| short(s(key));
     let (kind, label) = match name {
