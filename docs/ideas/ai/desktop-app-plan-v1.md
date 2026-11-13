@@ -389,8 +389,9 @@ separate review run prepares the decision page's report (D31):
   by default; model `sonnet` (cheaper and faster than the task's); optional
   instructions. Off: the agent's own report is shown.
 - **Precedence:** the review's report replaces the agent's and is labelled
-  "Prepared by a separate review"; the agent's failed checks and the app's
-  own path evidence stay. While it prepares, the page stands on what it
+  "Prepared by a separate review"; the agent's checks (as they ran) and the
+  app's own path evidence stay; a review that fails or is cut publishes
+  nothing. While it prepares, the page stands on what it
   has, with "Preparing the summary…"; Keep and Revert work at once and stop
   it. A failed or cut review leaves the page as it was and says why. A new
   run, Keep, Revert or a different change ends it.
