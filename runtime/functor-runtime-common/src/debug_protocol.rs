@@ -235,7 +235,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// declare the project's `name`, which a headset reports over its link; an
 /// empty load returns a headset to its boot scene. A pre-v40 runtime refuses
 /// both queries with 400.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 40;
+///
+/// 41 adds `events` on each `GET /input-log` step: its recorded edge events
+/// as replay data, which `run native --replay-input` replays.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 41;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -374,7 +377,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "GET",
         path: "/input-log",
-        description: "recorded sampled input — ?from=N returns {generation, oldest, newest, steps: [{frame, tts, dts, input, marks}]}: each retained step from state frame N on (default: all), `input` the sampled snapshot it consumed (null for a game without sampledInput), `marks` its recorded edge events as [{kind, label}]; frames as GET /state numbers them",
+        description: "recorded sampled input — ?from=N returns {generation, oldest, newest, steps: [{frame, tts, dts, input, marks, events}]}: each retained step from state frame N on (default: all), `input` the sampled snapshot it consumed (null for a game without sampledInput), `marks` its recorded edge events as [{kind, label}], `events` the same events as replay data (`run native --replay-input`); frames as GET /state numbers them",
     },
     DebugRoute {
         method: "POST",
@@ -1025,6 +1028,11 @@ pub struct InputLogStep {
     /// because a pre-v37 runtime omits it.
     #[serde(default)]
     pub marks: Vec<TimelineMark>,
+    /// The same events as data (v41), in order, for `run native
+    /// --replay-input`; `default` because a pre-v41 runtime omits it.
+    #[serde(default)]
+    #[cfg_attr(feature = "ts", ts(type = "Array<unknown>"))]
+    pub events: Vec<crate::RecordedInput>,
 }
 
 /// One recorded event as a timeline shows it: `kind` (`key-down`,

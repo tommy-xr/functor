@@ -80,6 +80,11 @@ impl Git {
         })
     }
 
+    /// The work tree's top level.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// `git -C <root> <args>` against the store, with `index` as its index.
     fn command(&self, args: &[&str], index: Option<&Path>) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("git");
@@ -393,6 +398,40 @@ impl Git {
         )
         .await?;
         Ok(())
+    }
+
+    /// Writes snapshot `tree`'s directory `path` (repo-relative, `.` the
+    /// whole tree) under `dest`: the project as it was then, outside the
+    /// working tree.
+    pub async fn export(&self, tree: &str, path: &str, dest: &Path) -> Result<(), String> {
+        let tree = oid(tree)?;
+        let spec = match path {
+            "." => tree.to_string(),
+            path => format!("{tree}:{path}"),
+        };
+        let index = TempIndex::new(&self.dir);
+        self.git(&["read-tree", &spec], Some(&index.0)).await?;
+        let prefix = format!("--prefix={}/", plain(dest).display());
+        self.git(&["checkout-index", "-a", "-f", &prefix], Some(&index.0))
+            .await?;
+        Ok(())
+    }
+
+    /// The ignored files and directories present in directory `path`
+    /// (repo-relative, `.` the root): what no snapshot holds, such as
+    /// fetched assets.
+    pub async fn ignored(&self, path: &str) -> Result<Vec<String>, String> {
+        let args = [
+            "ls-files",
+            "-z",
+            "-o",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+            "--",
+            path,
+        ];
+        Ok(nul_list(&self.git(&args, None).await?))
     }
 
     /// Those of `paths` the working tree's ignore rules do not ignore.
@@ -718,6 +757,34 @@ pub(crate) mod tests {
         std::fs::remove_file(repo.root.join("gone.fun")).unwrap();
         repo.write("notes.txt", "untracked, then edited\n");
         repo.write("debug.log", "ignored\n");
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_exports_a_project_as_it_was_and_lists_ignored_files() {
+        let repo = Repo::new(&[
+            ("game/game.fun", "let a = 1\n"),
+            ("game/.gitignore", "*.glb\n"),
+            ("other.txt", "x"),
+        ]);
+        let git = repo.open();
+        let base = git.snapshot().await.unwrap();
+        repo.write("game/game.fun", "let a = 2\n");
+        repo.write("game/hero.glb", "bytes");
+        let before = repo.user_state();
+        let out = repo.home.join("out");
+        git.export(&base, "game", &out).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("game.fun")).unwrap(),
+            "let a = 1\n"
+        );
+        assert!(!out.join("other.txt").exists(), "only the project");
+        assert!(
+            !out.join("hero.glb").exists(),
+            "no ignored file is in a snapshot"
+        );
+        assert_eq!(git.ignored("game").await.unwrap(), ["game/hero.glb"]);
+        assert_eq!(repo.user_state(), before);
+        assert!(git.export("not-an-oid", "game", &out).await.is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -758,10 +758,10 @@ impl MouseButton {
 /// the frame-indexed input log survives a hot reload even though the
 /// closure-holding model snapshots do not. Both shells buffer these in
 /// `key_event`/`mouse_move`/`mouse_wheel` and flush a frame's worth into the
-/// recorder; the forward-step replays them. (`Serialize`/`Deserialize` are for
-/// the future on-disk/wire event log, T7 — unused by the in-session replay.)
+/// recorder; the forward-step replays them. (`Serialize`/`Deserialize` are
+/// `GET /input-log`'s `events`, which `run native --replay-input` replays.)
 /// (Not `Copy`: `UiEvent` can carry a text payload.)
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RecordedInput {
     /// A keyboard event carrying the raw `Key as i32` code (not the resolved
     /// `Key`), so replay re-runs `Key::from_i32` exactly as the live path does.

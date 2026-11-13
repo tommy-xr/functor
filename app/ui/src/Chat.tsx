@@ -31,6 +31,7 @@ import {
 import { AgentCard } from "./AgentCard";
 import { dockTask } from "./agent-model";
 import { Counts, ReviewActions, TaskBadge } from "./DiffView";
+import { PathCard } from "./PathEvidence";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import type { Accepted, Conn, Notice, Send } from "./socket";
@@ -323,6 +324,7 @@ function ReviewCard({
       <p className="review-card-title">
         Review change · {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
       </p>
+      <PathCard task={task} />
       <ReviewActions task={task} send={send} online={online} notice={notice} onViewDiff={() => onViewDiff(null)} />
     </div>
   );

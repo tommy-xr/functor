@@ -2400,6 +2400,133 @@ blockquote {
   gap: 8px;
 }
 
+/* Predicted path (D38): two of the game's renders, the old one faint over the new. */
+.paths {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.paths-overlay,
+.paths-pair-button {
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-m);
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.paths-overlay {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.paths-overlay img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.paths-overlay .paths-faint {
+  position: absolute;
+  inset: 0;
+  opacity: 0.3;
+}
+
+.paths-overlay:hover,
+.paths-pair-button:hover {
+  border-color: var(--accent-soft);
+}
+
+.paths-overlay:focus-visible,
+.paths-pair-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.paths-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.paths-legend {
+  color: var(--text-2);
+}
+
+.paths-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.paths-pair-button {
+  display: block;
+  padding: 8px;
+  background: var(--surface);
+}
+
+.paths-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.paths-side {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+}
+
+.paths-side img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-s);
+}
+
+/* A native modal <dialog>: the browser's top layer, inert page, Escape. */
+.paths-dialog {
+  width: min(1280px, calc(100% - 32px));
+  padding: 0;
+  color: inherit;
+}
+
+.paths-dialog:not([open]) {
+  display: none;
+}
+
+.paths-dialog::backdrop {
+  background: rgba(5, 8, 12, 0.72);
+}
+
+.paths-dialog-body {
+  min-height: 0;
+  padding: 14px 18px;
+  overflow: auto;
+}
+
+.paths-dialog-foot {
+  justify-content: space-between;
+}
+
+.paths-dialog-foot .hint {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .paths-dialog .paths-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .button-small {
   height: 30px;
   padding: 0 10px;

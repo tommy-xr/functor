@@ -145,7 +145,7 @@ pub fn make_private(home: &Path) -> io::Result<()> {
 
 /// Creates `dir` and its missing parents as 0700 on Unix. Windows has no
 /// mode bits: they inherit the home's ACL, the user's own by default.
-fn create_private_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -203,22 +203,26 @@ fn load_each<T: serde::de::DeserializeOwned>(
         .collect()
 }
 
-fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
-    create_private_dir(file.parent().expect("under home"))?;
-    write_whole(file, &serde_json::to_string(value)?)
+pub(crate) fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
+    save_private(file, serde_json::to_string(value)?.as_bytes())
 }
 
 /// Written aside then renamed, so a crash never leaves half a file. The
 /// temp name is this write's own (`<file>.<pid>.<n>.tmp`): writers never
 /// share one.
 pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
+    write_bytes(file, text.as_bytes())
+}
+
+/// As [`write_whole`], any bytes.
+fn write_bytes(file: &Path, bytes: &[u8]) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut tmp = file.as_os_str().to_owned();
     tmp.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     let written = create_private(&tmp)
-        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .and_then(|mut f| f.write_all(bytes))
         .and_then(|()| std::fs::rename(&tmp, file));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -314,13 +318,36 @@ pub fn save(home: &Path, dir: &Path, task: &Task) -> io::Result<()> {
     write_whole(&tasks.join(format!("{}.json", task.id)), &to_stored(task))
 }
 
-/// Removes task `id`'s file for the project at `dir`, and nothing else: its
-/// id stays reserved. A file already gone is not an error.
+/// Removes task `id`'s file and its moment for the project at `dir`, and
+/// nothing else: its id stays reserved. A file already gone is not an error.
 pub fn delete(home: &Path, dir: &Path, id: u64) -> io::Result<()> {
-    match std::fs::remove_file(tasks_dir(home, dir).join(format!("{id}.json"))) {
+    let gone = |result: io::Result<()>| match result {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         other => other,
-    }
+    };
+    gone(std::fs::remove_file(moment_file(home, dir, id)))?;
+    gone(std::fs::remove_file(
+        tasks_dir(home, dir).join(format!("{id}.json")),
+    ))
+}
+
+/// Task `id`'s moment (D38) for the project at `dir`: what its path
+/// evidence replays.
+pub fn moment_file(home: &Path, dir: &Path, id: u64) -> PathBuf {
+    project_home(home, dir)
+        .join("moments")
+        .join(format!("{id}.json"))
+}
+
+/// Writes `bytes` as `file`, private, making its directory.
+pub fn save_private(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    create_private_dir(file.parent().expect("under home"))?;
+    write_bytes(file, bytes)
+}
+
+/// Where path evidence captures are kept, by the names the core holds.
+pub fn evidence_dir(home: &Path) -> PathBuf {
+    home.join("evidence")
 }
 
 #[cfg(test)]
@@ -376,6 +403,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            moment: None,
+            evidence: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],
@@ -417,6 +446,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            moment: None,
+            evidence: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],
@@ -555,16 +586,17 @@ mod tests {
         assert_eq!(loaded[0].updated_at, Some(1));
     }
 
-    /// Deleting a task removes its file and nothing else under the home:
-    /// not another task's, not the project's layout or agent pick, not its
-    /// reserved id. A second delete is not an error.
+    /// Deleting a task removes its file and its moment and nothing else
+    /// under the home: not another task's, not the project's layout or agent
+    /// pick, not its reserved id. A second delete is not an error.
     #[test]
-    fn delete_removes_exactly_the_tasks_file() {
+    fn delete_removes_exactly_the_tasks_file_and_moment() {
         let tmp = tempfile::tempdir().unwrap();
         let (state, dir, home) = one_project(tmp.path());
         for id in [1, 2] {
             reserve_id(&home, id).unwrap();
             save(&home, &dir, &task(id)).unwrap();
+            save_private(&moment_file(&home, &dir, id), b"{}").unwrap();
         }
         save_harness(&home, &dir, Harness::Codex).unwrap();
         save_layout(&home, &dir, &Layout::initial()).unwrap();
@@ -581,8 +613,14 @@ mod tests {
             .filter(|p| !listing().contains(p))
             .cloned()
             .collect();
-        assert_eq!(gone, [tasks_dir(&home, &dir).join("1.json")]);
-        assert_eq!(listing().len(), before.len() - 1);
+        assert_eq!(
+            gone,
+            [
+                moment_file(&home, &dir, 1),
+                tasks_dir(&home, &dir).join("1.json")
+            ]
+        );
+        assert_eq!(listing().len(), before.len() - 2);
         assert_eq!(load(&home, &state).0, vec![task(2)]);
         delete(&home, &dir, 1).unwrap();
         assert!(!tmp.path().join("repo").exists(), "touched the repo");

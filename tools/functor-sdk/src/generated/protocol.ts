@@ -416,7 +416,12 @@ input: InputSnapshot | null,
  * The step's recorded edge events (v37), as timeline marks. `default`
  * because a pre-v37 runtime omits it.
  */
-marks: Array<TimelineMark>, };
+marks: Array<TimelineMark>, 
+/**
+ * The same events as data (v41), in order, for `run native
+ * --replay-input`; `default` because a pre-v41 runtime omits it.
+ */
+events: Array<unknown>, };
 
 /**
  * Runtime-owned input sampled for one fixed simulation step.

@@ -5,6 +5,7 @@ import { WalkSteps } from "./Chat";
 import { Counts, FileCounts, ReviewActions, TaskBadge } from "./DiffView";
 import { hasChange, plural, totals } from "./diff-model";
 import { Icon } from "./Icon";
+import { PathSection } from "./PathEvidence";
 import type { Notice, Send } from "./socket";
 import { taskPage, usageTable, type RunSteps } from "./task-page-model";
 import { relativeTime, untitled } from "./tasks-model";
@@ -93,6 +94,11 @@ export function TaskPage({
           <Section id={id("change")} title="Change">
             <ChangeSection task={task} tracks={state?.tracks_changes ?? false} now={now} {...{ online, send, notice, onOpenChanges }} />
           </Section>
+          {task.evidence && (
+            <Section id={id("paths")} title="Predicted path">
+              <PathSection task={task} />
+            </Section>
+          )}
           {page.walkthrough && (
             <Section id={id("walk")} title="Walkthrough">
               <WalkSteps

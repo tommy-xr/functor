@@ -15,6 +15,7 @@ use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
 use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent};
+use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -273,6 +274,12 @@ pub enum Event {
         baseline: String,
         result: Result<(), String>,
     },
+    /// Task `task`'s path evidence for the change measured as `tree`.
+    Evidence {
+        task: u64,
+        tree: String,
+        state: EvidenceState,
+    },
     /// Run `run` of task `task`'s tool server asks to change the view
     /// (`POST /agent/view` with the run's secret); answered with `ViewReply`.
     AgentView {
@@ -418,6 +425,19 @@ pub enum Command {
         baseline: String,
         paths: Vec<String>,
     },
+    /// Take task `task`'s path evidence (D38): its moment replayed under
+    /// project `project`'s files (repo-relative, at `dir`) in `baseline` and
+    /// in `tree`, answering with `Event::Evidence`. A later one for the task
+    /// replaces it.
+    TakeEvidence {
+        task: u64,
+        dir: PathBuf,
+        project: String,
+        baseline: String,
+        tree: String,
+    },
+    /// Remove these evidence files (`EvidenceState::Shown`'s).
+    DropEvidence { files: Vec<String> },
     /// The answer to the `Event::AgentView` being stepped, for its caller.
     ViewReply(ViewReply),
     /// Give run `run` of task `task`'s tool server this context (`PUT
@@ -452,6 +472,9 @@ pub struct RunSpec {
     pub baseline: Option<String>,
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
+    /// Record the game's moment with the snapshot (`RunEvent::Moment`):
+    /// sessions get a GPU, so its paths can be drawn (D38).
+    pub moment: bool,
     pub context: AppContext,
 }
 
@@ -771,8 +794,19 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             task,
             baseline,
             change,
+        } => {
+            let changed = on_change(&mut state, task, &baseline, change, &mut commands);
+            (
+                refresh_evidence(&mut state, task, &mut commands) || changed,
+                false,
+            )
+        }
+        Event::Evidence {
+            task,
+            tree,
+            state: taken,
         } => (
-            on_change(&mut state, task, &baseline, change, &mut commands),
+            on_evidence(&mut state, task, tree, taken, &mut commands),
             false,
         ),
         Event::Reverted {
@@ -798,7 +832,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             let ended = matches!(event, RunEvent::Ended { .. });
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
-            (changed || shown, false)
+            let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
+            (changed || shown || evidence, false)
         }
         Event::TasksLoaded { tasks } => {
             state.tasks = tasks
@@ -807,6 +842,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                     // A run (or revert) saved in flight died with the app.
                     t.run = None;
                     t.reverting = false;
+                    if let Some(e) = t
+                        .evidence
+                        .as_mut()
+                        .filter(|e| e.state == EvidenceState::Taking)
+                    {
+                        e.state = EvidenceState::Withheld {
+                            reason: "the app closed before the paths were taken".to_string(),
+                        };
+                    }
                     t.status = derive_status(&t);
                     t
                 })
@@ -1683,6 +1727,7 @@ fn delete_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bo
     }
     // Its Task and Changes tabs no longer check out, so they close.
     prune(state, &task.project, commands);
+    drop_files(task.evidence, commands);
     commands.push(Command::DeleteTask {
         dir: project_dir(Path::new(&state.repo_root), &task.project),
         task: id,
@@ -1720,6 +1765,8 @@ fn new_task(
         baseline: None,
         change: None,
         reverting: false,
+        moment: None,
+        evidence: None,
         created_at: stamp(state.now),
         updated_at: None,
         transcript: Vec::new(),
@@ -1820,6 +1867,7 @@ fn start_run(state: &mut AppState, id: u64, message: String, commands: &mut Vec<
         snapshot: tracks && task.baseline.is_none(),
         baseline: task.baseline.clone().filter(|_| tracks),
         attach,
+        moment: tracks && task.baseline.is_none() && !state.no_gpu,
         context,
     })));
     commands.push(save(&root, task));
@@ -1889,6 +1937,7 @@ fn keep(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
     };
     task.baseline = None;
     task.change = None;
+    end_evidence(task, commands);
     close(&root, task, Item::Kept, now, commands);
     true
 }
@@ -1988,6 +2037,68 @@ fn on_change(
     true
 }
 
+/// Brings task `id`'s path evidence up to date ([`evidence::next`]),
+/// asking the shell for the captures when they are due.
+fn refresh_evidence(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+        return false;
+    };
+    let evidence::Next::Set { evidence, take } = evidence::next(task) else {
+        return false;
+    };
+    if let (true, Some(baseline), Some(e)) = (take, &task.baseline, &evidence) {
+        commands.push(Command::TakeEvidence {
+            task: id,
+            dir: project_dir(&root, &task.project),
+            project: task.project.clone(),
+            baseline: baseline.clone(),
+            tree: e.tree.clone(),
+        });
+    }
+    drop_files(std::mem::replace(&mut task.evidence, evidence), commands);
+    commands.push(save(&root, task));
+    true
+}
+
+/// Records the shell's captures, if they are still the ones asked for;
+/// else their files go.
+fn on_evidence(
+    state: &mut AppState,
+    id: u64,
+    tree: String,
+    taken: EvidenceState,
+    commands: &mut Vec<Command>,
+) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    let evidence = Evidence { tree, state: taken };
+    let asked = |e: &Evidence| e.tree == evidence.tree && e.state == EvidenceState::Taking;
+    let Some(task) = state
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id && t.evidence.as_ref().is_some_and(asked))
+    else {
+        drop_files(Some(evidence), commands);
+        return false;
+    };
+    task.evidence = Some(evidence);
+    commands.push(save(&root, task));
+    true
+}
+
+/// The review is over: the moment and the paths go with the baseline.
+fn end_evidence(task: &mut Task, commands: &mut Vec<Command>) {
+    task.moment = None;
+    drop_files(task.evidence.take(), commands);
+}
+
+fn drop_files(evidence: Option<Evidence>, commands: &mut Vec<Command>) {
+    let files = evidence.map(|e| e.files()).unwrap_or_default();
+    if !files.is_empty() {
+        commands.push(Command::DropEvidence { files });
+    }
+}
+
 /// A finished revert closes the task; a failed one says why and measures
 /// what is left.
 fn on_reverted(
@@ -2011,6 +2122,7 @@ fn on_reverted(
         Ok(()) => {
             task.baseline = None;
             task.change = None;
+            end_evidence(task, commands);
             close(&root, task, Item::Reverted, now, commands);
         }
         Err(reason) => {
@@ -2049,6 +2161,11 @@ fn on_run(
         RunEvent::Baseline { tree } => {
             task.baseline = Some(tree);
             task.change = None;
+            commands.push(save(&root, task));
+            true
+        }
+        RunEvent::Moment(moment) => {
+            task.moment = Some(moment);
             commands.push(save(&root, task));
             true
         }
@@ -3269,6 +3386,7 @@ mod tests {
                     snapshot: false,
                     baseline: None,
                     attach: None,
+                    moment: false,
                     context: crate::agent_view::app_context(&s0, "examples/a"),
                 })),
                 Command::SaveTask {
@@ -4032,6 +4150,146 @@ mod tests {
             baseline: tree.to_string(),
             result,
         }
+    }
+
+    // Path evidence (D38).
+
+    fn moment(task: u64, moment: crate::evidence::Moment) -> Event {
+        Event::Run {
+            task,
+            run: 0,
+            event: RunEvent::Moment(moment),
+        }
+    }
+
+    fn taken(tree: &str, state: EvidenceState) -> Event {
+        Event::Evidence {
+            task: 1,
+            tree: tree.to_string(),
+            state,
+        }
+    }
+
+    fn captures(name: &str) -> EvidenceState {
+        EvidenceState::Shown {
+            before: format!("{name}-before.png"),
+            after: format!("{name}-after.png"),
+        }
+    }
+
+    fn takes(commands: &[Command]) -> Vec<&Command> {
+        commands
+            .iter()
+            .filter(|c| matches!(c, Command::TakeEvidence { .. }))
+            .collect()
+    }
+
+    fn drops(commands: &[Command]) -> Vec<Vec<String>> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::DropEvidence { files } => Some(files.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn paths_are_taken_once_the_run_ends_for_each_measured_change() {
+        let (s, commands) = update(tracked(), new_task("Make it spin"));
+        assert!(spec(&commands).moment, "asked with the snapshot");
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let at = crate::evidence::Moment::Taken { frame: 5, steps: 9 };
+        let (s, _) = update(s, moment(1, at.clone()));
+        assert_eq!(task(&s, 1).moment, Some(at));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        // Measured while the run edits: not yet.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(2)));
+        assert!(takes(&commands).is_empty(), "{commands:?}");
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(
+            takes(&commands),
+            [&Command::TakeEvidence {
+                task: 1,
+                dir: PathBuf::from("/repo/examples/a"),
+                project: "examples/a".to_string(),
+                baseline: "tree-1".to_string(),
+                tree: "now-2".to_string(),
+            }]
+        );
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().map(|e| &e.state),
+            Some(&EvidenceState::Taking)
+        );
+        // Measured again unchanged: still once.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(2)));
+        assert!(takes(&commands).is_empty());
+
+        // An answer for an older change is dropped, files and all.
+        let (s, commands) = update(s, taken("now-1", captures("old")));
+        assert_eq!(drops(&commands), [["old-before.png", "old-after.png"]]);
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Taking
+        );
+        let (s, commands) = update(s, taken("now-2", captures("a")));
+        assert_eq!(task(&s, 1).evidence.as_ref().unwrap().state, captures("a"));
+        assert!(commands
+            .iter()
+            .any(|c| matches!(c, Command::SaveTask { .. })));
+
+        // A new measurement takes them again; the old captures go.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(5)));
+        assert_eq!(takes(&commands).len(), 1);
+        assert_eq!(drops(&commands), [["a-before.png", "a-after.png"]]);
+        let (s, _) = update(s, taken("now-5", captures("b")));
+
+        // Keeping ends the review: the moment and the captures go.
+        let (s, commands) = update(s, keep(1));
+        assert_eq!(drops(&commands), [["b-before.png", "b-after.png"]]);
+        assert_eq!((&task(&s, 1).moment, &task(&s, 1).evidence), (&None, &None));
+    }
+
+    #[test]
+    fn without_a_moment_the_page_says_why_and_without_a_gpu_none_is_asked() {
+        let (s, _) = update(tracked(), new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let reason = "the game was not running when the task started".to_string();
+        let missing = crate::evidence::Moment::Missing {
+            reason: reason.clone(),
+        };
+        let (s, _) = update(s, moment(1, missing));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(takes(&commands).is_empty());
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Withheld { reason }
+        );
+
+        let no_gpu = AppState {
+            no_gpu: true,
+            ..tracked()
+        };
+        let (_, commands) = update(no_gpu, new_task("Make it spin"));
+        assert!(!spec(&commands).moment);
+    }
+
+    #[test]
+    fn paths_being_taken_when_the_app_stopped_say_so_on_load() {
+        let s = reviewed(one_file(2));
+        let mut saved = task(&s, 1).clone();
+        saved.evidence = Some(Evidence {
+            tree: "now-2".to_string(),
+            state: EvidenceState::Taking,
+        });
+        let (s, _) = update(state(), Event::TasksLoaded { tasks: vec![saved] });
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Withheld {
+                reason: "the app closed before the paths were taken".to_string()
+            }
+        );
     }
 
     #[test]

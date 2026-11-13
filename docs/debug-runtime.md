@@ -762,13 +762,25 @@ record a worn session over `adb forward` and replay it on desktop through
 ```jsonc
 {"generation": 0, "oldest": 1, "newest": 3,
  "steps": [{"frame": 3, "tts": 0.05, "dts": 0.016666668, "input": {"held_keys": [], "xr": {...}, ...},
-            "marks": [{"kind": "key-down", "label": "Space down"}]}]}
+            "marks": [{"kind": "key-down", "label": "Right down"}],
+            "events": [{"Key": {"code": 30, "is_down": true}}]}]}
 ```
 
 `marks` (protocol v37) are the step's recorded edge events — keys, mouse
 buttons, the wheel, the frame's last mouse move, UI and webview events — with
 the `kind` and `label` the web timeline shows for them. Sampled snapshots and
-touches are not marks.
+touches are not marks. `events` (protocol v41) are all of the step's recorded
+events but its snapshot, every mouse move included, as replay data.
+
+`run native --replay-input <file>` replays a saved body under the project
+it runs, which may be different code: it starts as `--paused` does, runs each
+step at its fixed 1/60 s with its events fed before its tick (as
+`--input-script` feeds a frame's), then pauses on the last step. Each step
+must end at its recorded `tts`, or the run exits with an error. It refuses a
+log whose first steps are gone, a step that was not one fixed step, and
+events it cannot feed yet (the wheel, touches, UI and webview events). The
+desktop app replays a session's log this way under a task's old and new code,
+then seeks, extrapolates and captures each (D38).
 
 Retention is the time-travel window (up to 900 steps), so poll with `from` = the
 last step you hold + 1; `oldest > from` means steps were lost. A changed

@@ -760,6 +760,8 @@ recents: 2
                     "t".into(),
                 )),
                 reverting: false,
+                moment: None,
+                evidence: None,
                 created_at: None,
                 updated_at: None,
                 transcript: transcript.clone(),

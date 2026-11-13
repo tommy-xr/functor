@@ -40,9 +40,9 @@ const FAST_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MARKS_INTERVAL: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long output written just before an exit is still collected.
-const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
-const TAIL_LINES: usize = 20;
+pub(crate) const TAIL_LINES: usize = 20;
 /// Between checks of an ended session's project files for a change.
 const SOURCE_POLL: Duration = Duration::from_millis(500);
 /// How long a layout change waits to be written, so a burst (a splitter
@@ -78,6 +78,8 @@ pub struct Driver {
     templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
     /// The device link, once started.
     pub link: Option<crate::link::Hub>,
+    /// Takes tasks' path evidence.
+    evidence: crate::evidence::Worker,
     /// Games being stopped on headsets, by tunnel, until one answers.
     unloads: HashMap<String, JoinHandle<()>>,
 }
@@ -141,7 +143,15 @@ impl Driver {
         views: Arc<ViewRoute>,
     ) -> Self {
         Self {
-            runs: Runner::new(functor.clone(), agents, None, events.clone(), views),
+            runs: Runner::new(
+                functor.clone(),
+                agents,
+                None,
+                events.clone(),
+                views,
+                home.clone(),
+            ),
+            evidence: crate::evidence::Worker::new(functor.clone(), home.clone(), events.clone()),
             functor,
             events,
             live: None,
@@ -332,6 +342,33 @@ impl Driver {
                 paths,
             } => self.revert(task, baseline, paths),
             Command::AppContext { task, run, context } => self.runs.context(task, run, &context),
+            Command::TakeEvidence {
+                task,
+                dir,
+                project,
+                baseline,
+                tree,
+            } => match self.git.clone() {
+                Some(git) => self.evidence.take(crate::evidence::Job {
+                    task,
+                    git,
+                    dir,
+                    project,
+                    baseline,
+                    tree,
+                }),
+                None => {
+                    let reason = "changes are tracked only in a git repository".to_string();
+                    let state = functor_app_core::evidence::EvidenceState::Withheld { reason };
+                    let _ = self.events.send(Event::Evidence { task, tree, state });
+                }
+            },
+            Command::DropEvidence { files } => {
+                let dir = crate::store::evidence_dir(&self.home);
+                for file in files.iter().filter(|f| crate::evidence::is_name(f)) {
+                    let _ = std::fs::remove_file(dir.join(file));
+                }
+            }
             Command::Link(command) => {
                 if let Some(link) = &self.link {
                     link.command(command);
@@ -482,6 +519,11 @@ impl Driver {
                 result,
             });
         });
+    }
+
+    /// Where the app keeps its data (`store::home`).
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The current child's last output lines, oldest first.
@@ -718,15 +760,28 @@ pub async fn request(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<String, String> {
+    let body = request_bytes(url, method, path, headers, body).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// As [`request`], the body as bytes (a `/capture`'s PNG).
+pub async fn request_bytes(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<Vec<u8>, String> {
     let what = format!("{method} {path}");
-    let (head, body) = exchange(url, method, path, headers, body).await?;
+    let (head, body) = exchange_bytes(url, method, path, headers, body).await?;
     let status = head.lines().next().unwrap_or_default();
     if !status
         .split(' ')
         .nth(1)
         .is_some_and(|code| code.starts_with('2'))
     {
-        return Err(format!("{what}: {status}: {}", body.trim()));
+        let text = String::from_utf8_lossy(&body);
+        return Err(format!("{what}: {status}: {}", text.trim()));
     }
     Ok(body)
 }
@@ -739,6 +794,17 @@ pub async fn exchange(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<(String, String), String> {
+    let (head, body) = exchange_bytes(url, method, path, headers, body).await?;
+    Ok((head, String::from_utf8_lossy(&body).into_owned()))
+}
+
+async fn exchange_bytes(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<(String, Vec<u8>), String> {
     let what = format!("{method} {path}");
     let addr = url
         .strip_prefix("http://")
@@ -762,13 +828,16 @@ pub async fn exchange(
         .await
         .map_err(|_| format!("{what} timed out"))?
         .map_err(|e| format!("{what}: {e}"))?;
-    let text = String::from_utf8_lossy(&response);
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    Ok((head.to_string(), body.to_string()))
+    let split = response.windows(4).position(|w| w == b"\r\n\r\n");
+    let (head, body) = match split {
+        Some(at) => (&response[..at], &response[at + 4..]),
+        None => (&response[..], &[][..]),
+    };
+    Ok((String::from_utf8_lossy(head).into_owned(), body.to_vec()))
 }
 
 /// `GET /state`'s `frame`, pointer surface and `clock`.
-async fn poll_state(debug_url: &str) -> Result<Polled, String> {
+pub(crate) async fn poll_state(debug_url: &str) -> Result<Polled, String> {
     let body = request(debug_url, "GET", "/state?model=0", &[], "").await?;
     parse_state(&body)
 }

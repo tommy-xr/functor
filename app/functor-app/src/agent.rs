@@ -115,6 +115,8 @@ pub struct Runner {
     events: UnboundedSender<Event>,
     live: HashMap<u64, Live>,
     views: Arc<ViewRoute>,
+    /// Where a run keeps its task's moment (`store::moment_file`).
+    home: PathBuf,
 }
 
 struct Live {
@@ -188,6 +190,7 @@ impl Runner {
         git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
         views: Arc<ViewRoute>,
+        home: PathBuf,
     ) -> Self {
         Self {
             functor,
@@ -196,6 +199,7 @@ impl Runner {
             events,
             live: HashMap::new(),
             views,
+            home,
         }
     }
 
@@ -206,8 +210,10 @@ impl Runner {
         let id = spec.task;
         let json = serde_json::to_string(&spec.context).expect("the context serializes");
         let (context, contexts) = watch::channel(json);
+        let moment = crate::store::moment_file(&self.home, &spec.dir, spec.task);
         let task = tokio::spawn(run_task(
             spec,
+            moment,
             self.functor.clone(),
             self.agents.clone(),
             self.git.clone(),
@@ -257,6 +263,7 @@ impl Runner {
 #[allow(clippy::too_many_arguments)]
 async fn run_task(
     spec: RunSpec,
+    moment: PathBuf,
     functor: PathBuf,
     agents: Agents,
     git: Option<Arc<Git>>,
@@ -275,12 +282,25 @@ async fn run_task(
     let git = git.filter(|_| spec.snapshot || spec.baseline.is_some());
     let mut baseline = spec.baseline.clone();
     // Taken before the agent starts, so the change is all its own work (and
-    // anyone else's edits meanwhile, which git cannot tell apart).
+    // anyone else's edits meanwhile, which git cannot tell apart); the
+    // game's moment with it, as the user left the game.
     if let (Some(git), true) = (&git, spec.snapshot) {
+        let moment = async {
+            match (&spec.attach, spec.moment) {
+                (_, false) => None,
+                (Some(url), true) => Some(crate::evidence::take_moment(url, &moment).await),
+                (None, true) => Some(functor_app_core::evidence::Moment::Missing {
+                    reason: "the game was not running when the task started".to_string(),
+                }),
+            }
+        };
         tokio::select! {
-            tree = git.snapshot() => match tree {
+            (tree, moment) = async { tokio::join!(git.snapshot(), moment) } => match tree {
                 Ok(tree) => {
                     send(RunEvent::Baseline { tree: tree.clone() });
+                    if let Some(moment) = moment {
+                        send(RunEvent::Moment(moment));
+                    }
                     baseline = Some(tree);
                 }
                 Err(e) => eprintln!("functor-app: cannot snapshot the working tree: {e}"),
@@ -862,7 +882,15 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let (tx, _events) = mpsc::unbounded_channel();
         let views = Arc::new(ViewRoute::default());
-        let mut runner = Runner::new(stub, Agents::Fake(dir.path().join("x")), None, tx, views);
+        let home = dir.path().to_path_buf();
+        let mut runner = Runner::new(
+            stub,
+            Agents::Fake(dir.path().join("x")),
+            None,
+            tx,
+            views,
+            home,
+        );
         runner.start(RunSpec {
             task: 1,
             run: 1,
@@ -874,6 +902,7 @@ mod tests {
             snapshot: false,
             baseline: None,
             attach: None,
+            moment: false,
             context: functor_app_core::agent_view::app_context(
                 &functor_app_core::AppState::none(),
                 ".",

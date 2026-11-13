@@ -9,9 +9,9 @@
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
-import { GIT_ENV, ROOT, git, tempDir, tempHome, tempProject } from "../../../app/ui/e2e/app.mjs";
+import { GIT_ENV, ROOT, git, setJump, tempDir, tempHome, tempProject } from "../../../app/ui/e2e/app.mjs";
 
-export { ROOT, stopServer, watchState } from "../../../app/ui/e2e/app.mjs";
+export { ROOT, setJump, stopServer, watchState } from "../../../app/ui/e2e/app.mjs";
 
 const APP = join(ROOT, "target/release/functor-app");
 const FUNCTOR = join(ROOT, "target/release/functor");
@@ -72,14 +72,6 @@ export function platformerCopy(velocity) {
     git(dir, "commit", "-qam", "jump velocity");
   }
   return dir;
-}
-
-/** Rewrites the copy's `jumpVelocity` line, as an editor's save would. */
-export function setJump(dir, from, to) {
-  const file = join(dir, "game.fun");
-  const text = readFileSync(file, "utf8");
-  if (!text.includes(`let jumpVelocity = ${from}`)) throw new Error(`game.fun has no jumpVelocity = ${from}`);
-  writeFileSync(file, text.replace(`let jumpVelocity = ${from}`, `let jumpVelocity = ${to}`));
 }
 
 /** The session's frame, clock and model. */
