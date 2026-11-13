@@ -60,7 +60,10 @@ pub enum Next {
     /// It is current.
     Keep,
     /// It becomes this; with `take`, the shell is asked for the captures.
-    Set { evidence: Option<Evidence>, take: bool },
+    Set {
+        evidence: Option<Evidence>,
+        take: bool,
+    },
 }
 
 /// What `task`'s evidence should become: none without a code change or a
@@ -83,7 +86,11 @@ pub fn next(task: &Task) -> Next {
             None => Next::Keep,
         };
     };
-    if task.evidence.as_ref().is_some_and(|e| e.tree == change.tree) {
+    if task
+        .evidence
+        .as_ref()
+        .is_some_and(|e| e.tree == change.tree)
+    {
         return Next::Keep;
     }
     let (state, take) = match moment {
@@ -203,9 +210,15 @@ mod tests {
 
     #[test]
     fn nothing_runs_without_a_code_change_or_a_moment() {
-        assert_eq!(next(&task(Some(change(&["game/hero.png"], "t")), Some(TAKEN))), Next::Keep);
+        assert_eq!(
+            next(&task(Some(change(&["game/hero.png"], "t")), Some(TAKEN))),
+            Next::Keep
+        );
         assert_eq!(next(&task(None, Some(TAKEN))), Next::Keep);
-        assert_eq!(next(&task(Some(change(&["game/game.fun"], "t")), None)), Next::Keep);
+        assert_eq!(
+            next(&task(Some(change(&["game/game.fun"], "t")), None)),
+            Next::Keep
+        );
         // Evidence for a change that is no longer code goes.
         let mut t = task(Some(change(&["game/hero.png"], "t")), Some(TAKEN));
         t.evidence = Some(Evidence {

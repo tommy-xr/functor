@@ -883,7 +883,14 @@ mod tests {
         let (tx, _events) = mpsc::unbounded_channel();
         let views = Arc::new(ViewRoute::default());
         let home = dir.path().to_path_buf();
-        let mut runner = Runner::new(stub, Agents::Fake(dir.path().join("x")), None, tx, views, home);
+        let mut runner = Runner::new(
+            stub,
+            Agents::Fake(dir.path().join("x")),
+            None,
+            tx,
+            views,
+            home,
+        );
         runner.start(RunSpec {
             task: 1,
             run: 1,

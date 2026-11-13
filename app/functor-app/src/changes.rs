@@ -773,9 +773,15 @@ pub(crate) mod tests {
         let before = repo.user_state();
         let out = repo.home.join("out");
         git.export(&base, "game", &out).await.unwrap();
-        assert_eq!(std::fs::read_to_string(out.join("game.fun")).unwrap(), "let a = 1\n");
+        assert_eq!(
+            std::fs::read_to_string(out.join("game.fun")).unwrap(),
+            "let a = 1\n"
+        );
         assert!(!out.join("other.txt").exists(), "only the project");
-        assert!(!out.join("hero.glb").exists(), "no ignored file is in a snapshot");
+        assert!(
+            !out.join("hero.glb").exists(),
+            "no ignored file is in a snapshot"
+        );
         assert_eq!(git.ignored("game").await.unwrap(), ["game/hero.glb"]);
         assert_eq!(repo.user_state(), before);
         assert!(git.export("not-an-oid", "game", &out).await.is_err());

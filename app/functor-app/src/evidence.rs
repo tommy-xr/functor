@@ -185,7 +185,11 @@ async fn take(job: &Job, functor: &Path, home: &Path) -> EvidenceState {
 }
 
 /// The before and after captures, or `None` when they are the same.
-async fn pair(job: &Job, functor: &Path, home: &Path) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
+async fn pair(
+    job: &Job,
+    functor: &Path,
+    home: &Path,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
     let file = crate::store::moment_file(home, &job.dir, job.task);
     let kept: Kept = std::fs::read(&file)
         .ok()
@@ -208,7 +212,12 @@ async fn pair(job: &Job, functor: &Path, home: &Path) -> Result<Option<(Vec<u8>,
         materialize(job, tree, &dir).await?;
         let side = replay(functor, &dir, &log, moment, check)
             .await
-            .map_err(|e| format!("the {} code: {e}", if check.is_some() { "old" } else { "new" }))?;
+            .map_err(|e| {
+                format!(
+                    "the {} code: {e}",
+                    if check.is_some() { "old" } else { "new" }
+                )
+            })?;
         sides.push(side);
     }
     let after = sides.pop().expect("two sides");
@@ -344,24 +353,58 @@ async fn replay(
         tokio::time::sleep(POLL).await;
     }
     if frame != steps {
-        request(&url, "POST", "/seek", &[], &json!({ "frame": frame }).to_string()).await?;
+        request(
+            &url,
+            "POST",
+            "/seek",
+            &[],
+            &json!({ "frame": frame }).to_string(),
+        )
+        .await?;
     }
     let state = json_of(&request(&url, "GET", "/state", &[], "").await?)?;
     if state["frame"].as_u64() != Some(frame) {
         return Err(format!("it could not show frame {frame}"));
     }
     if check.is_some_and(|model| state["model"] != *model) {
-        return Err("replaying the recorded inputs did not reach the game's state at that \
+        return Err(
+            "replaying the recorded inputs did not reach the game's state at that \
              moment, so its paths could mislead"
-            .into());
+                .into(),
+        );
     }
     let scene = json_of(&request(&url, "GET", "/scene", &[], "").await?)?;
-    request(&url, "POST", "/preview", &[], &json!({ "extrapolate": true }).to_string()).await?;
+    request(
+        &url,
+        "POST",
+        "/preview",
+        &[],
+        &json!({ "extrapolate": true }).to_string(),
+    )
+    .await?;
     let png = request_bytes(&url, "POST", "/capture", &[], "").await?;
     Ok(Side {
         png,
         camera: scene["camera"].clone(),
     })
+}
+
+/// A temporary directory, removed when dropped.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> Result<Self, String> {
+        let dir =
+            std::env::temp_dir().join(format!("functor-paths-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a work directory: {e}"))?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[cfg(test)]
@@ -382,22 +425,5 @@ mod tests {
         ] {
             assert!(!is_name(&bad), "{bad}");
         }
-    }
-}
-
-/// A temporary directory, removed when dropped.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Result<Self, String> {
-        let dir = std::env::temp_dir().join(format!("functor-paths-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a work directory: {e}"))?;
-        Ok(Self(dir))
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

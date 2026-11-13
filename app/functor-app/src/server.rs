@@ -575,7 +575,10 @@ async fn evidence(
         Ok(png) => (
             [
                 (header::CONTENT_TYPE, "image/png"),
-                (header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
+                (
+                    header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable",
+                ),
             ],
             png,
         )

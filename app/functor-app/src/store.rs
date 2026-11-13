@@ -211,14 +211,19 @@ fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
 /// Written aside then renamed, so a crash never leaves half a file. The
 /// temp name is this write's own (`<file>.<pid>.<n>.tmp`): writers never
 /// share one.
-pub(crate) fn write_whole(file: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
+    write_bytes(file, text.as_bytes())
+}
+
+/// As [`write_whole`], any bytes.
+fn write_bytes(file: &Path, bytes: &[u8]) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut tmp = file.as_os_str().to_owned();
     tmp.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     let written = create_private(&tmp)
-        .and_then(|mut f| f.write_all(bytes.as_ref()))
+        .and_then(|mut f| f.write_all(bytes))
         .and_then(|()| std::fs::rename(&tmp, file));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -338,7 +343,7 @@ pub fn moment_file(home: &Path, dir: &Path, id: u64) -> PathBuf {
 /// Writes `bytes` as `file`, private, making its directory.
 pub fn save_private(file: &Path, bytes: &[u8]) -> io::Result<()> {
     create_private_dir(file.parent().expect("under home"))?;
-    write_whole(file, bytes)
+    write_bytes(file, bytes)
 }
 
 /// Where path evidence captures are kept, by the names the core holds.

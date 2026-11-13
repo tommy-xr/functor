@@ -11,11 +11,11 @@ use crate::agent_view::{
     AppContext, Highlight, ViewReply, ViewRequest,
 };
 use crate::changes::Change;
-use crate::evidence::{self, Evidence, EvidenceState};
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
 use crate::devices::{self, on_link, Devices, LinkCommand, LinkEvent};
+use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -781,7 +781,10 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             change,
         } => {
             let changed = on_change(&mut state, task, &baseline, change, &mut commands);
-            (refresh_evidence(&mut state, task, &mut commands) || changed, false)
+            (
+                refresh_evidence(&mut state, task, &mut commands) || changed,
+                false,
+            )
         }
         Event::Evidence {
             task,
@@ -824,7 +827,11 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                     // A run (or revert) saved in flight died with the app.
                     t.run = None;
                     t.reverting = false;
-                    if let Some(e) = t.evidence.as_mut().filter(|e| e.state == EvidenceState::Taking) {
+                    if let Some(e) = t
+                        .evidence
+                        .as_mut()
+                        .filter(|e| e.state == EvidenceState::Taking)
+                    {
                         e.state = EvidenceState::Withheld {
                             reason: "the app closed before the paths were taken".to_string(),
                         };
@@ -2447,7 +2454,10 @@ mod tests {
         assert_eq!(next, with_session(4, None, SessionStatus::Starting));
         assert_eq!(
             commands,
-            vec![start_cmd(4, "examples/a", Display::Hidden), broadcast(&next)]
+            vec![
+                start_cmd(4, "examples/a", Display::Hidden),
+                broadcast(&next)
+            ]
         );
         // Ended after running, stopped, or a stale session: no restart.
         for before in [
@@ -2457,7 +2467,9 @@ mod tests {
         ] {
             let (next, commands) = update(before.clone(), session(3, SessionEvent::SourceChanged));
             assert_eq!(next, before);
-            assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
+            assert!(!commands
+                .iter()
+                .any(|c| matches!(c, Command::StartSession { .. })));
         }
     }
 
@@ -4965,8 +4977,14 @@ mod tests {
         let mut app = state();
         app.start_on_open = true;
         for (placement, expected) in [
-            (Placement::Pane, vec![(PathBuf::from("/other"), Display::Hidden)]),
-            (Placement::Mini, vec![(PathBuf::from("/other"), Display::Hidden)]),
+            (
+                Placement::Pane,
+                vec![(PathBuf::from("/other"), Display::Hidden)],
+            ),
+            (
+                Placement::Mini,
+                vec![(PathBuf::from("/other"), Display::Hidden)],
+            ),
             (Placement::Window, vec![]),
         ] {
             let (next, commands) = update(app.clone(), read(placement));
