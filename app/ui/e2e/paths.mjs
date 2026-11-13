@@ -87,11 +87,12 @@ async function play(url) {
   await expect.poll(async () => (await clock(url)).frame).toBe(5);
 }
 
-/** Opens the only task's page from the Tasks pane. */
+/** Opens the only task's page from the Tasks pane, on its Captures tab (the change waits). */
 async function openTask(page) {
   const pane = page.getByRole("complementary", { name: "Tasks" });
   if (!(await pane.isVisible())) await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: /^Tasks/ }).click();
   await pane.getByTestId("task-row").first().click();
+  await page.getByTestId("task-page").getByRole("tab", { name: "Captures" }).click();
 }
 
 /** The stored file of the project's only task. */
@@ -178,7 +179,7 @@ async function stored(browser) {
       await expect(open).toBeFocused();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "no horizontal scroll").toBe(true);
 
-      // The task page: the pair beside the change.
+      // The task page's Captures tab: the pair, side by side.
       await openTask(page);
       const section = page.getByTestId("paths-section");
       await expect(section).toBeVisible();

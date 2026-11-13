@@ -146,7 +146,7 @@ export async function chooseProject(page, name) {
 /** Each pane's tab names, in reading order. */
 export function tabs(page) {
   return page.locator(".pane-box").evaluateAll((panes) =>
-    panes.map((p) => [...p.querySelectorAll("[role=tab]")].map((t) => t.textContent)),
+    panes.map((p) => [...p.querySelectorAll(".pane-tabs [role=tab]")].map((t) => t.textContent)),
   );
 }
 

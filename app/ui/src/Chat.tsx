@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Harness, Item, Task, Usage } from "./generated/protocol";
+import type { AppState, Change, Decision, Harness, Item, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -30,6 +30,7 @@ import {
 } from "./chat-model";
 import { AgentCard } from "./AgentCard";
 import { dockTask } from "./agent-model";
+import { DEPTH_WORDS, kindsLine } from "./decision-model";
 import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { PathCard } from "./PathEvidence";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
@@ -185,7 +186,15 @@ export function ChatDock({
           current &&
           current.run === null &&
           hasChange(current) && (
-            <ReviewCard task={current} send={send} online={online} notice={notice} onViewDiff={onViewDiff} />
+            <ReviewCard
+              task={current}
+              decision={state?.decisions[current.id]}
+              send={send}
+              online={online}
+              notice={notice}
+              onViewDiff={onViewDiff}
+              onOpenTask={onOpenTask}
+            />
           )
         }
       />
@@ -304,28 +313,51 @@ function ChatHead({
   );
 }
 
-/** The end of a conversation whose change waits: its size, Keep / Revert and View diff. */
+/**
+ * The end of a conversation whose change waits: the decision page in
+ * small (D35) — its size, how deep to look and why, the predicted path —
+ * with Keep / Revert, View diff and the way to the page.
+ */
 function ReviewCard({
   task,
+  decision,
   send,
   online,
   notice,
   onViewDiff,
+  onOpenTask,
 }: {
   task: Task & { change: Change };
+  decision: Decision | undefined;
   send: Send;
   online: boolean;
   notice: Notice | null;
   onViewDiff: (path: string | null) => void;
+  onOpenTask: (task: number) => void;
 }) {
   const sum = totals(task.change);
   return (
     <div className="chat-card review-card" data-testid="review-card">
       <p className="review-card-title">
         Review change · {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
+        {decision && decision.size.kinds.length > 0 && ` · ${kindsLine(decision.size)}`}
       </p>
+      {decision && (
+        <p className={`review-verdict verdict verdict-${decision.depth}`} data-testid="review-verdict">
+          <strong>{DEPTH_WORDS[decision.depth]}</strong> {decision.reason}
+        </p>
+      )}
       <PathCard task={task} />
       <ReviewActions task={task} send={send} online={online} notice={notice} onViewDiff={() => onViewDiff(null)} />
+      <button
+        type="button"
+        className="link-button review-card-open"
+        // Clicking keeps the keyboard focus where it was (the composer).
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => onOpenTask(task.id)}
+      >
+        Open the decision page
+      </button>
     </div>
   );
 }

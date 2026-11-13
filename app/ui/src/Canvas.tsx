@@ -622,6 +622,8 @@ function ViewBody({ view, pane, ctx }: { view: View; pane: number; ctx: Ctx }) {
           notice={ctx.notice}
           onContinue={() => ctx.onContinue(view.task)}
           onOpenChanges={openChanges}
+          diff={ctx.diffs.get(view.task)}
+          fetchDiff={ctx.fetchDiff}
         />
       );
     }
