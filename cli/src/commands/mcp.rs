@@ -41,9 +41,9 @@ use tokio::process::{Child, Command};
 use super::mcp_net::NetCoordinator;
 
 /// Tools an HTTP client loads up front (see `router`): look, run, poke,
-/// learn the language, and the app's views. About 2k tokens a turn, against
-/// a whole turn for each tool search.
-const ALWAYS_LOADED: [&str; 9] = [
+/// learn the language and API, and the app's views. About 2k tokens a turn,
+/// against a whole turn (some 35k) for each tool search.
+const ALWAYS_LOADED: [&str; 10] = [
     "app_context",
     "get_state",
     "step",
@@ -51,6 +51,7 @@ const ALWAYS_LOADED: [&str; 9] = [
     "send_input",
     "capture_frame",
     "language_guide",
+    "api_reference",
     "show_view",
     "present",
 ];

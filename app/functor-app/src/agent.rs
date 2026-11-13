@@ -44,7 +44,8 @@ const PREAMBLE: &str = "You are working on a Functor game project: this director
 Your MCP server `mis` drives its game. Loaded and ready: `mcp__mis__get_state` (the live \
 model and clock), `mcp__mis__step` and `mcp__mis__resume` (run it), `mcp__mis__send_input` \
 (keys, mouse, UI events), `mcp__mis__capture_frame` (a picture), `mcp__mis__app_context` \
-(what the user is looking at in the Functor app) and `mcp__mis__language_guide`. Its other \
+(what the user is looking at in the Functor app), `mcp__mis__language_guide` and \
+`mcp__mis__api_reference` (the engine API, e.g. `Ui.row`). Its other \
 tools (scene, trace, rewind, launch, stop) are there when you need them. Prefer reading \
 live state and captures over guessing. Functor Lang (`.fun`) is a custom language, not F#: \
 before writing it, read `mcp__mis__language_guide` (contents and quick facts, then only the \
