@@ -364,6 +364,27 @@ async fn replay(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_its_own_names_are_captures() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(is_name(&format!("{id}-before.png")));
+        assert!(is_name(&format!("{id}-after.png")));
+        for bad in [
+            "../x-before.png".to_string(),
+            format!("{id}-side.png"),
+            format!("{id}x-after.png"),
+            format!("../{}-after.png", &id[3..]),
+            "-before.png".to_string(),
+        ] {
+            assert!(!is_name(&bad), "{bad}");
+        }
+    }
+}
+
 /// A temporary directory, removed when dropped.
 struct Scratch(PathBuf);
 

@@ -2654,16 +2654,20 @@ let draw = (model, tts) =>
                 newest: 3
             })
         );
-        let marks: Vec<_> = input_log(&game, 1)
-            .steps
-            .into_iter()
-            .map(|s| s.marks)
-            .collect();
+        let steps = input_log(&game, 1).steps;
+        let marks: Vec<_> = steps.iter().map(|s| s.marks.clone()).collect();
         let space = TimelineMark {
             kind: "key-down".into(),
             label: "Space down".into(),
         };
         assert_eq!(marks, vec![vec![], vec![space], vec![]]);
+        // The same event as replay data (v40).
+        let events: Vec<_> = steps.into_iter().map(|s| s.events).collect();
+        let down = crate::RecordedInput::Key {
+            code: crate::Key::Space as i32,
+            is_down: true,
+        };
+        assert_eq!(events, vec![vec![], vec![down], vec![]]);
 
         assert_eq!(
             seek_to_state_frame(&mut game, 2).as_deref(),

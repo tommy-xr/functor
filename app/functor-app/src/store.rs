@@ -582,16 +582,17 @@ mod tests {
         assert_eq!(loaded[0].updated_at, Some(1));
     }
 
-    /// Deleting a task removes its file and nothing else under the home:
-    /// not another task's, not the project's layout or agent pick, not its
-    /// reserved id. A second delete is not an error.
+    /// Deleting a task removes its file and its moment and nothing else
+    /// under the home: not another task's, not the project's layout or agent
+    /// pick, not its reserved id. A second delete is not an error.
     #[test]
-    fn delete_removes_exactly_the_tasks_file() {
+    fn delete_removes_exactly_the_tasks_file_and_moment() {
         let tmp = tempfile::tempdir().unwrap();
         let (state, dir, home) = one_project(tmp.path());
         for id in [1, 2] {
             reserve_id(&home, id).unwrap();
             save(&home, &dir, &task(id)).unwrap();
+            save_private(&moment_file(&home, &dir, id), b"{}").unwrap();
         }
         save_harness(&home, &dir, Harness::Codex).unwrap();
         save_layout(&home, &dir, &Layout::initial()).unwrap();
@@ -608,8 +609,14 @@ mod tests {
             .filter(|p| !listing().contains(p))
             .cloned()
             .collect();
-        assert_eq!(gone, [tasks_dir(&home, &dir).join("1.json")]);
-        assert_eq!(listing().len(), before.len() - 1);
+        assert_eq!(
+            gone,
+            [
+                moment_file(&home, &dir, 1),
+                tasks_dir(&home, &dir).join("1.json")
+            ]
+        );
+        assert_eq!(listing().len(), before.len() - 2);
         assert_eq!(load(&home, &state).0, vec![task(2)]);
         delete(&home, &dir, 1).unwrap();
         assert!(!tmp.path().join("repo").exists(), "touched the repo");

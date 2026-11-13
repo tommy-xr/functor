@@ -1,0 +1,6 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-paths-note", "model": "claude-model"}}
+{"ms": 100, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "// <editable>", "new_string": "// <editable> (the jump is tuned below)"}}}
+{"ms": 150, "edit": {"path": "game.fun", "old": "// <editable>", "new": "// <editable> (the jump is tuned below)"}}
+{"ms": 250, "event": {"type": "tool_result", "content": "The file has been updated."}}
+{"ms": 350, "event": {"type": "text", "text": "Added a note; nothing moves."}}
+{"ms": 400, "event": {"type": "finished", "ok": true, "summary": "Added a note."}}

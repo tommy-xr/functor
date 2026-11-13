@@ -31,6 +31,11 @@ const TOKEN = takeToken();
 /** False after a reload in a browser, say: the page can then never connect. */
 export const HAS_TOKEN = TOKEN !== "";
 
+/** A path evidence capture's URL (`EvidenceState::Shown`'s names), for an `<img>`. */
+export function evidenceUrl(name: string): string {
+  return `/evidence/${encodeURIComponent(name)}?token=${encodeURIComponent(TOKEN)}`;
+}
+
 function takeToken(): string {
   const injected = (window as { functorToken?: string }).functorToken;
   if (injected) return injected;

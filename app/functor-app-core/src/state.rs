@@ -4055,6 +4055,146 @@ mod tests {
         }
     }
 
+    // Path evidence (D38).
+
+    fn moment(task: u64, moment: crate::evidence::Moment) -> Event {
+        Event::Run {
+            task,
+            run: 0,
+            event: RunEvent::Moment(moment),
+        }
+    }
+
+    fn taken(tree: &str, state: EvidenceState) -> Event {
+        Event::Evidence {
+            task: 1,
+            tree: tree.to_string(),
+            state,
+        }
+    }
+
+    fn captures(name: &str) -> EvidenceState {
+        EvidenceState::Shown {
+            before: format!("{name}-before.png"),
+            after: format!("{name}-after.png"),
+        }
+    }
+
+    fn takes(commands: &[Command]) -> Vec<&Command> {
+        commands
+            .iter()
+            .filter(|c| matches!(c, Command::TakeEvidence { .. }))
+            .collect()
+    }
+
+    fn drops(commands: &[Command]) -> Vec<Vec<String>> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::DropEvidence { files } => Some(files.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn paths_are_taken_once_the_run_ends_for_each_measured_change() {
+        let (s, commands) = update(tracked(), new_task("Make it spin"));
+        assert!(spec(&commands).moment, "asked with the snapshot");
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let at = crate::evidence::Moment::Taken { frame: 5, steps: 9 };
+        let (s, _) = update(s, moment(1, at.clone()));
+        assert_eq!(task(&s, 1).moment, Some(at));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        // Measured while the run edits: not yet.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(2)));
+        assert!(takes(&commands).is_empty(), "{commands:?}");
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(
+            takes(&commands),
+            [&Command::TakeEvidence {
+                task: 1,
+                dir: PathBuf::from("/repo/examples/a"),
+                project: "examples/a".to_string(),
+                baseline: "tree-1".to_string(),
+                tree: "now-2".to_string(),
+            }]
+        );
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().map(|e| &e.state),
+            Some(&EvidenceState::Taking)
+        );
+        // Measured again unchanged: still once.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(2)));
+        assert!(takes(&commands).is_empty());
+
+        // An answer for an older change is dropped, files and all.
+        let (s, commands) = update(s, taken("now-1", captures("old")));
+        assert_eq!(drops(&commands), [["old-before.png", "old-after.png"]]);
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Taking
+        );
+        let (s, commands) = update(s, taken("now-2", captures("a")));
+        assert_eq!(task(&s, 1).evidence.as_ref().unwrap().state, captures("a"));
+        assert!(commands
+            .iter()
+            .any(|c| matches!(c, Command::SaveTask { .. })));
+
+        // A new measurement takes them again; the old captures go.
+        let (s, commands) = update(s, change(1, "tree-1", one_file(5)));
+        assert_eq!(takes(&commands).len(), 1);
+        assert_eq!(drops(&commands), [["a-before.png", "a-after.png"]]);
+        let (s, _) = update(s, taken("now-5", captures("b")));
+
+        // Keeping ends the review: the moment and the captures go.
+        let (s, commands) = update(s, keep(1));
+        assert_eq!(drops(&commands), [["b-before.png", "b-after.png"]]);
+        assert_eq!((&task(&s, 1).moment, &task(&s, 1).evidence), (&None, &None));
+    }
+
+    #[test]
+    fn without_a_moment_the_page_says_why_and_without_a_gpu_none_is_asked() {
+        let (s, _) = update(tracked(), new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let reason = "the game was not running when the task started".to_string();
+        let missing = crate::evidence::Moment::Missing {
+            reason: reason.clone(),
+        };
+        let (s, _) = update(s, moment(1, missing));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(takes(&commands).is_empty());
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Withheld { reason }
+        );
+
+        let no_gpu = AppState {
+            no_gpu: true,
+            ..tracked()
+        };
+        let (_, commands) = update(no_gpu, new_task("Make it spin"));
+        assert!(!spec(&commands).moment);
+    }
+
+    #[test]
+    fn paths_being_taken_when_the_app_stopped_say_so_on_load() {
+        let s = reviewed(one_file(2));
+        let mut saved = task(&s, 1).clone();
+        saved.evidence = Some(Evidence {
+            tree: "now-2".to_string(),
+            state: EvidenceState::Taking,
+        });
+        let (s, _) = update(state(), Event::TasksLoaded { tasks: vec![saved] });
+        assert_eq!(
+            task(&s, 1).evidence.as_ref().unwrap().state,
+            EvidenceState::Withheld {
+                reason: "the app closed before the paths were taken".to_string()
+            }
+        );
+    }
+
     #[test]
     fn a_finished_run_with_a_change_is_ready_for_review() {
         let s = reviewed(one_file(2));

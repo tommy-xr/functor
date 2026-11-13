@@ -16,6 +16,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { chromium, expect } from "@playwright/test";
 import {
   clock,
+  difference,
   FUNCTOR,
   ROOT,
   requireBuilt,
@@ -243,32 +244,6 @@ async function marks(browser) {
     await page.close();
     await stopServer(server);
   }
-}
-
-/**
- * The mean absolute difference of two PNGs' pixels, decoded in the page
- * (0–255); within `region` (`[x0, y0, x1, y1]`, fractions of the image) when given.
- */
-function difference(page, a, b, region = [0, 0, 1, 1]) {
-  return page.evaluate(
-    async ([a, b, [x0, y0, x1, y1]]) => {
-      const pixels = async (b64) => {
-        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        canvas.getContext("2d").drawImage(bitmap, 0, 0);
-        const [x, y] = [Math.round(x0 * bitmap.width), Math.round(y0 * bitmap.height)];
-        const [w, h] = [Math.round(x1 * bitmap.width) - x, Math.round(y1 * bitmap.height) - y];
-        return canvas.getContext("2d").getImageData(x, y, w, h).data;
-      };
-      const [pa, pb] = [await pixels(a), await pixels(b)];
-      if (pa.length !== pb.length) return 255;
-      let sum = 0;
-      for (let i = 0; i < pa.length; i++) sum += Math.abs(pa[i] - pb[i]);
-      return sum / pa.length;
-    },
-    [a.toString("base64"), b.toString("base64"), region],
-  );
 }
 
 /** A hidden GPU session: the picture follows pause, step and a seek back. */

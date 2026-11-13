@@ -280,6 +280,17 @@ export type Dock = { pane: number, index: number, };
  */
 export type Entries = { "kind": "single", file: string, } | { "kind": "named", roles: Array<Role>, } | { "kind": "invalid", error: string, };
 
+/**
+ * A task's path evidence, for the change measured as `tree`.
+ */
+export type Evidence = { 
+/**
+ * The change's snapshot the new path runs (`Change::tree`).
+ */
+tree: string, state: EvidenceState, };
+
+export type EvidenceState = { "kind": "taking" } | { "kind": "shown", before: string, after: string, } | { "kind": "same" } | { "kind": "withheld", reason: string, };
+
 export type FileChange = { 
 /**
  * Relative to the repo root; a rename's new path.
@@ -411,6 +422,11 @@ kind: string, label: string, };
  * aspect ratio, and the page shrinks it to fit a smaller canvas.
  */
 export type Mini = { corner: Corner, width: number, };
+
+/**
+ * The game as the task's baseline was taken: where both paths start.
+ */
+export type Moment = { "kind": "taken", frame: number, steps: number, } | { "kind": "missing", reason: string, };
 
 export type MouseButton = "left" | "right" | "middle";
 
@@ -645,6 +661,14 @@ change: Change | null,
  * A revert is being written; no run or second revert may start.
  */
 reverting: boolean, 
+/**
+ * The game as `baseline` was taken (D38), when there was a game to ask.
+ */
+moment: Moment | null, 
+/**
+ * The predicted paths before and after `change` (D38).
+ */
+evidence: Evidence | null, 
 /**
  * When it was started: the shell's wall clock, ms since the Unix
  * epoch. Last active: a message, a run's event or a review. Both absent

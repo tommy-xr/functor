@@ -4711,6 +4711,51 @@ mod tests {
         assert!(game.mouse_capture);
     }
 
+    #[test]
+    fn replay_input_takes_a_whole_log_of_fixed_steps_it_can_feed() {
+        use functor_runtime_common::game_clock::FIXED_DT;
+        let step = |frame: u64, events: serde_json::Value| {
+            serde_json::json!({"frame": frame, "tts": FIXED_DT * frame as f32, "dts": FIXED_DT,
+                "input": null, "marks": [], "events": events})
+        };
+        let log = |oldest: u64, steps: Vec<serde_json::Value>| {
+            let newest = steps.last().map_or(0, |s| s["frame"].as_u64().unwrap());
+            serde_json::json!({"generation": 0, "oldest": oldest, "newest": newest, "steps": steps})
+                .to_string()
+        };
+        let key = serde_json::json!([{"Key": {"code": 30, "is_down": true}}]);
+        let ok = write_tmp("replay-ok.json", &log(1, vec![step(1, key.clone()), step(2, serde_json::json!([]))]));
+        let replay = parse_replay_input(ok.to_str().unwrap()).unwrap();
+        assert_eq!(replay.steps.len(), 2);
+        assert_eq!(
+            replay.steps[0].1,
+            [RecordedInput::Key {
+                code: 30,
+                is_down: true
+            }]
+        );
+        assert_eq!(replay.steps[1].0, FIXED_DT * 2.0);
+        // Nothing recorded: a launch paused on frame 0.
+        let empty = write_tmp("replay-empty.json", &log(0, vec![]));
+        assert!(parse_replay_input(empty.to_str().unwrap()).unwrap().steps.is_empty());
+        // The first steps gone, a gap, a step that was not one fixed step, an
+        // event this shell does not feed: refused.
+        let bad = [
+            log(2, vec![step(2, key.clone())]),
+            log(1, vec![step(1, key.clone()), step(3, key.clone())]),
+            log(1, vec![{
+                let mut s = step(1, key.clone());
+                s["dts"] = serde_json::json!(0.5);
+                s
+            }]),
+            log(1, vec![step(1, serde_json::json!([{"MouseWheel": {"delta": 1}}]))]),
+        ];
+        for (i, text) in bad.iter().enumerate() {
+            let file = write_tmp(&format!("replay-bad-{i}.json"), text);
+            assert!(parse_replay_input(file.to_str().unwrap()).is_err(), "{text}");
+        }
+    }
+
     fn write_tmp(name: &str, contents: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);
         std::fs::File::create(&path)
