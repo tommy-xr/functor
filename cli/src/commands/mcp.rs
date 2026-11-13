@@ -61,23 +61,10 @@ const ALWAYS_LOADED: [&str; 12] = [
 ];
 
 /// What a review (`--review`: a separate agent preparing an app's decision
-/// page) keeps besides its own tools: the language and API, and games it
-/// launches itself. Nothing that writes project files, attaches to another
-/// game or runs arbitrary code.
-const REVIEW_TOOLS: [&str; 12] = [
-    "language_guide",
-    "api_reference",
-    "launch_game",
-    "list_sessions",
-    "stop_game",
-    "get_state",
-    "get_scene",
-    "capture_frame",
-    "step",
-    "send_input",
-    "resume",
-    "pause",
-];
+/// page) keeps besides its own tools: the language and the API. No game
+/// tools: launching one can rewrite the project's generated `assets.fun`,
+/// and the app compares the two versions itself (D38).
+const REVIEW_TOOLS: [&str; 2] = ["language_guide", "api_reference"];
 
 /// How often the background routing pump drains and delivers a live group's
 /// traffic. Between `step_all` rounds a group still runs on wall-clock time,
@@ -5755,16 +5742,9 @@ mod tests {
             .collect();
         want.sort();
         assert_eq!(linked, want);
-        // A review's: its own two and the game tools it keeps.
-        let reviewing = eager(reviewer());
-        let want = ["capture_frame", "get_state", "report", "resume", "send_input", "step"];
-        let mut want: Vec<String> = [&want[..], &["api_reference", "language_guide", "task_change"]]
-            .concat()
-            .into_iter()
-            .map(String::from)
-            .collect();
-        want.sort();
-        assert_eq!(reviewing, want);
+        // A review's: all four it has.
+        let want = ["api_reference", "language_guide", "report", "task_change"];
+        assert_eq!(eager(reviewer()), want);
     }
 
     /// An HTTP server for a review, its brief at `brief.md` in no directory.
@@ -5780,8 +5760,8 @@ mod tests {
         }
     }
 
-    /// A review reads and looks: nothing that writes the project, attaches
-    /// another game, runs code or shows the user views.
+    /// A review reads: nothing that writes the project, runs a game or code,
+    /// or shows the user views.
     #[test]
     fn a_review_gets_read_only_tools_and_its_own_two() {
         let mut names: Vec<String> = reviewer()
@@ -5801,6 +5781,7 @@ mod tests {
             "reload_project",
             "reload_source",
             "connect_game",
+            "launch_game",
             "run_game_code_unsafe",
             "present",
             "show_view",

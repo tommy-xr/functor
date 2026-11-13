@@ -657,7 +657,7 @@ fn an_app_that_does_not_answer_times_out_cleanly() {
     assert!(result["content"][0]["text"].as_str().unwrap().contains("cannot reach the app"), "{result}");
 }
 
-/// `--review`: only read-only tools and its own two; `task_change` reads the
+/// `--review`: only the language and API tools and its own two; `task_change` reads the
 /// brief, `report` forwards; no attaching a game, and an app is required.
 #[test]
 fn a_review_server_reads_its_brief_and_forwards_its_report() {
@@ -669,17 +669,12 @@ fn a_review_server_reads_its_brief_and_forwards_its_report() {
     let server = HttpServer::start_env(&["--app-url", &url, "--review", brief], &[("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)]);
     let mut mcp = HttpMcp::connect(&server.url);
     let list = mcp.request("tools/list", json!({}));
-    let mut want = vec![
-        "api_reference", "capture_frame", "get_scene", "get_state", "language_guide", "launch_game",
-        "list_sessions", "pause", "report", "resume", "send_input", "step", "stop_game", "task_change",
-    ];
-    want.sort();
-    assert_eq!(tool_names(&list), want);
+    assert_eq!(tool_names(&list), ["api_reference", "language_guide", "report", "task_change"]);
     assert_eq!(mcp.call("task_change", json!({})), "# Task: Faster\n\n## The diff\n");
     let report = json!({
         "summary": "The hero jumps 2 m higher.",
         "notes": [],
-        "evidence": [{"ran": "capture_frame", "result": "the hero clears the gap", "ok": true}],
+        "evidence": [{"ran": "functor test", "result": "3 expects pass", "ok": true}],
     });
     assert_eq!(mcp.call("report", report.clone()), "Saved on the decision page.");
     let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
