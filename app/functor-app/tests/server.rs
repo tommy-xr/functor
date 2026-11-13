@@ -382,11 +382,8 @@ async fn the_game_child_never_sees_the_token() {
     );
     assert!(server.ws.ends_with(token), "{}", server.ws);
     let mut socket = connect(&server.ws).await;
-    next_state(&mut socket).await;
-    socket
-        .send(Message::text(r#"{"type":"start_session"}"#))
-        .await
-        .unwrap();
+    // The game starts by itself on open. A second start here would run the
+    // script again, emptying the file while the first run still reads as running.
     state_where(&mut socket, |s| s["session"]["status"]["kind"] == "running").await;
     let seen = std::fs::read_to_string(&seen).unwrap();
     assert!(seen.contains("--debug-port"), "{seen}");
