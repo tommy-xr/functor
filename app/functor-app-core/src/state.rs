@@ -24,7 +24,7 @@ use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, Harness, Item, Run,
     RunEvent, Task, TaskStatus,
 };
-use crate::transport::{SessionCall, Timeline, Transport};
+use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -487,28 +487,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         // Shown at once and broadcast as `ServerMsg::Transport` (below).
         Event::Client(ClientMsg::Transport { call }) => {
-            if let Some(Session {
-                id,
-                status:
-                    SessionStatus::Running {
-                        debug_url,
-                        timeline,
-                        ..
-                    },
-                ..
-            }) = &mut state.session
-            {
-                if let Some(call) = timeline.call(call) {
-                    commands.push(Command::Call {
-                        id: *id,
-                        debug_url: debug_url.clone(),
-                        call: SessionCall::Transport(call),
-                    });
-                }
-            }
+            transport_call(&mut state, call, &mut commands);
             (false, false)
         }
         Event::Client(ClientMsg::WatchTransport { on }) => {
+            // No bar shows any more (a page closed or lost its connection):
+            // a peek one started cannot end there, so it ends here.
+            if state.transport_watched && !on {
+                transport_call(&mut state, TransportCall::Peek { on: false }, &mut commands);
+            }
             state.transport_watched = on;
             read_marks(&mut state, &mut commands);
             (false, false)
@@ -888,6 +875,29 @@ fn send_transport(state: &AppState, before: Shown, get_state: bool, commands: &m
             .map(|(_, t)| t.marks.clone())
             .unwrap_or_default();
         commands.push(send(ServerMsg::Marks { marks }));
+    }
+}
+
+/// Posts the bar's `call` to the running session, as its timeline allows.
+fn transport_call(state: &mut AppState, call: TransportCall, commands: &mut Vec<Command>) {
+    if let Some(Session {
+        id,
+        status:
+            SessionStatus::Running {
+                debug_url,
+                timeline,
+                ..
+            },
+        ..
+    }) = &mut state.session
+    {
+        if let Some(call) = timeline.call(call) {
+            commands.push(Command::Call {
+                id: *id,
+                debug_url: debug_url.clone(),
+                call: SessionCall::Transport(call),
+            });
+        }
     }
 }
 
@@ -2149,6 +2159,8 @@ mod tests {
             recorded: clock.recorded,
             generation: clock.generation,
             seek: 0,
+            extrapolate: false,
+            revision: clock.program_revision,
         }
     }
 
@@ -2711,9 +2723,13 @@ mod tests {
                 Command::Reply(ServerMsg::Marks { marks: vec![w] })
             ]
         );
-        // Unwatched, the read on its way is the last.
+        // Unwatched, the read on its way is the last, and the switch is posted
+        // again: a peek no page can end is over.
         let (s, commands) = update(s, watch(false));
-        assert_eq!(commands, vec![]);
+        assert_eq!(
+            commands,
+            vec![posted(TransportCall::Extrapolate { on: false })]
+        );
         let failed = SessionEvent::InputLog(Err("connection refused".into()));
         let (_, commands) = update(s, session(1, failed));
         assert_eq!(commands, vec![]);

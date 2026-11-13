@@ -30,6 +30,11 @@ pub struct Transport {
     /// The `id` of the last seek asked for (0: none), so the page that asked
     /// stops waiting for it.
     pub seek: u64,
+    /// The bar's Extrapolate switch (D38). A peek leaves it as it is.
+    pub extrapolate: bool,
+    /// Successful hot reloads since the program loaded: a new one is an
+    /// edit landing, which the page peeks at while paused.
+    pub revision: u64,
 }
 
 /// An event on the timeline: an input edge or a hot reload, with the kind
@@ -58,6 +63,15 @@ pub enum TransportCall {
     Seek {
         frame: u64,
         id: u64,
+    },
+    /// Draw the extrapolation into the game view, or stop (`POST /preview`).
+    Extrapolate {
+        on: bool,
+    },
+    /// Show the extrapolation for a moment without moving the switch (the
+    /// page's peek after an edit); ending it posts the switch's own state.
+    Peek {
+        on: bool,
     },
 }
 
@@ -160,6 +174,8 @@ impl Timeline {
             recorded: clock.recorded,
             generation: clock.generation,
             seek: shown.map_or(0, |c| c.seek),
+            extrapolate: shown.is_some_and(|c| c.extrapolate),
+            revision: clock.program_revision,
         });
         self.prune(branched);
     }
@@ -168,11 +184,22 @@ impl Timeline {
     /// or a seek with nothing recorded). A seek is clamped to the window and
     /// shown at once, so a drag never waits on the runtime; pause, step and
     /// resume show when a poll reports them, so a pause freezes the window
-    /// where the runtime really stopped.
+    /// where the runtime really stopped. The switch shows at once too; a peek
+    /// is posted as the switch the runtime should follow meanwhile.
     pub fn call(&mut self, call: TransportCall) -> Option<TransportCall> {
         let clock = self.clock.as_mut().filter(|c| c.clock)?;
-        let TransportCall::Seek { frame, id } = call else {
-            return Some(call);
+        let (frame, id) = match call {
+            TransportCall::Seek { frame, id } => (frame, id),
+            TransportCall::Extrapolate { on } => {
+                clock.extrapolate = on;
+                return Some(call);
+            }
+            TransportCall::Peek { on } => {
+                return Some(TransportCall::Extrapolate {
+                    on: on || clock.extrapolate,
+                })
+            }
+            _ => return Some(call),
         };
         let [oldest, newest] = clock.recorded?;
         clock.frame = frame.clamp(oldest, newest);
@@ -353,6 +380,26 @@ mod tests {
         assert_eq!(t.clock.unwrap().frame, 10);
         assert_eq!(t.call(seek(90, 3)), Some(seek(50, 3)));
         assert_eq!(t.clock.unwrap().frame, 50);
+    }
+
+    #[test]
+    fn the_switch_shows_at_once_and_a_peek_never_moves_it() {
+        let mut t = Timeline::default();
+        let on = |on| TransportCall::Extrapolate { on };
+        let peek = |on| TransportCall::Peek { on };
+        assert_eq!(t.call(on(true)), None, "no clock yet");
+        t.polled(0, 0, clock(true, [0, 0], 0, 0));
+        // A peek shows the extrapolation; its end restores the switch: off.
+        assert_eq!(t.call(peek(true)), Some(on(true)));
+        assert_eq!(t.call(peek(false)), Some(on(false)));
+        assert!(!t.clock.unwrap().extrapolate);
+        // Switched on, it shows at once and outlives polls and a peek's end.
+        assert_eq!(t.call(on(true)), Some(on(true)));
+        t.polled(0, 5, clock(true, [0, 5], 0, 1));
+        assert!(t.clock.unwrap().extrapolate);
+        assert_eq!(t.call(peek(false)), Some(on(true)));
+        assert_eq!(t.call(on(false)), Some(on(false)));
+        assert!(!t.clock.unwrap().extrapolate);
     }
 
     #[test]

@@ -1389,6 +1389,11 @@ desktop runtime's --headless/--debug-port path"
                 "the headset's view follows the wearer; POST /camera is desktop-only".to_string(),
             ));
         }
+        DebugRequest::Preview(_, response) => {
+            let _ = response.send(Err(
+                "the headset draws no extrapolation; POST /preview is desktop-only".to_string(),
+            ));
+        }
         // Desktop-only for now: the headset would pay for an eye readback
         // per streamed frame inside its frame budget.
         DebugRequest::Stream(response) => {

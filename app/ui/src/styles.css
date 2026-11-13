@@ -1838,6 +1838,62 @@ blockquote {
   opacity: 0.62;
 }
 
+/* The extrapolation's window: the recorded past cyan, the predicted future
+   pink, as on the web rail and in the game view. */
+.transport-past {
+  fill: color-mix(in srgb, var(--tl-accent) 20%, transparent);
+  stroke: #8ff2fa;
+  stroke-width: 1;
+  stroke-opacity: 0.9;
+}
+
+.transport-future {
+  fill: var(--tl-future);
+  opacity: 0.9;
+}
+
+/* Rightmost on the bar: its tip opens leftward. */
+.transport-extrapolate[data-tip]::after {
+  left: auto;
+  right: 0;
+}
+
+/* `:hover` too, so the hover style does not hide the state. */
+.transport-extrapolate.on,
+.transport-extrapolate.on:hover:not(:disabled) {
+  border-color: var(--tl-future);
+  box-shadow: 0 0 0 1px var(--tl-future), 0 2px 10px color-mix(in srgb, var(--tl-future) 40%, transparent);
+}
+
+/* A peek after an edit (the web scrubber's): the button presses, then shines
+   while the path shows. */
+.transport-extrapolate.peeking,
+.transport-extrapolate.peeking:hover:not(:disabled) {
+  animation: transport-peek-press 0.3s ease-out, transport-peek-shine 2s ease-in-out 0.3s infinite;
+  border-color: var(--tl-future);
+  background: color-mix(in srgb, var(--tl-future) 22%, transparent);
+  box-shadow: 0 0 0 2px var(--tl-future), 0 0 18px 3px color-mix(in srgb, var(--tl-future) 75%, transparent);
+}
+
+@keyframes transport-peek-press {
+  35% {
+    transform: translateY(1px);
+    box-shadow: 0 0 0 2px var(--tl-future), 0 0 16px color-mix(in srgb, var(--tl-future) 85%, transparent);
+  }
+}
+
+@keyframes transport-peek-shine {
+  50% { box-shadow: 0 0 0 2px var(--tl-future), 0 0 13px 2px color-mix(in srgb, var(--tl-future) 55%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transport-extrapolate.peeking,
+  .transport-extrapolate.peeking:hover:not(:disabled) {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--tl-future);
+  }
+}
+
 .transport-tick {
   fill: var(--tl-text);
   fill-opacity: 0.28;
