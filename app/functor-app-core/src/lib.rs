@@ -8,6 +8,7 @@ pub mod agent_view;
 pub mod changes;
 pub mod creation;
 pub mod devices;
+pub mod evidence;
 pub mod folders;
 pub mod layout;
 pub mod print;

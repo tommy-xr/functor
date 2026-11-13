@@ -167,6 +167,8 @@ struct Ctx {
     views: Arc<ViewRoute>,
     /// View requests waiting for the core (`VIEW_IN_FLIGHT`).
     in_flight: std::sync::atomic::AtomicUsize,
+    /// Where path evidence captures are kept (`store::evidence_dir`).
+    evidence: PathBuf,
 }
 
 /// Serves until `shutdown` resolves to an exit code, then stops the session
@@ -195,9 +197,11 @@ pub async fn serve(
         ui,
         views,
         in_flight: Default::default(),
+        evidence: crate::store::evidence_dir(driver.home()),
     });
     let app = Router::new()
         .route("/ws", get(ws))
+        .route("/evidence/{name}", get(evidence))
         .route(
             VIEW_PATH,
             post(agent_view).layer(DefaultBodyLimit::max(MAX_VIEW_BYTES)),
@@ -551,6 +555,33 @@ async fn client(ctx: Arc<Ctx>, socket: WebSocket) {
         _ = receive => {}
     }
     let _ = ctx.inputs.send(Input::Disconnect { id });
+}
+
+/// A path evidence capture (`/evidence/<name>?token=`), for the page's
+/// `<img>`: the token, as for `/ws`, and only a name the app gives one.
+async fn evidence(
+    State(ctx): State<Arc<Ctx>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    uri: Uri,
+) -> Response {
+    if !ctx.token.presented_in(uri.query()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if !crate::evidence::is_name(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match tokio::fs::read(ctx.evidence.join(&name)).await {
+        // A name is never reused: its picture never changes.
+        Ok(png) => (
+            [
+                (header::CONTENT_TYPE, "image/png"),
+                (header::CACHE_CONTROL, "private, max-age=31536000, immutable"),
+            ],
+            png,
+        )
+            .into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn asset(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {

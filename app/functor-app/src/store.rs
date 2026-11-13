@@ -211,14 +211,14 @@ fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
 /// Written aside then renamed, so a crash never leaves half a file. The
 /// temp name is this write's own (`<file>.<pid>.<n>.tmp`): writers never
 /// share one.
-pub(crate) fn write_whole(file: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_whole(file: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     static WRITES: AtomicU64 = AtomicU64::new(0);
     let n = WRITES.fetch_add(1, Ordering::Relaxed);
     let mut tmp = file.as_os_str().to_owned();
     tmp.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     let written = create_private(&tmp)
-        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .and_then(|mut f| f.write_all(bytes.as_ref()))
         .and_then(|()| std::fs::rename(&tmp, file));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -314,13 +314,36 @@ pub fn save(home: &Path, dir: &Path, task: &Task) -> io::Result<()> {
     write_whole(&tasks.join(format!("{}.json", task.id)), &to_stored(task))
 }
 
-/// Removes task `id`'s file for the project at `dir`, and nothing else: its
-/// id stays reserved. A file already gone is not an error.
+/// Removes task `id`'s file and its moment for the project at `dir`, and
+/// nothing else: its id stays reserved. A file already gone is not an error.
 pub fn delete(home: &Path, dir: &Path, id: u64) -> io::Result<()> {
-    match std::fs::remove_file(tasks_dir(home, dir).join(format!("{id}.json"))) {
+    let gone = |result: io::Result<()>| match result {
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         other => other,
-    }
+    };
+    gone(std::fs::remove_file(moment_file(home, dir, id)))?;
+    gone(std::fs::remove_file(
+        tasks_dir(home, dir).join(format!("{id}.json")),
+    ))
+}
+
+/// Task `id`'s moment (D38) for the project at `dir`: what its path
+/// evidence replays.
+pub fn moment_file(home: &Path, dir: &Path, id: u64) -> PathBuf {
+    project_home(home, dir)
+        .join("moments")
+        .join(format!("{id}.json"))
+}
+
+/// Writes `bytes` as `file`, private, making its directory.
+pub fn save_private(file: &Path, bytes: &[u8]) -> io::Result<()> {
+    create_private_dir(file.parent().expect("under home"))?;
+    write_whole(file, bytes)
+}
+
+/// Where path evidence captures are kept, by the names the core holds.
+pub fn evidence_dir(home: &Path) -> PathBuf {
+    home.join("evidence")
 }
 
 #[cfg(test)]
@@ -376,6 +399,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            moment: None,
+            evidence: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],
@@ -417,6 +442,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            moment: None,
+            evidence: None,
             created_at: None,
             updated_at: Some(1),
             transcript: vec![Item::User { text: "hi".into() }],

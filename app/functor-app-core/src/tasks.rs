@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::agent_view::WalkthroughStep;
 use crate::changes::Change;
+use crate::evidence::{Evidence, Moment};
 use crate::session::loopback_url;
 
 /// The persisted format's version; a file with any other is skipped.
@@ -62,6 +63,12 @@ pub struct Task {
     /// A revert is being written; no run or second revert may start.
     #[serde(default)]
     pub reverting: bool,
+    /// The game as `baseline` was taken (D38), when there was a game to ask.
+    #[serde(default)]
+    pub moment: Option<Moment>,
+    /// The predicted paths before and after `change` (D38).
+    #[serde(default)]
+    pub evidence: Option<Evidence>,
     /// When it was started: the shell's wall clock, ms since the Unix
     /// epoch. Last active: a message, a run's event or a review. Both absent
     /// from tasks saved before they were kept.
@@ -203,6 +210,8 @@ pub enum RunEvent {
     Baseline {
         tree: String,
     },
+    /// The game as the baseline was taken (sent with it when asked).
+    Moment(Moment),
     Agent(AgentEvent),
     /// The agent and its tool server are gone; `error` if the run could not
     /// start or broke.
@@ -520,6 +529,8 @@ mod tests {
             baseline: None,
             change: None,
             reverting: false,
+            moment: None,
+            evidence: None,
             created_at: None,
             updated_at: None,
             transcript: vec![Item::User {

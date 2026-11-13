@@ -77,6 +77,8 @@ pub struct Driver {
     templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
     /// The device link, once started.
     pub link: Option<crate::link::Hub>,
+    /// Takes tasks' path evidence.
+    evidence: crate::evidence::Worker,
 }
 
 pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
@@ -136,7 +138,15 @@ impl Driver {
         views: Arc<ViewRoute>,
     ) -> Self {
         Self {
-            runs: Runner::new(functor.clone(), agents, None, events.clone(), views),
+            runs: Runner::new(
+                functor.clone(),
+                agents,
+                None,
+                events.clone(),
+                views,
+                home.clone(),
+            ),
+            evidence: crate::evidence::Worker::new(functor.clone(), home.clone(), events.clone()),
             functor,
             events,
             live: None,
@@ -313,6 +323,30 @@ impl Driver {
                 paths,
             } => self.revert(task, baseline, paths),
             Command::AppContext { task, run, context } => self.runs.context(task, run, &context),
+            Command::TakeEvidence {
+                task,
+                dir,
+                project,
+                baseline,
+                tree,
+            } => {
+                if let Some(git) = self.git.clone() {
+                    self.evidence.take(crate::evidence::Job {
+                        task,
+                        git,
+                        dir,
+                        project,
+                        baseline,
+                        tree,
+                    });
+                }
+            }
+            Command::DropEvidence { files } => {
+                let dir = crate::store::evidence_dir(&self.home);
+                for file in files.iter().filter(|f| crate::evidence::is_name(f)) {
+                    let _ = std::fs::remove_file(dir.join(file));
+                }
+            }
             Command::Link(command) => {
                 if let Some(link) = &self.link {
                     link.command(command);
@@ -463,6 +497,11 @@ impl Driver {
                 result,
             });
         });
+    }
+
+    /// Where the app keeps its data (`store::home`).
+    pub fn home(&self) -> &Path {
+        &self.home
     }
 
     /// The current child's last output lines, oldest first.
@@ -661,15 +700,28 @@ pub async fn request(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<String, String> {
+    let body = request_bytes(url, method, path, headers, body).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+/// As [`request`], the body as bytes (a `/capture`'s PNG).
+pub async fn request_bytes(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<Vec<u8>, String> {
     let what = format!("{method} {path}");
-    let (head, body) = exchange(url, method, path, headers, body).await?;
+    let (head, body) = exchange_bytes(url, method, path, headers, body).await?;
     let status = head.lines().next().unwrap_or_default();
     if !status
         .split(' ')
         .nth(1)
         .is_some_and(|code| code.starts_with('2'))
     {
-        return Err(format!("{what}: {status}: {}", body.trim()));
+        let text = String::from_utf8_lossy(&body);
+        return Err(format!("{what}: {status}: {}", text.trim()));
     }
     Ok(body)
 }
@@ -682,6 +734,17 @@ pub async fn exchange(
     headers: &[(&str, &str)],
     body: &str,
 ) -> Result<(String, String), String> {
+    let (head, body) = exchange_bytes(url, method, path, headers, body).await?;
+    Ok((head, String::from_utf8_lossy(&body).into_owned()))
+}
+
+async fn exchange_bytes(
+    url: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<(String, Vec<u8>), String> {
     let what = format!("{method} {path}");
     let addr = url
         .strip_prefix("http://")
@@ -705,9 +768,12 @@ pub async fn exchange(
         .await
         .map_err(|_| format!("{what} timed out"))?
         .map_err(|e| format!("{what}: {e}"))?;
-    let text = String::from_utf8_lossy(&response);
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
-    Ok((head.to_string(), body.to_string()))
+    let split = response.windows(4).position(|w| w == b"\r\n\r\n");
+    let (head, body) = match split {
+        Some(at) => (&response[..at], &response[at + 4..]),
+        None => (&response[..], &[][..]),
+    };
+    Ok((String::from_utf8_lossy(head).into_owned(), body.to_vec()))
 }
 
 /// `GET /state`'s `frame`, pointer surface and `clock`.

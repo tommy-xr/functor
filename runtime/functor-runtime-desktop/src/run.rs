@@ -589,6 +589,61 @@ fn reject_unmatched_button_releases(
     Ok(())
 }
 
+/// A `--replay-input` log: each step's recorded clock and events.
+struct ReplayInput {
+    steps: Vec<(f32, Vec<RecordedInput>)>,
+    /// Steps fed so far.
+    next: usize,
+    /// Whether its steps are queued on the clock.
+    queued: bool,
+}
+
+/// Reads a `--replay-input` file: every step from the first, each one fixed
+/// step long, with only events this shell feeds (keys, mouse buttons,
+/// pointer moves). Anything else is refused: a partial replay would show a
+/// run that never happened.
+fn parse_replay_input(path: &str) -> Result<ReplayInput, String> {
+    use functor_runtime_common::debug_protocol::InputLog;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let log: InputLog = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    if log.newest != log.steps.len() as u64 {
+        return Err(format!(
+            "{path}: has {} steps of {}: replay needs every step from the first",
+            log.steps.len(),
+            log.newest
+        ));
+    }
+    let mut steps = Vec::with_capacity(log.steps.len());
+    for (i, step) in log.steps.into_iter().enumerate() {
+        let frame = i as u64 + 1;
+        if step.frame != frame {
+            return Err(format!("{path}: step {frame} is missing"));
+        }
+        if step.dts != functor_runtime_common::game_clock::FIXED_DT {
+            return Err(format!(
+                "{path}: step {frame} ran {} s, not one fixed step",
+                step.dts
+            ));
+        }
+        if let Some(event) = step.events.iter().find(|e| {
+            !matches!(
+                e,
+                RecordedInput::Key { .. }
+                    | RecordedInput::MouseButton { .. }
+                    | RecordedInput::MouseMove { .. }
+            )
+        }) {
+            return Err(format!("{path}: step {frame}: cannot replay {event:?}"));
+        }
+        steps.push((step.tts, step.events));
+    }
+    Ok(ReplayInput {
+        steps,
+        next: 0,
+        queued: false,
+    })
+}
+
 use clap::Parser;
 
 /// CLI spelling of `functor_runtime_common::DebugRenderMode`.
@@ -821,6 +876,15 @@ pub struct Args {
     #[arg(long, default_value_t = 1.0 / 60.0, value_parser = parse_script_dt)]
     script_dt: f32,
 
+    /// Replay a recorded input log (`GET /input-log`'s body, kept from its
+    /// first step) from `init`, then pause on its last step. It starts as
+    /// `--paused` does, then runs each step at its fixed 1/60 s, its
+    /// recorded events fed before its tick. So another program sees the
+    /// same inputs on the same steps: the desktop app predicts a task's old
+    /// and new paths this way.
+    #[arg(long, conflicts_with_all = ["fixed_time", "input_script", "paused", "display_hz", "headless"])]
+    replay_input: Option<String>,
+
     /// Simulate a display at this refresh rate: each rendered frame advances
     /// the live clock by exactly `1/HZ` instead of wall-clock time, so the
     /// fixed-step cadence and `draw`'s sub-step alpha are reproducible (e.g.
@@ -959,10 +1023,11 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
-/// The game clock as launched: pinned by `--fixed-time`, paused by `--paused`.
+/// The game clock as launched: pinned by `--fixed-time`, paused by `--paused`
+/// (and `--replay-input`, which then steps it).
 fn launch_clock(args: &Args) -> GameClock {
     let mut clock = GameClock::new(args.fixed_time);
-    if args.paused {
+    if args.paused || args.replay_input.is_some() {
         clock.pause();
     }
     clock
@@ -1947,6 +2012,7 @@ pub fn run(args: Args) {
     // windowed one draws the loading screen while the load job runs.
     let load_first = args.headless
         || args.paused
+        || args.replay_input.is_some()
         || args.input_script.is_some()
         || args.capture_at_frame.is_some()
         || args.capture_frame.is_some()
@@ -2023,6 +2089,16 @@ then restart the runner"
                     std::process::exit(1);
                 }
             });
+    let mut replay_input = args
+        .replay_input
+        .as_ref()
+        .map(|path| match parse_replay_input(path) {
+            Ok(replay) => replay,
+            Err(e) => {
+                eprintln!("error: --replay-input {e}");
+                std::process::exit(1);
+            }
+        });
 
     // `--capture-at-frame` only names a *deterministic* sim frame when playback
     // advances by a fixed dt — i.e. under `--input-script`. Without it the loop
@@ -2485,6 +2561,14 @@ Escape releases while captured"
             // every rendered frame a single fixed dt regardless of real timing.
             if input_script.is_some() {
                 clock.step(args.script_dt);
+            }
+            // `--replay-input`'s steps, queued once frame 0 (the bootstrap a
+            // paused launch runs) has run; they drain up to 8 a frame.
+            if let Some(replay) = replay_input.as_mut().filter(|r| !r.queued && frame_count > 0) {
+                replay.queued = true;
+                if !replay.steps.is_empty() {
+                    clock.step_n(functor_runtime_common::game_clock::FIXED_DT, replay.steps.len() as u32);
+                }
             }
             // The fixed-timestep model loop (docs/time-travel.md): advance `tick`
             // in whole 1/60 steps decoupled from the render rate, so the sim is
@@ -3262,6 +3346,30 @@ Escape again to quit"
                             &mut input_edges,
                             events,
                         );
+                    }
+                }
+                // A replayed step must end at its recorded clock, or the
+                // run it shows is not the recorded one.
+                if let Some(replay) = replay_input.as_mut().filter(|_| sub.dts > 0.0) {
+                    if let Some((tts, events)) = replay.steps.get(replay.next) {
+                        if sub.tts != *tts {
+                            eprintln!(
+                                "error: --replay-input: step {} ends at {} s, recorded at {tts} s",
+                                replay.next + 1,
+                                sub.tts
+                            );
+                            std::process::exit(1);
+                        }
+                        apply_scripted_events(
+                            &mut sim,
+                            &mut game_mouse_pos,
+                            args.emulate_xr,
+                            &mut held_keys,
+                            &mut held_buttons,
+                            &mut input_edges,
+                            events,
+                        );
+                        replay.next += 1;
                     }
                 }
                 if caps.samples_input || sim.is_threaded() {

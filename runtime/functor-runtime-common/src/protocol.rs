@@ -339,7 +339,10 @@ pub fn input_log<G: GameProducer + ?Sized>(game: &G, from: u64) -> crate::debug_
                     label,
                 })
                 .collect();
-            let input = inputs.into_iter().find_map(|input| match input {
+            let (snapshots, events): (Vec<_>, Vec<_>) = inputs
+                .into_iter()
+                .partition(|input| matches!(input, crate::RecordedInput::Snapshot(_)));
+            let input = snapshots.into_iter().find_map(|input| match input {
                 crate::RecordedInput::Snapshot(snapshot) => Some(*snapshot),
                 _ => None,
             });
@@ -349,6 +352,7 @@ pub fn input_log<G: GameProducer + ?Sized>(game: &G, from: u64) -> crate::debug_
                 dts: time.dts,
                 input,
                 marks,
+                events,
             })
         })
         .collect();

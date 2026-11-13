@@ -80,6 +80,11 @@ impl Git {
         })
     }
 
+    /// The work tree's top level.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// `git -C <root> <args>` against the store, with `index` as its index.
     fn command(&self, args: &[&str], index: Option<&Path>) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("git");
@@ -393,6 +398,40 @@ impl Git {
         )
         .await?;
         Ok(())
+    }
+
+    /// Writes snapshot `tree`'s directory `path` (repo-relative, `.` the
+    /// whole tree) under `dest`: the project as it was then, outside the
+    /// working tree.
+    pub async fn export(&self, tree: &str, path: &str, dest: &Path) -> Result<(), String> {
+        let tree = oid(tree)?;
+        let spec = match path {
+            "." => tree.to_string(),
+            path => format!("{tree}:{path}"),
+        };
+        let index = TempIndex::new(&self.dir);
+        self.git(&["read-tree", &spec], Some(&index.0)).await?;
+        let prefix = format!("--prefix={}/", dest.display());
+        self.git(&["checkout-index", "-a", "-f", &prefix], Some(&index.0))
+            .await?;
+        Ok(())
+    }
+
+    /// The ignored files and directories present in directory `path`
+    /// (repo-relative, `.` the root): what no snapshot holds, such as
+    /// fetched assets.
+    pub async fn ignored(&self, path: &str) -> Result<Vec<String>, String> {
+        let args = [
+            "ls-files",
+            "-z",
+            "-o",
+            "-i",
+            "--exclude-standard",
+            "--directory",
+            "--",
+            path,
+        ];
+        Ok(nul_list(&self.git(&args, None).await?))
     }
 
     /// Those of `paths` the working tree's ignore rules do not ignore.
