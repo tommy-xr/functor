@@ -42,6 +42,9 @@ out
 # `functor build wasm` static web bundles (<project>/dist/web) + site/dist
 dist/
 
+# Agent-run metrics results (app/metrics/run.mjs)
+app/metrics/results/
+
 # perf output
 perf*
 
