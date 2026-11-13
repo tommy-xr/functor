@@ -817,6 +817,15 @@ async fn run_vr_pushes_through_the_tunnel() {
     let source = std::fs::read_to_string(&game).unwrap();
     std::fs::write(&game, format!("{source}\n// edited\n")).unwrap();
     quest.line("request POST /reload-project");
+
+    // An edit saved while the headset is away arrives once it is back.
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Run Quest") == "away")
+        .await;
+    std::fs::write(&game, format!("{source}\n// edited while away\n")).unwrap();
+    run.line("retrying");
+    let quest = stub(&app.link, store.path(), "Run Quest", &[]);
+    quest.line("request POST /reload-project");
     drop(run);
 
     // Away: a run waits, then goes on once the headset links again.
@@ -1482,16 +1491,7 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         return;
     }
     let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
-    // Unpaired, keeping its id (the desktop knows it by it).
-    let mut file = quest.pairing_file();
-    let id = file.device.clone();
-    file.desktop = None;
-    file.desktop_name = None;
-    file.secret = None;
-    quest.put_pairing(file.to_json().as_bytes());
-
-    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
-    quest.launch().await;
+    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
     let serial = quest.serial.clone();
     let on_cable = |d: &Value| -> Option<Value> {
         d["attached"]
@@ -1500,27 +1500,6 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
             .find(|a| a["serial"] == serial.as_str())
             .cloned()
     };
-    let devices = app
-        .devices_where("the Quest is on the cable, ready", |d| {
-            on_cable(d).is_some_and(|a| a["pairable"] == true)
-        })
-        .await;
-    let a = on_cable(&devices).unwrap();
-    assert_eq!(a["state"]["device"], id.as_str());
-    assert_eq!(a["state"]["paired"]["with"], "nobody");
-    assert!(app.pairings().is_empty() || !app.pairings().contains(&id));
-
-    // One click; the headset links over Wi-Fi by itself.
-    let started = Instant::now();
-    app.send(json!({"type": "pair_by_cable", "serial": serial}))
-        .await;
-    let devices = app
-        .devices_where("it connects over Wi-Fi", |d| {
-            card_by_id(d, &id)
-                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
-        })
-        .await;
-    eprintln!("cable pairing → connected in {:?}", started.elapsed());
     assert_eq!(card_by_id(&devices, &id).unwrap()["state"]["link"], "wifi");
     let written = quest.pairing_file();
     assert_eq!(written.device, id, "the headset keeps its id");
@@ -1607,31 +1586,7 @@ async fn quest_runs_a_project_over_the_link() {
     }
     let Some(functor) = functor_bin() else { return };
     let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
-    let mut file = quest.pairing_file();
-    let id = file.device.clone();
-    file.desktop = None;
-    file.desktop_name = None;
-    file.secret = None;
-    quest.put_pairing(file.to_json().as_bytes());
-
-    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
-    quest.launch().await;
-    let serial = quest.serial.clone();
-    app.devices_where("the Quest is on the cable, ready", |d| {
-        d["attached"].as_array().is_some_and(|a| {
-            a.iter()
-                .any(|a| a["serial"] == serial.as_str() && a["pairable"] == true)
-        })
-    })
-    .await;
-    app.send(json!({"type": "pair_by_cable", "serial": serial}))
-        .await;
-    let devices = app
-        .devices_where("it links over Wi-Fi", |d| {
-            card_by_id(d, &id)
-                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
-        })
-        .await;
+    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
     let tunnel = card_by_id(&devices, &id).unwrap()["tunnel"]
         .as_str()
         .unwrap()
@@ -1714,6 +1669,52 @@ async fn quest_runs_a_project_over_the_link() {
         quest.pairing_file().secret.is_none().then_some(())
     })
     .await;
+}
+
+/// `quest` unpaired (keeping its id, which the desktop knows it by), then
+/// paired over the cable by one click in a new app, linked over Wi-Fi: the
+/// app, the headset's id and the devices once its tunnel is up.
+async fn pair_quest_by_cable(quest: &Quest) -> (App, String, Value) {
+    let mut file = quest.pairing_file();
+    let id = file.device.clone();
+    file.desktop = None;
+    file.desktop_name = None;
+    file.secret = None;
+    quest.put_pairing(file.to_json().as_bytes());
+
+    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
+    quest.launch().await;
+    let serial = quest.serial.clone();
+    let devices = app
+        .devices_where("the Quest is on the cable, ready", |d| {
+            d["attached"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|a| a["serial"] == serial.as_str() && a["pairable"] == true)
+            })
+        })
+        .await;
+    let a = devices["attached"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["serial"] == serial.as_str())
+        .unwrap();
+    assert_eq!(a["state"]["device"], id.as_str());
+    assert_eq!(a["state"]["paired"]["with"], "nobody");
+    assert!(app.pairings().is_empty() || !app.pairings().contains(&id));
+
+    // One click; the headset links over Wi-Fi by itself.
+    let started = Instant::now();
+    app.send(json!({"type": "pair_by_cable", "serial": serial}))
+        .await;
+    let devices = app
+        .devices_where("it connects over Wi-Fi", |d| {
+            card_by_id(d, &id)
+                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
+        })
+        .await;
+    eprintln!("cable pairing → connected in {:?}", started.elapsed());
+    (app, id, devices)
 }
 
 /// The card for device `id`, if any.

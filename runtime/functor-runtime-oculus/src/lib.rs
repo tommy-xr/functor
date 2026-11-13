@@ -883,11 +883,9 @@ struct DebugLoopState {
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
     /// `/frames`, `/spikes`, `/state.frame_stats`.
     telemetry: FrameTelemetry,
-    /// The `/load-project` waiting on a load job, and where its status
-    /// arrives: answered when it lands.
-    pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
-    /// The name the last `/load-project` declared, until it lands.
-    loading_name: Option<String>,
+    /// The `/load-project` waiting on a load job, where its status arrives,
+    /// and the project name it declared: answered when it lands.
+    pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>, Option<String>)>,
     /// Pushed reloads, for the head-locked indicator and `/state.reload`.
     reload: ReloadIndicator,
     /// Why `Xr.streamCamera`'s camera is not open, while wanted.
@@ -991,7 +989,6 @@ fn launch(
     // any frame.
     sim.queue_terrain_requests(scene_context);
     if result.is_ok() {
-        link::set_project(debug.loading_name.take());
         clock.restart();
         debug.frame_count = 0;
         let config = sim.call(|g| g.config());
@@ -1321,19 +1318,18 @@ desktop runtime's --headless/--debug-port path"
         DebugRequest::LoadProject(files, role, host, response) => {
             // An empty load unloads: the boot scene, under the plain
             // contract, and no uploads (a desktop app stopping the game here).
-            let (files, role) = if files.is_empty() {
+            // Reported over the link once the load lands.
+            let (files, role, name) = if files.is_empty() {
                 let removed = asset_cache.retain_uploaded(&HashSet::new());
                 for path in &removed {
                     scene_context.evict_asset(path);
                 }
                 let boot = vec![("boot.fun".to_string(), BOOT_SCENE.to_string())];
                 let plain = functor_runtime_common::functor_lang_producer::EntryRole::Prefix(String::new());
-                (boot, Some(plain))
+                (boot, Some(plain), None)
             } else {
-                (files, role)
+                (files, role, host.name)
             };
-            // Reported over the link once the load lands.
-            debug.loading_name = host.name;
             // Files the device lacks are asked of this host, if any (before
             // the load reads them).
             device_files.begin(host.session);
@@ -1356,12 +1352,15 @@ desktop runtime's --headless/--debug-port path"
             });
             match begun {
                 Ok((_, true)) => {
-                    if let Some((superseded, _)) = debug.pending_load.replace((response, landed)) {
+                    if let Some((superseded, ..)) = debug.pending_load.replace((response, landed, name)) {
                         let _ = superseded.send(Err("superseded by a newer /load-project".to_string()));
                     }
                 }
                 done => {
                     let result = launch(done.map(|(status, _)| status), session, sim, clock, debug, scene_context, passthrough, environment_depth);
+                    if result.is_ok() {
+                        link::set_project(name);
+                    }
                     let _ = response.send(result);
                 }
             }
@@ -2016,10 +2015,13 @@ pub fn android_main(app: AndroidApp) {
         if debug.pending_load.is_some() {
             sim.call(|g| g.poll_load());
         }
-        let landed = debug.pending_load.as_ref().and_then(|(_, landed)| landed.try_recv().ok());
+        let landed = debug.pending_load.as_ref().and_then(|(_, landed, _)| landed.try_recv().ok());
         if let Some(result) = landed {
             let result = launch(result, &session, &mut sim, &mut clock, &mut debug, &scene_context, &passthrough, &environment_depth);
-            if let Some((response, _)) = debug.pending_load.take() {
+            if let Some((response, _, name)) = debug.pending_load.take() {
+                if result.is_ok() {
+                    link::set_project(name);
+                }
                 let _ = response.send(result);
             }
         }

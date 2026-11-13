@@ -1394,10 +1394,15 @@ link the headset's loopback ports stay its own"
                 }
             }
         }
+        let hint = match linked {
+            true => "is the desktop app still running, and the tunnel its Devices card lists?",
+            false => {
+                "is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+            }
+        };
         if !ready {
             return Err(Error::other(format!(
-                "cannot reach the headset's debug endpoint (http://{addr} {via}) — \
-is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+                "cannot reach the headset's debug endpoint (http://{addr} {via}) — {hint}"
             )));
         }
         let version = probe_protocol_version(&addr);
@@ -1525,8 +1530,7 @@ project root, not from {}/",
         }
         let mut attempted = attempted.ok_or_else(|| {
             Error::other(format!(
-                "cannot reach the headset's reload endpoint (http://{addr} {via}) — \
-is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+                "cannot reach the headset's reload endpoint (http://{addr} {via}) — {hint}"
             ))
         })?;
         if let Some(hz) = refresh_rate {
@@ -2335,12 +2339,10 @@ fn take_device_url_arg(runner_args: &[String]) -> Result<(Option<String>, Vec<St
     let addr = value
         .map(|url| {
             let addr = url.strip_prefix("http://").unwrap_or("").trim_end_matches('/');
+            // An address, not a name: `localhost` may resolve to `::1` first.
             let loopback = addr
                 .parse::<std::net::SocketAddr>()
-                .is_ok_and(|a| a.ip().is_loopback())
-                || addr
-                    .strip_prefix("localhost:")
-                    .is_some_and(|port| port.parse::<u16>().is_ok());
+                .is_ok_and(|a| a.ip().is_loopback());
             match loopback {
                 true => Ok(addr.to_string()),
                 false => Err(Error::other(format!(
@@ -2453,19 +2455,12 @@ impl FileProxy {
 
     fn load_query(&self) -> String {
         match &self.entry_dir {
-            Some(dir) => {
-                // Percent-encoded, so any folder name fits the query.
-                let dir: String = dir
-                    .bytes()
-                    .map(
-                        |b| match b.is_ascii_alphanumeric() || b"._-~/".contains(&b) {
-                            true => (b as char).to_string(),
-                            false => format!("%{b:02X}"),
-                        },
-                    )
-                    .collect();
-                format!("&session={}&dir={dir}", self.session)
-            }
+            // Percent-encoded, so any folder name fits the query.
+            Some(dir) => format!(
+                "&session={}&dir={}",
+                self.session,
+                functor_runtime_common::debug_protocol::percent_encode(dir)
+            ),
             None => format!("&session={}", self.session),
         }
     }
@@ -2701,7 +2696,14 @@ fn post_project(
         functor_runtime_common::debug_protocol::encode_entry_role_query(role)
     );
     // Answered when the load lands, which a heavy one takes a while to do.
-    http_post_bytes(addr, &path, "application/json", files_json.as_bytes(), LOAD_TIMEOUT)
+    match http_post_bytes(addr, &path, "application/json", files_json.as_bytes(), LOAD_TIMEOUT)? {
+        // A device link's tunnel with the headset away or slow: not an
+        // answer from the runtime, so the push is retried like a lost cable.
+        (status @ 502..=504, body) => Err(Error::other(format!(
+            "the headset did not answer ({status}): {body}"
+        ))),
+        answer => Ok(answer),
+    }
 }
 
 /// How long a push waits for its load: the runtime's own reply limit.
@@ -3039,8 +3041,8 @@ mod tests {
             (Some("127.0.0.1:5123".into()), args(&["--x"]))
         );
         assert_eq!(
-            take(&["--device-url=http://localhost:9"]).unwrap().0,
-            Some("localhost:9".into())
+            take(&["--device-url=http://[::1]:9"]).unwrap().0,
+            Some("[::1]:9".into())
         );
         assert_eq!(take(&[]).unwrap(), (None, vec![]));
         for bad in [
@@ -3048,7 +3050,7 @@ mod tests {
             "https://127.0.0.1:1",
             "127.0.0.1:1",
             "http://127.0.0.1",
-            "http://localhost:x",
+            "http://localhost:9",
         ] {
             assert!(take(&["--device-url", bad]).is_err(), "{bad}");
         }

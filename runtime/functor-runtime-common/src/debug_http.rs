@@ -779,6 +779,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("POST", "/sync-assets") => {
+            *UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
                 content_length,
@@ -903,8 +904,6 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
     Some(())
 }
 
-/// `key=N` from a query (`None` when absent): `GET /frames`' `last`,
-/// `GET /input-log`'s `from`, `GET /state`'s `model`.
 /// An asset envelope arriving in parts (`POST /reload-asset?upload=…`).
 struct Upload {
     id: u64,
@@ -913,7 +912,8 @@ struct Upload {
 }
 
 /// One at a time per process, shared by its listeners (a headset has two):
-/// a part at offset 0 replaces an unfinished upload.
+/// a part at offset 0 replaces an unfinished upload, and a finished sync
+/// (`POST /sync-assets`) drops one.
 static UPLOAD: std::sync::Mutex<Option<Upload>> = std::sync::Mutex::new(None);
 
 /// The whole envelope `part` belongs to: `part` itself when `query` names no
@@ -940,7 +940,7 @@ fn upload_part(
         *slot = Some(Upload {
             id,
             total,
-            bytes: Vec::with_capacity(total),
+            bytes: Vec::new(),
         });
     }
     let Some(upload) = slot
@@ -957,6 +957,8 @@ fn upload_part(
     Ok(slot.take().map(|upload| upload.bytes))
 }
 
+/// `key=N` from a query (`None` when absent): `GET /frames`' `last`,
+/// `GET /input-log`'s `from`, `GET /state`'s `model`.
 fn query_number<T: std::str::FromStr>(query: &str, key: &str) -> Result<Option<T>, String> {
     query
         .split('&')

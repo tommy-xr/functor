@@ -340,7 +340,7 @@ fn canned(
             200,
             "application/json",
             serde_json::json!({
-                "service": "functor debug runtime (device stub)",
+                "service": "functor debug runtime",
                 "protocol_version": STUB_PROTOCOL,
             })
             .to_string(),
