@@ -377,6 +377,42 @@ fn cli_task_with_a_failed_run_exits_1() {
     );
 }
 
+/// `--max-input` stops a run past its budget, and `--metrics` says so.
+#[cfg(unix)]
+#[test]
+fn cli_task_over_its_input_budget_stops_and_writes_metrics() {
+    let repo = tree();
+    let home = tempfile::tempdir().unwrap();
+    let (functor, _requests) = stub::functor(home.path());
+    // Usage 10 lands, then the run would wait 30 s.
+    let fixture = home.path().join("budget.jsonl");
+    let lines = [
+        r#"{"ms":0,"event":{"type":"started","session":"s","model":"claude-model"}}"#,
+        r#"{"ms":0,"event":{"type":"tool_use","name":"mcp__mis__get_state","input":{}}}"#,
+        r#"{"ms":0,"event":{"type":"usage","input":10,"output":2}}"#,
+        r#"{"ms":30000,"event":{"type":"finished","ok":true,"summary":null}}"#,
+    ];
+    std::fs::write(&fixture, lines.join("\n")).unwrap();
+    let metrics = home.path().join("metrics.json");
+    let started = Instant::now();
+    let out = task_command(repo.path(), home.path(), &functor, &fixture, "hi")
+        .arg("--max-input=5")
+        .arg("--metrics")
+        .arg(&metrics)
+        .output()
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_secs(20), "not stopped");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let m: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+    assert_eq!(m["cut"], "over 5 input tokens");
+    assert_eq!(m["ended"], "stopped");
+    assert_eq!(m["input_tokens"], 10);
+    assert_eq!(m["tools"], serde_json::json!({"mcp__mis__get_state": 1}));
+    assert_eq!(m["calls"], serde_json::json!({"game": 1}));
+    assert_eq!(m["model"], "claude-model");
+    assert!(m["first_event_ms"].as_u64().unwrap() <= m["wall_ms"].as_u64().unwrap());
+}
+
 /// Runs a task through the CLI with `functor` as the tool server; checks
 /// its children exist mid-run and are gone after it exits 0.
 fn cli_task_leaves_no_children(functor: &Path) {
