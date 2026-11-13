@@ -111,12 +111,17 @@ export async function startGame(page, app, server) {
   const debugUrl = app.state.session.status.debug_url;
   await bar.getByRole("button", { name: "Play" }).click();
   await untilState(debugUrl, (s) => !s.clock.paused, "play");
+  // The page has seen it play (a click on the view now captures input); the
+  // pointer leaves the bar so no tip stays up.
+  await bar.getByRole("button", { name: "Pause" }).waitFor();
+  await page.mouse.move(0, 0);
   return { bar, view, debugUrl };
 }
 
-/** Clicks the bar's Extrapolate switch and waits for it to say `on`. */
+/** Sets the bar's Extrapolate switch to `on`. */
 export async function extrapolate(bar, on) {
   const button = bar.getByRole("button", { name: /^Extrapolate/ });
+  if ((await button.getAttribute("aria-pressed")) === String(on)) return;
   await button.click();
   await bar.locator(`.transport-extrapolate[aria-pressed="${on}"]`).waitFor();
 }

@@ -1,6 +1,6 @@
 // Reproducible capture of the landing page's lead GIF: the desktop app's
-// describe → edit → reload → see the path change → replay → keep loop, on
-// examples/platformer.
+// fall → pause and drag back → predicted path → describe → edit → reload →
+// the path changes → replay → keep loop, on examples/platformer.
 //
 // The app, the game and every click are real; three things are staged, and
 // named here. The project is a throwaway copy of the platformer whose jump is
