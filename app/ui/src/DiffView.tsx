@@ -21,7 +21,10 @@ export type DiffTarget = { path: string | null; seq: number };
  */
 const kept = new Map<number, { top: number; seq: number | null }>();
 
-/** The current task's change: its files, each unified diff, and Keep / Revert. */
+/**
+ * The current task's change: its files, each unified diff, and Keep / Revert.
+ * `bare`: without its header, inside a page that has its own.
+ */
 export function DiffView({
   state,
   task,
@@ -31,6 +34,7 @@ export function DiffView({
   online,
   notice,
   target,
+  bare = false,
 }: {
   state: AppState | null;
   task: Task | null;
@@ -40,6 +44,7 @@ export function DiffView({
   online: boolean;
   notice: Notice | null;
   target: DiffTarget | null;
+  bare?: boolean;
 }) {
   const tracked = state?.tracks_changes ?? false;
   const change = hasChange(task) ? task.change : null;
@@ -89,15 +94,17 @@ export function DiffView({
   const sum = totals(change);
   return (
     <div className="diff" data-testid="diff-view" ref={box} onScroll={(e) => (place(task.id).top = e.currentTarget.scrollTop)}>
-      <header className="diff-head">
-        <h2 className="eyebrow">Change</h2>
-        <span className="diff-total">
-          {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
-        </span>
-        <TaskBadge status={task.status} testid="diff-status" />
-        <span className="spacer" />
-        <ReviewActions task={task} send={send} online={online} notice={notice} />
-      </header>
+      {!bare && (
+        <header className="diff-head">
+          <h2 className="eyebrow">Change</h2>
+          <span className="diff-total">
+            {plural(sum.files, "file")} <Counts added={sum.added} removed={sum.removed} />
+          </span>
+          <TaskBadge status={task.status} testid="diff-status" />
+          <span className="spacer" />
+          <ReviewActions task={task} send={send} online={online} notice={notice} />
+        </header>
+      )}
       <nav className="diff-index" aria-label="Changed files">
         {change.files.map((f, i) => (
           <button

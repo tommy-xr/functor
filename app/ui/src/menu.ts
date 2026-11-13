@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
+/** The tab an arrow key, Home or End moves to from tab `i` of `n` (the ARIA tabs pattern), wrapping. */
+export function tabTarget(key: string, i: number, n: number): number | null {
+  return key === "ArrowRight" ? (i + 1) % n
+    : key === "ArrowLeft" ? (i - 1 + n) % n
+    : key === "Home" ? 0
+    : key === "End" ? n - 1
+    : null;
+}
+
 /**
  * A button-opened menu's behaviour, for a wrapper holding the button and the
  * `role=menu`: the first item focused on open, closed by a click outside or

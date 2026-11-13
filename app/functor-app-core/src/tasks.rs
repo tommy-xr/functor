@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::agent_view::WalkthroughStep;
 use crate::changes::Change;
+use crate::decision::Report;
 use crate::evidence::{Evidence, Moment};
 use crate::session::loopback_url;
 
@@ -69,6 +70,9 @@ pub struct Task {
     /// The predicted paths before and after `change` (D38).
     #[serde(default)]
     pub evidence: Option<Evidence>,
+    /// The last run's account of the change (D35), from its `present`.
+    #[serde(default)]
+    pub report: Option<Report>,
     /// When it was started: the shell's wall clock, ms since the Unix
     /// epoch. Last active: a message, a run's event or a review. Both absent
     /// from tasks saved before they were kept.
@@ -531,6 +535,7 @@ mod tests {
             reverting: false,
             moment: None,
             evidence: None,
+            report: None,
             created_at: None,
             updated_at: None,
             transcript: vec![Item::User {

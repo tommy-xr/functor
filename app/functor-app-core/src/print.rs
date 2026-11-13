@@ -762,6 +762,7 @@ recents: 2
                 reverting: false,
                 moment: None,
                 evidence: None,
+                report: None,
                 created_at: None,
                 updated_at: None,
                 transcript: transcript.clone(),

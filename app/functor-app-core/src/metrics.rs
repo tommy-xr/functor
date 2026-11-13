@@ -95,6 +95,7 @@ mod tests {
             baseline: None,
             moment: None,
             evidence: None,
+            report: None,
             change: None,
             reverting: false,
             created_at: None,

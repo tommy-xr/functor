@@ -7,6 +7,7 @@ pub mod activity;
 pub mod agent_view;
 pub mod changes;
 pub mod creation;
+pub mod decision;
 pub mod devices;
 pub mod evidence;
 pub mod folders;
