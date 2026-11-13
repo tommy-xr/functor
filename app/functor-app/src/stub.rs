@@ -1,9 +1,12 @@
 //! `functor-app device-stub`: the device role of the device link, for tests
 //! and for driving the Devices pane without a headset. It pairs (printing
-//! its code), links with the secret it stored, answers `GET /` and
-//! `GET /state` from a canned table, sends heartbeats, and can be told to
-//! misbehave. One line per event on stdout: `code 482913`, `paired <desktop>`,
-//! `linked <desktop>`, `request GET /state`, `rejected <why>`, `ended <why>`.
+//! its code), links with the secret it stored, answers the debug routes
+//! `functor run vr` pushes through (`GET /`, `GET /state` and the pushes)
+//! from a canned table, reporting the project a load names in its
+//! heartbeats, and can be told to misbehave. One line per event on stdout:
+//! `code 482913`, `paired <desktop>`, `linked <desktop>`, `request GET
+//! /state` (with a body's size: `request POST /reload-asset 1024`),
+//! `rejected <why>`, `ended <why>`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -91,6 +94,10 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
         return std::process::ExitCode::FAILURE;
     };
     tokio::pin!(signal);
+    // Kept across links, as a headset's runtime keeps running.
+    let mut runtime = Runtime {
+        project: Some("examples/hello".to_string()),
+    };
     loop {
         if args.wait_for_pairing {
             loop {
@@ -115,7 +122,7 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
             },
         };
         let result = tokio::select! {
-            r = session(&args, &mut stored, &addr) => r,
+            r = session(&args, &mut stored, &mut runtime, &addr) => r,
             _ = &mut signal => return std::process::ExitCode::SUCCESS,
         };
         // Waiting for pairings written from outside, the file is theirs.
@@ -135,8 +142,19 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
     }
 }
 
+/// What the stub's debug runtime holds.
+struct Runtime {
+    /// The project the last `/load-project` named (`examples/hello` before one).
+    project: Option<String>,
+}
+
 /// One connection; `Ok(true)` when it paired.
-async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<bool, String> {
+async fn session(
+    args: &StubArgs,
+    stored: &mut Stored,
+    runtime: &mut Runtime,
+    addr: &str,
+) -> Result<bool, String> {
     let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE));
     let url = format!("ws://{addr}{PATH}");
     let (mut ws, _) = tokio_tungstenite::connect_async_with_config(url, Some(config), true)
@@ -157,7 +175,7 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
         return another_version(args, &identity, &mut ws).await;
     }
     let (mut machine, first) = match &secret {
-        Some(secret) => Device::link(&identity, secret, status(args), entropy, now),
+        Some(secret) => Device::link(&identity, secret, status(args, runtime), entropy, now),
         None => Device::pair(&identity, entropy, now),
     };
     for msg in first.send {
@@ -180,7 +198,8 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
                 Some(Err(e)) => return Err(e.to_string()),
             },
             _ = heartbeat.tick(), if machine.linked() && !silent => {
-                let msgs = machine.send(&Frame::Status(status(args))).map_err(|e| e.to_string())?;
+                let status = Frame::Status(status(args, runtime));
+                let msgs = machine.send(&status).map_err(|e| e.to_string())?;
                 functor_device_link::Output { send: msgs, ..Default::default() }
             }
             _ = tick.tick(), if !silent => match machine.check(now_ms()) {
@@ -233,9 +252,12 @@ async fn session(args: &StubArgs, stored: &mut Stored, addr: &str) -> Result<boo
                     }
                 }
                 device::Event::Request(r) => {
-                    say(&format!("request {} {}", r.method, r.target));
+                    match r.body.len() {
+                        0 => say(&format!("request {} {}", r.method, r.target)),
+                        n => say(&format!("request {} {} {n}", r.method, r.target)),
+                    }
                     served += 1;
-                    let response = canned(r.id, &r.method, &r.target, &args.name, served);
+                    let response = canned(r.id, &r.method, &r.target, &args.name, served, runtime);
                     for msg in machine.respond(response).map_err(|e| e.to_string())? {
                         ws.send(Message::Binary(msg.into()))
                             .await
@@ -289,28 +311,55 @@ async fn another_version(
     }
 }
 
-fn status(args: &StubArgs) -> Status {
+fn status(args: &StubArgs, runtime: &Runtime) -> Status {
     Status {
         battery: Some(80),
         charging: false,
         build: format!("stub-{}", args.app_version),
-        project: Some("examples/hello".to_string()),
+        project: runtime.project.clone(),
     }
 }
 
-/// The debug runtime's two simplest routes, canned.
-fn canned(id: u32, method: &str, target: &str, name: &str, served: u64) -> Response {
-    let (status, kind, body) = match (method, target) {
+/// The debug protocol the stub claims: `functor run vr` pushes through the
+/// link only to one that takes assets in parts.
+const STUB_PROTOCOL: u32 = 40;
+
+/// The debug runtime's simplest routes and the pushes, canned: every push
+/// is taken; a load sets the project its `name=` names.
+fn canned(
+    id: u32,
+    method: &str,
+    target: &str,
+    name: &str,
+    served: u64,
+    runtime: &mut Runtime,
+) -> Response {
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    let (status, kind, body) = match (method, path) {
         ("GET", "/") => (
             200,
-            "text/plain",
-            "functor debug runtime (device stub)\n".to_string(),
+            "application/json",
+            serde_json::json!({
+                "service": "functor debug runtime (device stub)",
+                "protocol_version": STUB_PROTOCOL,
+            })
+            .to_string(),
         ),
         ("GET", "/state") => (
             200,
             "application/json",
             serde_json::json!({ "stub": true, "name": name, "served": served }).to_string(),
         ),
+        ("POST", "/load-project") => {
+            runtime.project = query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("name="))
+                .and_then(percent_decode);
+            (200, "text/plain", "loaded project".to_string())
+        }
+        ("POST", "/reload-project" | "/reload-asset" | "/sync-assets") => {
+            (200, "text/plain", "ok".to_string())
+        }
         _ => (404, "text/plain", "not found\n".to_string()),
     };
     Response {
@@ -319,6 +368,22 @@ fn canned(id: u32, method: &str, target: &str, name: &str, served: u64) -> Respo
         headers: vec![("content-type".into(), kind.into())],
         body: body.into_bytes(),
     }
+}
+
+/// `%XX` escapes decoded; `None` for a bad one or a name that is not UTF-8.
+fn percent_decode(value: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(value.len());
+    let mut bytes = value.bytes();
+    while let Some(b) = bytes.next() {
+        out.push(match b {
+            b'%' => {
+                let hex = [bytes.next()?, bytes.next()?];
+                u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?
+            }
+            b => b,
+        });
+    }
+    String::from_utf8(out).ok()
 }
 
 /// A desktop's link address by mDNS, preferring `desktop` (its id).

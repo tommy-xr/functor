@@ -21,6 +21,15 @@ use jni::{jni_sig, jni_str, JValue};
 /// The pairing file's name in the app's internal storage.
 pub const STORE: &str = "device-link.json";
 
+/// The running project's name, as its `/load-project` declared it; the
+/// heartbeat reports it.
+static PROJECT: Mutex<Option<String>> = Mutex::new(None);
+
+/// A load landed: `name` (`None` for none declared, or the boot scene).
+pub fn set_project(name: Option<String>) {
+    *PROJECT.lock().unwrap() = name;
+}
+
 struct QuestHost {
     build: String,
     multicast: Mutex<Option<Global<JObject<'static>>>>,
@@ -36,8 +45,7 @@ impl Host for QuestHost {
                 .and_then(|pct| u8::try_from(pct.clamp(0, 100)).ok()),
             charging: battery.is_some_and(|b| b.status == "charging"),
             build: self.build.clone(),
-            // The device is not told which project it runs yet.
-            project: None,
+            project: PROJECT.lock().unwrap().clone(),
         }
     }
 

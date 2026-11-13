@@ -1126,14 +1126,17 @@ machine's mounts, which `run vr` sends to the headset",
         if matches!(environment, Environment::Vr) {
             let (refresh_rate, runner_args) = take_refresh_rate_arg(runner_args)?;
             let (limits, runner_args) = take_push_limit_args(&runner_args)?;
+            let (device, runner_args) = take_device_url_arg(&runner_args)?;
             if !runner_args.is_empty() {
                 emit(Event::Warning {
-                    message: "runner args are ignored on vr except --refresh-rate, --max-file-mb \
-and --max-push-mb (they configure the desktop runtime)"
+                    message: "runner args are ignored on vr except --refresh-rate, --max-file-mb, \
+--max-push-mb and --device-url (they configure the desktop runtime)"
                         .to_string(),
                 });
             }
-            return self.run_vr(working_directory, refresh_rate, limits).await;
+            return self
+                .run_vr(working_directory, refresh_rate, limits, device)
+                .await;
         }
         if matches!(environment, Environment::Wasm) {
             return self.run_wasm(working_directory, runner_args, develop).await;
@@ -1276,34 +1279,9 @@ with --debug-port (and --debug-bind 0.0.0.0 if remote)?"
         }
     }
 
-    /// `run vr` / `develop vr`: run the game on an adb-attached headset
-    /// running the functor VR runtime (a tool APK built once — see
-    /// runtime/functor-runtime-oculus/README.md). One command: launch the
-    /// app, forward the push port, push the whole project, then keep
-    /// watching and re-pushing on save (hot reload is built in, like
-    /// native — `run` and `develop` are the same here too), streaming the
-    /// headset's runtime log into this terminal. `refresh_rate` (Hz) is
-    /// requested once, after the initial load.
-    async fn run_vr(
-        &self,
-        working_directory: &str,
-        refresh_rate: Option<f32>,
-        limits: PushLimits,
-    ) -> Result<(), Error> {
-        let entry_path = self.entry_path(working_directory)?;
-        let project_root = Path::new(working_directory);
-        // The device has no command line: every push DECLARES this entry's
-        // same-file role, so the APK's producer resolves the same contract
-        // `run native` and `run wasm` do (and re-resolves it on each re-push).
-        let role = self.entry_role();
-        let externals = self.externals(working_directory)?;
-        let external = self.external_dirs(&externals);
-        // Refuse an over-cap project before touching the device (the
-        // readiness probe below clears its uploads).
-        let scan = project_asset_files(project_root, &external)?;
-        let mut escaped = Vec::new();
-        warn_escaped_links(&scan.escaped, &mut escaped);
-        check_push_limits(&scan.files, limits)?;
+    /// `run vr` over the cable: launch the app, forward its debug port and
+    /// declared `reverse` ports, stream its log. The forwarded address.
+    async fn adb_vr(&self) -> Result<String, Error> {
         let serial = adb_device().await?;
         adb_require_runtime(&serial).await?;
         // `am start` on the running singleTask activity is a no-op resume —
@@ -1330,32 +1308,109 @@ connected (`adb devices`) and the port free on it? (`adb reverse --list` shows e
             });
         }
         spawn_logcat(&serial);
-        let addr = format!("127.0.0.1:{VR_PORT}");
+        Ok(format!("127.0.0.1:{VR_PORT}"))
+    }
+
+    /// `run vr` / `develop vr`: run the game on an adb-attached headset
+    /// running the functor VR runtime (a tool APK built once — see
+    /// runtime/functor-runtime-oculus/README.md). One command: launch the
+    /// app, forward the push port, push the whole project, then keep
+    /// watching and re-pushing on save (hot reload is built in, like
+    /// native — `run` and `develop` are the same here too), streaming the
+    /// headset's runtime log into this terminal. `refresh_rate` (Hz) is
+    /// requested once, after the initial load.
+    ///
+    /// With `device` (`--device-url`: a paired headset's tunnel in the
+    /// desktop app, `http://127.0.0.1:<port>`), everything goes through the
+    /// device link instead and adb is never run: no launch, forward,
+    /// `reverse` or log.
+    async fn run_vr(
+        &self,
+        working_directory: &str,
+        refresh_rate: Option<f32>,
+        limits: PushLimits,
+        device: Option<String>,
+    ) -> Result<(), Error> {
+        let entry_path = self.entry_path(working_directory)?;
+        let project_root = Path::new(working_directory);
+        // The device has no command line: every push DECLARES this entry's
+        // same-file role, so the APK's producer resolves the same contract
+        // `run native` and `run wasm` do (and re-resolves it on each re-push).
+        let role = self.entry_role();
+        let externals = self.externals(working_directory)?;
+        let external = self.external_dirs(&externals);
+        // Refuse an over-cap project before touching the device (the
+        // readiness probe below clears its uploads).
+        let scan = project_asset_files(project_root, &external)?;
+        let mut escaped = Vec::new();
+        warn_escaped_links(&scan.escaped, &mut escaped);
+        check_push_limits(&scan.files, limits)?;
+        let linked = device.is_some();
+        let (addr, via) = match device {
+            Some(addr) => (addr, "through the device link"),
+            None => (self.adb_vr().await?, "via adb forward"),
+        };
+        if linked && !self.reverse.is_empty() {
+            emit(Event::Warning {
+                message: "functor.json `reverse` needs the cable (`adb reverse`): over the device \
+link the headset's loopback ports stay its own"
+                    .to_string(),
+            });
+        }
 
         // Wait for the cold app to bind its endpoint, clearing any previous
         // project's upload manifest in the same round trip. Assets land
         // BEFORE the new game starts, so its first Sub.assets snapshot cannot
         // observe transient "missing on Android" failures. 30 s: a first
         // launch right after an APK install can take over 10 s to bind.
+        // Through the link, a headset that is away (502/503/504) is waited
+        // for as long as it takes.
         let mut ready = false;
-        for _ in 0..60 {
+        let mut tries = 0;
+        let mut told = false;
+        while tries < 60 {
             match post_asset_manifest(&addr, &[]) {
                 Ok((200, _)) => {
                     ready = true;
                     break;
+                }
+                Ok((502..=504, _)) if linked => {
+                    if !told {
+                        emit(Event::Info {
+                            message: "waiting for the headset to link (Ctrl-C to stop)".into(),
+                        });
+                        told = true;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
                 Ok((status, body)) => {
                     return Err(Error::other(format!(
                         "asset sync rejected ({status}): {body}"
                     )))
                 }
-                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+                Err(_) => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await
+                }
             }
         }
         if !ready {
             return Err(Error::other(format!(
-                "cannot reach the headset's debug endpoint (http://{addr} via adb forward) — \
+                "cannot reach the headset's debug endpoint (http://{addr} {via}) — \
 is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
+            )));
+        }
+        let version = probe_protocol_version(&addr);
+        // Through the link, an asset must fit a frame: parts need v40. A
+        // v40 headset also learns the project's name.
+        let parts = version.is_some_and(|v| v >= ASSET_PARTS_PROTOCOL_VERSION);
+        if linked && !parts {
+            return Err(Error::other(format!(
+                "the headset's functor runtime speaks debug protocol v{}; running over the device \
+link needs v{ASSET_PARTS_PROTOCOL_VERSION} — update the Functor app on the headset (over the \
+cable: npm run build:oculus:apk && adb install -r \
+target-android/debug/apk/functor_runtime_oculus.apk)",
+                version.unwrap_or(0)
             )));
         }
 
@@ -1366,7 +1421,6 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
         // plain contract runs on any of them.
         use functor_runtime_common::functor_lang_producer::EntryRole;
         if !matches!(&role, EntryRole::Prefix(prefix) if prefix.is_empty()) {
-            let version = probe_protocol_version(&addr);
             if version.is_some_and(|version| version < ENTRY_ROLE_PROTOCOL_VERSION) {
                 return Err(Error::other(format!(
                     "the headset's functor runtime is too old for an entry role (it speaks debug \
@@ -1385,7 +1439,7 @@ target-android/debug/apk/functor_runtime_oculus.apk), or run this role with `run
             true => project_files::Mounts::default(),
             false => project_files::Mounts::load(&self.mounts)?,
         };
-        let mut proxy = match probe_protocol_version(&addr) {
+        let mut proxy = match version {
             Some(version) if version >= FILE_PROXY_PROTOCOL_VERSION => Some(FileProxy::new(
                 project_files::Resolver::load(
                     entry_path.parent().unwrap_or(project_root),
@@ -1424,10 +1478,14 @@ project root, not from {}/",
                 ),
             });
         }
-        let load_query = proxy.as_ref().map_or(String::new(), FileProxy::load_query);
+        let mut load_query = proxy.as_ref().map_or(String::new(), FileProxy::load_query);
+        // The headset reports it over its device link.
+        if parts {
+            load_query.push_str(&project_name_query(project_root));
+        }
 
         let mut attempted_assets = scan.files;
-        let report = sync_project_assets(&addr, &attempted_assets, None)?;
+        let report = sync_project_assets(&addr, &attempted_assets, None, parts)?;
         let mut observed_assets = attempted_assets.clone();
         emit(Event::Info {
             message: format!(
@@ -1467,7 +1525,7 @@ project root, not from {}/",
         }
         let mut attempted = attempted.ok_or_else(|| {
             Error::other(format!(
-                "cannot reach the headset's reload endpoint (http://{addr} via adb forward) — \
+                "cannot reach the headset's reload endpoint (http://{addr} {via}) — \
 is the functor VR runtime running? (`adb logcat -s functor` for its startup log)"
             ))
         })?;
@@ -1483,6 +1541,9 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 }
             }
         }
+        // The same line a native runtime's debug server prints, so a desktop
+        // app that launched this run polls and drives the headset there.
+        eprintln!("[debug-server] listening on http://{addr}");
         emit(Event::Info {
             message: format!(
                 "watching {} + siblings + project assets — edit and save to hot-reload on the headset \
@@ -1554,7 +1615,7 @@ is the functor VR runtime running? (`adb logcat -s functor` for its startup log)
                 continue;
             }
             if current_assets != attempted_assets {
-                match sync_project_assets(&addr, &current_assets, Some(&attempted_assets)) {
+                match sync_project_assets(&addr, &current_assets, Some(&attempted_assets), parts) {
                     Ok(report) => {
                         emit(Event::Info {
                             message: format!(
@@ -2169,6 +2230,7 @@ fn sync_project_assets(
     addr: &str,
     current: &[ProjectAssetFile],
     previous: Option<&[ProjectAssetFile]>,
+    parts: bool,
 ) -> Result<AssetSyncReport, Error> {
     let mut report = AssetSyncReport::default();
     for asset in current {
@@ -2186,13 +2248,7 @@ fn sync_project_assets(
         let body =
             functor_runtime_common::debug_protocol::encode_project_asset(&asset.locator, &bytes)
                 .map_err(Error::other)?;
-        let (status, response) = http_post_bytes(
-            addr,
-            "/reload-asset",
-            "application/octet-stream",
-            &body,
-            std::time::Duration::from_secs(30),
-        )?;
+        let (status, response) = post_asset(addr, &body, parts)?;
         if status != 200 {
             return Err(Error::other(format!(
                 "asset {} rejected ({status}): {response}",
@@ -2211,6 +2267,90 @@ fn sync_project_assets(
         )));
     }
     Ok(report)
+}
+
+/// The debug protocol that takes `/reload-asset` in parts and a load's `name`.
+const ASSET_PARTS_PROTOCOL_VERSION: u64 = 40;
+
+/// Largest `/reload-asset` body sent at once: half a device link's 16 MiB
+/// frame, so an envelope part always fits one.
+const ASSET_PART_BYTES: usize = 8 * 1024 * 1024;
+
+/// `POST /reload-asset` with one asset envelope; with `parts`, one larger
+/// than [`ASSET_PART_BYTES`] goes in order in parts of that size. The last
+/// answer.
+fn post_asset(addr: &str, envelope: &[u8], parts: bool) -> Result<(u16, String), Error> {
+    let post = |path: &str, body: &[u8]| {
+        let timeout = std::time::Duration::from_secs(30);
+        http_post_bytes(addr, path, "application/octet-stream", body, timeout)
+    };
+    if !parts || envelope.len() <= ASSET_PART_BYTES {
+        return post("/reload-asset", envelope);
+    }
+    // Unique enough: one upload at a time per runtime, and a stale one is
+    // replaced by the next part at offset 0.
+    let id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64)
+        ^ u64::from(std::process::id());
+    let total = envelope.len();
+    let mut answer = (0, String::new());
+    for (i, part) in envelope.chunks(ASSET_PART_BYTES).enumerate() {
+        let offset = i * ASSET_PART_BYTES;
+        answer = post(
+            &format!("/reload-asset?upload={id}&offset={offset}&total={total}"),
+            part,
+        )?;
+        if answer.0 != 200 {
+            break;
+        }
+    }
+    Ok(answer)
+}
+
+/// `&name=<the project folder's name>` for `/load-project`.
+fn project_name_query(root: &Path) -> String {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let name: String = root
+        .file_name()
+        .map(|n| n.to_string_lossy().chars().filter(|c| !c.is_control()).collect())
+        .unwrap_or_default();
+    let mut end = name.len().min(functor_runtime_common::debug_protocol::MAX_PROJECT_NAME_BYTES);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    match &name[..end] {
+        "" => String::new(),
+        name => format!(
+            "&name={}",
+            functor_runtime_common::debug_protocol::percent_encode(name)
+        ),
+    }
+}
+
+/// Pull `--device-url <url>` out of `run vr`'s trailing args: a paired
+/// headset's tunnel in the desktop app, on loopback. The `host:port`.
+fn take_device_url_arg(runner_args: &[String]) -> Result<(Option<String>, Vec<String>), Error> {
+    let (value, rest) = crate::take_flag_arg(runner_args, "--device-url")?;
+    let addr = value
+        .map(|url| {
+            let addr = url.strip_prefix("http://").unwrap_or("").trim_end_matches('/');
+            let loopback = addr
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|a| a.ip().is_loopback())
+                || addr
+                    .strip_prefix("localhost:")
+                    .is_some_and(|port| port.parse::<u16>().is_ok());
+            match loopback {
+                true => Ok(addr.to_string()),
+                false => Err(Error::other(format!(
+                    "--device-url expects a headset's tunnel on this machine, \
+http://127.0.0.1:<port> (got `{url}`)"
+                ))),
+            }
+        })
+        .transpose()?;
+    Ok((addr, rest))
 }
 
 fn post_asset_manifest(addr: &str, paths: &[&str]) -> Result<(u16, String), Error> {
@@ -2889,6 +3029,92 @@ pub(crate) fn check_printable(binding: &str, mesh: &functor_solid::Mesh) -> Resu
 
 #[cfg(test)]
 mod tests {
+    /// `--device-url` names a tunnel on this machine, nothing else.
+    #[test]
+    fn device_url_arg_is_a_loopback_tunnel() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let take = |list: &[&str]| super::take_device_url_arg(&args(list));
+        assert_eq!(
+            take(&["--device-url", "http://127.0.0.1:5123/", "--x"]).unwrap(),
+            (Some("127.0.0.1:5123".into()), args(&["--x"]))
+        );
+        assert_eq!(
+            take(&["--device-url=http://localhost:9"]).unwrap().0,
+            Some("localhost:9".into())
+        );
+        assert_eq!(take(&[]).unwrap(), (None, vec![]));
+        for bad in [
+            "http://192.168.1.4:8123",
+            "https://127.0.0.1:1",
+            "127.0.0.1:1",
+            "http://127.0.0.1",
+            "http://localhost:x",
+        ] {
+            assert!(take(&["--device-url", bad]).is_err(), "{bad}");
+        }
+    }
+
+    /// The project folder's own name, escaped for the query.
+    #[test]
+    fn a_load_names_the_project_folder() {
+        let root = std::env::temp_dir().join(format!("functor-vr-name {}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let query = super::project_name_query(&root);
+        assert_eq!(
+            query,
+            format!("&name=functor-vr-name%20{}", std::process::id())
+        );
+        let (host, _) =
+            functor_runtime_common::debug_protocol::take_load_host(&query[1..]).unwrap();
+        assert_eq!(
+            host.name,
+            Some(format!("functor-vr-name {}", std::process::id()))
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An asset over a device link's frame goes in parts the runtime puts
+    /// back together; a small one, or one to a pre-v40 runtime, goes whole.
+    #[test]
+    fn a_large_asset_is_pushed_in_parts() {
+        use functor_runtime_common::debug_protocol::{
+            encode_project_asset, DebugRequest, MAX_ASSET_BYTES,
+        };
+        let (bound, rx) = functor_runtime_common::debug_http::spawn(("127.0.0.1", 0)).unwrap();
+        let (got, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for request in rx {
+                match request {
+                    DebugRequest::ReloadAsset(asset, response) => {
+                        let _ = got.send(asset);
+                        let _ = response.send(Ok("reloaded".into()));
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            }
+        });
+        let addr = bound.to_string();
+        let bytes: Vec<u8> = (0..super::ASSET_PART_BYTES * 2 + 5)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        assert!(bytes.len() < MAX_ASSET_BYTES);
+        let envelope = encode_project_asset("models/big.glb", &bytes).unwrap();
+        assert_eq!(
+            super::post_asset(&addr, &envelope, true).unwrap(),
+            (200, "reloaded".into())
+        );
+        let asset = received.recv().unwrap();
+        assert_eq!(asset.path, "models/big.glb");
+        assert!(asset.bytes == bytes, "the parts make the whole file");
+        assert!(received.try_recv().is_err(), "one upload");
+
+        let small = encode_project_asset("a.png", &[1, 2, 3]).unwrap();
+        for parts in [true, false] {
+            assert_eq!(super::post_asset(&addr, &small, parts).unwrap().0, 200);
+            assert_eq!(received.recv().unwrap().bytes, vec![1, 2, 3]);
+        }
+    }
+
     #[test]
     fn refresh_rate_arg_is_extracted_in_both_forms_and_validated() {
         let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();

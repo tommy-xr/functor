@@ -886,6 +886,8 @@ struct DebugLoopState {
     /// The `/load-project` waiting on a load job, and where its status
     /// arrives: answered when it lands.
     pending_load: Option<(mpsc::Sender<Result<String, String>>, mpsc::Receiver<Result<String, String>>)>,
+    /// The name the last `/load-project` declared, until it lands.
+    loading_name: Option<String>,
     /// Pushed reloads, for the head-locked indicator and `/state.reload`.
     reload: ReloadIndicator,
     /// Why `Xr.streamCamera`'s camera is not open, while wanted.
@@ -989,6 +991,7 @@ fn launch(
     // any frame.
     sim.queue_terrain_requests(scene_context);
     if result.is_ok() {
+        link::set_project(debug.loading_name.take());
         clock.restart();
         debug.frame_count = 0;
         let config = sim.call(|g| g.config());
@@ -1316,9 +1319,24 @@ desktop runtime's --headless/--debug-port path"
             });
         }
         DebugRequest::LoadProject(files, role, host, response) => {
+            // An empty load unloads: the boot scene, under the plain
+            // contract, and no uploads (a desktop app stopping the game here).
+            let (files, role) = if files.is_empty() {
+                let removed = asset_cache.retain_uploaded(&HashSet::new());
+                for path in &removed {
+                    scene_context.evict_asset(path);
+                }
+                let boot = vec![("boot.fun".to_string(), BOOT_SCENE.to_string())];
+                let plain = functor_runtime_common::functor_lang_producer::EntryRole::Prefix(String::new());
+                (boot, Some(plain))
+            } else {
+                (files, role)
+            };
+            // Reported over the link once the load lands.
+            debug.loading_name = host.name;
             // Files the device lacks are asked of this host, if any (before
             // the load reads them).
-            device_files.begin(host);
+            device_files.begin(host.session);
             // The load job evaluates off the frame: the loading screen draws
             // until it lands, and the request is answered then.
             let (done, landed) = mpsc::channel();
