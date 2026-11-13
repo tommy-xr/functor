@@ -129,13 +129,10 @@ answer within 5 s, or no app at all is a tool error.
 
 `--review <brief>` (with `--app-url`; not with `--attach`) serves a
 **review**: a separate agent that reads a change and writes the report the
-user decides from. Its tools are read-only: `language_guide`,
-`api_reference`, and the game tools for games it launches itself
-(`launch_game`, `list_sessions`, `stop_game`, `get_state`, `get_scene`,
-`capture_frame`, `step`, `send_input`, `resume`, `pause`). Nothing that
-writes project files (`save_project`, `init_game`, the reloads), attaches to
-another game (`connect_game`), runs code or shows views is listed or callable.
-Two tools of its own, both loaded up front:
+user decides from. Besides `language_guide` and `api_reference` it has no
+other tool: nothing that writes project files, runs a game (launching one
+can rewrite a stale generated `assets.fun`) or code, or shows views is
+listed or callable. Two tools of its own, both loaded up front:
 
 | Tool | What it does |
 | --- | --- |
