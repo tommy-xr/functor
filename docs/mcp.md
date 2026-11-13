@@ -75,6 +75,10 @@ FUNCTOR_MCP_TOKEN=$(openssl rand -hex 32) functor mcp --http 0 --attach http://1
 - **`Host` check.** Requests whose `Host` is not loopback (`localhost`,
   `127.0.0.1`, `::1`) get `403` from `/mcp`, against DNS rebinding.
 - **Sessions are shared.** Every MCP connection sees the same game sessions.
+- **Common tools load up front.** `app_context`, `get_state`, `step`,
+  `resume`, `send_input`, `capture_frame`, `language_guide`, `api_reference`,
+  `show_view` and `present` carry `_meta: {"anthropic/alwaysLoad": true}`, so
+  Claude Code offers them without a tool-search turn; other clients ignore it.
 - **Lifecycle.** The server stops on SIGINT/SIGTERM (Ctrl-C on Windows) or when
   its **stdin reaches EOF** — the convention for a child, which works on every
   OS: the host must pipe stdin and hold it open, and closes it (or dies) to stop
