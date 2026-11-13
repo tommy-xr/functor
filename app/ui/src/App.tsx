@@ -5,13 +5,13 @@ import { ChatDock } from "./Chat";
 import { DevicesPane, PairPrompt } from "./Devices";
 import { autoOpen, mayOpen, WORDS } from "./devices-model";
 import { basename, pickHarness } from "./chat-model";
-import { FolderActions, NoProject, type FolderProps } from "./Folders";
+import { NoProject, ProjectPicker, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
 import { focusedPane, isTyping, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
-import { TransportContext, useTransport } from "./TransportBar";
+import { TransportContext } from "./TransportBar";
 import { choiceKey, chosenTask, currentTask, needsYou } from "./tasks-model";
 
 
@@ -267,7 +267,7 @@ function activeProject(state: AppState | null) {
   return state?.projects.find((p) => p.path === state.active) ?? null;
 }
 
-/** One word for the session, as the title bar and session card show it. */
+/** One word for the session, as the title bar shows it. */
 function sessionWord(session: Session | null | undefined): string {
   return session?.status.kind ?? "stopped";
 }
@@ -365,51 +365,17 @@ function Rail({ view, onSelect, waiting }: { view: View; onSelect: (v: View) => 
 
 function ExplorerPane(props: FolderProps) {
   const { state, online, send } = props;
-  const projects = state?.projects ?? [];
-  const where = state?.git ? "repo" : "folder";
-  const session = state?.session;
-  const status = session?.status;
-  const { transport } = useTransport();
-  const frame = status?.kind === "running" ? (transport?.frame ?? null) : null;
-  const reason = status?.kind === "failed" || status?.kind === "exited" ? status.reason : null;
   const openFile = (path: string, side: boolean) =>
     send({ type: "layout", op: { type: "open", view: { kind: "file", path }, target: { kind: side ? "side" : "focused" } } });
   return (
-    <aside className="pane" aria-label="Explorer">
+    <aside className="pane explorer" aria-label="Explorer">
+      <ProjectPicker {...props} />
       <section className="stack">
-        <label className="eyebrow" htmlFor="project-switcher">
-          Project
-        </label>
-        <div className="switcher">
-          <select
-            id="project-switcher"
-            value={state?.active ?? ""}
-            disabled={!online || projects.length === 0}
-            onChange={(e) => send({ type: "set_active_project", path: e.target.value })}
-          >
-            {projects.map((p) => (
-              <option key={p.path} value={p.path}>
-                {/* The folder itself: its name, not `.`. */}
-                {p.path === "." ? p.name : p.path}
-              </option>
-            ))}
-          </select>
-          <Icon name="chevron" />
-        </div>
-        {state && (
-          <p className="hint">
-            {!state.folder
-              ? "No folder open"
-              : projects.length === 0
-                ? `No projects in this ${where}`
-                : projects.length === 1
-                  ? `The only project in this ${where}`
-                  : `One of ${projects.length} projects in this ${where}`}
-          </p>
-        )}
-        <FolderActions {...props} />
+        <h2 id="files-heading" className="files-heading">
+          Files
+        </h2>
         {/* A click opens the file in the focused pane; Alt-click or the side button, beside it. */}
-        <ul className="files" aria-label="Files">
+        <ul className="files" aria-labelledby="files-heading">
           {(state?.files ?? []).map((f) => (
             <li key={f} className={f.endsWith(".fun") ? undefined : "dim"}>
               <button
@@ -434,24 +400,6 @@ function ExplorerPane(props: FolderProps) {
             </li>
           ))}
         </ul>
-      </section>
-      <section className="card" aria-labelledby="session-heading">
-        <h2 id="session-heading" className="eyebrow">
-          Session
-        </h2>
-        <dl className="rows">
-          <div>
-            <dt>Status</dt>
-            <dd data-testid="session-status">{sessionWord(session)}</dd>
-          </div>
-          <div>
-            <dt>Frame</dt>
-            <dd className="mono" data-testid="session-frame">
-              {frame ?? "—"}
-            </dd>
-          </div>
-        </dl>
-        {reason && <p className="reason">{reason}</p>}
       </section>
     </aside>
   );

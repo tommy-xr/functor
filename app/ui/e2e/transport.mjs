@@ -90,7 +90,7 @@ async function noGpu(browser) {
     await expect(bar.getByRole("button", { name: "Pause" })).toBeVisible();
     const first = await shown(bar);
     await expect.poll(() => shown(bar)).toBeGreaterThan(first + 10);
-    await expect(page.getByTestId("session-frame")).toHaveText(/^\d+$/);
+    await expect(bar.getByTestId("transport-frame")).toHaveText(/^\d+ \/ \d+$/);
 
     // Pause stops the session's frame, and says so on the game view.
     await bar.getByRole("button", { name: "Pause" }).click();
