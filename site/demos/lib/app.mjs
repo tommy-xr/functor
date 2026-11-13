@@ -98,15 +98,27 @@ export async function untilState(debugUrl, test, what, timeout = 20_000) {
   }
 }
 
-/** Opens the app, starts the project's game and resolves with its bar, view and debug server. */
+/**
+ * Opens the app (its game opens paused on frame 0), plays the game and
+ * resolves with its bar, view and debug server.
+ */
 export async function startGame(page, app, server) {
   await page.goto(server.url);
   const view = page.getByTestId("game-view");
-  await view.getByRole("button", { name: "Start game" }).click();
   const bar = page.getByRole("group", { name: "Transport" });
   await bar.waitFor({ timeout: 60_000 });
   await view.locator("img").waitFor({ timeout: 60_000 });
-  return { bar, view, debugUrl: app.state.session.status.debug_url };
+  const debugUrl = app.state.session.status.debug_url;
+  await bar.getByRole("button", { name: "Play" }).click();
+  await untilState(debugUrl, (s) => !s.clock.paused, "play");
+  return { bar, view, debugUrl };
+}
+
+/** Clicks the bar's Extrapolate switch and waits for it to say `on`. */
+export async function extrapolate(bar, on) {
+  const button = bar.getByRole("button", { name: /^Extrapolate/ });
+  await button.click();
+  await bar.locator(`.transport-extrapolate[aria-pressed="${on}"]`).waitFor();
 }
 
 /**
