@@ -266,9 +266,8 @@ async fn session(
                         n => say(&format!("request {} {} {n}", r.method, r.target)),
                     }
                     served += 1;
-                    let response = canned(
-                        r.id, &r.method, &r.target, &r.body, &args.name, served, runtime,
-                    );
+                    let response =
+                        canned(r.id, &r.method, &r.target, &r.body, &args.name, served, runtime);
                     for msg in machine.respond(response).map_err(|e| e.to_string())? {
                         ws.send(Message::Binary(msg.into()))
                             .await
