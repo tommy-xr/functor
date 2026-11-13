@@ -831,7 +831,11 @@ async fn run_vr_pushes_through_the_tunnel() {
     run.line("[debug-server] listening on");
     drop(run);
     let log = adb.path().join("adb.log");
-    assert!(!log.exists(), "adb ran: {:?}", std::fs::read_to_string(&log));
+    assert!(
+        !log.exists(),
+        "adb ran: {:?}",
+        std::fs::read_to_string(&log)
+    );
 
     // No tunnel named: adb, as before (here it lists no headset).
     let run = run_vr(&functor, &project, &[], adb.path());
@@ -1660,7 +1664,10 @@ async fn quest_runs_a_project_over_the_link() {
         serde_json::from_str(&body).unwrap()
     };
     let project_text = || state("/project").to_string();
-    assert!(project_text().contains("hello-cubes"), "the pushed game runs");
+    assert!(
+        project_text().contains("hello-cubes"),
+        "the pushed game runs"
+    );
     let first = state("/state?model=0");
     let (frames, steps) = (
         first["rendered_frames"].as_u64().unwrap(),
@@ -1702,6 +1709,11 @@ async fn quest_runs_a_project_over_the_link() {
         .await;
     app.devices_where("it is forgotten", |d| card_by_id(d, &id).is_none())
         .await;
+    // Its cable clean-up lands before the headset's file is put back.
+    until("the headset's pairing is gone", || {
+        quest.pairing_file().secret.is_none().then_some(())
+    })
+    .await;
 }
 
 /// The card for device `id`, if any.
