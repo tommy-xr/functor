@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
-use functor_app_core::{AgentEvent, Event, Harness, RunEvent, RunSpec};
+use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec};
 use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts};
 use mis_types::{PermissionMode, Permissions};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -81,6 +81,17 @@ pub fn permissions(repo_root: &Path) -> Permissions {
     }
 }
 
+/// What a review (D31) may do: read. It runs `mis-agent`'s read-only mode
+/// (`read_only` in its `RunOpts`) on [`permissions`]: what no rule allows is
+/// denied, the only rule is its MCP server's tools, and the user's own
+/// settings are not loaded, as their rules could allow writes; so, unlike a
+/// task's run, a review is isolated from them (D19). Reading files and
+/// read-only shell commands (`ls`, `git log`) still work. Claude only: that
+/// mode has no Codex equivalent (`review::review_harness`).
+pub fn review_permissions(repo_root: &Path) -> Permissions {
+    permissions(repo_root)
+}
+
 /// The prompt for `message`: a new agent session gets the [`PREAMBLE`],
 /// with the parts for whether it is `attached` to a game and has `views`.
 fn prompt(message: &str, resumed: bool, attached: bool, views: bool) -> String {
@@ -96,13 +107,63 @@ fn prompt(message: &str, resumed: bool, attached: bool, views: bool) -> String {
     format!("{PREAMBLE} {game}{views}\n\n{message}")
 }
 
+/// A review stops once it has read more input than this (cached tokens
+/// included), or run longer than [`REVIEW_MAX_TIME`]. Codex reports usage
+/// only at its end, so only the time bounds it.
+pub const REVIEW_MAX_INPUT: u64 = 300_000;
+pub const REVIEW_MAX_TIME: Duration = Duration::from_secs(180);
+/// The most of the diff a review's brief carries.
+const REVIEW_DIFF_BYTES: u64 = 48 * 1024;
+
+/// A review's instructions (D31), then the setting's own. The summary rules
+/// are those of ASD-STE100 that matter in one paragraph.
+const REVIEW_PREAMBLE: &str = "You prepare the decision page for a change that another \
+agent made in this Functor game project. The user reads your report, then keeps the change or \
+reverts it. You are read-only: do not try to edit files or run commands that change anything.
+
+1. Call `mcp__mis__task_change`. It gives the user's request, what the agent did, the change \
+with its diff, and the evidence the app has.
+2. Check what you can, with few tool calls. Read the changed code and the code it touches. Look \
+for mistakes, missed cases and side effects. Do not do the agent's work again.
+3. Call `mcp__mis__report` once, then stop.
+
+The summary is one paragraph in Simplified Technical English (ASD-STE100):
+- At most 20 words in each sentence, and at most 6 sentences.
+- Active voice. Simple present or simple past tense.
+- One word for one thing: use the same term each time. Write code names as in the code, in \
+backticks.
+- No idioms, no slang, no filler.
+- Give numbers with their units (2.5 m, 60 frames, 0.4 s).
+- Say what changed, what the effect in the game is, and what the user should check.
+
+`notes`: each is one concrete sentence the user must know before they keep the change: what \
+nobody verified, what was assumed, a side effect, a risk. Write `[]` only when you checked and \
+found nothing.
+
+`evidence`: the page keeps the checks in the agent's own report. Add only checks that really \
+ran and that report does not list, with their real result as `task_change` shows them (say they \
+are the agent's). Reading code is not evidence. Set `ok` false for a check that failed.
+
+`steps`: only when `task_change` says the agent gave no walkthrough: 1 to 4 highlights, each a \
+changed file range (`{\"kind\": \"file\", \"path\", \"lines\": [first, last]}`, the path relative \
+to this directory) with a short title.";
+
+/// The review's prompt: [`REVIEW_PREAMBLE`] and the setting's instructions.
+fn review_prompt(instructions: Option<&str>) -> String {
+    match instructions {
+        Some(more) => format!("{REVIEW_PREAMBLE}\n\nThe user's instructions for reviews:\n\n{more}"),
+        None => REVIEW_PREAMBLE.to_string(),
+    }
+}
+
 /// Which agent runs tasks.
 #[derive(Clone)]
 pub enum Agents {
     /// The task's harness, on `PATH`.
     Real,
-    /// [`FakeAgent`] replaying this fixture, whatever the harness.
-    Fake(PathBuf),
+    /// [`FakeAgent`] replaying `run` for each task's run and `review`, when
+    /// given, for each review; whatever the harness.
+    Fake { run: PathBuf, review: Option<PathBuf> },
 }
 
 impl Agents {
@@ -111,7 +172,7 @@ impl Agents {
     pub fn available(&self) -> Vec<Harness> {
         let all = [Harness::Claude, Harness::Codex];
         match self {
-            Self::Fake(_) => all.to_vec(),
+            Self::Fake { .. } => all.to_vec(),
             Self::Real => all
                 .into_iter()
                 .filter(|h| mis_agent::which(h.name()))
@@ -119,10 +180,18 @@ impl Agents {
         }
     }
 
-    fn get(&self, harness: Harness) -> Box<dyn Agent> {
+    /// Whether reviews can run: a fake agent needs a review fixture.
+    pub fn can_review(&self) -> bool {
+        !matches!(self, Self::Fake { review: None, .. })
+    }
+
+    fn get(&self, harness: Harness, review: bool) -> Box<dyn Agent> {
         match (self, harness) {
-            (Self::Fake(fixture), _) => Box::new(FakeAgent {
-                fixture: fixture.clone(),
+            (Self::Fake { run, review: fixture }, _) => Box::new(FakeAgent {
+                fixture: match (review, fixture) {
+                    (true, Some(fixture)) => fixture.clone(),
+                    _ => run.clone(),
+                },
             }),
             (Self::Real, Harness::Claude) => Box::new(mis_agent::claude::ClaudeAgent::default()),
             (Self::Real, Harness::Codex) => Box::new(mis_agent::codex::CodexAgent::default()),
@@ -137,6 +206,9 @@ pub struct Runner {
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
     live: HashMap<u64, Live>,
+    /// Per task, its review in flight: the run it reviews and its cancel,
+    /// fired (or dropped) to stop it.
+    reviews: HashMap<u64, (u64, oneshot::Sender<()>)>,
     views: Arc<ViewRoute>,
     /// Where a run keeps its task's moment (`store::moment_file`).
     home: PathBuf,
@@ -151,39 +223,52 @@ struct Live {
     context: watch::Sender<String>,
 }
 
-/// The app's `POST /agent/view` route: its URL once the server listens, and
-/// one secret per run with a tool server, each naming its task and run.
-/// A secret is removed when its run ends ([`RunSecret`]'s drop).
+/// Who a view request comes from: run `run` of task `task`, or its review.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caller {
+    pub task: u64,
+    pub run: u64,
+    pub review: bool,
+}
+
+/// The app's `POST /agent/view` route: its URL once the server listens
+/// (and whether only reviews get it), and one secret per run with a tool
+/// server, each naming its caller. A secret is removed when its run ends
+/// ([`RunSecret`]'s drop).
 #[derive(Default)]
 pub struct ViewRoute {
-    url: OnceLock<String>,
-    secrets: Mutex<Vec<(String, u64, u64)>>,
+    url: OnceLock<(String, bool)>,
+    secrets: Mutex<Vec<(String, Caller)>>,
 }
 
 impl ViewRoute {
-    /// The server listens at `origin`: runs started from now get the route.
-    pub fn listen(&self, origin: &str) {
-        let _ = self.url.set(format!("{origin}{VIEW_PATH}"));
+    /// The server listens at `origin`: runs started from now get the route,
+    /// or only reviews (`task`, whose runs show no views).
+    pub fn listen(&self, origin: &str, reviews_only: bool) {
+        let _ = self.url.set((format!("{origin}{VIEW_PATH}"), reviews_only));
     }
 
-    /// The run `presented` is the secret of, comparing each in constant time.
-    pub fn find(&self, presented: &[u8]) -> Option<(u64, u64)> {
+    /// The caller `presented` is the secret of, comparing each in constant time.
+    pub fn find(&self, presented: &[u8]) -> Option<Caller> {
         let secrets = self.secrets.lock().expect("view secrets poisoned");
         let mut found = None;
-        for (secret, task, run) in secrets.iter() {
+        for (secret, caller) in secrets.iter() {
             if crate::server::same(secret.as_bytes(), presented) {
-                found = Some((*task, *run));
+                found = Some(*caller);
             }
         }
         found
     }
 
-    /// A fresh secret for run `run` of `task`; `None` with no server to route to.
-    fn register(self: &Arc<Self>, task: u64, run: u64) -> Option<RunSecret> {
-        let url = self.url.get()?.clone();
+    /// A fresh secret for `caller`; `None` with no server to route to.
+    fn register(self: &Arc<Self>, caller: Caller) -> Option<RunSecret> {
+        let (url, reviews_only) = self.url.get()?.clone();
+        if reviews_only && !caller.review {
+            return None;
+        }
         let secret = token();
         let mut secrets = self.secrets.lock().expect("view secrets poisoned");
-        secrets.push((secret.clone(), task, run));
+        secrets.push((secret.clone(), caller));
         Some(RunSecret {
             route: self.clone(),
             secret,
@@ -221,8 +306,33 @@ impl Runner {
             git,
             events,
             live: HashMap::new(),
+            reviews: HashMap::new(),
             views,
             home,
+        }
+    }
+
+    /// Starts `spec`'s review, replacing any the task had.
+    pub fn start_review(&mut self, spec: ReviewSpec) {
+        let (cancel, cancelled) = oneshot::channel();
+        self.reviews.insert(spec.task, (spec.run, cancel));
+        tokio::spawn(run_review(
+            spec,
+            self.functor.clone(),
+            self.agents.clone(),
+            self.git.clone(),
+            self.events.clone(),
+            cancelled,
+            self.views.clone(),
+            self.home.clone(),
+        ));
+    }
+
+    /// Cancels task `task`'s review of run `run`. Not waited for: it edits
+    /// nothing, and stops its tool server and agent on its own.
+    pub fn stop_review(&mut self, task: u64, run: u64) {
+        if self.reviews.get(&task).is_some_and(|(r, _)| *r == run) {
+            self.reviews.remove(&task);
         }
     }
 
@@ -331,7 +441,12 @@ async fn run_task(
             _ = &mut cancel => return,
         }
     }
-    let secret = views.and_then(|v| v.register(spec.task, spec.run));
+    let caller = Caller {
+        task: spec.task,
+        run: spec.run,
+        review: false,
+    };
+    let secret = views.and_then(|v| v.register(caller));
     let run = run(
         &spec,
         &functor,
@@ -368,9 +483,10 @@ async fn run(
 ) -> Option<Option<String>> {
     let token = token();
     let app = secret.map(|s| (s.url.as_str(), s.secret.as_str()));
+    let args = tool_server_args(spec.attach.as_deref(), app.map(|(url, _)| url), None);
     // A cancel while starting drops the child's stdin, which stops it.
     let started = tokio::select! {
-        started = ToolServer::start(functor, &spec.dir, spec.attach.as_deref(), &token, app) => started,
+        started = ToolServer::start(functor, &spec.dir, &args, &token, app.map(|(_, s)| s)) => started,
         _ = &mut cancel => return None,
     };
     let server = match started {
@@ -414,30 +530,210 @@ async fn run(
         permissions: Some(&permissions),
         ..RunOpts::default()
     };
-    let agent = agents.get(spec.harness);
-    let outcome = match mis_agent::check(&permissions) {
-        Err(e) => Some(Some(e)),
-        Ok(()) => {
-            let (tx, mut rx) = mpsc::channel(64);
-            let run = run_guarded(&*agent, uuid::Uuid::new_v4(), &prompt, opts, tx);
-            let forward = async {
-                while let Some(event) = rx.recv().await {
-                    if let Some(event) = mirror(event) {
-                        send(RunEvent::Agent(redact(event, &mcp.token)));
-                    }
-                }
-            };
-            // Cancelling drops the run, and `mis-agent` kills the agent's
-            // process tree with it.
-            tokio::select! {
-                _ = futures_util::future::join(run, forward) => Some(None),
-                _ = &mut cancel => None,
-            }
-        }
-    };
+    let agent = agents.get(spec.harness, false);
+    let forward = |event: AgentEvent| send(RunEvent::Agent(event));
+    let outcome = drive(&*agent, &prompt, opts, &mcp.token, None, &forward, &mut cancel)
+        .await
+        .map(Result::err);
     drop(pusher);
     server.stop().await;
     outcome
+}
+
+/// Runs `agent` on `prompt`, each event it reports mirrored to `send`
+/// (the token blanked): `Some(Ok)` once it ends, `Some(Err)` if it could
+/// not start or was cut past `max_input` tokens, `None` if cancelled.
+/// Cancelling or cutting drops the run, and `mis-agent` kills the agent's
+/// process tree with it.
+async fn drive(
+    agent: &dyn Agent,
+    prompt: &str,
+    opts: RunOpts<'_>,
+    token: &str,
+    max_input: Option<u64>,
+    send: &impl Fn(AgentEvent),
+    cancel: &mut oneshot::Receiver<()>,
+) -> Option<Result<(), String>> {
+    if let Some(permissions) = opts.permissions {
+        if let Err(e) = mis_agent::check(permissions) {
+            return Some(Err(e));
+        }
+    }
+    let (tx, mut rx) = mpsc::channel(64);
+    let run = run_guarded(agent, uuid::Uuid::new_v4(), prompt, opts, tx);
+    // Ends when the run has sent its last event, or at the cut.
+    let forward = async {
+        while let Some(event) = rx.recv().await {
+            let Some(event) = mirror(event) else {
+                continue;
+            };
+            let over = match (&event, max_input) {
+                (AgentEvent::Usage { input, .. }, Some(max)) => *input > max,
+                _ => false,
+            };
+            send(redact(event, token));
+            if let (true, Some(max)) = (over, max_input) {
+                return Err(format!("cut: over {max} input tokens"));
+            }
+        }
+        Ok(())
+    };
+    tokio::pin!(run, forward);
+    tokio::select! {
+        // The run is done: what it sent is still to forward.
+        _ = &mut run => Some(forward.await),
+        forwarded = &mut forward => Some(forwarded),
+        _ = cancel => None,
+    }
+}
+
+/// One review (D31), then its `Ended`, also after a panic; a cancelled one
+/// sends nothing. The working tree is measured again after it, so a review
+/// that edited anyway shows as a new change, which voids its report.
+#[allow(clippy::too_many_arguments)]
+async fn run_review(
+    spec: ReviewSpec,
+    functor: PathBuf,
+    agents: Agents,
+    git: Option<Arc<Git>>,
+    events: UnboundedSender<Event>,
+    mut cancel: oneshot::Receiver<()>,
+    views: Arc<ViewRoute>,
+    home: PathBuf,
+) {
+    let send = |event| {
+        let (task, run) = (spec.task, spec.run);
+        let _ = events.send(Event::Review { task, run, event });
+    };
+    let Some(git) = git else {
+        let error = Some("changes are tracked only in a git repository".to_string());
+        return send(ReviewEvent::Ended { error });
+    };
+    let review = review(&spec, &functor, &agents, &git, &views, &home, &send, &mut cancel);
+    let error = match futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(review))
+        .await
+    {
+        Ok(Some(error)) => error,
+        Ok(None) => return,
+        Err(_) => Some("the review panicked".to_string()),
+    };
+    // Its report is published only on a tree measured as unchanged.
+    let error = match git.change(&spec.baseline).await {
+        Ok(change) => {
+            let (task, baseline) = (spec.task, spec.baseline.clone());
+            let _ = events.send(Event::Change {
+                task,
+                baseline,
+                change,
+            });
+            error
+        }
+        Err(e) => Some(format!("cannot measure the files after the review: {e}")),
+    };
+    send(ReviewEvent::Ended { error });
+}
+
+/// The brief (with the diff), the review's tool server and its agent, read
+/// only and bounded: the review's error, or `None` if cancelled.
+#[allow(clippy::too_many_arguments)]
+async fn review(
+    spec: &ReviewSpec,
+    functor: &Path,
+    agents: &Agents,
+    git: &Git,
+    views: &Arc<ViewRoute>,
+    home: &Path,
+    send: &impl Fn(ReviewEvent),
+    cancel: &mut oneshot::Receiver<()>,
+) -> Option<Option<String>> {
+    // The core never asks for one: only Claude's can be held read-only.
+    if spec.harness != Harness::Claude {
+        return Some(Some(functor_app_core::review::NO_CODEX.to_string()));
+    }
+    let caller = Caller {
+        task: spec.task,
+        run: spec.run,
+        review: true,
+    };
+    let Some(secret) = views.register(caller) else {
+        return Some(Some("the app has no route for the review's report".to_string()));
+    };
+    let brief = match git.patch(&spec.baseline, &spec.tree, REVIEW_DIFF_BYTES).await {
+        Ok((diff, cut)) => {
+            let cut = match cut {
+                true => "\nThe diff is cut here: read the files for the rest.\n",
+                false => "",
+            };
+            format!("{}\n## The diff\n\n```diff\n{diff}```\n{cut}", spec.brief)
+        }
+        Err(e) => return Some(Some(format!("cannot read the change: {e}"))),
+    };
+    let brief = match BriefFile::write(home, &brief) {
+        Ok(file) => file,
+        Err(e) => return Some(Some(format!("cannot write the review's brief: {e}"))),
+    };
+    let token = token();
+    let path = brief.0.to_string_lossy();
+    let args = tool_server_args(None, Some(&secret.url), Some(&path));
+    let started = tokio::select! {
+        started = ToolServer::start(functor, &spec.dir, &args, &token, Some(&secret.secret)) => started,
+        _ = &mut *cancel => return None,
+    };
+    let server = match started {
+        Ok(server) => server,
+        Err(error) => return Some(Some(error)),
+    };
+    let mcp = Mcp {
+        url: format!("{}/mcp", server.base),
+        token: token.clone(),
+    };
+    let permissions = review_permissions(&spec.repo_root);
+    let cwd = spec.dir.to_string_lossy();
+    let opts = RunOpts {
+        cwd: Some(&cwd),
+        model: spec.model.as_deref(),
+        mcp: Some(&mcp),
+        permissions: Some(&permissions),
+        read_only: true,
+        ..RunOpts::default()
+    };
+    let prompt = review_prompt(spec.instructions.as_deref());
+    let agent = agents.get(spec.harness, true);
+    // The agent's own failure (a bad model, say) is the review's reason.
+    let failed = Mutex::new(None);
+    let forward = |event: AgentEvent| {
+        if let AgentEvent::Finished { ok: false, summary } = &event {
+            *failed.lock().expect("unpoisoned") = Some(summary.clone().unwrap_or("the agent failed".into()));
+        }
+        send(ReviewEvent::Agent(event));
+    };
+    let max = Some(REVIEW_MAX_INPUT);
+    let driven = drive(&*agent, &prompt, opts, &token, max, &forward, cancel);
+    let outcome = match tokio::time::timeout(REVIEW_MAX_TIME, driven).await {
+        Ok(Some(Ok(()))) => Some(failed.lock().expect("unpoisoned").take()),
+        Ok(outcome) => outcome.map(Result::err),
+        Err(_) => Some(Some(format!("cut: over {} s", REVIEW_MAX_TIME.as_secs()))),
+    };
+    server.stop().await;
+    outcome
+}
+
+/// A review's brief, on disk for its tool server; removed when dropped.
+struct BriefFile(PathBuf);
+
+impl BriefFile {
+    fn write(home: &Path, text: &str) -> std::io::Result<Self> {
+        let name = format!("{}.md", uuid::Uuid::new_v4().simple());
+        let file = Self(home.join("reviews").join(name));
+        crate::store::save_private(&file.0, text.as_bytes())?;
+        Ok(file)
+    }
+}
+
+impl Drop for BriefFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// `PUT /app-context` on the tool server at `base`. Not fatal: the agent can
@@ -507,10 +803,14 @@ struct ToolServer {
 }
 
 /// `functor`'s arguments for a tool server attached to `attach`, forwarding
-/// view requests to `app` (its secret goes in the environment, never here).
-/// Without `--no-unsafe-code` the agent could run any Node.js outside its
-/// folder sandbox.
-fn tool_server_args<'a>(attach: Option<&'a str>, app: Option<&'a str>) -> Vec<&'a str> {
+/// view requests to `app` (its secret goes in the environment, never here),
+/// or serving a review of the brief at `review`. Without `--no-unsafe-code`
+/// the agent could run any Node.js outside its folder sandbox.
+fn tool_server_args<'a>(
+    attach: Option<&'a str>,
+    app: Option<&'a str>,
+    review: Option<&'a str>,
+) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--http", "0", "--no-unsafe-code"];
     if let Some(url) = attach {
         args.extend(["--attach", url]);
@@ -518,28 +818,32 @@ fn tool_server_args<'a>(attach: Option<&'a str>, app: Option<&'a str>) -> Vec<&'
     if let Some(url) = app {
         args.extend(["--app-url", url]);
     }
+    if let Some(brief) = review {
+        args.extend(["--review", brief]);
+    }
     args
 }
 
 impl ToolServer {
-    /// In `dir`, the run's project, as the agent is: its tools resolve a
-    /// relative directory against it, and the app's own working directory
-    /// is wherever it was started, not the open folder.
+    /// `functor <args>` in `dir`, the run's project, as the agent is: its
+    /// tools resolve a relative directory against it, and the app's own
+    /// working directory is wherever it was started, not the open folder.
+    /// `app_secret` is `--app-url`'s.
     async fn start(
         functor: &Path,
         dir: &Path,
-        attach: Option<&str>,
+        args: &[&str],
         token: &str,
-        app: Option<(&str, &str)>,
+        app_secret: Option<&str>,
     ) -> Result<Self, String> {
         // Killed if dropped before `stop` (a cancel or failure while starting).
         let mut command = Command::new(functor);
         command
-            .args(tool_server_args(attach, app.map(|(url, _)| url)))
+            .args(args)
             .current_dir(dir)
             .kill_on_drop(true)
             .env(TOKEN_ENV, token);
-        if let Some((_, secret)) = app {
+        if let Some(secret) = app_secret {
             command.env(APP_TOKEN_ENV, secret);
         }
         let mut child = command
@@ -900,15 +1204,55 @@ mod tests {
     #[test]
     fn the_tool_server_never_offers_unsandboxed_code() {
         assert_eq!(
-            tool_server_args(None, None),
+            tool_server_args(None, None, None),
             ["mcp", "--http", "0", "--no-unsafe-code"]
         );
-        let attached = tool_server_args(Some("http://127.0.0.1:9"), None);
+        let attached = tool_server_args(Some("http://127.0.0.1:9"), None, None);
         assert!(attached.contains(&"--no-unsafe-code"), "{attached:?}");
         assert!(
             attached.ends_with(&["--attach", "http://127.0.0.1:9"]),
             "{attached:?}"
         );
+        // A review's never attaches the user's game.
+        let review = tool_server_args(None, Some("http://127.0.0.1:9/v"), Some("/b.md"));
+        assert_eq!(
+            review[4..],
+            ["--app-url", "http://127.0.0.1:9/v", "--review", "/b.md"]
+        );
+    }
+
+    /// A review is read-only by the harness's own rules, not by asking: what
+    /// no rule allows is denied (no edits), the user's settings (whose rules
+    /// could allow writes) are not loaded, and the only rule is the review's
+    /// own tool server.
+    #[test]
+    fn reviews_cannot_edit() {
+        let root = std::env::temp_dir();
+        let p = review_permissions(&root);
+        let mcp = Mcp {
+            url: "http://127.0.0.1:9/mcp".into(),
+            token: "t".into(),
+        };
+        let opts = RunOpts {
+            mcp: Some(&mcp),
+            permissions: Some(&p),
+            read_only: true,
+            model: Some("sonnet"),
+            ..RunOpts::default()
+        };
+        let argv = mis_agent::claude::ClaudeAgent::default().argv("review", &opts);
+        let at = |flag: &str| argv.iter().position(|a| a == flag);
+        let value = |flag: &str| at(flag).map(|i| argv[i + 1].as_str());
+        assert_eq!(value("--permission-mode"), Some("dontAsk"), "{argv:?}");
+        assert!(argv.contains(&"--setting-sources=".to_string()), "{argv:?}");
+        assert!(argv.contains(&"--strict-mcp-config".to_string()), "{argv:?}");
+        for writes in ["acceptEdits", "--dangerously-skip-permissions", "Edit", "Write"] {
+            assert!(!argv.iter().any(|a| a == writes), "{writes}: {argv:?}");
+        }
+        let allowed = at("--allowedTools").expect("an allow list");
+        assert_eq!(argv[allowed + 1], "mcp__mis", "{argv:?}");
+        assert!(argv[allowed + 2].starts_with("--"), "only its server: {argv:?}");
+        assert!(argv.contains(&"--model=sonnet".to_string()), "{argv:?}");
     }
 
     /// A run cancelled before its tool server listens leaves no server.
@@ -932,7 +1276,10 @@ mod tests {
         let home = dir.path().to_path_buf();
         let mut runner = Runner::new(
             stub,
-            Agents::Fake(dir.path().join("x")),
+            Agents::Fake {
+                run: dir.path().join("x"),
+                review: None,
+            },
             None,
             tx,
             views,

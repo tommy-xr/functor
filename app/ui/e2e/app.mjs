@@ -111,7 +111,8 @@ export function tempProject(project) {
  * Starts functor-app and resolves with it, its URL (carrying the launch's
  * `#token=`), port and token once it listens. `home` defaults to a fresh temp
  * dir; pass the previous server's `home` and `token` to restart it with its
- * tasks for the same open page. `fakeAgent` is a fixture for the fake agent.
+ * tasks for the same open page. `fakeAgent` is a fixture for the fake agent,
+ * `fakeReview` one for its reviews.
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
  * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
  * and resolves with its address as `link`; its cable side runs `adb` (a fake,
@@ -119,7 +120,7 @@ export function tempProject(project) {
  */
 export function startServer(
   port = 0,
-  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, token, deviceLink = false, adb = "/nonexistent/adb" } = {},
+  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, fakeReview, token, deviceLink = false, adb = "/nonexistent/adb" } = {},
 ) {
   const args = ["--headless", "--port", String(port)];
   // No LAN listener or mDNS advert unless a test pairs a stub device.
@@ -132,6 +133,9 @@ export function startServer(
   const env = { ...process.env, ...GIT_ENV, XDG_CONFIG_HOME: home, FUNCTOR_APP_HOME: home };
   if (fakeAgent) env.FUNCTOR_APP_FAKE_AGENT = fakeAgent;
   else delete env.FUNCTOR_APP_FAKE_AGENT;
+  // Without one, the fake agent runs no reviews.
+  if (fakeReview) env.FUNCTOR_APP_FAKE_REVIEW = fakeReview;
+  else delete env.FUNCTOR_APP_FAKE_REVIEW;
   if (token) env.FUNCTOR_APP_TOKEN = token;
   else delete env.FUNCTOR_APP_TOKEN;
   const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"], env, cwd });

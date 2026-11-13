@@ -22,9 +22,9 @@ const MAX_LINE: usize = 300;
 /// Most notes, and most evidence lines.
 pub const MAX_ITEMS: usize = 8;
 
-/// The agent's account of its change (`present`), stored with the task: a
-/// presentation agent fills the same fields. A new run, a later edit to the
-/// files or the end of the review clears it.
+/// The agent's account of its change (`present`), stored with the task; a
+/// separate review's (`report`, D31) replaces it. A new run, a later edit to
+/// the files or the end of the review clears it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Report {
@@ -35,6 +35,9 @@ pub struct Report {
     pub notes: Option<Vec<String>>,
     /// What was run, and the result.
     pub evidence: Vec<Check>,
+    /// Written by a separate review, not the agent that made the change.
+    #[serde(default)]
+    pub reviewed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,9 +85,47 @@ impl Report {
             summary,
             notes,
             evidence,
+            reviewed: false,
         };
         Ok((report != Self::default()).then_some(report))
     }
+}
+
+/// Simplified Technical English (ASD-STE100) caps a sentence at this many
+/// words…
+pub const STE_SENTENCE_WORDS: usize = 20;
+/// …and the summary is one short paragraph: at most this many.
+pub const SUMMARY_WORDS: usize = 120;
+
+/// What a mechanical look at `summary` finds against the STE rules it can
+/// count: long sentences, a long or split paragraph. Shown, never enforced.
+pub fn style_flags(summary: &str) -> Vec<String> {
+    let mut flags = vec![];
+    if summary.contains("\n\n") {
+        flags.push("It has more than one paragraph.".to_string());
+    }
+    let words = summary.split_whitespace().count();
+    if words > SUMMARY_WORDS {
+        flags.push(format!("It has {words} words (at most {SUMMARY_WORDS})."));
+    }
+    // Words per sentence. A sentence ends at a word ending in `.`, `!` or
+    // `?`, so `game.fun` and `2.5` stay whole.
+    let mut sentences = vec![0];
+    for word in summary.split_whitespace() {
+        *sentences.last_mut().expect("never empty") += 1;
+        if word.ends_with(['.', '!', '?']) {
+            sentences.push(0);
+        }
+    }
+    for (i, n) in sentences.iter().enumerate() {
+        if *n > STE_SENTENCE_WORDS {
+            let i = i + 1;
+            flags.push(format!(
+                "Sentence {i} has {n} words (at most {STE_SENTENCE_WORDS})."
+            ));
+        }
+    }
+    flags
 }
 
 /// What a changed file is, by its extension (and, for game logic, its place).
@@ -166,6 +207,8 @@ pub struct Decision {
     pub depth: Depth,
     /// One or two short sentences.
     pub reason: String,
+    /// The report's summary against the rules [`style_flags`] counts.
+    pub style: Vec<String>,
 }
 
 /// The decision for each task whose change waits for the user.
@@ -183,11 +226,14 @@ pub fn decision(task: &Task) -> Option<Decision> {
     }
     let size = size(task.change.as_ref()?, &task.project);
     let path = task.evidence.as_ref().map(|e| &e.state);
-    let (depth, reason) = verdict(&size, task.report.as_ref(), path);
+    let report = task.report.as_ref();
+    let (depth, reason) = verdict(&size, report, path);
+    let summary = report.and_then(|r| r.summary.as_deref());
     Some(Decision {
         size,
         depth,
         reason,
+        style: summary.map(style_flags).unwrap_or_default(),
     })
 }
 
@@ -206,10 +252,14 @@ pub fn verdict(
     if let Some(failed) = checks.iter().find(|c| !c.ok) {
         return look(format!("A check failed: {}.", failed.ran));
     }
+    let who = match report {
+        Some(Report { reviewed: true, .. }) => "The review",
+        _ => "The agent",
+    };
     let notes = report.and_then(|r| r.notes.as_ref()).map_or(0, Vec::len);
     if notes > 0 {
         return look(format!(
-            "The agent notes {}.",
+            "{who} notes {}.",
             count(notes as u32, "thing", "things")
         ));
     }
@@ -229,7 +279,7 @@ pub fn verdict(
     match report {
         None => return look("The agent gave no report.".to_string()),
         Some(Report { notes: None, .. }) => {
-            return look("The agent did not say if there is anything to note.".to_string())
+            return look(format!("{who} did not say if there is anything to note."))
         }
         Some(_) => {}
     }
@@ -344,6 +394,7 @@ mod tests {
                     ok: *ok,
                 })
                 .collect(),
+            reviewed: false,
         }
     }
 
@@ -401,6 +452,41 @@ mod tests {
                 "{what}"
             );
         }
+        // A separate review's report says so.
+        let reviewed = |r: &Report| Report {
+            reviewed: true,
+            ..r.clone()
+        };
+        assert_eq!(
+            verdict(&small, Some(&reviewed(&noted)), None).1,
+            "The review notes 1 thing."
+        );
+        assert_eq!(
+            verdict(&small, Some(&reviewed(&unsaid)), shown.as_ref()).1,
+            "The review did not say if there is anything to note."
+        );
+        assert_eq!(verdict(&small, Some(&reviewed(&ok)), None).0, Glance);
+    }
+
+    #[test]
+    fn style_flags_count_sentences_and_the_paragraph() {
+        assert!(style_flags("The jump is higher. Check the chasm in `game.fun`.").is_empty());
+        let long = vec!["word"; 21].join(" ");
+        assert_eq!(
+            style_flags(&format!("Short one. {long}. Short again")),
+            ["Sentence 2 has 21 words (at most 20)."]
+        );
+        // The last sentence counts without its full stop; `2.5 m` is one sentence.
+        assert_eq!(
+            style_flags(&format!("It moves 2.5 m. {long}")),
+            ["Sentence 2 has 21 words (at most 20)."]
+        );
+        let many = vec!["Six words in each sentence here."; 21].join(" ");
+        assert_eq!(style_flags(&many), ["It has 126 words (at most 120)."]);
+        assert_eq!(
+            style_flags("One.\n\nTwo."),
+            ["It has more than one paragraph."]
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::agent_view::WalkthroughStep;
 use crate::changes::Change;
 use crate::decision::Report;
 use crate::evidence::{Evidence, Moment};
+use crate::review::Review;
 use crate::session::loopback_url;
 
 /// The persisted format's version; a file with any other is skipped.
@@ -70,9 +71,13 @@ pub struct Task {
     /// The predicted paths before and after `change` (D38).
     #[serde(default)]
     pub evidence: Option<Evidence>,
-    /// The last run's account of the change (D35), from its `present`.
+    /// The last run's account of the change (D35), from its `present`, or
+    /// its review's (`Report::reviewed`), which replaces it.
     #[serde(default)]
     pub report: Option<Report>,
+    /// The separate run preparing the report on the waiting change (D31).
+    #[serde(default)]
+    pub review: Option<Review>,
     /// When it was started: the shell's wall clock, ms since the Unix
     /// epoch. Last active: a message, a run's event or a review. Both absent
     /// from tasks saved before they were kept.
@@ -536,6 +541,7 @@ mod tests {
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: None,
             transcript: vec![Item::User {

@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use functor_device_link::client::{Client, Command, Config, Host, Pairing};
 use functor_device_link::wire::Status;
-use functor_runtime_common::debug_protocol::{DeviceLinkState, PairingState};
+use functor_runtime_common::debug_protocol::{DeviceLinkState, PairingState, VoiceToast};
 use functor_runtime_common::link_overlay::Gesture;
 use jni::objects::JObject;
 use jni::refs::Global;
@@ -162,12 +162,13 @@ pub fn pairing_state(pairing: Pairing) -> PairingState {
     }
 }
 
-/// `/state.link`.
-pub fn state(client: &Client) -> DeviceLinkState {
+/// `/state.link`, with the voice toast showing.
+pub fn state(client: &Client, voice: Option<VoiceToast>) -> DeviceLinkState {
     let view = client.view();
     DeviceLinkState {
         paired: view.paired,
         linked: view.linked,
         pairing: view.pairing.map(pairing_state),
+        voice,
     }
 }

@@ -104,6 +104,11 @@ harnesses: Array<Harness>,
  */
 harness_choice: { [key in string]: Harness }, 
 /**
+ * Per project path, how its changes are reviewed (D31); absent: the
+ * default.
+ */
+review_settings: { [key in string]: ReviewSetting }, 
+/**
  * Per project path, its canvas layout; every project has one.
  */
 layouts: { [key in string]: Layout }, 
@@ -202,7 +207,7 @@ result: string, ok: boolean, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -213,7 +218,11 @@ export type Decision = { size: Size, depth: Depth,
 /**
  * One or two short sentences.
  */
-reason: string, };
+reason: string, 
+/**
+ * The report's summary against the rules [`style_flags`] counts.
+ */
+style: Array<string>, };
 
 export type Depth = "glance" | "look";
 
@@ -594,9 +603,9 @@ path: string,
 missing: boolean, };
 
 /**
- * The agent's account of its change (`present`), stored with the task: a
- * presentation agent fills the same fields. A new run, a later edit to the
- * files or the end of the review clears it.
+ * The agent's account of its change (`present`), stored with the task; a
+ * separate review's (`report`, D31) replaces it. A new run, a later edit to
+ * the files or the end of the review clears it.
  */
 export type Report = { 
 /**
@@ -611,7 +620,52 @@ notes: Array<string> | null,
 /**
  * What was run, and the result.
  */
-evidence: Array<Check>, };
+evidence: Array<Check>, 
+/**
+ * Written by a separate review, not the agent that made the change.
+ */
+reviewed: boolean, };
+
+/**
+ * A task's review of its waiting change, kept until the change is decided,
+ * replaced or measured again differently.
+ */
+export type Review = { 
+/**
+ * The run whose change it reviews; its events carry it.
+ */
+run: number, harness: Harness, 
+/**
+ * As asked, until the agent reports its own.
+ */
+model: string | null, state: ReviewState, 
+/**
+ * The latest (cumulative) usage it reported.
+ */
+usage: Usage | null, };
+
+/**
+ * How a project's changes are reviewed; stored per project.
+ */
+export type ReviewSetting = { 
+/**
+ * Prepare the report in a separate run; off, the agent's own is shown.
+ */
+on: boolean, 
+/**
+ * `None`: the task's own.
+ */
+harness: Harness | null, 
+/**
+ * `None`: [`default_model`] for the harness.
+ */
+model: string | null, 
+/**
+ * Added to the review's instructions, e.g. a skill to follow.
+ */
+instructions: string | null, };
+
+export type ReviewState = { "kind": "preparing" } | { "kind": "prepared" } | { "kind": "failed", reason: string, };
 
 /**
  * One `"entries"` role: `"client.fun"`, or `{ "file", "module" | "prefix" }`
@@ -736,9 +790,14 @@ moment: Moment | null,
  */
 evidence: Evidence | null, 
 /**
- * The last run's account of the change (D35), from its `present`.
+ * The last run's account of the change (D35), from its `present`, or
+ * its review's (`Report::reviewed`), which replaces it.
  */
 report: Report | null, 
+/**
+ * The separate run preparing the report on the waiting change (D31).
+ */
+review: Review | null, 
 /**
  * When it was started: the shell's wall clock, ms since the Unix
  * epoch. Last active: a message, a run's event or a review. Both absent

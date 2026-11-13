@@ -1,0 +1,4 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-review-slow", "model": "claude-review-model"}}
+{"ms": 100, "mcp": {"tool": "task_change", "arguments": {}}}
+{"ms": 30000, "mcp": {"tool": "report", "arguments": {"summary": "Too late.", "notes": [], "evidence": []}}}
+{"ms": 30100, "event": {"type": "finished", "ok": true, "summary": "Reported."}}

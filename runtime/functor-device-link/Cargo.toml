@@ -31,3 +31,6 @@ file = ["dep:log", "dep:serde", "dep:serde_json"]
 client = ["file", "capsule", "dep:mdns-sd", "dep:tungstenite"]
 # `capsule`: the voice capsule's JSON type, for both sides.
 capsule = ["dep:serde", "dep:serde_json"]
+
+[dev-dependencies]
+tempfile = "3"
