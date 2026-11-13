@@ -663,6 +663,195 @@ async fn the_headset_client_pairs_tunnels_and_relinks() {
     assert!(stored_pairing(store.path()));
 }
 
+/// `FUNCTOR_BIN`, a built `functor`, or why the test skips.
+fn functor_bin() -> Option<std::path::PathBuf> {
+    let found = std::env::var_os("FUNCTOR_BIN")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file());
+    if found.is_none() {
+        eprintln!("SKIPPED: set FUNCTOR_BIN to a built `functor` to run `run vr`");
+    }
+    found
+}
+
+/// `examples/hello-cubes` copied into `<dir>/cubes`, with `extra` files.
+fn cubes_project(dir: &Path, extra: &[(&str, &[u8])]) -> std::path::PathBuf {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-cubes");
+    let to = dir.join("cubes");
+    std::fs::create_dir_all(&to).unwrap();
+    for name in ["functor.json", "game.fun", "pieces.fun"] {
+        std::fs::copy(from.join(name), to.join(name)).unwrap();
+    }
+    for (name, bytes) in extra {
+        std::fs::write(to.join(name), bytes).unwrap();
+    }
+    to
+}
+
+/// A `functor run vr` child, its stdout and stderr lines merged.
+struct Run {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `functor -d project run vr extra…` with `path_dir` first on `PATH`.
+fn run_vr(functor: &Path, project: &Path, extra: &[&str], path_dir: &Path) -> Run {
+    let path = format!(
+        "{}:{}",
+        path_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut child = Command::new(functor)
+        .arg("-d")
+        .arg(project)
+        .args(["run", "vr"])
+        .args(extra)
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, lines) = mpsc::channel();
+    for pipe in [
+        Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
+        Box::new(child.stderr.take().unwrap()),
+    ] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+                eprintln!("[run vr] {line}");
+                let _ = tx.send(line);
+            }
+        });
+    }
+    Run { child, lines }
+}
+
+impl Run {
+    /// The next line containing `text`, within 60s; earlier lines go.
+    fn line(&self, text: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) if line.contains(text) => return line,
+                Ok(_) => {}
+                Err(_) => panic!("`run vr` never printed {text:?}"),
+            }
+        }
+    }
+}
+
+/// A fake `adb` in its own directory that logs every call to `adb.log`
+/// and lists no devices.
+#[cfg(unix)]
+fn logging_adb() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("adb.log");
+    let script = dir.path().join("adb");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\necho 'List of devices attached'\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// `functor run vr --device-url <tunnel>` (needs `FUNCTOR_BIN`): the push,
+/// a 20 MiB asset in parts and a hot reload reach the stub through the
+/// tunnel with adb never run, and the card shows the project the load
+/// named. Away, the run waits for the headset and goes on when it links.
+/// Without the flag, `run vr` is adb's, as before.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn run_vr_pushes_through_the_tunnel() {
+    let Some(functor) = functor_bin() else { return };
+    let mut app = app().await;
+    app.devices_where("the link starts", |d| !d["listening"].is_null())
+        .await;
+    let store = tempfile::tempdir().unwrap();
+    let quest = pair(&mut app, store.path(), "Run Quest").await;
+    let devices = app
+        .devices_where("connected", |d| state_of(d, "Run Quest") == "connected")
+        .await;
+    let tunnel = card(&devices, "Run Quest").unwrap()["tunnel"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let projects = tempfile::tempdir().unwrap();
+    let big = vec![7u8; 20 * 1024 * 1024];
+    let project = cubes_project(projects.path(), &[("big.bin", &big)]);
+    let adb = logging_adb();
+
+    let run = run_vr(&functor, &project, &["--device-url", &tunnel], adb.path());
+    quest.line("request POST /sync-assets");
+    // Over the 16 MiB frame: three parts, in order.
+    for offset in [0, 8 << 20, 16 << 20] {
+        let part = quest.line("request POST /reload-asset?upload=");
+        assert!(part.contains(&format!("&offset={offset}&")), "{part}");
+    }
+    let load = quest.line("request POST /load-project");
+    assert!(load.contains("name=cubes"), "{load}");
+    let addr = tunnel.strip_prefix("http://").unwrap();
+    run.line(&format!("[debug-server] listening on http://{addr}"));
+    app.devices_where("the card shows the project", |d| {
+        card(d, "Run Quest").is_some_and(|c| c["state"]["project"] == "cubes")
+    })
+    .await;
+
+    // A saved edit is pushed through the link too.
+    let game = project.join("game.fun");
+    let source = std::fs::read_to_string(&game).unwrap();
+    std::fs::write(&game, format!("{source}\n// edited\n")).unwrap();
+    quest.line("request POST /reload-project");
+
+    // An edit saved while the headset is away arrives once it is back.
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Run Quest") == "away")
+        .await;
+    std::fs::write(&game, format!("{source}\n// edited while away\n")).unwrap();
+    run.line("retrying");
+    let quest = stub(&app.link, store.path(), "Run Quest", &[]);
+    quest.line("request POST /reload-project");
+    drop(run);
+
+    // Away: a run waits, then goes on once the headset links again.
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Run Quest") == "away")
+        .await;
+    let run = run_vr(&functor, &project, &["--device-url", &tunnel], adb.path());
+    run.line("waiting for the headset to link");
+    let quest = stub(&app.link, store.path(), "Run Quest", &[]);
+    quest.line("linked ");
+    quest.line("request POST /load-project");
+    run.line("[debug-server] listening on");
+    drop(run);
+    let log = adb.path().join("adb.log");
+    assert!(
+        !log.exists(),
+        "adb ran: {:?}",
+        std::fs::read_to_string(&log)
+    );
+
+    // No tunnel named: adb, as before (here it lists no headset).
+    let run = run_vr(&functor, &project, &[], adb.path());
+    run.line("no device attached");
+    assert!(std::fs::read_to_string(&log).unwrap().contains("devices"));
+}
+
 /// The Quest attached over adb: `npm run test:quest-link`.
 struct Quest {
     serial: String,
@@ -1302,16 +1491,7 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         return;
     }
     let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
-    // Unpaired, keeping its id (the desktop knows it by it).
-    let mut file = quest.pairing_file();
-    let id = file.device.clone();
-    file.desktop = None;
-    file.desktop_name = None;
-    file.secret = None;
-    quest.put_pairing(file.to_json().as_bytes());
-
-    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
-    quest.launch().await;
+    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
     let serial = quest.serial.clone();
     let on_cable = |d: &Value| -> Option<Value> {
         d["attached"]
@@ -1320,27 +1500,6 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
             .find(|a| a["serial"] == serial.as_str())
             .cloned()
     };
-    let devices = app
-        .devices_where("the Quest is on the cable, ready", |d| {
-            on_cable(d).is_some_and(|a| a["pairable"] == true)
-        })
-        .await;
-    let a = on_cable(&devices).unwrap();
-    assert_eq!(a["state"]["device"], id.as_str());
-    assert_eq!(a["state"]["paired"]["with"], "nobody");
-    assert!(app.pairings().is_empty() || !app.pairings().contains(&id));
-
-    // One click; the headset links over Wi-Fi by itself.
-    let started = Instant::now();
-    app.send(json!({"type": "pair_by_cable", "serial": serial}))
-        .await;
-    let devices = app
-        .devices_where("it connects over Wi-Fi", |d| {
-            card_by_id(d, &id)
-                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
-        })
-        .await;
-    eprintln!("cable pairing → connected in {:?}", started.elapsed());
     assert_eq!(card_by_id(&devices, &id).unwrap()["state"]["link"], "wifi");
     let written = quest.pairing_file();
     assert_eq!(written.device, id, "the headset keeps its id");
@@ -1412,6 +1571,150 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         (quest.link()["linked"] == false).then_some(())
     })
     .await;
+}
+
+/// A Quest on the cable, paired over it, runs a project through its tunnel
+/// alone (`npm run test:quest-run`, needs `FUNCTOR_BIN`): no adb forward
+/// exists while `functor run vr --device-url` pushes source and a 20 MiB
+/// asset, the game renders and steps, the card names it, an edit hot
+/// reloads over the link, and an empty load returns the boot scene.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_runs_a_project_over_the_link() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let Some(functor) = functor_bin() else { return };
+    let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
+    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
+    let tunnel = card_by_id(&devices, &id).unwrap()["tunnel"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // From here on, only the tunnel: no forward to the headset at all.
+    let port = quest.debug.rsplit(':').next().unwrap().to_string();
+    quest.adb(&["forward", "--remove", &format!("tcp:{port}")]);
+    let forwards = || {
+        let out = quest.adb(&["forward", "--list"]);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(forwards(), "", "no adb forward");
+
+    let projects = tempfile::tempdir().unwrap();
+    let big: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let project = cubes_project(projects.path(), &[("big.bin", &big)]);
+    let path = tempfile::tempdir().unwrap();
+    let started = Instant::now();
+    let run = run_vr(&functor, &project, &["--device-url", &tunnel], path.path());
+    run.line("synced ");
+    run.line("[debug-server] listening on");
+    eprintln!("pushed and loaded over the link in {:?}", started.elapsed());
+    assert_eq!(forwards(), "", "the push used no adb forward");
+
+    // Running there: its source, frames rendered and the clock stepping.
+    let state = |path: &str| -> Value {
+        let (status, body) = get(&tunnel, path).unwrap();
+        assert_eq!(status, 200, "{path}: {body}");
+        serde_json::from_str(&body).unwrap()
+    };
+    let project_text = || state("/project").to_string();
+    assert!(
+        project_text().contains("hello-cubes"),
+        "the pushed game runs"
+    );
+    let first = state("/state?model=0");
+    let (frames, steps) = (
+        first["rendered_frames"].as_u64().unwrap(),
+        first["frame"].as_u64().unwrap(),
+    );
+    until("it renders and steps", || {
+        let now = state("/state?model=0");
+        (now["rendered_frames"].as_u64()? > frames && now["frame"].as_u64()? > steps).then_some(())
+    })
+    .await;
+    app.devices_where("the card names the project", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["project"] == "cubes")
+    })
+    .await;
+
+    // An edit hot reloads over the link, model kept.
+    let revision = first["clock"]["program_revision"].as_u64().unwrap();
+    let game = project.join("game.fun");
+    let source = std::fs::read_to_string(&game).unwrap();
+    std::fs::write(&game, format!("{source}\n// edited over the link\n")).unwrap();
+    until("the reload lands", || {
+        let clock = state("/state?model=0")["clock"].clone();
+        (clock["program_revision"].as_u64()? > revision).then_some(())
+    })
+    .await;
+    assert!(project_text().contains("edited over the link"));
+    assert_eq!(forwards(), "", "still no adb forward");
+    drop(run);
+
+    // An empty load stops it there: the boot scene, and no project named.
+    let (status, body) = post(&tunnel, "/load-project", "[]").unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(project_text().contains("boot scene"), "{}", project_text());
+    app.devices_where("the card names nothing", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["project"].is_null())
+    })
+    .await;
+    app.send(json!({"type": "forget_device", "device": id}))
+        .await;
+    app.devices_where("it is forgotten", |d| card_by_id(d, &id).is_none())
+        .await;
+    // Its cable clean-up lands before the headset's file is put back.
+    until("the headset's pairing is gone", || {
+        quest.pairing_file().secret.is_none().then_some(())
+    })
+    .await;
+}
+
+/// `quest` unpaired (keeping its id, which the desktop knows it by), then
+/// paired over the cable by one click in a new app, linked over Wi-Fi: the
+/// app, the headset's id and the devices once its tunnel is up.
+async fn pair_quest_by_cable(quest: &Quest) -> (App, String, Value) {
+    let mut file = quest.pairing_file();
+    let id = file.device.clone();
+    file.desktop = None;
+    file.desktop_name = None;
+    file.secret = None;
+    quest.put_pairing(file.to_json().as_bytes());
+
+    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
+    quest.launch().await;
+    let serial = quest.serial.clone();
+    let devices = app
+        .devices_where("the Quest is on the cable, ready", |d| {
+            d["attached"].as_array().is_some_and(|a| {
+                a.iter()
+                    .any(|a| a["serial"] == serial.as_str() && a["pairable"] == true)
+            })
+        })
+        .await;
+    let a = devices["attached"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["serial"] == serial.as_str())
+        .unwrap();
+    assert_eq!(a["state"]["device"], id.as_str());
+    assert_eq!(a["state"]["paired"]["with"], "nobody");
+    assert!(app.pairings().is_empty() || !app.pairings().contains(&id));
+
+    // One click; the headset links over Wi-Fi by itself.
+    let started = Instant::now();
+    app.send(json!({"type": "pair_by_cable", "serial": serial}))
+        .await;
+    let devices = app
+        .devices_where("it connects over Wi-Fi", |d| {
+            card_by_id(d, &id)
+                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
+        })
+        .await;
+    eprintln!("cable pairing → connected in {:?}", started.elapsed());
+    (app, id, devices)
 }
 
 /// The card for device `id`, if any.

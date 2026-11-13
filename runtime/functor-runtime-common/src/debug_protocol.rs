@@ -230,9 +230,15 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// switch, for a shell whose own timeline is hidden. A pre-v39 runtime
 /// answers 404.
 ///
-/// 40 adds `events` on each `GET /input-log` step: its recorded edge events
+/// 40 lets `POST /reload-asset` arrive in parts (`?upload=&offset=&total=`),
+/// each small enough for a device link's frame, and `POST /load-project`
+/// declare the project's `name`, which a headset reports over its link; an
+/// empty load returns a headset to its boot scene. A pre-v40 runtime refuses
+/// both queries with 400.
+///
+/// 41 adds `events` on each `GET /input-log` step: its recorded edge events
 /// as replay data, which `run native --replay-input` replays.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 40;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 41;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -336,7 +342,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/load-project",
-        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role; &session=N&dir=src lets the device ask this host for files it lacks (GET /project-files), resolved from the entry's folder",
+        description: "load a new whole project from a JSON array of [path, source] pairs (entry first), model initialized from init — 400 with the load error on a broken push; ?module=Server / ?prefix=server declares the same-file entry role; &session=N&dir=src lets the device ask this host for files it lacks (GET /project-files), resolved from the entry's folder; &name= names the project (a headset reports it over its device link); on a headset, an empty array returns to the boot scene and drops the uploads",
     },
     DebugRoute {
         method: "GET",
@@ -346,7 +352,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/reload-asset",
-        description: "upload one project asset as a binary path+bytes envelope and evict its decoded render data",
+        description: "upload one project asset as a binary path+bytes envelope and evict its decoded render data; ?upload=ID&offset=N&total=T sends the envelope in parts, in order (offset 0 starts an upload, a part out of order is 409, the last part is answered as the whole upload)",
     },
     DebugRoute {
         method: "GET",
@@ -1022,8 +1028,8 @@ pub struct InputLogStep {
     /// because a pre-v37 runtime omits it.
     #[serde(default)]
     pub marks: Vec<TimelineMark>,
-    /// The same events as data (v40), in order, for `run native
-    /// --replay-input`; `default` because a pre-v40 runtime omits it.
+    /// The same events as data (v41), in order, for `run native
+    /// --replay-input`; `default` because a pre-v41 runtime omits it.
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(type = "Array<unknown>"))]
     pub events: Vec<crate::RecordedInput>,
@@ -1169,10 +1175,22 @@ pub struct ProjectSession {
     pub entry_dir: String,
 }
 
-/// Split `session`/`dir` off a `/load-project` query, returning the rest
-/// (the entry role, for [`parse_entry_role_query`]).
-pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, String), String> {
-    let (mut id, mut dir, mut rest) = (None, None, Vec::new());
+/// What a `/load-project` declares besides its entry role.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoadHost {
+    /// The host session serving missing files (`session=N&dir=src`).
+    pub session: Option<ProjectSession>,
+    /// The project's name (`name=`), which a headset reports over its link.
+    pub name: Option<String>,
+}
+
+/// Longest project name a load may declare, in bytes.
+pub const MAX_PROJECT_NAME_BYTES: usize = 128;
+
+/// Split `session`/`dir`/`name` off a `/load-project` query, returning the
+/// rest (the entry role, for [`parse_entry_role_query`]).
+pub fn take_load_host(query: &str) -> Result<(LoadHost, String), String> {
+    let (mut id, mut dir, mut name, mut rest) = (None, None, None, Vec::new());
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         match pair.split_once('=') {
             Some(("session", value)) if id.is_none() => {
@@ -1183,13 +1201,16 @@ pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, Stri
                 )
             }
             Some(("dir", value)) if dir.is_none() => dir = Some(value),
-            Some(("session" | "dir", _)) => return Err("session or dir declared twice".into()),
+            Some(("name", value)) if name.is_none() => name = Some(value),
+            Some(("session" | "dir" | "name", _)) => {
+                return Err("session, dir or name declared twice".into())
+            }
             _ => rest.push(pair),
         }
     }
     let entry_dir = match dir.filter(|dir| !dir.is_empty()) {
         Some(dir) => {
-            let dir = percent_decode(dir)?;
+            let dir = percent_decode(dir).map_err(|e| format!("dir: {e}"))?;
             validate_project_asset_path(&dir).map_err(|e| format!("dir: {e}"))?;
             format!("{dir}/")
         }
@@ -1200,7 +1221,34 @@ pub fn take_project_session(query: &str) -> Result<(Option<ProjectSession>, Stri
         None if !entry_dir.is_empty() => return Err("dir needs a session".to_string()),
         None => None,
     };
-    Ok((session, rest.join("&")))
+    let name = match name.filter(|name| !name.is_empty()) {
+        Some(name) => {
+            let name = percent_decode(name).map_err(|e| format!("name: {e}"))?;
+            if name.len() > MAX_PROJECT_NAME_BYTES || name.chars().any(char::is_control) {
+                return Err(format!(
+                    "name must be at most {MAX_PROJECT_NAME_BYTES} bytes, without control characters"
+                ));
+            }
+            Some(name)
+        }
+        None => None,
+    };
+    Ok((LoadHost { session, name }, rest.join("&")))
+}
+
+/// `value` for a query string: everything but unreserved ASCII
+/// `%XX`-escaped ([`percent_decode`] undoes it).
+pub fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// `%XX` escapes decoded (`my%20src` → `my src`).
@@ -1212,7 +1260,7 @@ fn percent_decode(value: &str) -> Result<String, String> {
             let byte = value
                 .get(at + 1..at + 3)
                 .and_then(|hex| u8::from_str_radix(hex, 16).ok())
-                .ok_or("dir has a bad %-escape")?;
+                .ok_or("bad %-escape")?;
             out.push(byte);
             at += 3;
         } else {
@@ -1220,7 +1268,7 @@ fn percent_decode(value: &str) -> Result<String, String> {
             at += 1;
         }
     }
-    String::from_utf8(out).map_err(|_| "dir must be UTF-8".to_string())
+    String::from_utf8(out).map_err(|_| "must be UTF-8".to_string())
 }
 
 /// `GET /project-files`: what the device lacks, oldest first.
@@ -1433,11 +1481,12 @@ pub enum DebugRequest {
         Option<crate::functor_lang_producer::EntryRole>,
         Sender<Result<String, String>>,
     ),
-    /// Also the host session serving missing files, when one was declared.
+    /// Also the host session serving missing files and the project's name,
+    /// when declared.
     LoadProject(
         ProjectSources,
         Option<crate::functor_lang_producer::EntryRole>,
-        Option<ProjectSession>,
+        LoadHost,
         Sender<Result<String, String>>,
     ),
     /// `Err` (409) on runtimes that read the project from disk.
@@ -1507,39 +1556,57 @@ mod tests {
         );
     }
 
-    /// `/load-project`'s host session splits off the role query; a bad
-    /// folder or a folder without a session is refused.
+    /// `/load-project`'s host session and name split off the role query; a
+    /// bad folder, a folder without a session or a bad name is refused.
     #[test]
-    fn a_load_declares_its_host_session_beside_the_role() {
+    fn a_load_declares_its_host_session_and_name_beside_the_role() {
+        let session = |id, entry_dir: &str| {
+            Some(ProjectSession {
+                id,
+                entry_dir: entry_dir.to_string(),
+            })
+        };
         assert_eq!(
-            take_project_session("prefix=&session=7&dir=src"),
+            take_load_host("prefix=&session=7&dir=src"),
             Ok((
-                Some(ProjectSession {
-                    id: 7,
-                    entry_dir: "src/".to_string()
-                }),
+                LoadHost {
+                    session: session(7, "src/"),
+                    name: None
+                },
                 "prefix=".to_string()
             ))
         );
         assert_eq!(
-            take_project_session("session=7&dir="),
+            take_load_host("session=7&dir="),
             Ok((
-                Some(ProjectSession {
-                    id: 7,
-                    entry_dir: String::new()
-                }),
+                LoadHost {
+                    session: session(7, ""),
+                    name: None
+                },
                 String::new()
             ))
         );
         assert_eq!(
-            take_project_session("session=7&dir=my%20src/v%C3%A9")
-                .map(|(session, _)| session.unwrap().entry_dir),
+            take_load_host("session=7&dir=my%20src/v%C3%A9")
+                .map(|(host, _)| host.session.unwrap().entry_dir),
             Ok("my src/vé/".to_string())
         );
         assert_eq!(
-            take_project_session("module=Server"),
-            Ok((None, "module=Server".to_string()))
+            take_load_host("module=Server"),
+            Ok((LoadHost::default(), "module=Server".to_string()))
         );
+        let named = format!("module=Server&name={}", percent_encode("my game & co/vé"));
+        assert_eq!(
+            take_load_host(&named),
+            Ok((
+                LoadHost {
+                    session: None,
+                    name: Some("my game & co/vé".to_string())
+                },
+                "module=Server".to_string()
+            ))
+        );
+        let long = format!("name={}", "n".repeat(MAX_PROJECT_NAME_BYTES + 1));
         for bad in [
             "session=x",
             "session=1&dir=../up",
@@ -1547,8 +1614,11 @@ mod tests {
             "session=1&session=2",
             "session=1&dir=a%2",
             "session=1&dir=%2E%2E",
+            "name=a&name=b",
+            "name=a%0Ab",
+            long.as_str(),
         ] {
-            assert!(take_project_session(bad).is_err(), "{bad}");
+            assert!(take_load_host(bad).is_err(), "{bad}");
         }
     }
 

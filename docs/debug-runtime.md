@@ -138,9 +138,9 @@ timeline, a fusing room or head tracking keeps the usual 60 Hz.
 | `POST /time` | control the frame clock (see below) |
 | `POST /reload-source` | swap game logic from the request body (see below) |
 | `POST /reload-project` | swap all sibling modules from a JSON array of `[path, source]` pairs, entry first; `?module=`/`?prefix=` declares the same-file entry role |
-| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query, plus `&session=N&dir=src` naming a host that serves files the device lacks (protocol v24) |
+| `POST /load-project` | start a new sibling-module project from the same body, initializing its model from `init`; takes the same role query, plus `&session=N&dir=src` naming a host that serves files the device lacks (protocol v24) and `&name=` the project's name, which a headset reports over its device link; on a headset an empty array `[]` returns to the boot scene and drops the uploads (protocol v40) |
 | `GET /project` | the running program's own `.fun` sources as a JSON array of `[path, source]` pairs, entry first — the read half of the push routes (see below) |
-| `POST /reload-asset` | upload one project-relative file (texture/model/audio asset or `File.bytes` data) as a binary path+bytes envelope |
+| `POST /reload-asset` | upload one project-relative file (texture/model/audio asset or `File.bytes` data) as a binary path+bytes envelope, whole or in parts (`?upload=&offset=&total=`, protocol v40) |
 | `GET /project-files` | files the game asked for that the device lacks: `{session, requests: [{path, have}]}`, `have` = the version it holds; 409 on desktop (protocol v24) |
 | `POST /project-files` | answer one request: big-endian u32 header length, JSON header `{session, path, status: "bytes"\|"current"\|"missing", version?, message?}`, then the bytes; 409 for another session or an unrequested path (protocol v24) |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
@@ -769,7 +769,7 @@ record a worn session over `adb forward` and replay it on desktop through
 `marks` (protocol v37) are the step's recorded edge events — keys, mouse
 buttons, the wheel, the frame's last mouse move, UI and webview events — with
 the `kind` and `label` the web timeline shows for them. Sampled snapshots and
-touches are not marks. `events` (protocol v40) are all of the step's recorded
+touches are not marks. `events` (protocol v41) are all of the step's recorded
 events but its snapshot, every mouse move included, as replay data.
 
 `run native --replay-input <file>` replays a saved body under the project
@@ -933,7 +933,13 @@ socket to a real peer, with no coordinator behind adb.
 Source and assets remain separate operations. `POST /reload-asset` carries one
 file: a big-endian four-byte UTF-8 path length, that many path bytes, then the
 raw asset bytes. Paths are forward-slash, project-relative locators with no
-`.`/`..` segments. One file may be up to 256 MB. After uploading added or
+`.`/`..` segments. One file may be up to 256 MB. The envelope may also
+arrive in parts, in order (protocol v40):
+`POST /reload-asset?upload=<id>&offset=<bytes so far>&total=<envelope bytes>`,
+each body the envelope's next bytes; a part at offset 0 starts the upload
+(replacing an unfinished one), a part out of order is 409, and the last part
+is answered as a whole upload. `functor run vr` sends parts of at most 8 MiB,
+so a file fits a device link's 16 MiB frame. After uploading added or
 changed files, `POST /sync-assets` receives the complete current path list and
 evicts uploads deleted on the host.
 
