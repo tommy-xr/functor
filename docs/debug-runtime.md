@@ -668,7 +668,10 @@ predicted future (pink) into every rendered frame — so `/capture` and
 way. The future is the current code run forward from the shown frame (a seek
 included), replaying recorded input where there is some. `false` fades it out
 and stops the work. Shell state only, like `/camera`: the model, input log
-and replay never see it.
+and replay never see it. The path fades in over 0.28 s of wall-clock time, so
+wait that long before a `/capture` (or launch with `--preview-presence 1`).
+Once a client has used `/preview`, it rather than `--trajectory`/`--strobe`
+decides what is drawn.
 
 Cost: one computation runs the game's step over the future at 1/60 s (120
 steps for 2 s) and draws 40 samples of it and 40 of the recorded past. While
@@ -679,6 +682,7 @@ there is none. A 400 under `--headless`
 
 ```sh
 curl -s -X POST $H/preview -d '{"extrapolate":true}'
+sleep 0.3
 curl -s -X POST $H/capture -o future.png
 ```
 

@@ -4140,12 +4140,13 @@ Escape again to quit"
                             break;
                         }
                         // `POST /preview`: the timeline's Extrapolate switch.
+                        // Like `/camera`, later requests wait for the next frame.
                         debug_server::DebugRequest::Preview(command, resp) => {
                             preview_by_debug = true;
                             extrapolate_on = command.extrapolate;
                             let on = if extrapolate_on { "on" } else { "off" };
                             let _ = resp.send(Ok(format!("extrapolate {on}")));
-                            continue;
+                            break;
                         }
                         debug_server::DebugRequest::Stream(resp) => {
                             let tap = stream_tap.get_or_insert_with(Default::default);
@@ -4293,7 +4294,7 @@ Escape again to quit"
                     || debug_active
                     // The time-travel chrome reads and seeks the live sim.
                     || scrubber_visible
-                    || (preview_by_debug && extrapolate_on)
+                    || preview_by_debug
                     || args.trajectory
                     || args.strobe;
             }

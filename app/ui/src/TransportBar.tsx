@@ -82,7 +82,7 @@ export function TransportBar({
 
   const view = deriveTimelineView(timeline.current);
   const call = (call: TransportCall) => online && send({ type: "transport", call });
-  const peek = usePeek(transport, extrapolates ? call : null);
+  const peek = usePeek(transport, extrapolates && online ? call : null);
   // Shown at once by the model; the core is asked for the frame it settled on.
   const seek = (frame: number) => {
     if (!online) return;
