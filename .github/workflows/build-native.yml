@@ -76,7 +76,8 @@ jobs:
 
       # Local speech-to-text: whisper.cpp builds (no model is fetched; its
       # transcription test runs only with FUNCTOR_STT_REAL=1, locally).
-      - name: Build speech-to-text
+      # macOS only, as the app's window is.
+      - name: Test speech-to-text with whisper.cpp
         if: matrix.os == 'macos-latest'
         run: cargo test -p functor-stt --features whisper
 

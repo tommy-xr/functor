@@ -43,23 +43,17 @@ pub struct Model {
     pub bytes: u64,
 }
 
-/// whisper.cpp's English-only base model: about 1 s for a 5 s clip on a
-/// laptop CPU, good enough for short commands.
-pub const BASE_EN: Model = Model {
+/// The model the app uses: whisper.cpp's English-only base model, small
+/// (148 MB) and good enough for short commands.
+pub const DEFAULT_MODEL: Model = Model {
     file: "ggml-base.en.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin",
     sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
     bytes: 147_964_211,
 };
 
-/// The model the app uses.
-pub const DEFAULT_MODEL: Model = BASE_EN;
-
 /// Where models are kept: `FUNCTOR_MODELS`, else `~/.functor/models`.
-pub fn models_dir(
-    env: Option<std::ffi::OsString>,
-    user_home: Option<PathBuf>,
-) -> Option<PathBuf> {
+pub fn models_dir(env: Option<std::ffi::OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
     env.filter(|e| !e.is_empty())
         .map(PathBuf::from)
         .or_else(|| Some(user_home?.join(".functor").join("models")))
@@ -75,15 +69,19 @@ pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, String> {
     while at + 8 <= bytes.len() {
         let id = &bytes[at..at + 4];
         let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
-        let body = &bytes[at + 8..(at + 8).saturating_add(len).min(bytes.len())];
+        let end = (at + 8).saturating_add(len);
         match id {
-            b"fmt " if body.len() >= 16 => {
+            _ if end > bytes.len() => return Err("the WAV is cut short".into()),
+            b"fmt " if len >= 16 => {
+                let body = &bytes[at + 8..end];
                 let u16_at = |i: usize| u16::from_le_bytes([body[i], body[i + 1]]);
                 let rate = u32::from_le_bytes(body[4..8].try_into().unwrap());
                 format = Some((u16_at(0), u16_at(2), rate, u16_at(14)));
             }
             b"data" => {
+                let body = &bytes[at + 8..end];
                 return match format {
+                    _ if len % 2 == 1 => Err("the WAV ends mid-sample".into()),
                     Some((1, 1, SAMPLE_RATE, 16)) => Ok(body
                         .as_chunks::<2>()
                         .0
@@ -140,6 +138,8 @@ mod tests {
         fast[24..28].copy_from_slice(&44_100u32.to_le_bytes());
         assert!(read_wav(&fast).is_err());
         assert!(read_wav(b"not a wav").is_err());
+        let whole = write_wav(&pcm);
+        assert!(read_wav(&whole[..whole.len() - 1]).is_err(), "cut short");
     }
 
     #[test]
