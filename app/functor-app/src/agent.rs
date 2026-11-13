@@ -81,37 +81,15 @@ pub fn permissions(repo_root: &Path) -> Permissions {
     }
 }
 
-/// What a review (D31) may do: read. Claude runs `mis-agent`'s read-only
-/// mode on [`permissions`] (`read_only` in its `RunOpts`): what no rule
-/// allows is denied, the only rules are its MCP server's tools, and the
-/// user's own settings are not loaded, as their rules could allow writes;
-/// so, unlike a task's run, a review is isolated from them (D19). Reading
-/// files and read-only shell commands (`ls`, `git log`) still work. Codex
-/// gets no permissions, which leaves `exec` in its read-only sandbox,
-/// unless its config chooses another ([`codex_reads_only`]).
-pub fn review_permissions(harness: Harness, repo_root: &Path) -> Option<Permissions> {
-    match harness {
-        Harness::Claude => Some(permissions(repo_root)),
-        Harness::Codex => None,
-    }
-}
-
-/// Why codex might not run read-only: its `config.toml` (`text`) names a
-/// `sandbox_mode` other than `read-only` anywhere, a profile's included.
-fn codex_reads_only(text: &str) -> Result<(), String> {
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().trim_matches(['"', '\'']);
-        if key.trim().trim_matches('"').ends_with("sandbox_mode") && value != "read-only" {
-            return Err(format!(
-                "codex's config sets sandbox_mode = \"{value}\", and a review must not edit: \
-                 choose Claude for reviews, or remove that line"
-            ));
-        }
-    }
-    Ok(())
+/// What a review (D31) may do: read. It runs `mis-agent`'s read-only mode
+/// (`read_only` in its `RunOpts`) on [`permissions`]: what no rule allows is
+/// denied, the only rule is its MCP server's tools, and the user's own
+/// settings are not loaded, as their rules could allow writes; so, unlike a
+/// task's run, a review is isolated from them (D19). Reading files and
+/// read-only shell commands (`ls`, `git log`) still work. Claude only: that
+/// mode has no Codex equivalent (`review::review_harness`).
+pub fn review_permissions(repo_root: &Path) -> Permissions {
+    permissions(repo_root)
 }
 
 /// The prompt for `message`: a new agent session gets the [`PREAMBLE`],
@@ -146,9 +124,7 @@ reverts it. You are read-only: do not try to edit files or run commands that cha
 1. Call `mcp__mis__task_change`. It gives the user's request, what the agent did, the change \
 with its diff, and the evidence the app has.
 2. Check what you can, with few tool calls. Read the changed code and the code it touches. Look \
-for mistakes, missed cases and side effects. You may launch a hidden copy of the game \
-(`launch_game` with this directory) to look at state or a capture; never connect to the user's \
-game. Do not do the agent's work again.
+for mistakes, missed cases and side effects. Do not do the agent's work again.
 3. Call `mcp__mis__report` once, then stop.
 
 The summary is one paragraph in Simplified Technical English (ASD-STE100):
@@ -164,9 +140,8 @@ backticks.
 nobody verified, what was assumed, a side effect, a risk. Write `[]` only when you checked and \
 found nothing.
 
-`evidence`: only checks that really ran, with their real result: yours (a state you read, a \
-capture you looked at) and the agent's, when its result shows in `task_change` (say they are the \
-agent's). Reading code is not evidence. Set `ok` false for a check that failed.
+`evidence`: only checks that really ran, with their real result, as `task_change` shows them \
+(say they are the agent's). Reading code is not evidence. Set `ok` false for a check that failed.
 
 `steps`: only when `task_change` says the agent gave no walkthrough: 1 to 4 highlights, each a \
 changed file range (`{\"kind\": \"file\", \"path\", \"lines\": [first, last]}`, the path relative \
@@ -658,12 +633,9 @@ async fn review(
     send: &impl Fn(ReviewEvent),
     cancel: &mut oneshot::Receiver<()>,
 ) -> Option<Option<String>> {
-    if let (Agents::Real, Harness::Codex) = (agents, spec.harness) {
-        let config = mis_agent::codex::codex_home().map(|d| d.join("config.toml"));
-        let text = config.ok().and_then(|f| std::fs::read_to_string(f).ok());
-        if let Err(e) = codex_reads_only(&text.unwrap_or_default()) {
-            return Some(Some(e));
-        }
+    // The core never asks for one: only Claude's can be held read-only.
+    if spec.harness != Harness::Claude {
+        return Some(Some(functor_app_core::review::NO_CODEX.to_string()));
     }
     let caller = Caller {
         task: spec.task,
@@ -702,22 +674,30 @@ async fn review(
         url: format!("{}/mcp", server.base),
         token: token.clone(),
     };
-    let permissions = review_permissions(spec.harness, &spec.repo_root);
+    let permissions = review_permissions(&spec.repo_root);
     let cwd = spec.dir.to_string_lossy();
     let opts = RunOpts {
         cwd: Some(&cwd),
         model: spec.model.as_deref(),
         mcp: Some(&mcp),
-        permissions: permissions.as_ref(),
+        permissions: Some(&permissions),
         read_only: true,
         ..RunOpts::default()
     };
     let prompt = review_prompt(spec.instructions.as_deref());
     let agent = agents.get(spec.harness, true);
-    let forward = |event: AgentEvent| send(ReviewEvent::Agent(event));
+    // The agent's own failure (a bad model, say) is the review's reason.
+    let failed = Mutex::new(None);
+    let forward = |event: AgentEvent| {
+        if let AgentEvent::Finished { ok: false, summary } = &event {
+            *failed.lock().expect("unpoisoned") = Some(summary.clone().unwrap_or("the agent failed".into()));
+        }
+        send(ReviewEvent::Agent(event));
+    };
     let max = Some(REVIEW_MAX_INPUT);
     let driven = drive(&*agent, &prompt, opts, &token, max, &forward, cancel);
     let outcome = match tokio::time::timeout(REVIEW_MAX_TIME, driven).await {
+        Ok(Some(Ok(()))) => Some(failed.lock().expect("unpoisoned").take()),
         Ok(outcome) => outcome.map(Result::err),
         Err(_) => Some(Some(format!("cut: over {} s", REVIEW_MAX_TIME.as_secs()))),
     };
@@ -1228,15 +1208,14 @@ mod tests {
         );
     }
 
-    /// A review is read-only by the harness's own rules, not by asking: for
-    /// Claude, what no rule allows is denied (no edits), the user's settings
-    /// (whose rules could allow writes) are not loaded, and the only rule is
-    /// the review's own tool server. Codex runs `exec` with no sandbox
-    /// override, read-only unless its config says otherwise.
+    /// A review is read-only by the harness's own rules, not by asking: what
+    /// no rule allows is denied (no edits), the user's settings (whose rules
+    /// could allow writes) are not loaded, and the only rule is the review's
+    /// own tool server.
     #[test]
     fn reviews_cannot_edit() {
         let root = std::env::temp_dir();
-        let p = review_permissions(Harness::Claude, &root).expect("claude's");
+        let p = review_permissions(&root);
         let mcp = Mcp {
             url: "http://127.0.0.1:9/mcp".into(),
             token: "t".into(),
@@ -1261,16 +1240,6 @@ mod tests {
         assert_eq!(argv[allowed + 1], "mcp__mis", "{argv:?}");
         assert!(argv[allowed + 2].starts_with("--"), "only its server: {argv:?}");
         assert!(argv.contains(&"--model=sonnet".to_string()), "{argv:?}");
-
-        assert_eq!(review_permissions(Harness::Codex, &root), None);
-        assert_eq!(codex_reads_only("model = \"gpt\"\n"), Ok(()));
-        assert_eq!(codex_reads_only("sandbox_mode = \"read-only\""), Ok(()));
-        for config in [
-            "sandbox_mode = \"workspace-write\"",
-            "[profiles.fast]\nsandbox_mode='danger-full-access'",
-        ] {
-            assert!(codex_reads_only(config).is_err(), "{config}");
-        }
     }
 
     /// A run cancelled before its tool server listens leaves no server.

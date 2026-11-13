@@ -634,11 +634,7 @@ export type Review = {
 /**
  * The run whose change it reviews; its events carry it.
  */
-run: number, 
-/**
- * That change (`Change::tree`).
- */
-tree: string, harness: Harness, 
+run: number, harness: Harness, 
 /**
  * As asked, until the agent reports its own.
  */

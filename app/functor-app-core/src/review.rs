@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::decision::{kind, Kind, Report};
+use crate::agent_view::WalkthroughStep;
+use crate::decision::{kind, size, Kind, Report};
 use crate::evidence::EvidenceState;
+use crate::print::cut;
 use crate::projects::project_prefix;
 use crate::tasks::{AgentEvent, Harness, Item, Task, Usage};
 
@@ -75,12 +77,26 @@ impl ReviewSetting {
 }
 
 /// The model a review runs when the setting names none: a cheaper, faster
-/// one where the harness has a name for it, else the harness's default.
+/// one than the harness's default.
 pub fn default_model(harness: Harness) -> Option<&'static str> {
     match harness {
         Harness::Claude => Some("sonnet"),
-        // Codex has no stable alias for a smaller model.
         Harness::Codex => None,
+    }
+}
+
+/// Why Codex cannot review: `mis-agent` (at its pinned rev) has no way to
+/// force its sandbox read-only, and its own config may choose another.
+pub const NO_CODEX: &str =
+    "Codex reviews cannot be held read-only yet: choose Claude for reviews";
+
+/// The harness a review runs on: the setting's, else the task's — but only
+/// Claude can be held read-only, so a Codex task's review runs on Claude and
+/// a setting naming Codex is refused ([`NO_CODEX`]).
+pub fn review_harness(setting: Option<Harness>) -> Result<Harness, &'static str> {
+    match setting {
+        Some(Harness::Codex) => Err(NO_CODEX),
+        _ => Ok(Harness::Claude),
     }
 }
 
@@ -91,14 +107,24 @@ pub fn default_model(harness: Harness) -> Option<&'static str> {
 pub struct Review {
     /// The run whose change it reviews; its events carry it.
     pub run: u64,
-    /// That change (`Change::tree`).
-    pub tree: String,
     pub harness: Harness,
     /// As asked, until the agent reports its own.
     pub model: Option<String>,
     pub state: ReviewState,
     /// The latest (cumulative) usage it reported.
     pub usage: Option<Usage>,
+    /// Its `report`, held until it ends and the files are measured unchanged
+    /// since it started; then the task's.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub staged: Option<(Report, Vec<WalkthroughStep>)>,
+}
+
+impl Review {
+    /// Still preparing, as review of run `run`.
+    pub fn preparing(&self, run: u64) -> bool {
+        self.run == run && self.state == ReviewState::Preparing
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +177,11 @@ const BRIEF_CALLS: usize = 40;
 /// the last run's calls and words, the change, the evidence so far and the
 /// agent's own report. The shell adds the diff.
 pub fn brief(task: &Task) -> String {
-    let mut out = format!("# Task: {}\n\nProject: `{}`. Paths are relative to the repo root.\n", task.title, task.project);
+    let mut out = format!(
+        "# Task: {}\n\nProject: `{}` (your working directory). The paths below are relative \
+         to the repo root; `report`'s step paths are relative to the project.\n",
+        task.title, task.project
+    );
     let users: Vec<&str> = (task.transcript.iter())
         .filter_map(|i| match i {
             Item::User { text } => Some(text.as_str()),
@@ -204,9 +234,8 @@ pub fn brief(task: &Task) -> String {
     }
     if let Some(change) = &task.change {
         let prefix = project_prefix(&task.project);
-        let (added, removed): (u32, u32) = (change.files.iter())
-            .fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
-        let files = change.files.len() as u32 + change.more;
+        let s = size(change, &task.project);
+        let (files, added, removed) = (s.files, s.added, s.removed);
         out += &format!("\n## The change\n\n{files} files, +{added} −{removed}:\n\n");
         for f in &change.files {
             let what = match kind(f, &prefix) {
@@ -230,7 +259,10 @@ pub fn brief(task: &Task) -> String {
         Some(EvidenceState::Same) => {
             "- The predicted path is the same under the old and the new code.\n".to_string()
         }
-        Some(EvidenceState::Taking) => "- The predicted path is being taken.\n".to_string(),
+        // Taken beside the review, which does not see the result.
+        Some(EvidenceState::Taking) => "- The app is comparing the predicted path under the old \
+            and the new code; the page shows the result. Do not report on it.\n"
+            .to_string(),
         Some(EvidenceState::Withheld { reason }) => format!("- No predicted path: {reason}.\n"),
         None => "- None.\n".to_string(),
     };
@@ -282,14 +314,6 @@ fn compact(input: &Value) -> String {
     one_line(&input.to_string())
 }
 
-/// `text`'s first `max` characters, `…` marking a cut.
-fn cut(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((at, _)) => format!("{}…", &text[..at]),
-        None => text.to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,9 +340,9 @@ mod tests {
     }
 
     #[test]
-    fn cuts_mark_themselves() {
-        assert_eq!(cut("abcdef", 3), "abc…");
-        assert_eq!(cut("abc", 3), "abc");
-        assert_eq!(cut("ééé", 2), "éé…");
+    fn only_claude_reviews() {
+        assert_eq!(review_harness(None), Ok(Harness::Claude));
+        assert_eq!(review_harness(Some(Harness::Claude)), Ok(Harness::Claude));
+        assert_eq!(review_harness(Some(Harness::Codex)), Err(NO_CODEX));
     }
 }

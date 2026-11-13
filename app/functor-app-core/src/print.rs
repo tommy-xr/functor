@@ -353,10 +353,14 @@ const CLIP_CHARS: usize = 200;
 
 /// `text` on one line, cut to [`CLIP_CHARS`] with `…`.
 fn clip(text: &str) -> String {
-    let line = text.replace('\n', "\\n");
-    match line.char_indices().nth(CLIP_CHARS) {
-        Some((at, _)) => format!("{}…", &line[..at]),
-        None => line,
+    cut(&text.replace('\n', "\\n"), CLIP_CHARS)
+}
+
+/// `text`'s first `max` characters, `…` marking a cut.
+pub(crate) fn cut(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
     }
 }
 

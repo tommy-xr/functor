@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::activity::{activities, Activity};
 use crate::agent_view::{
-    agent_view, app_context, auto_apply, prune_highlight, refresh_contexts, step_clicked,
-    AppContext, Highlight, ViewReply, ViewRequest,
+    agent_view, app_context, auto_apply, prune_highlight, publish_review, refresh_contexts,
+    step_clicked, AppContext, Highlight, ViewReply, ViewRequest,
 };
 use crate::changes::Change;
 use crate::creation::{
@@ -22,7 +22,8 @@ use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::review::{
-    brief, default_model, Review, ReviewEvent, ReviewSetting, ReviewSpec, ReviewState,
+    brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
+    ReviewState,
 };
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
@@ -1514,8 +1515,7 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
         return false;
     };
     if !state.harnesses.contains(&harness) {
-        let name = harness.name();
-        return reject(commands, format!("{name} is not available on this machine"));
+        return reject(commands, unavailable(harness));
     }
     if state.harness_choice.get(path) == Some(&harness) {
         return false;
@@ -2049,6 +2049,8 @@ fn revert(state: &mut AppState, id: u64, tree: &str, commands: &mut Vec<Command>
     }
     let paths = change.paths();
     task.reverting = true;
+    // It would read a tree half put back.
+    drop_review(task, commands);
     commands.push(Command::Revert {
         task: id,
         baseline: task.baseline.clone().expect("reviewable"),
@@ -2186,6 +2188,10 @@ fn end_evidence(task: &mut Task, commands: &mut Vec<Command>) {
     drop_files(task.evidence.take(), commands);
 }
 
+fn unavailable(harness: Harness) -> String {
+    format!("{} is not available on this machine", harness.name())
+}
+
 /// Records `setting` as the active project's review setting.
 fn set_review(state: &mut AppState, setting: ReviewSetting, commands: &mut Vec<Command>) -> bool {
     let Some(path) = state.active.clone() else {
@@ -2195,9 +2201,11 @@ fn set_review(state: &mut AppState, setting: ReviewSetting, commands: &mut Vec<C
         Ok(setting) => setting,
         Err(reason) => return reject(commands, reason),
     };
+    if let Err(reason) = review_harness(setting.harness) {
+        return reject(commands, reason.to_string());
+    }
     if let Some(h) = setting.harness.filter(|h| !state.harnesses.contains(h)) {
-        let name = h.name();
-        return reject(commands, format!("{name} is not available on this machine"));
+        return reject(commands, unavailable(h));
     }
     if state.review_settings.get(&path) == Some(&setting) {
         return false;
@@ -2226,7 +2234,10 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
     if !state.can_review || !setting.on || !ready {
         return false;
     }
-    let harness = setting.harness.unwrap_or(task.harness);
+    let (harness, refused) = match review_harness(setting.harness) {
+        Ok(harness) => (harness, None),
+        Err(reason) => (Harness::Codex, Some(reason.to_string())),
+    };
     let model = setting.model.or(default_model(harness).map(String::from));
     let spec = ReviewSpec {
         task: id,
@@ -2240,23 +2251,22 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
         tree: change.tree.clone(),
         brief: brief(task),
     };
-    let review_state = match state.harnesses.contains(&harness) {
-        true => {
-            commands.push(Command::StartReview(Box::new(spec.clone())));
+    let unavailable = (!state.harnesses.contains(&harness)).then(|| unavailable(harness));
+    let review_state = match refused.or(unavailable) {
+        None => {
+            commands.push(Command::StartReview(Box::new(spec)));
             ReviewState::Preparing
         }
-        false => ReviewState::Failed {
-            reason: format!("{} is not available on this machine", harness.name()),
-        },
+        Some(reason) => ReviewState::Failed { reason },
     };
     let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
     task.review = Some(Review {
         run,
-        tree: spec.tree,
         harness,
         model,
         state: review_state,
         usage: None,
+        staged: None,
     });
     commands.push(save(&root, task));
     true
@@ -2273,12 +2283,10 @@ fn on_review(
     let root = PathBuf::from(&state.repo_root);
     // A cancelled or superseded review's late events find none preparing.
     let Some(task) = state.tasks.iter_mut().find(|t| {
-        t.id == id
-            && (t.review.as_ref()).is_some_and(|r| r.run == run && r.state == ReviewState::Preparing)
+        t.id == id && t.review.as_ref().is_some_and(|r| r.preparing(run))
     }) else {
         return false;
     };
-    let reported = task.report.as_ref().is_some_and(|r| r.reviewed);
     let review = task.review.as_mut().expect("found");
     match event {
         ReviewEvent::Agent(AgentEvent::Started { model, .. }) => {
@@ -2291,8 +2299,11 @@ fn on_review(
             false
         }
         ReviewEvent::Agent(_) => false,
+        // The shell measured the files after it: a change since its start
+        // has already failed it (`on_change`), so its report stands.
         ReviewEvent::Ended { error } => {
-            review.state = match (reported, error) {
+            let reported = publish_review(task, commands);
+            task.review.as_mut().expect("found").state = match (reported, error) {
                 (true, _) => ReviewState::Prepared,
                 (false, Some(reason)) => ReviewState::Failed { reason },
                 (false, None) => ReviewState::Failed {
@@ -4506,21 +4517,24 @@ mod tests {
             "No check was reported and no path was compared."
         );
 
-        // Only the review reports, and its report replaces the agent's.
+        // Only the review reports; its report waits for its end (the files
+        // measured unchanged), then replaces the agent's.
         let (same, commands) = update(s.clone(), report_from(false));
         assert!(!view_reply(&commands).ok);
         assert_eq!(task(&same, 1).report, task(&s, 1).report);
         let (s, commands) = update(s, report_from(true));
         let reply = view_reply(&commands);
         assert!(reply.ok, "{reply:?}");
+        assert!(!task(&s, 1).report.as_ref().unwrap().reviewed, "held");
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, review_ended(None));
+        assert_eq!(review_state(&s), Some(&ReviewState::Prepared));
+        assert!(commands.iter().any(|c| matches!(c, Command::SaveTask { .. })));
         let report = task(&s, 1).report.clone().expect("the review's");
         assert!(report.reviewed);
         assert_eq!(report.notes, Some(vec!["Nobody tried it with a gamepad.".into()]));
         assert_eq!(s.decisions[&1].reason, "The review notes 1 thing.");
         assert!(s.decisions[&1].style.is_empty());
-        let (s, commands) = update(s, review_ended(None));
-        assert_eq!(review_state(&s), Some(&ReviewState::Prepared));
-        assert!(commands.iter().any(|c| matches!(c, Command::SaveTask { .. })));
         // Late events and reports find no review preparing.
         let (late, commands) = update(s.clone(), report_from(true));
         assert!(!view_reply(&commands).ok);
@@ -4559,15 +4573,34 @@ mod tests {
         let (s, commands) = update(s, ended(1, 0));
         assert!(review_specs(&commands).is_empty());
         assert_eq!(task(&s, 1).review, None);
-        // A harness that is not installed fails it at once, with the reason.
-        let mut s = AppState {
+        // Claude not installed fails it at once, with the reason.
+        let s = AppState {
             can_review: true,
-            harnesses: vec![Harness::Claude],
+            harnesses: vec![Harness::Codex],
             ..tracked()
         };
+        let (s, _) = update(s, new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(review_specs(&commands).is_empty());
+        let reason = "claude is not available on this machine".to_string();
+        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+        // Codex cannot be held read-only: refused as a setting, and a stored
+        // one fails the review saying so.
         let codex = ReviewSetting {
             harness: Some(Harness::Codex),
             ..Default::default()
+        };
+        let set = client(ClientMsg::SetReview {
+            setting: codex.clone(),
+        });
+        let (_, commands) = update(s, set);
+        assert_eq!(commands[..1], rejected(crate::review::NO_CODEX));
+        let mut s = AppState {
+            can_review: true,
+            ..tracked()
         };
         s.review_settings.insert("examples/a".into(), codex);
         let (s, _) = update(s, new_task("Make it spin"));
@@ -4576,22 +4609,45 @@ mod tests {
         let (s, _) = update(s, change(1, "tree-1", one_file(2)));
         let (s, commands) = update(s, ended(1, 0));
         assert!(review_specs(&commands).is_empty());
-        let reason = "codex is not available on this machine".to_string();
+        let reason = crate::review::NO_CODEX.to_string();
         assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
-        // Setting an agent that is not there is refused.
-        let (_, commands) = update(
-            s,
-            client(ClientMsg::SetReview {
-                setting: ReviewSetting {
-                    harness: Some(Harness::Codex),
-                    ..Default::default()
-                },
-            }),
-        );
-        assert_eq!(
-            commands[..1],
-            rejected("codex is not available on this machine")
-        );
+    }
+
+    /// A Codex task's change is reviewed on Claude, and a check the agent
+    /// reported failed stays, so the verdict still leads with it.
+    #[test]
+    fn a_codex_tasks_review_runs_on_claude_and_keeps_failed_checks() {
+        let s = AppState {
+            can_review: true,
+            ..tracked()
+        };
+        let codex_task = Event::NewTask {
+            id: Ok(1),
+            message: "Make it spin".into(),
+            harness: Harness::Codex,
+        };
+        let (s, _) = update(s, codex_task);
+        let (mut s, _) = update(s, baseline(1, 0, "tree-1"));
+        s.tasks[0].report = Some(crate::decision::Report {
+            summary: Some("Done.".into()),
+            notes: Some(vec![]),
+            evidence: vec![crate::decision::Check {
+                ran: "functor test".into(),
+                result: "1 of 3 expects pass".into(),
+                ok: false,
+            }],
+            reviewed: false,
+        });
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(review_specs(&commands)[0].harness, Harness::Claude);
+        let (s, _) = update(s, report_from(true));
+        let (s, _) = update(s, review_ended(None));
+        let report = task(&s, 1).report.clone().unwrap();
+        assert!(report.reviewed);
+        assert_eq!(report.evidence[0].ran, "functor test");
+        assert_eq!(s.decisions[&1].reason, "A check failed: functor test.");
     }
 
     #[test]
@@ -4629,10 +4685,9 @@ mod tests {
         assert_eq!(task(&kept, 1).status, TaskStatus::Kept);
         assert_eq!(review_stops(&commands), 1);
         assert_eq!(task(&kept, 1).review, None);
-        // So does Revert; once written, the review is gone.
+        // So does Revert, as it starts writing.
         let (s2, commands) = update(s.clone(), revert(1));
         assert!(task(&s2, 1).reverting, "{commands:?}");
-        let (s2, commands) = update(s2, reverted(1, "tree-1", Ok(())));
         assert_eq!(review_stops(&commands), 1);
         assert_eq!(task(&s2, 1).review, None);
         // A follow-up supersedes it.

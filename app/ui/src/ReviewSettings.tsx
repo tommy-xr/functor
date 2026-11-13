@@ -1,23 +1,20 @@
 import { useEffect, useState } from "react";
-import type { AppState, Harness, ReviewSetting } from "./generated/protocol";
+import type { AppState, ReviewSetting } from "./generated/protocol";
 import { useMenu } from "./menu";
 import { modelHint, reviewSetting } from "./review-model";
 
 /**
  * Beside the agent picker: how the active project's changes are reviewed
- * (D31) — on or off, and the review's agent, model and instructions. Each
- * change is saved as it is made (text fields when they lose focus).
+ * (D31) — on or off, and the review's model and instructions. Each change
+ * is saved as it is made (text fields when they lose focus).
  */
 export function ReviewSettings({
   state,
   online,
-  harness,
   onChange,
 }: {
   state: AppState | null;
   online: boolean;
-  /** The agent new tasks start with: the review's, unless the setting names one. */
-  harness: Harness;
   onChange: (setting: ReviewSetting) => void;
 }) {
   const { open, setOpen, ref, onKeyDown } = useMenu();
@@ -55,28 +52,13 @@ export function ReviewSettings({
             When a change waits for you, a read-only agent writes its summary, evidence and things to note. Off, the working agent's
             own report is shown.
           </p>
-          <label className="review-field">
-            <span>Agent</span>
-            <select
-              className="text-input"
-              value={setting.harness ?? ""}
-              disabled={!editable}
-              onChange={(e) => save({ harness: (e.target.value || null) as Harness | null })}
-            >
-              <option value="">Same as the task</option>
-              {(state?.harnesses ?? []).map((h) => (
-                <option key={h} value={h}>
-                  {h}
-                </option>
-              ))}
-            </select>
-          </label>
+          <p className="review-help">Agent: Claude, for every task. Codex reviews cannot be held read-only yet.</p>
           <label className="review-field">
             <span>Model</span>
             <input
               className="text-input"
               value={model}
-              placeholder={modelHint(setting, harness)}
+              placeholder={modelHint()}
               disabled={!editable}
               spellCheck={false}
               onChange={(e) => setModel(e.target.value)}

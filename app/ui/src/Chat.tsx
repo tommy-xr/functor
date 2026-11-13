@@ -218,7 +218,7 @@ export function ChatDock({
           pickable={current === null}
           onHarness={(h) => send({ type: "set_harness", harness: h })}
           review={
-            <ReviewSettings state={state} online={online} harness={harness} onChange={(setting) => send({ type: "set_review", setting })} />
+            <ReviewSettings state={state} online={online} onChange={(setting) => send({ type: "set_review", setting })} />
           }
           running={running}
           busy={pending !== null}

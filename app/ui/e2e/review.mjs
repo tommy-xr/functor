@@ -62,7 +62,7 @@ async function prepared(browser, size) {
     await shot(page, `review-preparing-${size[0]}`);
     // Then the review's report, labelled, and the verdict on it.
     const by = p.getByTestId("first-review-by");
-    await expect(by).toHaveText("Prepared by a separate review (claude · claude-review-model · 41k tokens in)", { timeout: 15_000 });
+    await expect(by).toHaveText("Prepared by a separate review (claude · claude-review-model · 41.2k tokens in)", { timeout: 15_000 });
     await expect(p.getByTestId("first-review-preparing")).toHaveCount(0);
     await expect(p.getByTestId("first-summary")).toHaveText(/^The agent changed the colour of the cube in `game\.fun` from blue to amber\./);
     await expect(p.getByTestId("first-verdict")).toHaveText("Look into thisThe review notes 1 thing.");
@@ -119,7 +119,7 @@ async function off(browser, size) {
     const toggle = page.locator(".chat").getByRole("button", { name: "Review on" });
     await toggle.click();
     const panel = page.getByRole("dialog", { name: "Review settings" });
-    await expect(panel.getByLabel("Model")).toHaveAttribute("placeholder", "sonnet (default for claude)");
+    await expect(panel.getByLabel("Model")).toHaveAttribute("placeholder", "sonnet (default)");
     await shot(page, `review-settings-${size[0]}`);
     // It shows the core's setting: unchecked once the core has it.
     const on = panel.getByLabel("Prepare a separate review");

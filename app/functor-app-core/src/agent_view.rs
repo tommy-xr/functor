@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::decision::{style_flags, Check, Report};
 use crate::layout::{LayoutOp, Placed, Placement, Target, View};
 use crate::projects::check_relative;
-use crate::review::ReviewState;
 use crate::session::{Session, SessionMode, SessionStatus};
 use crate::state::{
     broadcast_items, check_view, layout_op, placement, save, save_layout, AppState, Command,
@@ -292,7 +291,7 @@ pub(crate) fn agent_view(
     commands: &mut Vec<Command>,
 ) -> bool {
     let handled = match review {
-        true => report(state, task, run, request, commands),
+        true => report(state, task, run, request),
         false => handle(state, task, run, request, commands),
     };
     let (ok, message, changed) = match handled {
@@ -303,14 +302,14 @@ pub(crate) fn agent_view(
     changed
 }
 
-/// A review's `report`: its report replaces the agent's, and its steps
-/// become the walkthrough when the run that made the change gave none.
+/// A review's `report`, held with the review (a later call replaces it)
+/// until it ends: then its report replaces the agent's, and its steps become
+/// the walkthrough when the run that made the change gave none.
 fn report(
     state: &mut AppState,
     id: u64,
     run: u64,
     request: ViewRequest,
-    commands: &mut Vec<Command>,
 ) -> Result<(String, bool), String> {
     let ViewRequest::Report {
         summary,
@@ -321,10 +320,8 @@ fn report(
     else {
         return Err("a review only reports: nothing was shown".to_string());
     };
-    let preparing = |t: &crate::tasks::Task| {
-        t.id == id
-            && (t.review.as_ref()).is_some_and(|r| r.run == run && r.state == ReviewState::Preparing)
-    };
+    let preparing =
+        |t: &crate::tasks::Task| t.id == id && t.review.as_ref().is_some_and(|r| r.preparing(run));
     let task = state
         .tasks
         .iter()
@@ -341,14 +338,14 @@ fn report(
     let flags = style_flags(report.summary.as_deref().unwrap_or_default());
     let mut also = String::new();
     let steps = match (steps.is_empty(), walked) {
-        (true, _) => None,
+        (true, _) => vec![],
         (false, true) => {
             also = " The agent's own walkthrough stays: your steps were left out.".to_string();
-            None
+            vec![]
         }
         _ if state.active.as_deref() != Some(project.as_str()) => {
             also = " The user has another project open: your steps were left out.".to_string();
-            None
+            vec![]
         }
         (false, false) => {
             check_steps(&steps)?;
@@ -356,30 +353,49 @@ fn report(
                 check_target(state, &project, id, &step.view)
                     .map_err(|e| format!("step {}: {e}; nothing was saved", i + 1))?;
             }
-            Some(steps)
+            steps
         }
     };
-    let root = Path::new(&state.repo_root).to_path_buf();
     let task = state.tasks.iter_mut().find(|t| preparing(t)).expect("found");
-    task.report = Some(Report {
-        reviewed: true,
-        ..report
-    });
-    if let Some(steps) = steps {
-        task.transcript.push(Item::Walkthrough {
-            steps,
-            current: None,
-        });
-        broadcast_items(commands, task, vec![task.transcript.len() - 1]);
-    }
-    commands.push(save(&root, task));
+    task.review.as_mut().expect("found").staged = Some((report, steps));
     if !flags.is_empty() {
         also += &format!(
             " Its summary breaks Simplified Technical English rules: {} Call `report` again to fix it, or stop.",
             flags.join(" ")
         );
     }
-    Ok((format!("Saved on the decision page.{also}"), true))
+    let saved = "Saved: it shows on the decision page when you stop.";
+    Ok((format!("{saved}{also}"), false))
+}
+
+/// A review that ended: its staged report replaces the agent's, keeping the
+/// agent's failed checks (the verdict's first rule reads them), and its
+/// steps become the walkthrough. Whether it had one.
+pub(crate) fn publish_review(task: &mut crate::tasks::Task, commands: &mut Vec<Command>) -> bool {
+    let Some((mut report, steps)) = task.review.as_mut().and_then(|r| r.staged.take()) else {
+        return false;
+    };
+    // First, so the cap never drops them.
+    let mut evidence: Vec<Check> = (task.report.iter())
+        .flat_map(|r| &r.evidence)
+        .filter(|c| !c.ok && !report.evidence.contains(c))
+        .cloned()
+        .collect();
+    evidence.append(&mut report.evidence);
+    evidence.truncate(crate::decision::MAX_ITEMS);
+    report.evidence = evidence;
+    task.report = Some(Report {
+        reviewed: true,
+        ..report
+    });
+    if !steps.is_empty() {
+        task.transcript.push(Item::Walkthrough {
+            steps,
+            current: None,
+        });
+        broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+    }
+    true
 }
 
 fn handle(
