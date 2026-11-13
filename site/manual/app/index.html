@@ -75,8 +75,8 @@
             <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-loop.png" />
             <img
               src="../../media/app-loop.gif"
-              width="1440"
-              height="900"
+              width="1200"
+              height="675"
               alt="The desktop app on the platformer: the hero's jump falls into the gap, the game is paused and dragged back to before the run, and its predicted path falls into the gap; a request is typed, the agent edits jumpVelocity in game.fun, the paused game reloads and the predicted path now clears the gap; played again, the jump clears it, and the change is kept"
             />
           </picture>
@@ -92,7 +92,10 @@
           </p>
           <pre class="shell">npm run build:app          # the UI bundle, then target/release/functor-app
 npm run build:cli          # target/release/functor, built separately</pre>
-          <p>Then open a project. Bare <code>functor</code> opens the app; so does <code>functor app</code>:</p>
+          <p>
+            Then open a project. Once the app is built, bare <code>functor</code> opens it; so
+            does <code>functor app</code>:
+          </p>
           <pre class="shell">./target/release/functor -d examples/primitives</pre>
           <p>
             <code>functor</code> looks for <code>functor-app</code> next to itself, then in
@@ -153,7 +156,7 @@ npm run build:cli          # target/release/functor, built separately</pre>
             Play on the <a href="#time">transport bar</a> to run it, then click the view to play:
             keys and mouse go to the game until you press Esc. While paused, input is not
             forwarded. <em>Stop game</em> ends the process; <em>Start game</em> brings it back,
-            paused on its first frame.
+            paused on its first frame again.
           </p>
           <p>The control beside Start/Stop chooses where the game shows:</p>
           <table>
@@ -168,7 +171,10 @@ npm run build:cli          # target/release/functor, built separately</pre>
             </tr>
             <tr>
               <td>Own window</td>
-              <td>The game in its own OS window. Switching to or from it restarts a running game.</td>
+              <td>
+                The game in its own OS window. It has no transport bar there, so it runs at
+                once instead of opening paused. Switching to or from it restarts a running game.
+              </td>
             </tr>
             <tr>
               <td>Headset</td>
@@ -269,8 +275,8 @@ npm run build:cli          # target/release/functor, built separately</pre>
               <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-review.png" />
               <img
                 src="../../media/app-review.gif"
-                width="1440"
-                height="900"
+                width="963"
+                height="821"
                 loading="lazy"
                 alt="After a run, the walkthrough card steps through the changed line of game.fun, opened beside the game, then the diff, then the game, and Keep change is clicked"
               />
@@ -301,8 +307,8 @@ npm run build:cli          # target/release/functor, built separately</pre>
               <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-transport.png" />
               <img
                 src="../../media/app-transport.gif"
-                width="1280"
-                height="372"
+                width="561"
+                height="440"
                 loading="lazy"
                 alt="The game pane's transport bar: the game is paused mid-jump, walked back and forward a frame at a time, dragged back along the rail past its key marks to before the run, and resumed"
               />
@@ -406,9 +412,13 @@ npm run build:cli          # target/release/functor, built separately</pre>
             the old code and once under the new, and shows both with the path drawn. Your own
             game and files are only read.
           </p>
-          <p>It shows nothing, and says why, when:</p>
+          <p>
+            A change that touches none of the project's top-level <code>.fun</code>,
+            <code>.funi</code> or <code>functor.json</code> files gets no path at all. Otherwise
+            it shows nothing, and says why, when:
+          </p>
           <ul>
-            <li>the change touches no game code, or moves nothing on the path;</li>
+            <li>the change moves nothing on the path;</li>
             <li>no game was running when the task started;</li>
             <li>the game had run longer than its recorded inputs reach back (about 15 s);</li>
             <li>the game made network requests, which a replay would send again;</li>
@@ -447,7 +457,8 @@ npm run build:cli          # target/release/functor, built separately</pre>
             </li>
             <li>
               <strong>Over the cable.</strong> Plug the headset in with USB (needs
-              <code>adb</code> and USB debugging allowed). Its card in Devices offers
+              <code>adb</code>, USB debugging allowed, and a debug build of the headset app,
+              which <code>npm run build:oculus:apk</code> makes). Its card in Devices offers
               <em>Pair over the cable</em>: one click, no code.
             </li>
           </ul>
@@ -493,11 +504,13 @@ npm run build:cli          # target/release/functor, built separately</pre>
           <p>A toast in the headset follows it:</p>
           <table>
             <tr><th>Toast</th><th>Means</th></tr>
+            <tr><td>Microphone</td><td>Allow the microphone in the headset, then hold again.</td></tr>
             <tr><td>Listening…</td><td>Recording, with a level meter. Clips stop at one minute.</td></tr>
             <tr><td>Sending… / Heard</td><td>The clip reached the desktop; the words it heard appear.</td></tr>
             <tr><td>Working…</td><td>The agent is on it.</td></tr>
             <tr><td>Reloaded</td><td>The game in the headset reloaded with the agent's edit.</td></tr>
             <tr><td>Failed / Not sent</td><td>With the reason on the second line.</td></tr>
+            <tr><td>Not connected</td><td>The headset is paired but the link is down. See the states above.</td></tr>
           </table>
           <p>
             Voice needs an app built with speech-to-text. It has been tested with a tone in
@@ -521,8 +534,10 @@ npm run build:cli          # target/release/functor, built separately</pre>
               <strong>It uses your own agent settings</strong>, today: your instructions, hooks,
               MCP servers and allow rules load as they do in your terminal. The app adds two
               things: edits inside the repository are accepted without asking, and anything
-              else that no rule of yours allows is denied rather than asked. The separate
-              review is the exception: it loads none of your settings and cannot write.
+              else that no rule allows is denied rather than asked. Shell commands differ by
+              agent: Claude Code runs only the ones your own rules allow; Codex runs any, inside
+              its sandbox on the repository. The separate review is the exception: it loads
+              none of your settings and cannot write.
             </li>
             <li>
               <strong>The UI listens on loopback only</strong> (<code>127.0.0.1</code>), and the
@@ -537,16 +552,20 @@ npm run build:cli          # target/release/functor, built separately</pre>
             </li>
             <li>
               <strong>Speech-to-text is local.</strong> Audio is transcribed on this machine
-              (whisper.cpp) and dropped. The only download is the model itself, once, on first
-              use: about 148 MB, checked against its hash.
+              (whisper.cpp) and dropped; headset clips are kept, under
+              <code>~/.functor/app/voice</code>, only if you set
+              <code>FUNCTOR_APP_KEEP_AUDIO</code>. The only download is the model itself, once,
+              on first use: about 148 MB, checked against its hash.
             </li>
             <li>
               <strong>Where data lives.</strong> Tasks, transcripts, layouts, pairings and the
               snapshots behind Revert are in <code>~/.functor/app</code>
               (<code>FUNCTOR_APP_HOME</code> overrides). Speech models are in
-              <code>~/.functor/models</code> (<code>FUNCTOR_MODELS</code> overrides). Nothing is
-              written into your repository except the agent's edits, and your git history,
-              index and stash are only read.
+              <code>~/.functor/models</code> (<code>FUNCTOR_MODELS</code> overrides). The app
+              keeps none of its own files in your repository, and your git history, index and
+              stash are only read. What does change there: the agent's edits, and whatever
+              running the game writes anyway (<code>functor run</code> regenerates
+              <code>assets.fun</code> when assets change).
             </li>
           </ul>
         </section>
@@ -583,7 +602,7 @@ FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens
           <table>
             <tr><th>You see</th><th>Do this</th></tr>
             <tr>
-              <td><code>functor-app not found (looked for …)</code></td>
+              <td><code>functor-app not found (looked for …)</code>, or bare <code>functor</code> prints help</td>
               <td>
                 Build it (<code>npm run build:app</code>), or point
                 <code>FUNCTOR_APP_BIN</code> at the binary.
@@ -601,8 +620,12 @@ FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens
               </td>
             </tr>
             <tr>
-              <td>no agent is installed on the computer</td>
-              <td>Install Claude Code or Codex so <code>claude</code> or <code>codex</code> is on <code>PATH</code>, then open the app again.</td>
+              <td>claude is not available on this machine (or codex)</td>
+              <td>
+                Install that agent so its command is on <code>PATH</code>, then open the app
+                again. Reviews need Claude Code: with only Codex installed, turn
+                <em>Review</em> off.
+              </td>
             </tr>
             <tr>
               <td>This folder is not a git repository, so changes are not tracked.</td>

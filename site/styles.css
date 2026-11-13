@@ -2110,9 +2110,10 @@ a:hover {
   margin: 24px 0;
 }
 
+/* Never wider than its own pixels: a small capture stays sharp. */
 .docs-figure img {
   display: block;
-  width: 100%;
+  max-width: 100%;
   height: auto;
   border: 1px solid var(--line);
   border-radius: 6px;

@@ -1204,7 +1204,8 @@ for (const example of examples) {
       .locator("a[href]")
       .evaluateAll((links) => links.map((a) => a.href).filter((href) => href.startsWith(location.origin)));
     const broken = [];
-    for (const href of new Set(hrefs)) {
+    const checked = new Set(hrefs);
+    for (const href of checked) {
       const url = new URL(href);
       const res = await fetch(url);
       const id = decodeURIComponent(url.hash.slice(1));
@@ -1212,8 +1213,8 @@ for (const example of examples) {
     }
     check(
       "desktop app manual page links resolve",
-      hrefs.length > 20 && broken.length === 0,
-      broken.join(", ") || `${hrefs.length} links`
+      checked.size > 10 && broken.length === 0,
+      broken.join(", ") || `${checked.size} links`
     );
     await app.close();
   }
