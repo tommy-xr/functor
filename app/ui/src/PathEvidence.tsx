@@ -47,6 +47,35 @@ export function PathCard({ task }: { task: Task }) {
   );
 }
 
+/**
+ * The decision page's pair, in place (D35): two fixed frames that fill when
+ * the captures arrive, so nothing under them moves. Nothing unless they are
+ * shown or being taken. A click opens them on the Captures tab.
+ */
+export function PairFrames({ task, onOpen }: { task: Task; onOpen: () => void }) {
+  const state = task.evidence?.state;
+  if (state?.kind !== "shown" && state?.kind !== "taking") return null;
+  const from = momentPhrase(task);
+  return (
+    <figure className="pair-frames" data-testid="decision-pair" aria-busy={state.kind === "taking"}>
+      <button type="button" className="pair-frames-button" aria-label="Before and after: open on the Captures tab" onClick={onOpen}>
+        {(["before", "after"] as const).map((side) => (
+          <span key={side} className="pair-side">
+            <span className="pair-frame">
+              {state.kind === "shown" ? <img src={evidenceUrl(state[side])} alt={alt(side, from)} /> : <span className="pair-wait">Predicting…</span>}
+            </span>
+            <span className="pair-label">{side === "before" ? "Before" : "After"}</span>
+          </span>
+        ))}
+      </button>
+      {/* The moment is known before the captures: the caption never changes. */}
+      <figcaption className="pair-frames-caption">
+        {from ? `Predicted path from ${from}, under the old code and the new.` : "Predicted path under the old code and the new."}
+      </figcaption>
+    </figure>
+  );
+}
+
 /** The task page's paths: the pair side by side, else why there is none. */
 export function PathSection({ task }: { task: Task }) {
   const [open, setOpen] = useState(false);

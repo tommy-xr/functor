@@ -163,8 +163,8 @@ async function tasksView(browser, width, height) {
     const section = (name) => taskPage.getByRole("region", { name });
     await expect(section("What the agent was given").locator(".task-given")).toHaveText(READY);
     await expect(section("Steps").getByTestId("task-step")).toHaveText(["Readgame.fun", "Editedgame.fun"]);
-    await expect(section("Change").getByTestId("task-change")).toContainText("1 file +1 −1");
-    await expect(section("Change").locator(".task-change-files")).toContainText("examples/counter/game.fun");
+    // While its change waits, the decision page leads (decision.mjs covers it).
+    await expect(taskPage.getByTestId("first-size")).toHaveText("+1 −1 1 file · game logic");
     await expect(section("Usage").getByTestId("task-usage").locator("tbody tr")).toHaveText(["14.1k52"]);
     await expect(section("Usage").locator("tfoot")).toHaveText("1 turn4.1k52");
     await expect(taskPage.getByRole("region", { name: "Walkthrough" })).toHaveCount(0);
@@ -175,17 +175,16 @@ async function tasksView(browser, width, height) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await step(page, width);
 
-    // Open changes puts the Changes tab beside the page.
-    await section("Change").getByRole("button", { name: "Open changes" }).click();
-    await expect(page.getByRole("tab", { name: `Changes · ${READY}` })).toHaveAttribute("aria-selected", "true");
+    // Its Changes tab shows the diff in place.
+    await taskPage.getByRole("tab", { name: "Changes", exact: true }).click();
+    await expect(taskPage.getByTestId("diff-view")).toContainText("examples/counter/game.fun");
     await expect(readyTab).toHaveAttribute("aria-selected", "true");
     await step(page, width);
 
     // Keep from the page: the same keep as the Changes tab, and the task is done.
-    await section("Change").getByRole("button", { name: "Keep change" }).click();
+    await taskPage.getByRole("button", { name: "Keep change" }).click();
     await expect(taskPage.getByTestId("task-page-status")).toHaveText("Kept");
     await expect(section("Change").getByTestId("task-change-closed")).toHaveText("The change was kept just now.");
-    await expect(page.getByTestId("diff-empty")).toHaveText("The change was kept. Nothing left to review.");
     await expect(titles("done")).toHaveText([READY, KEPT]);
     await expect(pane.locator('[data-group="review"]')).toHaveCount(0);
     await expect(rail.getByTestId("tasks-badge")).toHaveText("1");

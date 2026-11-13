@@ -1,0 +1,6 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-decision-bare", "model": "claude-model"}}
+{"ms": 100, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "Color.rgb(0.3, 0.65, 0.9)", "new_string": "Color.rgb(0.95, 0.6, 0.2)"}}}
+{"ms": 150, "edit": {"path": "game.fun", "old": "Color.rgb(0.3, 0.65, 0.9)", "new": "Color.rgb(0.95, 0.6, 0.2)"}}
+{"ms": 200, "event": {"type": "tool_result", "content": "The file has been updated."}}
+{"ms": 300, "event": {"type": "text", "text": "The cube is amber now."}}
+{"ms": 350, "event": {"type": "finished", "ok": true, "summary": "The cube is amber now."}}

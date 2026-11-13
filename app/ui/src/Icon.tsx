@@ -73,6 +73,8 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   alert: <path d="M12 4l9 16H3zM12 10v4M12 17h.01" />,
+  check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  cross: <path d="M6 6l12 12M18 6L6 18" />,
 };
 
 export function Icon({ name }: { name: keyof typeof ICONS }) {
