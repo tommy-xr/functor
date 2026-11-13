@@ -1048,6 +1048,11 @@ fn respond_report<T: serde::Serialize>(
 const STREAM_IDLE_CHECK: Duration = Duration::from_secs(1);
 /// An uncapped stream's read-ahead frame older than this is skipped.
 const STREAM_STALE_MS: f64 = 100.0;
+/// A multipart part no newer frame follows within this is sent again, with
+/// its original headers: a browser `<img>` shows a part only once the next
+/// one arrives, and a paused hidden session renders only when its picture
+/// can change.
+const STREAM_REPEAT_AFTER: Duration = Duration::from_millis(50);
 
 /// Serve `GET /stream` until the client goes away (see [`frame_stream`]).
 fn stream_frames(
@@ -1093,10 +1098,19 @@ fn stream_frames(
     // By deadline, so `fps` is the mean rate rather than interval + wait.
     let mut pacer = crate::FramePacer::new(params.interval());
     let mut seen = 0;
+    // The last part written, until it has been repeated.
+    let mut unrepeated: Option<Vec<u8>> = None;
     loop {
         std::thread::sleep(pacer.delay(Instant::now()));
         tap.request();
-        let Some((seq, frame)) = tap.newer_than(seen, STREAM_IDLE_CHECK) else {
+        let wait = if unrepeated.is_some() { STREAM_REPEAT_AFTER } else { STREAM_IDLE_CHECK };
+        let Some((seq, frame)) = tap.newer_than(seen, wait) else {
+            if let Some(part) = unrepeated.take() {
+                if stream.write_all(&part).is_err() {
+                    return;
+                }
+                continue;
+            }
             // No frame yet: stop if the client left or the render loop ended.
             if client_closed(&stream) || tap.is_closed() {
                 return;
@@ -1120,6 +1134,8 @@ fn stream_frames(
         if stream.write_all(&part).is_err() {
             return;
         }
+        // Only an `<img>` (multipart) needs it.
+        unrepeated = (!params.octet).then_some(part);
     }
 }
 
