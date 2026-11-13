@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::changes::{Change, FileChange};
 use crate::evidence::EvidenceState;
+use crate::projects::project_prefix;
 use crate::tasks::{has_change, Task};
 
 /// A glance needs at most this many changed lines (added + removed)…
@@ -22,15 +23,16 @@ const MAX_LINE: usize = 300;
 pub const MAX_ITEMS: usize = 8;
 
 /// The agent's account of its change (`present`), stored with the task: a
-/// presentation agent fills the same fields. A new run or the end of the
-/// review clears it.
+/// presentation agent fills the same fields. A new run, a later edit to the
+/// files or the end of the review clears it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Report {
     /// One paragraph in Simplified Technical English.
     pub summary: Option<String>,
-    /// What was not verified, what was assumed, side effects.
-    pub notes: Vec<String>,
+    /// What was not verified, what was assumed, side effects; `None`: the
+    /// agent did not say (unlike `Some([])`, "nothing to note").
+    pub notes: Option<Vec<String>>,
     /// What was run, and the result.
     pub evidence: Vec<Check>,
 }
@@ -50,9 +52,10 @@ impl Report {
     /// The report, `None` when it says nothing; or why it is malformed.
     pub fn new(
         summary: Option<String>,
-        notes: Vec<String>,
+        notes: Option<Vec<String>>,
         evidence: Vec<Check>,
     ) -> Result<Option<Self>, String> {
+        let listed = notes.as_deref().unwrap_or_default();
         let summary = summary
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
@@ -62,13 +65,13 @@ impl Report {
         {
             return Err(format!("a summary is at most {MAX_SUMMARY} characters"));
         }
-        if notes.len() > MAX_ITEMS || evidence.len() > MAX_ITEMS {
+        if listed.len() > MAX_ITEMS || evidence.len() > MAX_ITEMS {
             return Err(format!(
                 "at most {MAX_ITEMS} notes and {MAX_ITEMS} evidence lines"
             ));
         }
         let line = |s: &str| !s.trim().is_empty() && s.chars().count() <= MAX_LINE;
-        if !notes.iter().all(|n| line(n))
+        if !listed.iter().all(|n| line(n))
             || !evidence.iter().all(|c| line(&c.ran) && line(&c.result))
         {
             return Err(format!(
@@ -84,12 +87,12 @@ impl Report {
     }
 }
 
-/// What a changed file is, by its extension.
+/// What a changed file is, by its extension (and, for game logic, its place).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// `.fun` and `.funi`.
+    /// `.fun` and `.funi` in the task's project.
     GameLogic,
     /// Models, textures, sounds, fonts, and any binary file.
     Assets,
@@ -103,7 +106,8 @@ const ASSETS: &[&str] = &[
     "mp3", "flac", "ttf", "otf",
 ];
 
-pub fn kind(file: &FileChange) -> Kind {
+/// `file`'s kind in a change to the project at `prefix` ([`project_prefix`]).
+pub fn kind(file: &FileChange, prefix: &str) -> Kind {
     let ext = file
         .path
         .rsplit_once('.')
@@ -111,7 +115,7 @@ pub fn kind(file: &FileChange) -> Kind {
         .map(|(_, ext)| ext.to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "fun" | "funi" => Kind::GameLogic,
+        "fun" | "funi" if file.path.starts_with(prefix) => Kind::GameLogic,
         _ if file.binary || ASSETS.contains(&ext.as_str()) => Kind::Assets,
         "json" | "toml" | "yaml" | "yml" => Kind::Config,
         _ => Kind::Other,
@@ -130,8 +134,10 @@ pub struct Size {
     pub kinds: Vec<Kind>,
 }
 
-pub fn size(change: &Change) -> Size {
-    let mut kinds: Vec<Kind> = change.files.iter().map(kind).collect();
+/// `change`'s size, in project `project` (repo-relative, `.` the root).
+pub fn size(change: &Change, project: &str) -> Size {
+    let prefix = project_prefix(project);
+    let mut kinds: Vec<Kind> = change.files.iter().map(|f| kind(f, &prefix)).collect();
     kinds.sort();
     kinds.dedup();
     Size {
@@ -175,12 +181,9 @@ pub fn decision(task: &Task) -> Option<Decision> {
     if task.run.is_some() || !has_change(task) {
         return None;
     }
-    let size = size(task.change.as_ref()?);
-    let shown = matches!(
-        task.evidence.as_ref().map(|e| &e.state),
-        Some(EvidenceState::Shown { .. })
-    );
-    let (depth, reason) = verdict(&size, task.report.as_ref(), shown);
+    let size = size(task.change.as_ref()?, &task.project);
+    let path = task.evidence.as_ref().map(|e| &e.state);
+    let (depth, reason) = verdict(&size, task.report.as_ref(), path);
     Some(Decision {
         size,
         depth,
@@ -188,17 +191,22 @@ pub fn decision(task: &Task) -> Option<Decision> {
     })
 }
 
-/// The rule: a glance needs a report with no notes and no failed check, at
-/// most [`GLANCE_LINES`] lines in at most [`GLANCE_FILES`] game-logic file,
-/// and evidence — a check the agent ran, or the predicted path shown. Else
-/// "look", for the first reason in that order.
-pub fn verdict(size: &Size, report: Option<&Report>, path_shown: bool) -> (Depth, String) {
+/// The rule: a glance needs no failed check and nothing to note, at most
+/// [`GLANCE_LINES`] changed lines in at most [`GLANCE_FILES`] game-logic
+/// file, a report that says there is nothing to note, and evidence — a
+/// check the agent ran, or the predicted path (`path`) shown. Else "look",
+/// for the first reason in that order.
+pub fn verdict(
+    size: &Size,
+    report: Option<&Report>,
+    path: Option<&EvidenceState>,
+) -> (Depth, String) {
     let look = |reason: String| (Depth::Look, reason);
     let checks = report.map_or(&[][..], |r| &r.evidence[..]);
     if let Some(failed) = checks.iter().find(|c| !c.ok) {
         return look(format!("A check failed: {}.", failed.ran));
     }
-    let notes = report.map_or(0, |r| r.notes.len());
+    let notes = report.and_then(|r| r.notes.as_ref()).map_or(0, Vec::len);
     if notes > 0 {
         return look(format!(
             "The agent notes {}.",
@@ -213,15 +221,37 @@ pub fn verdict(size: &Size, report: Option<&Report>, path_shown: bool) -> (Depth
         return look(format!("{} changed.", count(size.files, "file", "files")));
     }
     if lines > GLANCE_LINES {
-        return look(format!("{} changed.", count(lines, "line", "lines")));
+        return look(format!(
+            "{}.",
+            count(lines, "changed line", "changed lines")
+        ));
     }
-    if report.is_none() {
-        return look("The agent gave no report.".to_string());
+    match report {
+        None => return look("The agent gave no report.".to_string()),
+        Some(Report { notes: None, .. }) => {
+            return look("The agent did not say if there is anything to note.".to_string())
+        }
+        Some(_) => {}
     }
-    if checks.is_empty() && !path_shown {
-        return look("Nothing was run or compared.".to_string());
+    let shown = matches!(path, Some(EvidenceState::Shown { .. }));
+    if checks.is_empty() && !shown {
+        return look(
+            match path {
+                Some(EvidenceState::Taking) => {
+                    "No check was reported; the predicted path is being taken."
+                }
+                Some(EvidenceState::Same) => {
+                    "No check was reported, and the predicted path does not change."
+                }
+                _ => "No check was reported and no path was compared.",
+            }
+            .to_string(),
+        );
     }
-    let mut reason = format!("{} in one file.", count(lines, "line", "lines"));
+    let mut reason = format!(
+        "{} in one file.",
+        count(lines, "changed line", "changed lines")
+    );
     if !checks.is_empty() {
         let n = checks.len() as u32;
         reason += &format!(
@@ -230,7 +260,7 @@ pub fn verdict(size: &Size, report: Option<&Report>, path_shown: bool) -> (Depth
             if n == 1 { "passes" } else { "pass" }
         );
     }
-    if path_shown {
+    if shown {
         reason += " The predicted path shows it.";
     }
     (Depth::Glance, reason)
@@ -264,6 +294,8 @@ mod tests {
         for (f, k) in [
             (file("game/game.fun", 1, 1), Kind::GameLogic),
             (file("game/hud.funi", 1, 0), Kind::GameLogic),
+            (file("other/game.fun", 1, 1), Kind::Other),
+            (file("functor-prelude/stdlib/list.fun", 1, 1), Kind::Other),
             (file("game/Hero.GLB", 0, 0), Kind::Assets),
             (file("game/jump.ogg", 0, 0), Kind::Assets),
             (binary, Kind::Assets),
@@ -274,7 +306,7 @@ mod tests {
             (file("game/.gitignore", 1, 0), Kind::Other),
             (file("Makefile", 1, 0), Kind::Other),
         ] {
-            assert_eq!(kind(&f), k, "{}", f.path);
+            assert_eq!(kind(&f, "game/"), k, "{}", f.path);
         }
     }
 
@@ -290,7 +322,7 @@ mod tests {
             tree: "t".into(),
         };
         assert_eq!(
-            size(&change),
+            size(&change, "g"),
             Size {
                 added: 5,
                 removed: 3,
@@ -303,7 +335,7 @@ mod tests {
     fn report(notes: &[&str], checks: &[(&str, bool)]) -> Report {
         Report {
             summary: Some("The agent changed one value.".into()),
-            notes: notes.iter().map(|n| n.to_string()).collect(),
+            notes: Some(notes.iter().map(|n| n.to_string()).collect()),
             evidence: checks
                 .iter()
                 .map(|(ran, ok)| Check {
@@ -328,31 +360,43 @@ mod tests {
     fn the_verdict_rule() {
         use Depth::{Glance, Look};
         const LOGIC: &[Kind] = &[Kind::GameLogic];
+        let shown = Some(EvidenceState::Shown {
+            before: "b".into(),
+            after: "a".into(),
+        });
+        let (taking, same) = (Some(EvidenceState::Taking), Some(EvidenceState::Same));
         let ok = report(&[], &[("functor test", true)]);
         let two = report(&[], &[("functor test", true), ("functor build", true)]);
         let bare = report(&[], &[]);
+        let unsaid = Report {
+            notes: None,
+            ..ok.clone()
+        };
         let noted = report(&["Not tried on the left hand"], &[("functor test", true)]);
         let failed = report(&[], &[("functor test", false)]);
         let small = sized(1, 4, LOGIC);
         #[rustfmt::skip]
-        let table: &[(&str, Size, Option<&Report>, bool, Depth, &str)] = &[
-            ("small, checked", small.clone(), Some(&ok), false, Glance, "4 lines in one file. 1 check passes."),
-            ("small, two checks and the path", small.clone(), Some(&two), true, Glance, "4 lines in one file. 2 checks pass. The predicted path shows it."),
-            ("small, only the path", small.clone(), Some(&bare), true, Glance, "4 lines in one file. The predicted path shows it."),
-            ("at the line limit", sized(1, GLANCE_LINES, LOGIC), Some(&ok), false, Glance, "20 lines in one file. 1 check passes."),
-            ("one line", sized(1, 1, LOGIC), Some(&ok), false, Glance, "1 line in one file. 1 check passes."),
-            ("past the line limit", sized(1, GLANCE_LINES + 1, LOGIC), Some(&ok), true, Look, "21 lines changed."),
-            ("two files", sized(2, 4, LOGIC), Some(&ok), true, Look, "2 files changed."),
-            ("an asset", sized(1, 0, &[Kind::Assets]), Some(&ok), true, Look, "It changes more than game logic."),
-            ("logic and config", sized(2, 4, &[Kind::GameLogic, Kind::Config]), Some(&ok), true, Look, "It changes more than game logic."),
-            ("unverified", small.clone(), Some(&bare), false, Look, "Nothing was run or compared."),
-            ("no report", small.clone(), None, true, Look, "The agent gave no report."),
-            ("a note", small.clone(), Some(&noted), true, Look, "The agent notes 1 thing."),
-            ("a failed check first", sized(9, 400, LOGIC), Some(&failed), true, Look, "A check failed: functor test."),
+        let table: &[(&str, Size, Option<&Report>, &Option<EvidenceState>, Depth, &str)] = &[
+            ("small, checked", small.clone(), Some(&ok), &None, Glance, "4 changed lines in one file. 1 check passes."),
+            ("small, two checks and the path", small.clone(), Some(&two), &shown, Glance, "4 changed lines in one file. 2 checks pass. The predicted path shows it."),
+            ("small, only the path", small.clone(), Some(&bare), &shown, Glance, "4 changed lines in one file. The predicted path shows it."),
+            ("at the line limit", sized(1, GLANCE_LINES, LOGIC), Some(&ok), &None, Glance, "20 changed lines in one file. 1 check passes."),
+            ("one line", sized(1, 1, LOGIC), Some(&ok), &None, Glance, "1 changed line in one file. 1 check passes."),
+            ("past the line limit", sized(1, GLANCE_LINES + 1, LOGIC), Some(&ok), &shown, Look, "21 changed lines."),
+            ("two files", sized(2, 4, LOGIC), Some(&ok), &shown, Look, "2 files changed."),
+            ("an asset", sized(1, 0, &[Kind::Assets]), Some(&ok), &shown, Look, "It changes more than game logic."),
+            ("logic and config", sized(2, 4, &[Kind::GameLogic, Kind::Config]), Some(&ok), &shown, Look, "It changes more than game logic."),
+            ("unverified", small.clone(), Some(&bare), &None, Look, "No check was reported and no path was compared."),
+            ("the path is being taken", small.clone(), Some(&bare), &taking, Look, "No check was reported; the predicted path is being taken."),
+            ("the path does not move", small.clone(), Some(&bare), &same, Look, "No check was reported, and the predicted path does not change."),
+            ("no report", small.clone(), None, &shown, Look, "The agent gave no report."),
+            ("notes left out", small.clone(), Some(&unsaid), &shown, Look, "The agent did not say if there is anything to note."),
+            ("a note", small.clone(), Some(&noted), &shown, Look, "The agent notes 1 thing."),
+            ("a failed check first", sized(9, 400, LOGIC), Some(&failed), &shown, Look, "A check failed: functor test."),
         ];
         for (what, size, report, path, depth, reason) in table {
             assert_eq!(
-                verdict(size, *report, *path),
+                verdict(size, *report, path.as_ref()),
                 (*depth, reason.to_string()),
                 "{what}"
             );
@@ -361,20 +405,22 @@ mod tests {
 
     #[test]
     fn a_report_is_trimmed_bounded_and_none_when_empty() {
-        assert_eq!(Report::new(Some("  ".into()), vec![], vec![]), Ok(None));
-        let r = Report::new(Some(" Two values changed. ".into()), vec![], vec![]).unwrap();
+        assert_eq!(Report::new(Some("  ".into()), None, vec![]), Ok(None));
+        let r = Report::new(Some(" Two values changed. ".into()), None, vec![]).unwrap();
         assert_eq!(r.unwrap().summary.as_deref(), Some("Two values changed."));
+        // An empty list says "nothing to note": a report.
+        assert!(Report::new(None, Some(vec![]), vec![]).unwrap().is_some());
         let check = |ran: &str| Check {
             ran: ran.into(),
             result: "ok".into(),
             ok: true,
         };
         for (summary, notes, evidence) in [
-            (Some("x".repeat(MAX_SUMMARY + 1)), vec![], vec![]),
-            (None, vec!["n".to_string(); MAX_ITEMS + 1], vec![]),
-            (None, vec![" ".to_string()], vec![]),
-            (None, vec![], vec![check("")]),
-            (None, vec![], vec![check(&"x".repeat(MAX_LINE + 1))]),
+            (Some("x".repeat(MAX_SUMMARY + 1)), None, vec![]),
+            (None, Some(vec!["n".to_string(); MAX_ITEMS + 1]), vec![]),
+            (None, Some(vec![" ".to_string()]), vec![]),
+            (None, None, vec![check("")]),
+            (None, None, vec![check(&"x".repeat(MAX_LINE + 1))]),
         ] {
             assert!(Report::new(summary, notes, evidence).is_err());
         }

@@ -593,7 +593,7 @@ fn view_tools_forward_typed_requests_with_the_secret_and_relay_the_answer() {
     assert_eq!(got.body["op"], "present");
     assert_eq!(got.body["steps"][1]["view"], json!({"kind": "game"}));
     assert_eq!(got.body["steps"][0]["note"], "It counts by two.");
-    assert_eq!(got.body["notes"], json!([]), "no report: empty");
+    assert_eq!(got.body["notes"], Value::Null, "no report: none");
 
     // With the report on the change (D35), forwarded as given.
     let report = json!({

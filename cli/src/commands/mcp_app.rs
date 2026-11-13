@@ -99,12 +99,12 @@ pub struct PresentStep {
 pub struct PresentArgs {
     /// 1 to 8 steps, in order.
     pub steps: Vec<PresentStep>,
-    /// The whole change in one paragraph of Simplified Technical English:
-    /// sentences of at most 20 words, active voice, one word per thing.
+    /// The whole change so far, in one paragraph of Simplified Technical
+    /// English: sentences of at most 20 words, active voice, one word per thing.
     pub summary: Option<String>,
-    /// What you did not verify, assumed, or changed as a side effect.
-    #[serde(default)]
-    pub notes: Vec<String>,
+    /// What you did not verify, assumed, or changed as a side effect; `[]`
+    /// when there is nothing.
+    pub notes: Option<Vec<String>>,
     /// What you ran to check the change, and the result.
     #[serde(default)]
     pub evidence: Vec<PresentCheck>,

@@ -67,7 +67,7 @@ pub enum ViewRequest {
         #[serde(default)]
         summary: Option<String>,
         #[serde(default)]
-        notes: Vec<String>,
+        notes: Option<Vec<String>>,
         #[serde(default)]
         evidence: Vec<Check>,
     },
@@ -338,7 +338,6 @@ fn handle(
             }
             let report = Report::new(summary, notes, evidence)
                 .map_err(|e| format!("{e}; nothing was added"))?;
-            let reported = report.is_some();
             let n = steps.len();
             let root = Path::new(&state.repo_root).to_path_buf();
             let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
@@ -346,6 +345,7 @@ fn handle(
                 steps,
                 current: None,
             });
+            let changed = task.report != report;
             task.report = report;
             commands.push(save(&root, task));
             broadcast_items(commands, task, vec![task.transcript.len() - 1]);
@@ -359,7 +359,7 @@ fn handle(
                     plural(n)
                 ),
                 // The report rides with the task, in the state.
-                reported,
+                changed,
             ))
         }
     }
@@ -705,7 +705,7 @@ mod tests {
             request: ViewRequest::Present {
                 steps,
                 summary: None,
-                notes: vec![],
+                notes: None,
                 evidence: vec![],
             },
         }
@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn present_keeps_the_runs_report_until_the_next_run() {
-        let request = |notes: Vec<String>| Event::AgentView {
+        let request = |notes: Option<Vec<String>>| Event::AgentView {
             task: 1,
             run: 0,
             request: ViewRequest::Present {
@@ -975,14 +975,14 @@ mod tests {
                 }],
             },
         };
-        let (s, commands) = update(running(), request(vec!["Not tried on a pad.".into()]));
+        let (s, commands) = update(running(), request(Some(vec!["Not tried on a pad.".into()])));
         assert!(reply(&commands).ok);
         let report = s.tasks[0].report.clone().expect("a report");
         assert_eq!(
             report.summary.as_deref(),
             Some("The agent changed one value.")
         );
-        assert_eq!(report.notes, ["Not tried on a pad."]);
+        assert_eq!(report.notes, Some(vec!["Not tried on a pad.".to_string()]));
         assert!(commands
             .iter()
             .any(|c| matches!(c, Command::Broadcast(ServerMsg::State { .. }))));
@@ -990,7 +990,7 @@ mod tests {
         assert_eq!(back.report, Some(report));
 
         // A malformed report is refused whole: no card, the report as it was.
-        let (after, commands) = update(s.clone(), request(vec![" ".into()]));
+        let (after, commands) = update(s.clone(), request(Some(vec![" ".into()])));
         assert!(!reply(&commands).ok);
         assert_eq!(after.tasks[0].transcript, s.tasks[0].transcript);
         assert_eq!(after.tasks[0].report, s.tasks[0].report);

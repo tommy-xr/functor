@@ -2045,6 +2045,11 @@ fn on_change(
     if task.change.as_ref() == Some(&change) {
         return false;
     }
+    // Files changed after the run that reported on them: its report no
+    // longer speaks for the change.
+    if task.run.is_none() && task.change.as_ref().is_some_and(|c| c.tree != change.tree) {
+        task.report = None;
+    }
     task.change = Some(change);
     task.status = derive_status(task);
     commands.push(save(&root, task));
@@ -4167,6 +4172,26 @@ mod tests {
             baseline: tree.to_string(),
             result,
         }
+    }
+
+    #[test]
+    fn the_report_holds_until_the_files_change_after_the_run_or_the_review_ends() {
+        let mut s = reviewed(one_file(2));
+        s.tasks[0].report = Some(crate::decision::Report {
+            summary: Some("One value changed.".into()),
+            ..Default::default()
+        });
+        // Measured again, the same: it stands, and so does the decision on it.
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        assert!(task(&s, 1).report.is_some());
+        assert!(s.decisions.contains_key(&1));
+        let (kept, _) = update(s.clone(), keep(1));
+        assert_eq!(task(&kept, 1).report, None, "the review is over");
+        assert!(kept.decisions.is_empty());
+        // A later edit (the user's, by hand) is not what the agent reported on.
+        let (s, _) = update(s, change(1, "tree-1", one_file(3)));
+        assert_eq!(task(&s, 1).report, None);
+        assert_eq!(s.decisions[&1].reason, "The agent gave no report.");
     }
 
     // Path evidence (D38).

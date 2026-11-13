@@ -408,7 +408,7 @@ export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
 /**
- * What a changed file is, by its extension.
+ * What a changed file is, by its extension (and, for game logic, its place).
  */
 export type Kind = "game_logic" | "assets" | "config" | "other";
 
@@ -595,8 +595,8 @@ missing: boolean, };
 
 /**
  * The agent's account of its change (`present`), stored with the task: a
- * presentation agent fills the same fields. A new run or the end of the
- * review clears it.
+ * presentation agent fills the same fields. A new run, a later edit to the
+ * files or the end of the review clears it.
  */
 export type Report = { 
 /**
@@ -604,9 +604,10 @@ export type Report = {
  */
 summary: string | null, 
 /**
- * What was not verified, what was assumed, side effects.
+ * What was not verified, what was assumed, side effects; `None`: the
+ * agent did not say (unlike `Some([])`, "nothing to note").
  */
-notes: Array<string>, 
+notes: Array<string> | null, 
 /**
  * What was run, and the result.
  */
