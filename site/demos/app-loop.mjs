@@ -2,13 +2,15 @@
 // describe → edit → reload → see the path change → replay → keep loop, on
 // examples/platformer.
 //
-// The app, the game and every click are real; two things are staged, and
+// The app, the game and every click are real; three things are staged, and
 // named here. The project is a throwaway copy of the platformer whose jump is
-// weakened to 8.0 (the example ships 13.0), so there is something to fix. And
-// the agent is the app's recorded-run seam (FUNCTOR_APP_FAKE_AGENT) replaying
+// weakened to 8.0 (the example ships 13.0), so there is something to fix. The
+// agent is the app's recorded-run seam (FUNCTOR_APP_FAKE_AGENT) replaying
 // fixtures/jump.jsonl through the code path a real run takes: its get_state
 // reads the live game over the run's own tool server, and its edit is a real
-// write the running game hot-reloads.
+// write the running game hot-reloads. And in the first run Right is held for
+// 1.3 s after the fall: the predicted path replays the recorded keys, so an
+// earlier release would stop the new arc over the gap.
 //
 // What it records: the hero jumps and falls into the gap → the game is paused
 // and the playhead dragged back to before the run → Extrapolate is switched on
@@ -66,6 +68,10 @@ try {
 
   // The problem: the jump falls into the gap.
   await runAndJump(page, view, debugUrl);
+  // Right stays held past where a full jump would land: the path replays the
+  // recorded keys, and an earlier release would stop the new arc mid-air.
+  await untilState(debugUrl, (s) => s.model.grounded, "the fall");
+  await sleep(1300);
   if (await land(page, debugUrl)) throw new Error("the weakened jump cleared the gap");
   await sleep(700);
 

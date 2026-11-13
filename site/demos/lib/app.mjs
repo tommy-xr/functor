@@ -165,17 +165,21 @@ export async function dragPlayhead(page, bar, unit) {
 }
 
 /**
- * Paused: drags the playhead back to the last `Right down` mark, then walks
- * to a frame before it, where the hero still stands at the spawn point.
+ * Paused: drags the playhead back to the first `Right down` mark (the run;
+ * `land` taps Right after it), then walks to a frame before it, where the
+ * hero still stands at the spawn point.
  */
 export async function dragBeforeRun(page, bar, debugUrl) {
   const rail = await bar.locator(".transport-rail").boundingBox();
-  const mark = await bar.getByRole("button", { name: /^frame \d+, Right down/ }).last().boundingBox();
+  const down = bar.getByRole("button", { name: /^frame \d+, Right down/ }).first();
+  const pressed = Number((await down.getAttribute("aria-label")).match(/^frame (\d+)/)[1]);
+  const mark = await down.boundingBox();
   await dragPlayhead(page, bar, (mark.x + mark.width / 2 - rail.x) / rail.width);
   await bar.getByRole("slider", { name: "Selected frame" }).focus();
   for (let i = 0; i < 120; i++) {
     const { frame, model } = await gameState(debugUrl);
-    if (!model.rightHeld && model.grounded && model.x === -6) return;
+    // Before the press: a respawn after it also stands at the spawn point.
+    if (frame < pressed && !model.rightHeld && model.grounded && model.x === -6) return;
     await page.keyboard.press("ArrowLeft");
     await untilState(debugUrl, (s) => s.frame !== frame, "a frame step");
   }
