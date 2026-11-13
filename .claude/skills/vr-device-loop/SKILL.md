@@ -102,7 +102,13 @@ that display rate after the initial push; without it the APK keeps its startup r
 (the highest offered up to 80 Hz) or whatever an earlier run requested, so
 restart with `am start -S` to measure the default. 120 Hz is only offered when
 enabled in the headset's display settings; an unoffered rate fails the run and
-lists the available ones. For individual operations:
+lists the available ones.
+
+Paired with a desktop app (`functor-app`), the headset also has a tunnel,
+`http://127.0.0.1:<port>`, listed by `functor-app --print`. Every debug route
+but `/stream` works through it, and `run vr --device-url <tunnel>` pushes over
+Wi-Fi with no adb at all (`npm run test:quest-run` checks it on the device).
+For individual operations:
 
 ```sh
 adb -s SERIAL forward tcp:8123 tcp:8123

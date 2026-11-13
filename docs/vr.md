@@ -107,6 +107,12 @@ full, proven sequence. The short path is:
    it does on desktop. Ports are 1–65535, without duplicates or 8123; other
    shells ignore the field. Like the forward, adb drops the rule on
    disconnect; re-running `run vr` recreates both.
+   With the headset paired to the desktop app, `run vr --device-url
+   http://127.0.0.1:<port>` (its tunnel, which `functor-app --print` lists)
+   pushes over the Wi-Fi device link instead and runs no adb: no launch,
+   forward, `reverse` or log. It waits while the headset is away, and needs a
+   v40 runtime, which sends files over 8 MiB in parts. Without the flag,
+   `run vr` uses adb. Installing the APK always needs the cable.
    On the headset `Effect.httpGet`/`httpPost` speak plain `http://` only
    (`https://` fails as `Net.Failure`); `/state`'s `http` counts requests
    pending, completed, and failed.
