@@ -567,6 +567,33 @@ in one picture, with no second game kept alive.
 
 In the headset the two paths are drawn in the world (D36).
 
+### D39 — how much of your own setup an agent run loads is a choice
+
+Extends D19, where every run loads the user's own agent settings. That is
+right for some work and waste for other work, so it becomes a setting with
+three levels:
+
+- **Yours and the project's** — the user's global instructions, skills and
+  memory, plus the project's own. The agent works the way the user works.
+- **The project's only** — what is checked into the project (its instructions
+  and skills), nothing personal. The same result for anyone who opens it.
+- **Isolated** — neither: only what the app gives the run (its opening
+  instructions and tools). The cheapest and the most repeatable.
+
+Where it is set:
+
+- **Per project, with a default** of "yours and the project's", as today.
+- **Per task**, from the composer, for one request.
+- **Per kind of run.** The presentation agent (D31) has its own level, and
+  defaults lower than the working agent: it reads and reports, and does not
+  need the user's habits.
+
+What it changes is what the run reads, never what it may do: permissions stay
+scoped to the project folder at every level. The task records the level it
+ran with, and the metrics record it too, so the cost of each level is known
+rather than guessed (one turn is about 35k input tokens today, of which the
+user's own setup is roughly a quarter).
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
