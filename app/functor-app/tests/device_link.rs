@@ -1232,6 +1232,9 @@ impl Drop for Quest {
         for (name, value) in &self.props {
             self.shell(&format!("setprop {name} {value}"));
         }
+        // Asleep again, so it does not keep rendering while nobody wears it.
+        self.shell(&format!("am force-stop {PACKAGE}"));
+        self.shell("am broadcast -a com.oculus.vrpowermanager.automation_disable");
         let port = self.debug.rsplit(':').next().unwrap().to_string();
         let _ = self.adb(&["forward", "--remove", &format!("tcp:{port}")]);
     }
