@@ -110,7 +110,8 @@ full, proven sequence. The short path is:
    With the headset paired to the desktop app, `run vr --device-url
    http://127.0.0.1:<port>` (its tunnel, which `functor-app --print` lists)
    pushes over the Wi-Fi device link instead and runs no adb: no launch,
-   forward, `reverse` or log. It waits while the headset is away, and needs a
+   forward, `reverse` or log. It waits while the headset is away, loads the
+   game again if the headset's app restarted meanwhile, and needs a
    v40 runtime, which sends files over 8 MiB in parts. A file the headset
    fetches on demand (an `external` prefix) still goes whole, so over the
    link it must be under 16 MiB. Without the flag,

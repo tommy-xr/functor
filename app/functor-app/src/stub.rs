@@ -100,6 +100,7 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
         project: Some("examples/hello".to_string()),
         frame: 0,
         paused: false,
+        rendered: 0,
     };
     loop {
         if args.wait_for_pairing {
@@ -152,6 +153,8 @@ struct Runtime {
     /// `/state.frame`: one step per poll unless paused.
     frame: u64,
     paused: bool,
+    /// `/state.rendered_frames`: one per poll, from 0 when the stub starts.
+    rendered: u64,
 }
 
 /// One connection; `Ok(true)` when it paired.
@@ -354,6 +357,7 @@ fn canned(
             .to_string(),
         ),
         ("GET", "/state") => {
+            runtime.rendered += 1;
             if !runtime.paused {
                 runtime.frame += 1;
             }
@@ -368,7 +372,7 @@ fn canned(
                 "name": name,
                 "served": served,
                 "frame": runtime.frame,
-                "rendered_frames": served,
+                "rendered_frames": runtime.rendered,
                 "clock": clock,
                 "input": {},
             });

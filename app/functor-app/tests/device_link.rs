@@ -1689,7 +1689,8 @@ async fn quest_runs_a_project_over_the_link() {
 /// `FUNCTOR_BIN`): an app with a game open, paused here, pairs the Quest over
 /// the cable; choosing the headset over the app's socket runs the project
 /// there through its tunnel (source, frames, the card's name); the
-/// transport pauses and steps it there; `functor mcp` attaches to it and a
+/// transport pauses and steps it there; after its app restarts the game is
+/// loaded there again; `functor mcp` attaches to it and a
 /// capture comes back through the tunnel; Pane returns the headset to its
 /// boot scene and the game runs here again, paused on frame 0.
 #[tokio::test(flavor = "current_thread")]
@@ -1769,6 +1770,16 @@ async fn quest_runs_the_game_in_the_headset_placement() {
         .await;
     until("one step there", || {
         (get_json("/state?model=0")["frame"].as_u64()? == paused + 1).then_some(())
+    })
+    .await;
+
+    // Its app restarts (the link drops and comes back): the game is loaded
+    // there again, by the same session.
+    quest.launch().await;
+    until("the game is back on the headset", || {
+        get(&tunnel, "/project")
+            .ok()
+            .filter(|(status, body)| *status == 200 && body.contains("hello-cubes"))
     })
     .await;
 

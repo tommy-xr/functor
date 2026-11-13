@@ -298,6 +298,9 @@ function TitleBar({
   // The project, else the open folder.
   const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
   const word = sessionWord(state?.session);
+  // Where the session runs: here, or on a headset (D5).
+  const layout = state?.active ? state.layouts[state.active] : null;
+  const where = placementOf(layout) === "headset" ? "Headset session" : "Local session";
   // The app window shows it as its title.
   useEffect(() => {
     document.title = name ? `Functor — ${name}` : "Functor";
@@ -327,7 +330,7 @@ function TitleBar({
         )}
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}
-      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>Local session · {word}</span>
+      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>{where} · {word}</span>
       <button
         type="button"
         className={`pill pill-button pill-hs-${headset}${deferred ? " pill-attention" : ""}${conn === "open" ? "" : " pill-stale"}`}

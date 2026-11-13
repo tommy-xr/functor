@@ -66,6 +66,7 @@ async function headset(browser, width, height) {
     await expect(control.getByRole("button", { name: "Headset" })).toHaveAttribute("aria-pressed", "true");
     await expect(view).toContainText("Running on Quest 3");
     await expect(view.getByRole("status")).toHaveText("On the headset");
+    await expect(page.getByText("Headset session · running")).toBeVisible();
     await expect(view).toContainText(/Frame \d+ · Playing/);
     await expect(transport).toBeVisible();
     await expect(transport.getByRole("button", { name: /Extrapolate/ })).toHaveCount(0);
@@ -91,10 +92,12 @@ async function headset(browser, width, height) {
     expect(game().placement).toBe("headset");
     await shot(page, `headset-away-${width}`);
 
-    // It relinks: the same session follows it again.
+    // It relinks, its app restarted (a new stub): the same session loads
+    // the game there again and follows it.
     const session = app.state.session.id;
     quest = stub(server.link, store, "Quest 3");
     await quest.line("linked ");
+    expect(await quest.line("request POST /load-project")).toContain("name=counter");
     await expect(view).toContainText("Running on Quest 3");
     await expect(view).toContainText(/Frame \d+ · Playing/);
     expect(app.state.session.id).toBe(session);

@@ -1568,10 +1568,43 @@ project root, not from {}/",
         // set on any change (file = module — a sibling edit must ship too).
         // `reload_pending`: a synced or fetched file still owes a reload.
         let mut reload_pending = false;
+        // Through the link, the headset's frame count: one that starts again
+        // means its app restarted while away, so the game loads again.
+        let mut frames = linked.then(|| rendered_frames(&addr)).flatten();
+        let mut probed = std::time::Instant::now();
+        let mut restarted = false;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             if fetched.swap(false, Ordering::SeqCst) {
                 reload_pending = true;
+            }
+            if linked && probed.elapsed() >= RESTART_PROBE {
+                probed = std::time::Instant::now();
+                if let Some(now) = rendered_frames(&addr) {
+                    restarted |= frames.is_some_and(|before| now < before);
+                    frames = Some(now);
+                }
+            }
+            if restarted {
+                let pushed = sync_project_assets(&addr, &attempted_assets, None, parts)
+                    .and_then(|_| post_project(&addr, "/load-project", &attempted, &role, &load_query));
+                match pushed {
+                    Ok((200, body)) => emit(Event::Info {
+                        message: format!("the headset restarted; loaded the game again: {body}"),
+                    }),
+                    Ok((status, body)) => emit(Event::Warning {
+                        message: format!("the headset restarted; load rejected ({status}): {body}"),
+                    }),
+                    Err(e) => {
+                        emit(Event::Warning {
+                            message: format!("the headset restarted; load failed ({e}); retrying…"),
+                        });
+                        continue;
+                    }
+                }
+                restarted = false;
+                frames = rendered_frames(&addr);
+                continue;
             }
             // Atomic-save editors briefly unlink files mid-save; wait for
             // the next poll rather than failing the loop.
@@ -2703,6 +2736,19 @@ fn post_project(
             "the headset did not answer ({status}): {body}"
         ))),
         answer => Ok(answer),
+    }
+}
+
+/// Between `run vr --device-url`'s checks that the headset did not restart.
+const RESTART_PROBE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `GET /state`'s `rendered_frames`, or `None` when it does not answer.
+fn rendered_frames(addr: &str) -> Option<u64> {
+    let timeout = std::time::Duration::from_secs(5);
+    match http_request(addr, "GET", "/state?model=0", "text/plain", &[], timeout) {
+        Ok((200, body)) => serde_json::from_str::<serde_json::Value>(&body).ok()?["rendered_frames"]
+            .as_u64(),
+        _ => None,
     }
 }
 
