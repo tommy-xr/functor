@@ -1,0 +1,6 @@
+{"ms":0,"event":{"type":"started","session":"fake-state-question","model":"claude-model"}}
+{"ms":10,"mcp":{"tool":"list_sessions","arguments":{}}}
+{"ms":20,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}
+{"ms":30,"event":{"type":"text","text":"7"}}
+{"ms":40,"event":{"type":"usage","input":120000,"output":300}}
+{"ms":50,"event":{"type":"finished","ok":true,"summary":"7"}}
