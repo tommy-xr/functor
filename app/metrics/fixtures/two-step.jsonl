@@ -1,10 +1,4 @@
 {"ms":0,"event":{"type":"started","session":"fake-two-step","model":"claude-model"}}
-{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
-{"ms":0,"event":{"type":"tool_result","content":""}}
-{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
-{"ms":0,"event":{"type":"tool_result","content":""}}
-{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
-{"ms":0,"event":{"type":"tool_result","content":""}}
 {"ms":10,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}
 {"ms":20,"event":{"type":"tool_result","content":"type Msg = | Inc"}}
 {"ms":30,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"type Msg = | Inc","new_string":"type Msg = | Inc | Dec"}}}
@@ -19,5 +13,5 @@
 {"ms":120,"event":{"type":"tool_use","name":"Bash","input":{"command":"functor -d . test"}}}
 {"ms":130,"event":{"type":"tool_result","content":"4 expect(s): 4 passed"}}
 {"ms":140,"event":{"type":"text","text":"Added Dec, a -1 button beside +1, and an expect for Dec; functor test passes."}}
-{"ms":150,"event":{"type":"usage","input":597556,"output":3033}}
+{"ms":150,"event":{"type":"usage","input":255272,"output":1522}}
 {"ms":160,"event":{"type":"finished","ok":true,"summary":"Added Dec."}}

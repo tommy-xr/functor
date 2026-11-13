@@ -36,18 +36,34 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 /// Tool-server output lines kept for a failure report.
 const TAIL_LINES: usize = 20;
 
-/// Told to the agent at the start of each new agent session.
+/// Told to the agent at the start of each new agent session, then
+/// [`ATTACHED`] or [`NO_GAME`], then [`VIEWS`] when the run can show views:
+/// it names only tools the run is offered. The ones it calls loaded are the
+/// tool server's `ALWAYS_LOADED` (`cli/src/commands/mcp.rs`): keep the two
+/// lists together, or each missing one costs a tool-search turn.
 const PREAMBLE: &str = "You are working on a Functor game project: this directory. \
-Your MCP server `mis` has tools for its running game — state, scene, captures, input, \
-launching and stopping it — and `app_context`, which says what the user is looking at \
-in the Functor app. Prefer reading live state and captures over guessing. The app's \
-game opens paused on its first frame (`get_state`'s `clock.paused`): `step` or `resume` it \
-to run it, as input lands only when it does. Functor Lang \
-(`.fun`) is a custom language, not F#: its rules are in the repo's `functor-lang` skill \
-(`.claude/skills/functor-lang/`) and its docs; read them before writing it. \
-`show_view` and `present` show the user views in the app, beside their work. When you \
-finish a change, call `present` once: the changed file ranges, then the game. Do not \
-show anything else they did not ask to see.";
+Your MCP server `mis` drives its game. Loaded and ready: `mcp__mis__get_state` (the live \
+model and clock), `mcp__mis__step` and `mcp__mis__resume` (run it), `mcp__mis__send_input` \
+(keys, mouse, UI events), `mcp__mis__capture_frame` (a picture), `mcp__mis__app_context` \
+(what the user is looking at in the Functor app), `mcp__mis__language_guide` and \
+`mcp__mis__api_reference` (the engine API, e.g. `Ui.row`). Its other \
+tools (scene, trace, rewind, launch, stop) are there when you need them. Prefer reading \
+live state and captures over guessing. Functor Lang (`.fun`) is a custom language, not F#: \
+before writing it, read `mcp__mis__language_guide` (contents and quick facts, then only the \
+sections you need) rather than the whole `functor-lang` skill. Make edits with your edit \
+tools, not shell scripts.";
+
+/// The app's game, attached by the tool server before anything else.
+const ATTACHED: &str = "The game is running as session `s1`. It opens paused on its first \
+frame (`clock.paused`): `step` or `resume` it to run it, as input lands only when it does.";
+
+/// No game session when the run started.
+const NO_GAME: &str = "No game is running: `launch_game` starts one.";
+
+/// The app's view tools (`--app-url`).
+const VIEWS: &str = "`mcp__mis__show_view` and `mcp__mis__present` show the user views in \
+the app, beside their work. When you finish a change, call `present` once: the changed file \
+ranges, then the game. Do not show anything else they did not ask to see.";
 
 /// What a run may do unattended: folder-scoped on the repo root. Edits
 /// anywhere in the repo are accepted, the game tools are allowed (`mis-agent`
@@ -65,12 +81,19 @@ pub fn permissions(repo_root: &Path) -> Permissions {
     }
 }
 
-/// The prompt for `message`: a new agent session gets the [`PREAMBLE`].
-fn prompt(message: &str, resumed: bool) -> String {
-    match resumed {
-        true => message.to_string(),
-        false => format!("{PREAMBLE}\n\n{message}"),
+/// The prompt for `message`: a new agent session gets the [`PREAMBLE`],
+/// with the parts for whether it is `attached` to a game and has `views`.
+fn prompt(message: &str, resumed: bool, attached: bool, views: bool) -> String {
+    if resumed {
+        return message.to_string();
     }
+    let game = if attached { ATTACHED } else { NO_GAME };
+    let views = if views {
+        format!(" {VIEWS}")
+    } else {
+        String::new()
+    };
+    format!("{PREAMBLE} {game}{views}\n\n{message}")
 }
 
 /// Which agent runs tasks.
@@ -375,7 +398,13 @@ async fn run(
     };
     let permissions = permissions(&spec.repo_root);
     let cwd = spec.dir.to_string_lossy();
-    let prompt = prompt(&spec.message, spec.resume.is_some());
+    let resumed = spec.resume.is_some();
+    let prompt = prompt(
+        &spec.message,
+        resumed,
+        spec.attach.is_some(),
+        secret.is_some(),
+    );
     let opts = RunOpts {
         cwd: Some(&cwd),
         mcp: Some(&mcp),
@@ -833,11 +862,29 @@ mod tests {
 
     #[test]
     fn the_preamble_starts_only_new_sessions() {
-        assert_eq!(prompt("And now?", true), "And now?");
-        let first = prompt("What is the count?", false);
+        assert_eq!(prompt("And now?", true, true, true), "And now?");
+        let first = prompt("What is the count?", false, false, false);
         assert!(first.starts_with(PREAMBLE), "{first}");
         assert!(first.ends_with("\n\nWhat is the count?"), "{first}");
         assert!(first.contains("app_context"), "{first}");
+    }
+
+    /// `task` has no view route: the agent is not told of tools it lacks.
+    #[test]
+    fn the_preamble_names_only_the_tools_a_run_has() {
+        let bare = prompt("hi", false, false, false);
+        assert!(
+            !bare.contains("present") && !bare.contains("`s1`"),
+            "{bare}"
+        );
+        assert!(bare.contains(NO_GAME), "{bare}");
+        let app = prompt("hi", false, true, true);
+        assert!(app.contains(ATTACHED) && app.contains(VIEWS), "{app}");
+        let task = prompt("hi", false, true, false);
+        assert!(
+            task.contains(ATTACHED) && !task.contains("present"),
+            "{task}"
+        );
     }
 
     #[test]

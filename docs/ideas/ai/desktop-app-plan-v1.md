@@ -289,3 +289,76 @@ Not reported by the pinned `mis-agent` (each needs an upstream change to its
 `input`), usage per API message, the number of API turns (Claude's
 `num_turns`; agent messages and tool calls stand in), cost (`total_cost_usd`), API time (`duration_api_ms`), and
 Codex's `reasoning_output_tokens`.
+
+### Cheaper runs (2026-11-13, Claude `claude-fable-5-2`, the user's own settings)
+
+Three changes, measured against a baseline taken the same day:
+
+1. **The opening instructions name only tools the run has.** `present` /
+   `show_view` only with the app's view route; "session `s1`" when the app's
+   game is attached (the tool server attaches it first, so it is always `s1`),
+   "no game is running" otherwise.
+2. **The common game tools load up front.** Claude Code defers every MCP tool
+   behind `ToolSearch` unless the server marks it: in `--http` mode the tool
+   server sets `_meta["anthropic/alwaysLoad"]` on ten tools (state, step,
+   resume, input, capture, app context, language guide, API reference, the two
+   view tools), about 1.4k tokens a turn. The instructions name them.
+3. **The language guide, not the skill.** The `functor-lang` skill is 133 KB
+   (~33k tokens), resent on every later turn once loaded; the instructions now
+   point to `language_guide` (contents, then one section). Also: edit with the
+   edit tools, not shell scripts (a denied script cost a turn).
+
+Baseline, rev `5e49c801` (main's code):
+
+| scenario | outcome | wall s | tool calls | by kind | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 6.6 | 4 | game 3, skills 1 | 143,655 | 231 |
+| no-tools | pass | 2.2 | 0 | none | 33,063 | 4 |
+| weak-jump | pass | 28.0 | 21 | files 4, game 12, skills 5 | 374,541 | 2,664 |
+| spawn-in-chasm | pass | 19.4 | 11 | files 2, game 5, shell 1, skills 3 | 295,083 | 1,630 |
+| two-step | FAIL: cut over 600k input | 32.8 | 21 | files 5, game 7, shell 4, skills 5 | 694,461 | 108 |
+
+After, rev `9d33dcaa`:
+
+| scenario | outcome | wall s | tool calls | by kind | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 3.2 | 1 | game 1 | 74,555 | 58 |
+| no-tools | pass | 1.8 | 0 | none | 35,783 | 4 |
+| weak-jump | pass | 19.0 | 13 | files 4, game 9 | 213,701 | 1,760 |
+| spawn-in-chasm | pass | 14.2 | 7 | files 4, game 2, skills 1 | 211,626 | 1,168 |
+| two-step | pass | 17.1 | 12 | files 4, game 6, shell 2 | 255,272 | 1,522 |
+
+`--compare`:
+
+| scenario | outcome | wall ms | tool calls | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- |
+| state-question | pass → pass | 6635 → 3234 (-51%) | 4 → 1 (-75%) | 143655 → 74555 (-48%) | 231 → 58 (-75%) |
+| no-tools | pass → pass | 2240 → 1764 (-21%) | 0 → 0 | 33063 → 35783 (+8%) | 4 → 4 (+0%) |
+| weak-jump | pass → pass | 27972 → 18951 (-32%) | 21 → 13 (-38%) | 374541 → 213701 (-43%) | 2664 → 1760 (-34%) |
+| spawn-in-chasm | pass → pass | 19434 → 14230 (-27%) | 11 → 7 (-36%) | 295083 → 211626 (-28%) | 1630 → 1168 (-28%) |
+| two-step | fail → pass | 32801 → 17055 (-48%) | 21 → 12 (-43%) | 694461 → 255272 (-63%) | 108 → 1522 (+1309%) |
+
+All five: 1.54M → 0.79M input (-49%). The fixed cost rose 2.7k (+8%): the
+up-front schemas and the longer instructions. One run each; an intermediate
+pass (changes 1–3 without `api_reference` up front or the no-game note) gave
+1.02M, so run-to-run spread is wide.
+
+- **Search turns: 14 → 1.** The one left looked up `rewind` and
+  `reload_project`, which stay deferred.
+- **No session lookup.** `list_sessions` + `app_context` before every first
+  game call are gone (`s1` is named).
+- **two-step no longer loads the skill**, which is most of its drop and why it
+  now finishes under the cap.
+- **Still waste, not removed here:** `functor test` is denied (no allow rule
+  for it, D19), 1–2 turns per edit that writes tests. A test tool on the tool
+  server, or an allow rule for `functor test`, would remove them.
+- **An isolated-settings mode** (not here: it changes D19) would cut the
+  user's own instructions, skill list and memory from each request: in a
+  captured request (no tokens spent) they were 28k of 83k characters, about a
+  third, so roughly 7–10k of each turn's ~35k. It would also drop the denials
+  their settings cause.
+- **Upstream (`mis-agent`, not changed):** its `--mcp-config` entry could set
+  Claude Code's per-server `alwaysLoad`, but that loads every tool (~6k
+  tokens a turn); the per-tool `_meta` mark the server sets is the finer
+  control and needs no change there. Its `Usage` event still lacks the split
+  listed above, so cached input cannot be told apart.

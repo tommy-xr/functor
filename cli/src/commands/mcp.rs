@@ -40,6 +40,23 @@ use tokio::process::{Child, Command};
 
 use super::mcp_net::NetCoordinator;
 
+/// Tools an HTTP client loads up front (see `router`): look, run, poke,
+/// learn the language and API, and the app's views. About 2k tokens a turn,
+/// against a whole turn (some 35k) for each tool search. The desktop app's
+/// opening instructions name these as loaded (`app/functor-app/src/agent.rs`).
+const ALWAYS_LOADED: [&str; 10] = [
+    "app_context",
+    "get_state",
+    "step",
+    "resume",
+    "send_input",
+    "capture_frame",
+    "language_guide",
+    "api_reference",
+    "show_view",
+    "present",
+];
+
 /// How often the background routing pump drains and delivers a live group's
 /// traffic. Between `step_all` rounds a group still runs on wall-clock time,
 /// and its packets must move without a tool call to push them — this is the
@@ -2293,6 +2310,18 @@ impl FunctorMcp {
         }
         if self.app.is_some() {
             router.merge(Self::app_tool_router());
+        }
+        // Over HTTP the client is an embedding app's agent: the tools nearly
+        // every run calls are marked to load up front, as Claude Code
+        // otherwise defers each behind a tool-search turn. Others ignore it.
+        if self.http_mode {
+            for name in ALWAYS_LOADED {
+                if let Some(route) = router.map.get_mut(name) {
+                    let mut meta = rmcp::model::Meta::new();
+                    meta.0.insert("anthropic/alwaysLoad".into(), true.into());
+                    route.attr.meta = Some(meta);
+                }
+            }
         }
         router
     }
@@ -5548,7 +5577,7 @@ mod tests {
         retain_final_snapshot, search_api, serialize_json_bounded, spawn_node_child,
         strip_front_matter, truncate_code_error, CodeInputRestore, CodeOutputBudget, FunctorMcp,
         NodeCodeOutput, Registry, RunGameCodeUnsafeArgs, SessionTarget, WireFilter,
-        LANGUAGE_GUIDE,
+        ALWAYS_LOADED, LANGUAGE_GUIDE,
         MAX_CODE_CAPTURE_BYTES, MAX_CODE_TEXT_BYTES, QUICK_FACTS_SLUG,
     };
     use functor_docgen::ApiReference;
@@ -5656,6 +5685,36 @@ mod tests {
         });
         assert!(has(&linked, "show_view") && has(&linked, "present"), "{linked:?}");
         assert_eq!(linked.len(), stdio.len() + 3);
+    }
+
+    #[test]
+    fn http_clients_load_the_common_tools_up_front() {
+        let eager = |server: FunctorMcp| -> Vec<String> {
+            let mut names: Vec<String> = server
+                .router()
+                .list_all()
+                .into_iter()
+                .filter(|tool| {
+                    let meta = tool.meta.as_ref().and_then(|m| m.0.get("anthropic/alwaysLoad"));
+                    meta == Some(&serde_json::Value::Bool(true))
+                })
+                .map(|tool| tool.name.to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        assert!(eager(FunctorMcp::new()).is_empty(), "stdio defers to the client");
+        let linked = eager(FunctorMcp {
+            http_mode: true,
+            app: Some(super::super::mcp_app::AppLink {
+                url: "http://127.0.0.1:9/view".into(),
+                token: "t".into(),
+            }),
+            ..FunctorMcp::new()
+        });
+        let mut want = ALWAYS_LOADED.map(String::from).to_vec();
+        want.sort();
+        assert_eq!(linked, want);
     }
 
     #[test]
