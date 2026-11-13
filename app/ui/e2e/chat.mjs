@@ -76,9 +76,9 @@ async function conversation(browser, width, height) {
       { timeout: 60_000 },
     );
     await expect(send).toBeDisabled();
-    for (const name of [/^Attach/, /^Hold to talk/]) {
-      await expect(dock.getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
-    }
+    await expect(dock.getByRole("button", { name: /^Attach/ })).toHaveAttribute("aria-disabled", "true");
+    // No speech-to-text in this build: no mic (voice.mjs has it).
+    await expect(dock.getByRole("button", { name: "Speak a message" })).toHaveCount(0);
     const picker = dock.getByLabel("Agent", { exact: true });
     await expect(picker.locator("option")).toHaveText(["claude", "codex"]);
     // The pick is the server's, per project: it survives a reload.
