@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 
 use crate::debug_protocol::{
-    self, CaptureError, DebugRequest, InputCommand, ProjectAssetPaths, ProjectSources,
+    self, CaptureError, DebugRequest, InputCommand, LoadHost, ProjectAssetPaths, ProjectSources,
     RewindCommand, RuntimeState, TimeCommand,
 };
 use crate::frame_stream;
@@ -652,11 +652,8 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("POST", "/reload-asset") => {
-            let body = match read_body(
-                &mut reader,
-                content_length,
-                debug_protocol::MAX_ASSET_BYTES + debug_protocol::MAX_ASSET_PATH_BYTES + 4,
-            ) {
+            let max = debug_protocol::MAX_ASSET_BYTES + debug_protocol::MAX_ASSET_PATH_BYTES + 4;
+            let body = match read_body(&mut reader, content_length, max) {
                 Ok(body) => body,
                 Err(BodyError::MissingLength | BodyError::TooLarge) => {
                     respond_text(
@@ -670,6 +667,17 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 }
                 Err(BodyError::Invalid) => {
                     respond_text(&mut stream, cors_origin, 400, "Bad Request", "bad body");
+                    return Some(());
+                }
+            };
+            let body = match upload_part(query, body, max) {
+                Ok(Some(whole)) => whole,
+                Ok(None) => {
+                    respond_text(&mut stream, cors_origin, 200, "OK", "part received");
+                    return Some(());
+                }
+                Err((status, reason, message)) => {
+                    respond_text(&mut stream, cors_origin, status, reason, &message);
                     return Some(());
                 }
             };
@@ -771,6 +779,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("POST", "/sync-assets") => {
+            *UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
                 content_length,
@@ -844,11 +853,14 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                         return Some(());
                     }
                 };
-                // A load may name the host session serving missing files.
-                let (session, query) = match debug_protocol::take_project_session(query) {
-                    Ok(split) if path == "/load-project" || split.0.is_none() => split,
+                // A load may name the host session serving missing files,
+                // and the project.
+                let (host, query) = match debug_protocol::take_load_host(query) {
+                    Ok(split) if path == "/load-project" || split.0 == LoadHost::default() => {
+                        split
+                    }
                     Ok(_) => {
-                        let error = "only /load-project declares a session";
+                        let error = "only /load-project declares a session or name";
                         respond_text(&mut stream, cors_origin, 400, "Bad Request", error);
                         return Some(());
                     }
@@ -867,7 +879,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     }
                 };
                 if path == "/load-project" {
-                    DebugRequest::LoadProject(files, role, session, resp_tx)
+                    DebugRequest::LoadProject(files, role, host, resp_tx)
                 } else {
                     DebugRequest::ReloadProject(files, role, resp_tx)
                 }
@@ -890,6 +902,59 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
         _ => respond_text(&mut stream, cors_origin, 404, "Not Found", "not found"),
     }
     Some(())
+}
+
+/// An asset envelope arriving in parts (`POST /reload-asset?upload=…`).
+struct Upload {
+    id: u64,
+    total: usize,
+    bytes: Vec<u8>,
+}
+
+/// One at a time per process, shared by its listeners (a headset has two):
+/// a part at offset 0 replaces an unfinished upload, and a finished sync
+/// (`POST /sync-assets`) drops one.
+static UPLOAD: std::sync::Mutex<Option<Upload>> = std::sync::Mutex::new(None);
+
+/// The whole envelope `part` belongs to: `part` itself when `query` names no
+/// upload, the finished upload once this part completes it, `None` before
+/// that. `Err` is the status to answer.
+fn upload_part(
+    query: &str,
+    part: Vec<u8>,
+    max: usize,
+) -> Result<Option<Vec<u8>>, (u16, &'static str, String)> {
+    let bad = |message: String| (400, "Bad Request", message);
+    let Some(id) = query_number::<u64>(query, "upload").map_err(bad)? else {
+        return Ok(Some(part));
+    };
+    let number = |key| query_number::<usize>(query, key)?.ok_or(format!("a part needs {key}"));
+    let offset = number("offset").map_err(bad)?;
+    let total = number("total").map_err(bad)?;
+    if total > max || offset.checked_add(part.len()).is_none_or(|end| end > total) {
+        let message = format!("the parts exceed their total or the limit ({max} bytes)");
+        return Err((413, "Payload Too Large", message));
+    }
+    let mut slot = UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if offset == 0 {
+        *slot = Some(Upload {
+            id,
+            total,
+            bytes: Vec::new(),
+        });
+    }
+    let Some(upload) = slot
+        .as_mut()
+        .filter(|u| u.id == id && u.total == total && u.bytes.len() == offset)
+    else {
+        let message = "part out of order: send the upload again from offset 0".to_string();
+        return Err((409, "Conflict", message));
+    };
+    upload.bytes.extend_from_slice(&part);
+    if upload.bytes.len() < total {
+        return Ok(None);
+    }
+    Ok(slot.take().map(|upload| upload.bytes))
 }
 
 /// `key=N` from a query (`None` when absent): `GET /frames`' `last`,
@@ -1333,10 +1398,10 @@ mod tests {
         let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
 
         match rx.recv().unwrap() {
-            DebugRequest::LoadProject(files, role, session, response) => {
+            DebugRequest::LoadProject(files, role, host, response) => {
                 assert_eq!(files, vec![("game.fun".into(), "let init = 1".into())]);
                 assert_eq!(role, None, "no query = the running role stands");
-                assert_eq!(session, None);
+                assert_eq!(host, LoadHost::default());
                 response.send(Ok("loaded project".into())).unwrap();
             }
             _ => panic!("expected new project load request"),
@@ -1367,15 +1432,16 @@ mod tests {
 
         let body = r#"[["game.fun","let init = 1"]]"#;
         let (client, server, rx) = serve(format!(
-            "POST /load-project?prefix=&session=5&dir=src HTTP/1.1\r\nHost: localhost\r\n\
+            "POST /load-project?prefix=&session=5&dir=src&name=my%20game HTTP/1.1\r\nHost: localhost\r\n\
 Content-Length: {}\r\n\r\n{body}",
             body.len()
         ));
         match rx.recv().unwrap() {
-            DebugRequest::LoadProject(_, role, session, response) => {
+            DebugRequest::LoadProject(_, role, host, response) => {
                 assert!(role.is_some());
                 let entry_dir = "src/".to_string();
-                assert_eq!(session, Some(ProjectSession { id: 5, entry_dir }));
+                assert_eq!(host.session, Some(ProjectSession { id: 5, entry_dir }));
+                assert_eq!(host.name.as_deref(), Some("my game"));
                 response.send(Ok("loaded".into())).unwrap();
             }
             _ => panic!("expected a load"),
@@ -1866,6 +1932,73 @@ Content-Length: {}\r\n\r\n{body}",
         let response = client.join().unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.ends_with("reloaded asset"));
+    }
+
+    /// An envelope sent in parts reaches the runtime once, whole, when its
+    /// last part lands; a part out of order is refused and drops nothing
+    /// already held.
+    #[test]
+    fn reload_asset_parts_arrive_as_one_upload() {
+        let body = debug_protocol::encode_project_asset("models/big.glb", &[7; 10]).unwrap();
+        let total = body.len();
+        let send = |query: String, part: &[u8]| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut request = format!(
+                "POST /reload-asset?{query} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+                part.len()
+            )
+            .into_bytes();
+            request.extend_from_slice(part);
+            let address = listener.local_addr().unwrap();
+            let client = std::thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).unwrap();
+                stream.write_all(&request).unwrap();
+                stream.shutdown(Shutdown::Write).unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).unwrap();
+                response
+            });
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            (client, server, rx)
+        };
+        let part = |offset: usize, len: usize| {
+            let (client, server, rx) = send(
+                format!("upload=9&offset={offset}&total={total}"),
+                &body[offset..offset + len],
+            );
+            server.join().unwrap();
+            (client.join().unwrap(), rx)
+        };
+
+        let (response, rx) = part(0, 8);
+        assert!(response.ends_with("part received"), "{response}");
+        assert!(rx.try_recv().is_err(), "nothing reaches the runtime yet");
+        let (response, _) = part(12, 4);
+        assert!(response.starts_with("HTTP/1.1 409"), "{response}");
+        let (response, _) = part(8, 8);
+        assert!(response.ends_with("part received"), "{response}");
+
+        let rest = total - 16;
+        let (client, server, rx) = send(
+            format!("upload=9&offset=16&total={total}"),
+            &body[16..16 + rest],
+        );
+        match rx.recv().unwrap() {
+            DebugRequest::ReloadAsset(asset, response) => {
+                assert_eq!(asset.path, "models/big.glb");
+                assert_eq!(asset.bytes, vec![7; 10]);
+                response.send(Ok("reloaded asset".into())).unwrap();
+            }
+            _ => panic!("expected asset reload request"),
+        }
+        server.join().unwrap();
+        assert!(client.join().unwrap().ends_with("reloaded asset"));
+
+        // Over its total: refused.
+        let (client, server, _rx) = send("upload=10&offset=0&total=2".into(), &body[..4]);
+        server.join().unwrap();
+        assert!(client.join().unwrap().starts_with("HTTP/1.1 413"));
     }
 
     /// A fake render loop for `/stream`: hands out `tap` (or refuses, like
