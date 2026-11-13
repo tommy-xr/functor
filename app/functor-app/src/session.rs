@@ -862,6 +862,11 @@ fn transport_request(call: &TransportCall) -> (&'static str, String) {
         TransportCall::Seek { frame, .. } => {
             ("/seek", serde_json::json!({ "frame": frame }).to_string())
         }
+        // `Timeline::call` turns a peek into the switch it stands for.
+        TransportCall::Extrapolate { on } | TransportCall::Peek { on } => (
+            "/preview",
+            serde_json::json!({ "extrapolate": on }).to_string(),
+        ),
     }
 }
 

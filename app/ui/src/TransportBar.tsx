@@ -2,10 +2,13 @@ import { createContext, useContext, useEffect, useRef, useState, type CSSPropert
 import type { Mark, Transport, TransportCall } from "./generated/protocol";
 import type { Send } from "./socket";
 import {
+  EXTRAPOLATE_BUTTON,
+  PEEK_HOLD_MS,
   STEP_BUTTON,
   TIMELINE_COLORS,
   createTimelineState,
   deriveTimelineView,
+  editPeeks,
   follow,
   followMarks,
   keyAction,
@@ -34,16 +37,18 @@ const COLORS = {
   "--tl-text": TIMELINE_COLORS.text,
   "--tl-dim": TIMELINE_COLORS.dim,
   "--tl-accent": TIMELINE_COLORS.accent,
+  "--tl-future": TIMELINE_COLORS.future,
   "--tl-input": TIMELINE_COLORS.input,
   "--tl-reload": TIMELINE_COLORS.reload,
   "--tl-reload-error": TIMELINE_COLORS.reloadError,
 } as CSSProperties;
 
 /**
- * The game view's transport (D13): the web scrubber's pause/step and rail,
- * drawn from its own timeline model against the native session. `compact`
- * is the mini view's density: no frame count. While it shows, the core polls
- * the session often and reads its marks.
+ * The game view's transport (D13): the web scrubber's pause/step, rail and
+ * Extrapolate switch (D38), drawn from its own timeline model against the
+ * native session. `compact` is the mini view's density: no frame count.
+ * While it shows, the core polls the session often and reads its marks.
+ * `extrapolates`: the session draws frames, so it can draw the path.
  */
 export function TransportBar({
   transport,
@@ -51,12 +56,14 @@ export function TransportBar({
   online,
   send,
   compact,
+  extrapolates,
 }: {
   transport: Transport;
   marks: Mark[];
   online: boolean;
   send: Send;
   compact: boolean;
+  extrapolates: boolean;
 }) {
   const [timeline, dispatch] = useTimeline();
   const rail = useRef<HTMLDivElement>(null);
@@ -75,6 +82,7 @@ export function TransportBar({
 
   const view = deriveTimelineView(timeline.current);
   const call = (call: TransportCall) => online && send({ type: "transport", call });
+  const peek = usePeek(transport, extrapolates && online ? call : null);
   // Shown at once by the model; the core is asked for the frame it settled on.
   const seek = (frame: number) => {
     if (!online) return;
@@ -162,6 +170,26 @@ export function TransportBar({
                 height="6"
                 rx="3"
               />
+              {view.previewFrames > 0 && (
+                <>
+                  <rect
+                    className="transport-past"
+                    x={view.backwardStartUnit * 1000}
+                    y="11"
+                    width={Math.max(view.playheadUnit - view.backwardStartUnit, 0) * 1000}
+                    height="8"
+                    rx="3"
+                  />
+                  <rect
+                    className="transport-future"
+                    x={view.playheadUnit * 1000}
+                    y="11"
+                    width={Math.max(view.previewEndUnit - view.playheadUnit, 0) * 1000}
+                    height="8"
+                    rx="3"
+                  />
+                </>
+              )}
               {timelineTicks(view.viewport).map((t) => (
                 <rect
                   key={t.frame}
@@ -248,8 +276,59 @@ export function TransportBar({
           </span>
         )}
       </div>
+      <button
+        type="button"
+        className={`transport-button transport-extrapolate${transport.extrapolate ? " on" : ""}${peek.peeking ? " peeking" : ""}`}
+        data-tip={EXTRAPOLATE_BUTTON.tip}
+        aria-label={EXTRAPOLATE_BUTTON.label}
+        aria-pressed={transport.extrapolate}
+        disabled={!online || !extrapolates}
+        onClick={() => {
+          // Pressed during a peek, it stays: the switch turns on.
+          peek.cancel();
+          call({ type: "extrapolate", on: !transport.extrapolate });
+        }}
+      >
+        {EXTRAPOLATE_BUTTON.glyph}
+      </button>
     </div>
   );
+}
+
+/**
+ * The web scrubber's peek: an edit landing while paused with the switch off
+ * shows the extrapolation by itself for `PEEK_HOLD_MS`, then the runtime goes
+ * back to the switch. Another edit extends it; resuming or leaving ends it.
+ * The switch and the rail stay as they are. `call`: `null` when the session
+ * cannot draw the path.
+ */
+function usePeek(transport: Transport, call: ((call: TransportCall) => unknown) | null) {
+  const [peeking, setPeeking] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seen = useRef(transport.revision);
+  const post = useRef(call);
+  post.current = call;
+  const end = (restore: boolean) => {
+    if (timer.current === null) return;
+    clearTimeout(timer.current);
+    timer.current = null;
+    setPeeking(false);
+    if (restore) post.current?.({ type: "peek", on: false });
+  };
+  useEffect(() => {
+    const since = seen.current;
+    seen.current = transport.revision;
+    if (post.current && editPeeks(since, transport)) {
+      if (timer.current !== null) clearTimeout(timer.current);
+      post.current({ type: "peek", on: true });
+      timer.current = setTimeout(() => end(true), PEEK_HOLD_MS);
+      setPeeking(true);
+    } else if (!transport.paused) {
+      end(true);
+    }
+  }, [transport]);
+  useEffect(() => () => end(true), []);
+  return { peeking, cancel: () => end(false) };
 }
 
 /** "120 / 300", as the web bar labels its rail; "outside" past a frozen window. */

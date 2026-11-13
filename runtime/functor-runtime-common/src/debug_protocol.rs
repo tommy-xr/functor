@@ -225,7 +225,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 38 adds the optional `link` field on `GET /state` ([`DeviceLinkState`]):
 /// a headset's device link to a desktop app and the pairing its overlay
 /// shows. Omitted on desktop.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 38;
+///
+/// 39 adds `POST /preview` ([`PreviewCommand`]): the timeline's Extrapolate
+/// switch, for a shell whose own timeline is hidden. A pre-v39 runtime
+/// answers 404.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 39;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -370,6 +374,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/rewind",
         description: "coupled scene rewind — {\"frame\":42} restores model + physics to the state GET /state reported as frame 42 (pin the clock first); 400 if unrecorded/pruned",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/preview",
+        description: "extrapolation — {\"extrapolate\":true} draws the past and predicted future of the shown frame (under the current code, replaying recorded input) into the rendered frame, as the timeline's Extrapolate switch does; false stops it and its work. 400 without a rendered view (--headless, the headset)",
     },
     DebugRoute {
         method: "POST",
@@ -953,6 +962,14 @@ pub struct SeekCommand {
     pub frame: u64,
 }
 
+/// Shows or hides the extrapolation in the rendered frame, sent through
+/// `POST /preview` (v38).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewCommand {
+    pub extrapolate: bool,
+}
+
 /// A debug-view command sent through `POST /camera`.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -1427,6 +1444,9 @@ pub enum DebugRequest {
     /// Detach or reattach the shell's debug camera. `Err` on runtimes with no
     /// rendered view to override, or for an invalid view.
     Camera(CameraCommand, Sender<Result<String, String>>),
+    /// `POST /preview`: draw (or stop drawing) the extrapolation into the
+    /// rendered frame. `Err` on runtimes with no rendered view.
+    Preview(PreviewCommand, Sender<Result<String, String>>),
     /// Request this display refresh rate in Hz. `Err` when the runtime has no
     /// controllable display or the display does not offer that rate.
     DisplayRefreshRate(f32, Sender<Result<String, String>>),
@@ -2144,6 +2164,7 @@ mod tests {
             "POST /sync-assets",
             "POST /rewind",
             "POST /seek",
+            "POST /preview",
             "POST /camera",
             "POST /display-refresh-rate",
             "GET /net/outbound",

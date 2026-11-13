@@ -33,6 +33,20 @@ export const STEP_BUTTON = Object.freeze({
   tip: "Step one frame",
   label: "Step one frame forward",
 });
+// The tip is just the name: 🔮 shows the past AND the future.
+export const EXTRAPOLATE_BUTTON = Object.freeze({
+  glyph: "🔮",
+  tip: "Extrapolate",
+  label: "Extrapolate — see past and future states",
+});
+
+// The peek: an accepted edit landing on a paused timeline with extrapolation
+// off shows the extrapolation by itself for this long, then hands it back.
+// Playing already shows the consequence, and enabled is already showing it.
+export const PEEK_HOLD_MS = 1500;
+export const reloadPeeks = (kind, paused, previewEnabled) =>
+  kind === "reload-ok" && paused && !previewEnabled;
+
 export const PREVIEW_SECONDS_MIN = 0.5;
 export const PREVIEW_SECONDS_MAX = 5;
 export const PREVIEW_RATE_MIN = 1;

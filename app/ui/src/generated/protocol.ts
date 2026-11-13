@@ -701,12 +701,21 @@ generation: number,
  * The `id` of the last seek asked for (0: none), so the page that asked
  * stops waiting for it.
  */
-seek: number, };
+seek: number, 
+/**
+ * The bar's Extrapolate switch (D38). A peek leaves it as it is.
+ */
+extrapolate: boolean, 
+/**
+ * Successful hot reloads since the program loaded: a new one is an
+ * edit landing, which the page peeks at while paused.
+ */
+revision: number, };
 
 /**
  * What the bar asks of the session.
  */
-export type TransportCall = { "type": "pause" } | { "type": "resume" } | { "type": "step" } | { "type": "seek", frame: number, id: number, };
+export type TransportCall = { "type": "pause" } | { "type": "resume" } | { "type": "step" } | { "type": "seek", frame: number, id: number, } | { "type": "extrapolate", on: boolean, } | { "type": "peek", on: boolean, };
 
 export type Usage = { 
 /**
