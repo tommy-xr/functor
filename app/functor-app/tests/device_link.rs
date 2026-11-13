@@ -1826,18 +1826,10 @@ async fn quest_runs_the_game_in_the_headset_placement() {
     let listed = call(Some(2), "tools/call", tool("list_sessions", json!({})));
     let text = listed["result"]["content"][0]["text"].as_str().unwrap();
     let sessions: Value = serde_json::from_str(text).unwrap();
-    let id_of = sessions
-        .as_array()
-        .or(sessions["sessions"].as_array())
-        .and_then(|s| s.first())
-        .map(|s| {
-            s["session"]
-                .as_str()
-                .or(s["id"].as_str())
-                .unwrap()
-                .to_string()
-        })
-        .unwrap_or_else(|| panic!("no session: {text}"));
+    let id_of = sessions["sessions"][0]["session"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no session: {text}"))
+        .to_string();
     let state = call(
         Some(3),
         "tools/call",

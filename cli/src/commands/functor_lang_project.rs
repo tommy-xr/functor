@@ -1533,6 +1533,8 @@ project root, not from {}/",
                 "cannot reach the headset's reload endpoint (http://{addr} {via}) — {hint}"
             ))
         })?;
+        // What a headset that restarted loads again: never a rejected edit.
+        let mut loaded = attempted.clone();
         if let Some(hz) = refresh_rate {
             // An unoffered rate (120 Hz disabled in headset settings) or a
             // pre-v15 APK (404) fails the run: the user asked for a rate.
@@ -1585,13 +1587,23 @@ project root, not from {}/",
                     frames = Some(now);
                 }
             }
+            // The files as they are now, and the source that last loaded.
             if restarted {
-                let pushed = sync_project_assets(&addr, &attempted_assets, None, parts)
-                    .and_then(|_| post_project(&addr, "/load-project", &attempted, &role, &load_query));
+                let pushed = project_asset_files(project_root, &external).and_then(|scan| {
+                    sync_project_assets(&addr, &scan.files, None, parts)?;
+                    attempted_assets = scan.files;
+                    post_project(&addr, "/load-project", &loaded, &role, &load_query)
+                });
                 match pushed {
-                    Ok((200, body)) => emit(Event::Info {
-                        message: format!("the headset restarted; loaded the game again: {body}"),
-                    }),
+                    Ok((200, body)) => {
+                        emit(Event::Info {
+                            message: format!("the headset restarted; loaded the game again: {body}"),
+                        });
+                        // The rate asked for, which the restart dropped.
+                        if let Some(hz) = refresh_rate {
+                            let _ = post_display_refresh_rate(&addr, hz);
+                        }
+                    }
                     Ok((status, body)) => emit(Event::Warning {
                         message: format!("the headset restarted; load rejected ({status}): {body}"),
                     }),
@@ -1685,6 +1697,7 @@ project root, not from {}/",
             match post_project(&addr, "/reload-project", &current, &role, "") {
                 Ok((200, body)) => {
                     emit(Event::Info { message: body });
+                    loaded = current.clone();
                     attempted = current;
                     reload_pending = false;
                 }

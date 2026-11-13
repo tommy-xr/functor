@@ -123,6 +123,10 @@ async function headset(browser, width, height) {
     await expect(transport.getByRole("button", { name: "Play" })).toBeVisible();
     await expect(view).not.toContainText("headset");
     expect(game().headset).toBeNull();
+    // Neither headset runs it now, as their next heartbeats say.
+    for (const name of ["Quest 3", "Quest Pro"]) {
+      await expect.poll(() => project(name), { timeout: 15_000 }).toBeNull();
+    }
     await shot(page, `headset-back-${width}`);
 
     expect(errors, "console errors").toEqual([]);

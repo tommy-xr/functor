@@ -78,6 +78,8 @@ pub struct Driver {
     templates: Arc<Mutex<Option<(SystemTime, TemplateList)>>>,
     /// The device link, once started.
     pub link: Option<crate::link::Hub>,
+    /// Games being stopped on headsets, by tunnel, until one answers.
+    unloads: HashMap<String, JoinHandle<()>>,
 }
 
 pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
@@ -150,6 +152,7 @@ impl Driver {
             opened: Arc::default(),
             templates: Arc::default(),
             link: None,
+            unloads: HashMap::new(),
         }
     }
 
@@ -182,6 +185,10 @@ impl Driver {
                 self.start(id, &dir, &args, None)
             }
             Command::StartHeadset { id, dir, tunnel } => {
+                // This load supersedes a stop still waiting for the headset.
+                if let Some(unload) = self.unloads.remove(&tunnel) {
+                    unload.abort();
+                }
                 let args = ["run", "vr", "--device-url", tunnel.as_str()];
                 self.start(id, &dir, &args, Some(tunnel.clone()))
             }
@@ -534,16 +541,46 @@ impl Driver {
     }
 
     /// Kills the current child and waits until it is gone. A headset is
-    /// returned to its boot scene: the game stops there too.
+    /// returned to its boot scene, the game stopping there too: at once, or
+    /// once it is back if it is away.
     async fn stop(&mut self) {
         if let Some(live) = self.live.take() {
             let _ = live.stop.send(());
             let _ = live.task.await;
             if let Some(tunnel) = live.tunnel {
-                let json = [("Content-Type", "application/json")];
-                if let Err(e) = request(&tunnel, "POST", "/load-project", &json, "[]").await {
-                    eprintln!("functor-app: cannot stop the game on the headset: {e}");
+                self.unloads.retain(|_, task| !task.is_finished());
+                let task = tokio::spawn(unload(tunnel.clone()));
+                if let Some(old) = self.unloads.insert(tunnel, task) {
+                    old.abort();
                 }
+            }
+        }
+    }
+}
+
+/// Between tries to stop a game on a headset that is away, and how long.
+const UNLOAD_RETRY: Duration = Duration::from_secs(2);
+const UNLOAD_FOR: Duration = Duration::from_secs(30 * 60);
+
+/// `POST /load-project []` through `tunnel`: the headset's boot scene.
+/// Retried while the headset does not answer (the tunnel's 502–504, or the
+/// tunnel itself gone), for up to [`UNLOAD_FOR`].
+async fn unload(tunnel: String) {
+    let json = [("Content-Type", "application/json")];
+    let until = tokio::time::Instant::now() + UNLOAD_FOR;
+    loop {
+        let reply = exchange(&tunnel, "POST", "/load-project", &json, "[]").await;
+        let status = reply.as_ref().ok().and_then(|(head, _)| {
+            head.split(' ').nth(1).and_then(|code| code.parse::<u16>().ok())
+        });
+        match status {
+            Some(200..=299) => return,
+            Some(502..=504) | None if tokio::time::Instant::now() < until => {
+                tokio::time::sleep(UNLOAD_RETRY).await
+            }
+            _ => {
+                let why = reply.map_or_else(|e| e, |(head, body)| format!("{head}: {body}"));
+                return eprintln!("functor-app: cannot stop the game on the headset: {why}");
             }
         }
     }
