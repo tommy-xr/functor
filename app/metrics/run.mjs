@@ -9,7 +9,9 @@
 //   node app/metrics/run.mjs --compare a.jsonl b.jsonl
 //
 // Options: --only id,id  --out file.jsonl (default results/<stamp>-<mode>.jsonl,
-// with a .md table beside it). Binaries: FUNCTOR_APP_BIN, FUNCTOR_BIN (default
+// with a .md table beside it)  --keep (leave each scenario's temp dir, with
+// its workspace and the app home holding the task transcript; its path is
+// the record's `kept`). Binaries: FUNCTOR_APP_BIN, FUNCTOR_BIN (default
 // target/debug/functor-app and target/debug/functor).
 
 import { spawn, spawnSync } from "node:child_process";
@@ -112,7 +114,7 @@ function checkOne(check, ws, metrics, functor) {
 }
 
 /** Runs `functor-app task` for `scenario`; its metrics record. */
-async function runScenario(scenario, { live, app, functor, rev }) {
+async function runScenario(scenario, { live, keep, app, functor, rev }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `functor-metrics-${scenario.id}-`));
   try {
     const ws = workspace(scenario, tmp);
@@ -154,9 +156,10 @@ async function runScenario(scenario, { live, app, functor, rev }) {
       reason: failures.length ? failures.join("; ") : `${scenario.checks.length} checks pass`,
       exit: code,
       answer: m.answer,
+      kept: keep ? tmp : undefined,
     };
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    if (!keep) fs.rmSync(tmp, { recursive: true, force: true });
   }
 }
 
@@ -258,6 +261,7 @@ async function main(argv) {
     return 0;
   }
   const live = argv.includes("--live");
+  const keep = argv.includes("--keep");
   if (live && process.env.FUNCTOR_APP_LIVE !== "1") {
     console.error("--live spends real tokens: set FUNCTOR_APP_LIVE=1 to run it");
     return 2;
@@ -286,7 +290,7 @@ async function main(argv) {
     console.error(`[metrics] ${scenario.id}`);
     let record;
     try {
-      record = await runScenario(scenario, { live, app, functor, rev });
+      record = await runScenario(scenario, { live, keep, app, functor, rev });
     } catch (e) {
       record = { scenario: scenario.id, mode: live ? "live" : "fake", rev, pass: false, reason: String(e), cut: "error" };
     }
