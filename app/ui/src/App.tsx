@@ -8,7 +8,7 @@ import { basename, pickHarness } from "./chat-model";
 import { NoProject, ProjectPicker, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
-import { focusedPane, isTyping, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
+import { focusedPane, isTyping, panesOf, placementOf, tabbed, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
 import { TransportContext } from "./TransportBar";
@@ -141,7 +141,7 @@ export function App() {
             notice={notice}
             canvasWord={canvasWord(state)}
             // In Mini or its own window the game is already in view.
-            onOpenGame={() => placementOf(state?.active ? state.layouts[state.active] : null) === "pane" && openBeside({ kind: "game" })}
+            onOpenGame={() => tabbed(placementOf(state?.active ? state.layouts[state.active] : null)) && openBeside({ kind: "game" })}
             selected={selected}
             onSelect={setSelected}
             onViewDiff={viewDiff}

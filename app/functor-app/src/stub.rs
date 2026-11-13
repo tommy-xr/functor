@@ -1,8 +1,9 @@
 //! `functor-app device-stub`: the device role of the device link, for tests
 //! and for driving the Devices pane without a headset. It pairs (printing
 //! its code), links with the secret it stored, answers the debug routes
-//! `functor run vr` pushes through (`GET /`, `GET /state` and the pushes)
-//! from a canned table, reporting the project a load names in its
+//! `functor run vr` pushes through and the app polls and drives (`GET /`,
+//! `GET /state` with a clock that steps once per poll, `POST /time`, the
+//! pushes) from a canned table, reporting the project a load names in its
 //! heartbeats, and can be told to misbehave. One line per event on stdout:
 //! `code 482913`, `paired <desktop>`, `linked <desktop>`, `request GET
 //! /state` (with a body's size: `request POST /reload-asset 1024`),
@@ -97,6 +98,8 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
     // Kept across links, as a headset's runtime keeps running.
     let mut runtime = Runtime {
         project: Some("examples/hello".to_string()),
+        frame: 0,
+        paused: false,
     };
     loop {
         if args.wait_for_pairing {
@@ -146,6 +149,9 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
 struct Runtime {
     /// The project the last `/load-project` named (`examples/hello` before one).
     project: Option<String>,
+    /// `/state.frame`: one step per poll unless paused.
+    frame: u64,
+    paused: bool,
 }
 
 /// One connection; `Ok(true)` when it paired.
@@ -257,7 +263,8 @@ async fn session(
                         n => say(&format!("request {} {} {n}", r.method, r.target)),
                     }
                     served += 1;
-                    let response = canned(r.id, &r.method, &r.target, &args.name, served, runtime);
+                    let response =
+                        canned(r.id, &r.method, &r.target, &r.body, &args.name, served, runtime);
                     for msg in machine.respond(response).map_err(|e| e.to_string())? {
                         ws.send(Message::Binary(msg.into()))
                             .await
@@ -330,6 +337,7 @@ fn canned(
     id: u32,
     method: &str,
     target: &str,
+    body: &[u8],
     name: &str,
     served: u64,
     runtime: &mut Runtime,
@@ -345,11 +353,37 @@ fn canned(
             })
             .to_string(),
         ),
-        ("GET", "/state") => (
-            200,
-            "application/json",
-            serde_json::json!({ "stub": true, "name": name, "served": served }).to_string(),
-        ),
+        ("GET", "/state") => {
+            if !runtime.paused {
+                runtime.frame += 1;
+            }
+            let clock = serde_json::json!({
+                "paused": runtime.paused,
+                "recorded": { "oldest": 0, "newest": runtime.frame },
+                "generation": 0,
+                "program_revision": 0,
+            });
+            let state = serde_json::json!({
+                "stub": true,
+                "name": name,
+                "served": served,
+                "frame": runtime.frame,
+                "rendered_frames": served,
+                "clock": clock,
+                "input": {},
+            });
+            (200, "application/json", state.to_string())
+        }
+        // `/time`'s commands as the app sends them: pause, resume, a step.
+        ("POST", "/time") => {
+            match serde_json::from_slice::<serde_json::Value>(body).ok() {
+                Some(c) if c["type"] == "cancel" => runtime.paused = true,
+                Some(c) if c["type"] == "resume" => runtime.paused = false,
+                Some(c) if c["type"] == "advance" => runtime.frame += 1,
+                _ => {}
+            }
+            (200, "text/plain", "ok".to_string())
+        }
         ("POST", "/load-project") => {
             runtime.project = query
                 .split('&')

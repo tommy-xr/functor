@@ -1,5 +1,6 @@
 //! Runs the core's commands other than replies: one `functor run native`
-//! child at a time, its output read for the debug server's address, `/state`
+//! (or, on a headset, `functor run vr`) child at a time, its output read for
+//! the debug server's address, `/state`
 //! polled and input and transport calls posted (in one ordered queue), its
 //! input log read for marks; agent runs (`agent::Runner`); saving tasks,
 //! layouts and recent projects; project file listings and reads; opening
@@ -18,7 +19,7 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Display, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
     SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -111,6 +112,8 @@ struct Live {
     /// The child's poster of input, transport calls and polls, started by
     /// the first of them.
     poster: Option<UnboundedSender<SessionCall>>,
+    /// The headset's tunnel when the game runs there.
+    tunnel: Option<String>,
 }
 
 impl Live {
@@ -172,7 +175,16 @@ impl Driver {
 
     pub async fn run(&mut self, command: Command) {
         match command {
-            Command::StartSession { id, dir, display } => self.start(id, &dir, display),
+            Command::StartSession { id, dir, display } => {
+                let mut args = vec!["run", "native"];
+                args.extend(display.flags());
+                args.extend(["--debug-port", "0"]);
+                self.start(id, &dir, &args, None)
+            }
+            Command::StartHeadset { id, dir, tunnel } => {
+                let args = ["run", "vr", "--device-url", tunnel.as_str()];
+                self.start(id, &dir, &args, Some(tunnel.clone()))
+            }
             Command::StopSession { id } => {
                 if self.live.as_ref().is_some_and(|l| l.id == id) {
                     self.stop().await;
@@ -473,16 +485,16 @@ impl Driver {
             .unwrap_or_default()
     }
 
-    fn start(&mut self, id: u64, dir: &Path, display: Display) {
+    /// Spawns `functor -d <dir> <args>`; `tunnel` when it runs the game on
+    /// a headset.
+    fn start(&mut self, id: u64, dir: &Path, args: &[&str], tunnel: Option<String>) {
         let send = |event| {
             let _ = self.events.send(Event::Session { id, event });
         };
         let spawned = tokio::process::Command::new(&self.functor)
             .arg("-d")
             .arg(dir)
-            .args(["run", "native"])
-            .args(display.flags())
-            .args(["--debug-port", "0"])
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -517,14 +529,22 @@ impl Driver {
             task,
             tail,
             poster: None,
+            tunnel,
         });
     }
 
-    /// Kills the current child and waits until it is gone.
+    /// Kills the current child and waits until it is gone. A headset is
+    /// returned to its boot scene: the game stops there too.
     async fn stop(&mut self) {
         if let Some(live) = self.live.take() {
             let _ = live.stop.send(());
             let _ = live.task.await;
+            if let Some(tunnel) = live.tunnel {
+                let json = [("Content-Type", "application/json")];
+                if let Err(e) = request(&tunnel, "POST", "/load-project", &json, "[]").await {
+                    eprintln!("functor-app: cannot stop the game on the headset: {e}");
+                }
+            }
         }
     }
 }
