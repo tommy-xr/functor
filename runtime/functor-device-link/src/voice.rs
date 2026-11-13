@@ -284,7 +284,8 @@ pub struct Capsule {
     pub pointing_at: Option<String>,
 }
 
-/// A pose in the game's world, as `/state`'s xr input reports one.
+/// A tracked pose relative to the rig, as `/state`'s xr input reports one
+/// (`input.xr.head`, a controller's `grip`).
 #[cfg(feature = "capsule")]
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pose {
