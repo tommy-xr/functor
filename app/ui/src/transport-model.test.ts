@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createTimelineState, deriveTimelineView, follow, followMarks, keyAction, reduceTimeline } from "./transport-model.ts";
+import { createTimelineState, deriveTimelineView, editPeeks, follow, followMarks, keyAction, reduceTimeline } from "./transport-model.ts";
 import type { Transport } from "./generated/protocol";
 
 const at = (frame: number, over: Partial<Transport> = {}): Transport => ({
@@ -10,6 +10,8 @@ const at = (frame: number, over: Partial<Transport> = {}): Transport => ({
   recorded: [1, frame],
   generation: 0,
   seek: 0,
+  extrapolate: false,
+  revision: 0,
   ...over,
 });
 
@@ -88,4 +90,22 @@ test("playhead keys seek as the web's do, and forward from the newest frame step
   assert.deepEqual(keyAction(deriveTimelineView(stepped), "ArrowRight", false), { step: true });
   const earlier = deriveTimelineView(reduceTimeline(follow(createTimelineState(), at(50, { paused: true })), { type: "seek-requested", id: 1, frame: 20 }))!;
   assert.deepEqual(keyAction(earlier, "ArrowRight", true), { seek: 30 });
+});
+
+test("the switch is the model's preview, so the rail shows its window", () => {
+  let state = follow(createTimelineState(), at(50, { paused: true }));
+  assert.equal(deriveTimelineView(state)!.previewFrames, 0);
+  state = follow(state, at(50, { paused: true, extrapolate: true }));
+  assert.equal(deriveTimelineView(state)!.previewFrames, 120);
+  state = follow(state, at(50, { paused: true }));
+  assert.equal(deriveTimelineView(state)!.previewFrames, 0);
+});
+
+test("an edit landing while paused with the switch off is peeked at", () => {
+  const paused = at(50, { paused: true, revision: 2 });
+  assert.equal(editPeeks(1, paused), true);
+  assert.equal(editPeeks(2, paused), false, "no new edit");
+  assert.equal(editPeeks(1, { ...paused, paused: false }), false, "playing shows it");
+  assert.equal(editPeeks(1, { ...paused, extrapolate: true }), false, "already shown");
+  assert.equal(editPeeks(5, at(0, { paused: true })), false, "a new session restarts the count");
 });

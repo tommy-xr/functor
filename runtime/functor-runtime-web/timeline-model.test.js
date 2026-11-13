@@ -10,6 +10,7 @@ import {
   normalizePreviewConfig,
   pauseButton,
   reduceTimeline,
+  reloadPeeks,
   seekKeyTarget,
   timelineTicks,
 } from "./timeline-model.js";
@@ -366,4 +367,11 @@ test("ticks fall each second, heavier every fifth, and widen over long spans", (
   assert.equal(ticks[0].x, 100);
   // 100 s: one tick per 5 s.
   assert.equal(timelineTicks({ lo: 0, hi: 6000 })[1].frame, 300);
+});
+
+test("only an accepted edit on a paused timeline with extrapolation off peeks", () => {
+  assert.equal(reloadPeeks("reload-ok", true, false), true);
+  assert.equal(reloadPeeks("reload-error", true, false), false);
+  assert.equal(reloadPeeks("reload-ok", false, false), false);
+  assert.equal(reloadPeeks("reload-ok", true, true), false);
 });

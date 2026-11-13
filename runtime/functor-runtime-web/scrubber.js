@@ -40,6 +40,8 @@ import {
   functor_lang_viewer_zoom,
 } from "./pkg/functor_runtime_web.js";
 import {
+  EXTRAPOLATE_BUTTON,
+  PEEK_HOLD_MS,
   PREVIEW_SECONDS_MAX,
   PREVIEW_SECONDS_MIN,
   STEP_BUTTON,
@@ -52,6 +54,7 @@ import {
   markerLabel,
   pauseButton,
   reduceTimeline,
+  reloadPeeks,
   seekKeyTarget,
   timelineTicks,
   unitToFrame,
@@ -427,11 +430,9 @@ const HTML = `
          the frame the transport landed on (📷 the scene, 🔮 its future). -->
     <button id="scrub-camera" data-tip="Debug camera"
       aria-label="Open the debug camera" hidden>📷</button>
-    <!-- The tip is deliberately JUST the name: 🔮 shows the past AND the
-         future, so "preview the future" was wrong, and the hero excerpt's
-         comment does the teaching. -->
-    <button id="scrub-extrapolate" data-tip="Extrapolate"
-      aria-label="Extrapolate — see past and future states">🔮</button>
+    <!-- The hero excerpt's comment does the teaching, not the tip. -->
+    <button id="scrub-extrapolate" data-tip="${EXTRAPOLATE_BUTTON.tip}"
+      aria-label="${EXTRAPOLATE_BUTTON.label}">${EXTRAPOLATE_BUTTON.glyph}</button>
   </div>
   <!-- ▶, not ⏸: the notice only ever shows while paused, and the transport
        button reads ▶ then. It must name the glyph actually on the bar. -->
@@ -1158,11 +1159,10 @@ export function mountScrubber({ hidden = false } = {}) {
   //      animation and no timeline state to unwind afterwards.
   // Leaving the peek OUT of the timeline state also keeps it out of the recorded,
   // replayable model: a glimpse is a hint about the UI, never part of the run.
-  // How long the future stays on screen. The button's shine is INFINITE and
-  // retires when the class comes off at the end of the hold, so this duration
-  // alone decides the gesture's length — there is no animation length to keep
-  // it in step with.
-  const PEEK_HOLD_MS = 1500;
+  // `PEEK_HOLD_MS` is how long the future stays on screen. The button's shine
+  // is INFINITE and retires when the class comes off at the end of the hold,
+  // so that duration alone decides the gesture's length — there is no
+  // animation length to keep it in step with.
   let peekTimer = null;
   const peekActive = () => peekTimer !== null;
   // Retire the glimpse's chrome without touching the engine preview.
@@ -1505,13 +1505,7 @@ export function mountScrubber({ hidden = false } = {}) {
           // teaching moment gets it. `!hidden` stays as defense in depth — a
           // seam-only mount has no bar to press, so a glimpse there could only
           // ever be an unexplained trail and a glow on a detached button.
-          if (
-            peekOnEdit &&
-            !hidden &&
-            newReload.kind === "reload-ok" &&
-            pausedNow &&
-            !state.preview.enabled
-          ) {
+          if (peekOnEdit && !hidden && reloadPeeks(newReload.kind, pausedNow, state.preview.enabled)) {
             startPeek();
           }
         }

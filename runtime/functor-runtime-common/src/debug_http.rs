@@ -517,6 +517,27 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
             respond_result(&mut stream, cors_origin, recv(resp_rx), "camera")
         }
+        ("POST", "/preview") => {
+            let command =
+                match parse_json::<debug_protocol::PreviewCommand>(&mut reader, content_length) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        respond_text(
+                            &mut stream,
+                            cors_origin,
+                            400,
+                            "Bad Request",
+                            &format!("bad preview json: {error}"),
+                        );
+                        return Some(());
+                    }
+                };
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Preview(command, resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            respond_result(&mut stream, cors_origin, recv(resp_rx), "preview")
+        }
         ("POST", "/display-refresh-rate") => {
             let command = match parse_json::<debug_protocol::DisplayRefreshRateCommand>(
                 &mut reader,
@@ -1608,6 +1629,44 @@ Content-Length: {}\r\n\r\n{body}",
         );
         assert!(refused.starts_with("HTTP/1.1 400 "), "{refused}");
         for malformed in [r#"{"frame":-1}"#, r#"{"frame":42,"branch":true}"#] {
+            let response = post(malformed, None);
+            assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
+        }
+    }
+
+    /// The switch reaches the runtime as sent; its refusal and a malformed
+    /// body are 400s.
+    #[test]
+    fn preview_forwards_the_switch_and_reports_refusal() {
+        let post = |body: &str, answer: Option<Result<String, String>>| {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let request = format!(
+                "POST /preview HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = connect(&listener, request);
+            let (tx, rx) = mpsc::channel();
+            let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+            if let Some(answer) = answer {
+                match rx.recv().unwrap() {
+                    DebugRequest::Preview(command, response) => {
+                        assert!(command.extrapolate);
+                        response.send(answer).unwrap();
+                    }
+                    _ => panic!("expected a preview request"),
+                }
+            }
+            server.join().unwrap();
+            client.join().unwrap()
+        };
+        let ok = post(r#"{"extrapolate":true}"#, Some(Ok("extrapolate on".into())));
+        assert!(
+            ok.starts_with("HTTP/1.1 200 OK\r\n") && ok.ends_with("extrapolate on"),
+            "{ok}"
+        );
+        let refused = post(r#"{"extrapolate":true}"#, Some(Err("no rendered view".into())));
+        assert!(refused.starts_with("HTTP/1.1 400 "), "{refused}");
+        for malformed in [r#"{"extrapolate":1}"#, r#"{"extrapolate":true,"seconds":2}"#] {
             let response = post(malformed, None);
             assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
         }

@@ -6,11 +6,14 @@
 import {
   deriveTimelineView,
   reduceTimeline,
+  reloadPeeks,
   seekKeyTarget,
 } from "../../../runtime/functor-runtime-web/timeline-model.js";
 import type { Mark, Transport } from "./generated/protocol";
 
 export {
+  EXTRAPOLATE_BUTTON,
+  PEEK_HOLD_MS,
   STEP_BUTTON,
   TIMELINE_COLORS,
   createTimelineState,
@@ -30,10 +33,14 @@ export type TimelineView = NonNullable<ReturnType<typeof deriveTimelineView>>;
 /**
  * The timeline after the core's `transport`: its clock as the runtime
  * snapshot the model takes, and this page's seek resolved once the core
- * echoes its id (it may have clamped it).
+ * echoes its id (it may have clamped it). The Extrapolate switch is the
+ * model's preview, so the rail shows its window.
  */
 export function follow(state: TimelineState, transport: Transport): TimelineState {
   let next = state;
+  if (next.preview.enabled !== transport.extrapolate) {
+    next = reduceTimeline(next, { type: "preview-changed", preview: { enabled: transport.extrapolate } });
+  }
   const [lo, hi] = transport.recorded ?? [null, null];
   if (lo !== null && hi !== null) {
     const snapshot = { frame: transport.frame, lo, hi, paused: transport.paused, generation: transport.generation };
@@ -51,6 +58,14 @@ export function follow(state: TimelineState, transport: Transport): TimelineStat
   }
   return next;
 }
+
+/**
+ * Whether `transport` lands an edit the page should peek at (the web
+ * scrubber's rule): a hot reload since revision `seen`, paused, with the
+ * switch off. A revision counts only successful reloads.
+ */
+export const editPeeks = (seen: number, transport: Transport): boolean =>
+  transport.revision > seen && reloadPeeks("reload-ok", transport.paused, transport.extrapolate);
 
 /** The marks as the model's events: the same `{id, frame, kind, label}`. */
 export function followMarks(state: TimelineState, marks: Mark[]): TimelineState {

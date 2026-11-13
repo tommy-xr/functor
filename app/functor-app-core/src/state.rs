@@ -2149,6 +2149,8 @@ mod tests {
             recorded: clock.recorded,
             generation: clock.generation,
             seek: 0,
+            extrapolate: false,
+            revision: clock.program_revision,
         }
     }
 

@@ -1415,6 +1415,13 @@ fn service_debug_request(
                     .to_string(),
             ));
         }
+        // The windowed loop answers this itself (it draws the preview).
+        debug_server::DebugRequest::Preview(_, resp) => {
+            let _ = resp.send(Err(
+                "no rendered view to draw the extrapolation into; run with --hidden instead of --headless"
+                    .to_string(),
+            ));
+        }
         debug_server::DebugRequest::DisplayRefreshRate(_, resp) => {
             let _ = resp.send(Err(
                 "display refresh rate is a headset setting; the desktop runtime has none"
@@ -2156,6 +2163,9 @@ Escape releases while captured"
         // mode; they stay authoritative while the overlay is hidden (the
         // headless-capture escape hatch).
         let mut extrapolate_on = true;
+        // Set once `POST /preview` drives the switch: the preview then follows
+        // `extrapolate_on` as if the overlay were shown (the app's own bar).
+        let mut preview_by_debug = false;
         let mut preview_mode = match (args.trajectory, args.strobe) {
             (true, false) => functor_runtime_common::PreviewMode::Trail,
             (false, true) => functor_runtime_common::PreviewMode::Strobe,
@@ -3318,7 +3328,7 @@ Escape again to quit"
             // anchor follows the live tail while playing and freezes when
             // paused. With the overlay hidden the launch flags drive it, so
             // headless captures are byte-for-byte unchanged.
-            let (trail_wanted, strobe_wanted) = if scrubber_visible {
+            let (trail_wanted, strobe_wanted) = if scrubber_visible || preview_by_debug {
                 let selected = functor_runtime_common::interactive_preview(
                     preview_mode,
                     extrapolate_on,
@@ -3382,7 +3392,9 @@ Escape again to quit"
             // historical constants (32 samples over 1.6s, 8 copies), keeping
             // captures byte-identical.
             const TRAIL_RATE: f32 = 20.0;
-            let (preview_divisions, preview_window_s, strobe_copies) = if scrubber_visible {
+            let (preview_divisions, preview_window_s, strobe_copies) = if scrubber_visible
+                || preview_by_debug
+            {
                 let divisions = ((TRAIL_RATE * preview_window).round() as usize).clamp(1, 64);
                 let copies =
                     ((preview_rate as f32 * preview_window).round() as usize).clamp(1, divisions);
@@ -3419,7 +3431,8 @@ Escape again to quit"
                     // when frame + program are unchanged.
                     snapshot.timeline_generation,
                 );
-                let interactive_live = scrubber_visible && !clock.is_paused();
+                let interactive_live =
+                    (scrubber_visible || preview_by_debug) && !clock.is_paused();
                 let cache_hit = trail_cache.as_ref().is_some_and(|(k, _)| {
                     if interactive_live {
                         elapsed_time < next_live_trail_refresh
@@ -4126,6 +4139,14 @@ Escape again to quit"
                             }
                             break;
                         }
+                        // `POST /preview`: the timeline's Extrapolate switch.
+                        debug_server::DebugRequest::Preview(command, resp) => {
+                            preview_by_debug = true;
+                            extrapolate_on = command.extrapolate;
+                            let on = if extrapolate_on { "on" } else { "off" };
+                            let _ = resp.send(Ok(format!("extrapolate {on}")));
+                            continue;
+                        }
                         debug_server::DebugRequest::Stream(resp) => {
                             let tap = stream_tap.get_or_insert_with(Default::default);
                             let _ = resp.send(Ok(tap.share()));
@@ -4272,6 +4293,7 @@ Escape again to quit"
                     || debug_active
                     // The time-travel chrome reads and seeks the live sim.
                     || scrubber_visible
+                    || (preview_by_debug && extrapolate_on)
                     || args.trajectory
                     || args.strobe;
             }

@@ -134,7 +134,14 @@ function LiveGame({
       </span>
     </div>
     {transport?.clock && visible && (
-      <TransportBar transport={transport} marks={marks} online={online} send={send} compact={compact} />
+      <TransportBar
+        transport={transport}
+        marks={marks}
+        online={online}
+        send={send}
+        compact={compact}
+        extrapolates={!noGpu}
+      />
     )}
     </div>
   );
