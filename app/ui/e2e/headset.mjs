@@ -98,6 +98,8 @@ async function headset(browser, width, height) {
     quest = stub(server.link, store, "Quest 3");
     await quest.line("linked ");
     expect(await quest.line("request POST /load-project")).toContain("name=counter");
+    const project = (name) => app.state?.devices.list.find((d) => d.name === name)?.state.project;
+    await expect.poll(() => project("Quest 3"), { timeout: 15_000 }).toBe("counter");
     await expect(view).toContainText("Running on Quest 3");
     await expect(view).toContainText(/Frame \d+ · Playing/);
     expect(app.state.session.id).toBe(session);
