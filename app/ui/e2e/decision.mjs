@@ -13,13 +13,10 @@
 //   npm run test:app-ui
 //
 // APP_UI_SHOTS=<dir> saves stills of each case at both widths.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
-import { reopen, requireBuilt, ROOT, shot, startServer, stopServer, tempProject, watchErrors } from "./app.mjs";
+import { requireBuilt, ROOT, shot, startServer, stopServer, storePaths, tempProject, watchErrors } from "./app.mjs";
 
 const FIXTURES = `${ROOT}app/ui/e2e/fixtures`;
-const GOLDEN = `${ROOT}app/ui/e2e/golden`;
 const WIDTHS = [
   [1440, 900],
   [700, 900],
@@ -68,7 +65,7 @@ async function easy(browser, size) {
     await restoreLayout(page);
     const card = page.locator(".chat").getByTestId("review-card");
     await expect(card).toContainText("Review change · 1 file +1 −1 · game logic");
-    await expect(card.getByTestId("review-verdict")).toHaveText("Approve at a glance 2 lines in one file. 1 check passes.");
+    await expect(card.getByTestId("review-verdict")).toHaveText("Approve at a glance 2 changed lines in one file. 1 check passes.");
     await card.getByRole("button", { name: "Open the decision page" }).click();
     const tab = page.getByRole("tablist", { name: "Decision page" });
     await expect(tab.getByRole("tab", { name: "Decision" })).toHaveAttribute("aria-selected", "true");
@@ -168,23 +165,13 @@ async function bare(browser, size) {
     await expect(p.getByTestId("first-size")).toHaveText("+1 −1 1 file · game logic");
     await expect(p.getByTestId("first-summary")).toHaveCount(0);
     await expect(p.getByRole("heading", { name: "Things to note" })).toHaveCount(0);
-    await expect(p.locator(".first-list")).toContainText("Nothing was run or compared.");
+    await expect(p.locator(".first-list")).toContainText("No check was reported and no path was compared.");
     await shot(page, `decision-bare-${size[0]}`);
     expect(errors, "console errors").toEqual([]);
   } finally {
     await page.close();
     await stopServer(server);
   }
-}
-
-/** The stored file of the project's only task. */
-function taskFile(home) {
-  const projects = join(home, "projects");
-  for (const p of readdirSync(projects)) {
-    const file = join(projects, p, "tasks", "1.json");
-    if (existsSync(file)) return file;
-  }
-  throw new Error("no stored task");
 }
 
 /**
@@ -196,17 +183,7 @@ function taskFile(home) {
  */
 async function late(browser, { dir, server }, [width, height]) {
   await stopServer(server);
-  const evidence = join(server.home, "evidence");
-  mkdirSync(evidence, { recursive: true });
-  const before = "0123456789abcdef0123456789abcdef-before.png";
-  const after = "0123456789abcdef0123456789abcdef-after.png";
-  copyFileSync(`${GOLDEN}/paths-before.png`, join(evidence, before));
-  copyFileSync(`${GOLDEN}/paths-after.png`, join(evidence, after));
-  const file = taskFile(server.home);
-  const saved = JSON.parse(readFileSync(file, "utf8"));
-  saved.task.moment = { kind: "taken", frame: 5, steps: 121 };
-  saved.task.evidence = { tree: saved.task.change.tree, state: { kind: "shown", before, after } };
-  writeFileSync(file, JSON.stringify(saved));
+  storePaths(server.home);
   server = await startServer(server.port, { dir, home: server.home, token: server.token });
 
   const page = await browser.newPage({ viewport: { width, height } });

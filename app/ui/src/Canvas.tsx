@@ -20,7 +20,7 @@ import { TaskPage } from "./TaskPage";
 import { GameView } from "./GameView";
 import { useTransport } from "./TransportBar";
 import { Icon } from "./Icon";
-import { useMenu } from "./menu";
+import { tabTarget, useMenu } from "./menu";
 import { DEFAULT_ASPECT, isLeft, isTop, miniKey, miniRect, nearestCorner, resizedWidth, clampWidth } from "./mini-model";
 import {
   agentTabs,
@@ -468,13 +468,7 @@ function PaneView({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
   const show = (view: View) => op({ type: "open", view, target: { kind: "pane", pane: pane.id } });
   // Arrow keys move between tabs (and show them), as in the ARIA tabs pattern.
   const onTabKey = (e: KeyboardEvent, i: number) => {
-    const n = pane.tabs.length;
-    const to =
-      e.key === "ArrowRight" ? (i + 1) % n
-      : e.key === "ArrowLeft" ? (i - 1 + n) % n
-      : e.key === "Home" ? 0
-      : e.key === "End" ? n - 1
-      : null;
+    const to = tabTarget(e.key, i, pane.tabs.length);
     if (e.key === "Delete") {
       e.preventDefault();
       ctx.refocus(op({ type: "close", view: pane.tabs[i]! }));

@@ -2,7 +2,7 @@
 // with a throwaway home (so no test reads or writes the user's saved tasks),
 // and watching a page for console errors and non-loopback requests.
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,30 @@ export async function shot(page, name, { fullPage = false } = {}) {
 
 const temps = [];
 process.on("exit", () => temps.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/**
+ * Stores the committed path captures as the predicted path of the only
+ * task under the (stopped) app's `home`: its moment at frame 5, 121 steps.
+ * Resolves with the task's file and what it now holds.
+ */
+export function storePaths(home) {
+  const evidence = join(home, "evidence");
+  mkdirSync(evidence, { recursive: true });
+  const before = "0123456789abcdef0123456789abcdef-before.png";
+  const after = "0123456789abcdef0123456789abcdef-after.png";
+  copyFileSync(`${ROOT}app/ui/e2e/golden/paths-before.png`, join(evidence, before));
+  copyFileSync(`${ROOT}app/ui/e2e/golden/paths-after.png`, join(evidence, after));
+  const projects = join(home, "projects");
+  const file = readdirSync(projects)
+    .map((p) => join(projects, p, "tasks", "1.json"))
+    .find((f) => existsSync(f));
+  if (!file) throw new Error("no stored task");
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  saved.task.moment = { kind: "taken", frame: 5, steps: 121 };
+  saved.task.evidence = { tree: saved.task.change.tree, state: { kind: "shown", before, after } };
+  writeFileSync(file, JSON.stringify(saved));
+  return { file, saved };
+}
 
 /** A fresh temp directory, removed when the process exits. */
 export function tempDir(prefix) {

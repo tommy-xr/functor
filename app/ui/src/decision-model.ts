@@ -4,6 +4,7 @@
 
 import type { Depth, Kind, Size, Task } from "./generated/protocol";
 import { plural } from "./diff-model.ts";
+import { pathsNote } from "./paths-model.ts";
 
 /** The task page's tabs, in order: the first page, then depth (D31). */
 export const TABS = ["decision", "highlights", "captures", "changes"] as const;
@@ -50,11 +51,10 @@ export function evidenceLines(task: Task): EvidenceLine[] {
     case "taking":
       lines.push({ text: "Predicted path before and after", ok: state.kind === "shown" || null, tab: "captures" });
       break;
+    // In the Captures tab's words.
     case "same":
-      lines.push({ text: "The predicted path is the same before and after", ok: null });
-      break;
     case "withheld":
-      lines.push({ text: `No predicted path: ${state.reason}`, ok: null });
+      lines.push({ text: pathsNote(task)!, ok: null });
       break;
   }
   return lines;

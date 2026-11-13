@@ -6,6 +6,7 @@ import { DEPTH_WORDS, evidenceLines, firstOf, sizeLine, TAB_WORDS, TABS, VISIBLE
 import { Counts, DiffView, FileCounts, ReviewActions, TaskBadge } from "./DiffView";
 import { hasChange, plural, totals } from "./diff-model";
 import { Icon } from "./Icon";
+import { tabTarget } from "./menu";
 import { PairFrames, PathSection } from "./PathEvidence";
 import type { DiffMsg, Notice, Send } from "./socket";
 import { taskPage, usageTable, type RunSteps, type TaskPage as Page } from "./task-page-model";
@@ -169,6 +170,8 @@ export function TaskPage({
       </header>
       {decision ? (
         <Depths
+          // Its own tab state per task and change: the canvas reuses this page for another task.
+          key={`${task.id} ${task.change?.tree}`}
           task={task}
           decision={decision}
           page={page}
@@ -183,8 +186,12 @@ export function TaskPage({
   );
 }
 
-/** Per task, the tab its decision page last showed: kept across mounts (a split remounts it). */
-const shownTabs = new Map<number, Tab>();
+/**
+ * Per task and change (its tree), the tab its decision page last showed:
+ * kept across mounts (a split remounts it); a new change leads with the
+ * first page.
+ */
+const shownTabs = new Map<string, Tab>();
 
 /**
  * The decision page's tabs (the ARIA tabs pattern, as the canvas's): the
@@ -205,22 +212,17 @@ function Depths({
   details: ReactNode;
   diff: ReactNode;
 }) {
-  const [tab, setTab] = useState<Tab>(() => shownTabs.get(task.id) ?? "decision");
+  const shown = `${task.id} ${task.change?.tree}`;
+  const [tab, setTab] = useState<Tab>(() => shownTabs.get(shown) ?? "decision");
   const tabId = (t: Tab) => `task-${task.id}-tab-${t}`;
   const show = (t: Tab, focus: boolean) => {
-    shownTabs.set(task.id, t);
+    shownTabs.set(shown, t);
     setTab(t);
     if (focus) document.getElementById(tabId(t))?.focus();
   };
   // Arrow keys move between tabs and show them; Home and End jump.
   const onKey = (e: KeyboardEvent, i: number) => {
-    const n = TABS.length;
-    const to =
-      e.key === "ArrowRight" ? (i + 1) % n
-      : e.key === "ArrowLeft" ? (i - 1 + n) % n
-      : e.key === "Home" ? 0
-      : e.key === "End" ? n - 1
-      : null;
+    const to = tabTarget(e.key, i, TABS.length);
     if (to === null) return;
     e.preventDefault();
     show(TABS[to]!, true);
@@ -348,7 +350,7 @@ function FirstPage({
         </h3>
         <Lines
           testid="first-evidence"
-          empty="Nothing was run or compared."
+          empty="No check was reported and no path was compared."
           onTab={onTab}
           items={evidenceLines(task).map((line) => ({
             icon: line.ok === null ? null : line.ok ? "check" : "cross",
@@ -372,9 +374,10 @@ function FirstPage({
           </h3>
           <Lines
             testid="first-notes"
-            empty="Nothing to note."
+            // An empty list is the agent saying so; none at all, it did not say.
+            empty={report.notes ? "Nothing to note." : "None reported."}
             onTab={onTab}
-            items={report.notes.map((note) => ({ icon: "alert", tone: "warn", body: note }))}
+            items={(report.notes ?? []).map((note) => ({ icon: "alert", tone: "warn", body: note }))}
           />
         </section>
       )}

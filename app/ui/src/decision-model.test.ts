@@ -29,7 +29,10 @@ test("evidence is the agent's checks, then the predicted path", () => {
   // The same line while it is taken, without its tick.
   assert.deepEqual(evidenceLines(task(null, { kind: "taking" })), [{ text: "Predicted path before and after", ok: null, tab: "captures" }]);
   assert.deepEqual(evidenceLines(task(null, { kind: "withheld", reason: "the old code did not load" })), [
-    { text: "No predicted path: the old code did not load", ok: null },
+    { text: "No predicted path: the old code did not load.", ok: null },
+  ]);
+  assert.deepEqual(evidenceLines(task(null, { kind: "same" })), [
+    { text: "The change moves nothing on the predicted path from frame 5, with no recorded input.", ok: null },
   ]);
   assert.deepEqual(evidenceLines(task(null, null)), []);
 });

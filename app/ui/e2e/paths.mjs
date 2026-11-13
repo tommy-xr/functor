@@ -21,7 +21,7 @@
 //   UPDATE_GOLDENS=1 FUNCTOR_APP_GPU=1 FUNCTOR_BIN=target/release/functor node app/ui/e2e/paths.mjs
 //
 // APP_UI_SHOTS=<dir> saves stills of the card, the larger view and the page.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, expect } from "@playwright/test";
 import {
@@ -35,6 +35,7 @@ import {
   shot,
   startServer,
   stopServer,
+  storePaths,
   tempProject,
   watchErrors,
   watchState,
@@ -95,16 +96,6 @@ async function openTask(page) {
   await page.getByTestId("task-page").getByRole("tab", { name: "Captures" }).click();
 }
 
-/** The stored file of the project's only task. */
-function taskFile(home) {
-  const projects = join(home, "projects");
-  for (const p of readdirSync(projects)) {
-    const file = join(projects, p, "tasks", "1.json");
-    if (existsSync(file)) return file;
-  }
-  throw new Error("no stored task");
-}
-
 /** The card and page without a GPU: none from a run, then a stored pair and a stored reason. */
 async function stored(browser) {
   const dir = platformer();
@@ -126,17 +117,7 @@ async function stored(browser) {
 
     // The same task, stored with the committed captures.
     await stopServer(server);
-    const evidence = join(server.home, "evidence");
-    mkdirSync(evidence, { recursive: true });
-    const before = "0123456789abcdef0123456789abcdef-before.png";
-    const after = "0123456789abcdef0123456789abcdef-after.png";
-    copyFileSync(`${GOLDEN}/paths-before.png`, join(evidence, before));
-    copyFileSync(`${GOLDEN}/paths-after.png`, join(evidence, after));
-    const file = taskFile(server.home);
-    const saved = JSON.parse(readFileSync(file, "utf8"));
-    saved.task.moment = { kind: "taken", frame: 5, steps: 121 };
-    saved.task.evidence = { tree: saved.task.change.tree, state: { kind: "shown", before, after } };
-    writeFileSync(file, JSON.stringify(saved));
+    const { file, saved } = storePaths(server.home);
     server = await startServer(server.port, { dir, home: server.home, token: server.token });
 
     for (const [width, height] of [

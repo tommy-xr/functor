@@ -2,6 +2,6 @@
 {"ms": 100, "event": {"type": "tool_use", "name": "Edit", "input": {"file_path": "game.fun", "old_string": "Color.rgb(0.3, 0.65, 0.9)", "new_string": "Color.rgb(0.95, 0.6, 0.2)"}}}
 {"ms": 150, "edit": {"path": "game.fun", "old": "Color.rgb(0.3, 0.65, 0.9)", "new": "Color.rgb(0.95, 0.6, 0.2)"}}
 {"ms": 200, "event": {"type": "tool_result", "content": "The file has been updated."}}
-{"ms": 300, "mcp": {"tool": "present", "arguments": {"steps": [{"title": "The cube's colour", "view": {"kind": "file", "path": "game.fun", "lines": [36, 36]}}], "summary": "The agent changed one colour value in game.fun. The cube is now amber. Before, the cube was blue. The size and the rotation of the cube did not change. No other file changed.", "evidence": [{"ran": "functor test", "result": "3 expects pass", "ok": true}]}}}
+{"ms": 300, "mcp": {"tool": "present", "arguments": {"steps": [{"title": "The cube's colour", "view": {"kind": "file", "path": "game.fun", "lines": [36, 36]}}], "summary": "The agent changed one colour value in game.fun. The cube is now amber. Before, the cube was blue. The size and the rotation of the cube did not change. No other file changed.", "notes": [], "evidence": [{"ran": "functor test", "result": "3 expects pass", "ok": true}]}}}
 {"ms": 400, "event": {"type": "text", "text": "The cube is amber now."}}
 {"ms": 450, "event": {"type": "finished", "ok": true, "summary": "The cube is amber now."}}
