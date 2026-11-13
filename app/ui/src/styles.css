@@ -2418,7 +2418,7 @@ blockquote {
 .paths-overlay .paths-faint {
   position: absolute;
   inset: 0;
-  opacity: 0.4;
+  opacity: 0.3;
 }
 
 .paths-overlay:hover,
@@ -2441,27 +2441,7 @@ blockquote {
 }
 
 .paths-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px 14px;
   color: var(--text-2);
-}
-
-.paths-key {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.paths-swatch {
-  width: 14px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--text);
-}
-
-.paths-swatch-faint {
-  opacity: 0.4;
 }
 
 .paths-section {
@@ -2498,8 +2478,19 @@ blockquote {
   border-radius: var(--radius-s);
 }
 
+/* A native modal <dialog>: the browser's top layer, inert page, Escape. */
 .paths-dialog {
-  width: min(1280px, 100%);
+  width: min(1280px, calc(100% - 32px));
+  padding: 0;
+  color: inherit;
+}
+
+.paths-dialog:not([open]) {
+  display: none;
+}
+
+.paths-dialog::backdrop {
+  background: rgba(5, 8, 12, 0.72);
 }
 
 .paths-dialog-body {
@@ -2509,11 +2500,7 @@ blockquote {
 }
 
 .paths-dialog-foot {
-  display: flex;
-  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  border-top: 1px solid var(--border);
 }
 
 .paths-dialog-foot .hint {

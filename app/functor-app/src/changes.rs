@@ -759,7 +759,7 @@ pub(crate) mod tests {
         repo.write("debug.log", "ignored\n");
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test]
     async fn a_snapshot_exports_a_project_as_it_was_and_lists_ignored_files() {
         let repo = Repo::new(&[
             ("game/game.fun", "let a = 1\n"),
@@ -787,7 +787,7 @@ pub(crate) mod tests {
         assert!(git.export("not-an-oid", "game", &out).await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn a_snapshot_leaves_the_users_git_state_alone() {
         let repo = repo();
         // `git status` may refresh the index: settle it before comparing.

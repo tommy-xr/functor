@@ -238,6 +238,15 @@ pub fn project_dir(root: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// What a repo-relative path inside project `path` starts with: `path/`,
+/// or nothing for the root (`.`).
+pub fn project_prefix(path: &str) -> String {
+    match path {
+        "." => String::new(),
+        path => format!("{path}/"),
+    }
+}
+
 /// The nearest ancestor of `start` (itself included) with a `.git` (a
 /// directory, or a file in a worktree), else `start`.
 pub fn repo_root(start: &Path) -> PathBuf {

@@ -2454,10 +2454,7 @@ mod tests {
         assert_eq!(next, with_session(4, None, SessionStatus::Starting));
         assert_eq!(
             commands,
-            vec![
-                start_cmd(4, "examples/a", Display::Hidden),
-                broadcast(&next)
-            ]
+            vec![start_cmd(4, "examples/a", Display::Hidden), broadcast(&next)]
         );
         // Ended after running, stopped, or a stale session: no restart.
         for before in [
@@ -2467,9 +2464,7 @@ mod tests {
         ] {
             let (next, commands) = update(before.clone(), session(3, SessionEvent::SourceChanged));
             assert_eq!(next, before);
-            assert!(!commands
-                .iter()
-                .any(|c| matches!(c, Command::StartSession { .. })));
+            assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
         }
     }
 
@@ -4977,14 +4972,8 @@ mod tests {
         let mut app = state();
         app.start_on_open = true;
         for (placement, expected) in [
-            (
-                Placement::Pane,
-                vec![(PathBuf::from("/other"), Display::Hidden)],
-            ),
-            (
-                Placement::Mini,
-                vec![(PathBuf::from("/other"), Display::Hidden)],
-            ),
+            (Placement::Pane, vec![(PathBuf::from("/other"), Display::Hidden)]),
+            (Placement::Mini, vec![(PathBuf::from("/other"), Display::Hidden)]),
             (Placement::Window, vec![]),
         ] {
             let (next, commands) = update(app.clone(), read(placement));

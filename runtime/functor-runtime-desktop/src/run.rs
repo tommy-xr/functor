@@ -2502,7 +2502,11 @@ Escape releases while captured"
         // the game before the next tick (like net results). The player is `mut`
         // so the listener can be updated from each frame's camera.
         let (audio_tx, audio_rx) = std::sync::mpsc::channel::<u64>();
-        let mut audio_player = audio::AudioPlayer::new(audio_tx, asset_cache.clone());
+        // A `--replay-input` run is silent: it re-runs steps already heard.
+        let mut audio_player = match replay_input {
+            Some(_) => None,
+            None => audio::AudioPlayer::new(audio_tx, asset_cache.clone()),
+        };
 
         // Xreal head tracking: a background thread owns the TCP stream +
         // sensor fusion; the loop reads the latest orientation each frame and

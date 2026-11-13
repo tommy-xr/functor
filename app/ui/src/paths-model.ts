@@ -2,12 +2,12 @@
 // inputs both paths share, and what to say when there are none.
 import type { Task } from "./generated/protocol";
 
-/** "frame 212, the same 340 recorded input steps": what both paths share. */
+/** "frame 212, replaying the same 340 recorded input steps": what both paths share. */
 export function momentPhrase(task: Task): string | null {
   const m = task.moment;
   if (m?.kind !== "taken") return null;
   const inputs =
-    m.steps === 0 ? "no recorded input" : `the same ${m.steps} recorded input ${m.steps === 1 ? "step" : "steps"}`;
+    m.steps === 0 ? "with no recorded input" : `replaying the same ${m.steps} recorded input ${m.steps === 1 ? "step" : "steps"}`;
   return `frame ${m.frame}, ${inputs}`;
 }
 

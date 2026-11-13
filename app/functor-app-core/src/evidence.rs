@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::changes::Change;
+use crate::projects::{project_files, project_prefix};
 use crate::tasks::Task;
 
 /// The game as the task's baseline was taken: where both paths start.
@@ -111,17 +112,15 @@ pub fn next(task: &Task) -> Next {
     }
 }
 
-/// Whether `change` touches the game's code: a `.fun` file or
-/// `functor.json` in project `project` (repo-relative, `.` the root). Files
-/// past the summary's list may be code.
+/// Whether `change` touches the game's code: a file the loader reads
+/// ([`project_files`]: top-level `.fun`, `.funi`, `functor.json`) in project
+/// `project` (repo-relative, `.` the root). Files past the summary's list
+/// may be code.
 pub fn changes_code(change: &Change, project: &str) -> bool {
-    let prefix = match project {
-        "." => String::new(),
-        p => format!("{p}/"),
-    };
+    let prefix = project_prefix(project);
     let code = |path: &String| {
         path.strip_prefix(&prefix)
-            .is_some_and(|rest| rest.ends_with(".fun") || rest == "functor.json")
+            .is_some_and(|rest| !project_files([rest.to_string()]).is_empty())
     };
     change.more > 0
         || change
@@ -171,6 +170,8 @@ mod tests {
         assert!(changes_code(&change(&["game/game.fun"], "t"), "game"));
         assert!(changes_code(&change(&["game/functor.json"], "t"), "game"));
         assert!(changes_code(&change(&["game.fun"], "t"), "."));
+        assert!(changes_code(&change(&["game/game.funi"], "t"), "game"));
+        assert!(!changes_code(&change(&["game/sub/x.fun"], "t"), "game"));
         assert!(!changes_code(&change(&["game/hero.png"], "t"), "game"));
         assert!(!changes_code(&change(&["other/game.fun"], "t"), "game"));
         assert!(!changes_code(&change(&["README.md"], "t"), "."));

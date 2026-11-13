@@ -145,7 +145,7 @@ pub fn make_private(home: &Path) -> io::Result<()> {
 
 /// Creates `dir` and its missing parents as 0700 on Unix. Windows has no
 /// mode bits: they inherit the home's ACL, the user's own by default.
-fn create_private_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -203,9 +203,8 @@ fn load_each<T: serde::de::DeserializeOwned>(
         .collect()
 }
 
-fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
-    create_private_dir(file.parent().expect("under home"))?;
-    write_whole(file, &serde_json::to_string(value)?)
+pub(crate) fn save_json<T: serde::Serialize>(file: &Path, value: &T) -> io::Result<()> {
+    save_private(file, serde_json::to_string(value)?.as_bytes())
 }
 
 /// Written aside then renamed, so a crash never leaves half a file. The

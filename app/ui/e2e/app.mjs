@@ -2,7 +2,7 @@
 // with a throwaway home (so no test reads or writes the user's saved tasks),
 // and watching a page for console errors and non-loopback requests.
 import { execFileSync, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -258,4 +258,12 @@ export function difference(page, a, b, region = [0, 0, 1, 1]) {
     },
     [a.toString("base64"), b.toString("base64"), region],
   );
+}
+
+/** Rewrites the copy's `jumpVelocity` line, as an editor's save would. */
+export function setJump(dir, from, to) {
+  const file = join(dir, "game.fun");
+  const text = readFileSync(file, "utf8");
+  if (!text.includes(`let jumpVelocity = ${from}`)) throw new Error(`game.fun has no jumpVelocity = ${from}`);
+  writeFileSync(file, text.replace(`let jumpVelocity = ${from}`, `let jumpVelocity = ${to}`));
 }

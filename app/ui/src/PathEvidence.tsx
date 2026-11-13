@@ -1,5 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useRef, useState } from "react";
 import type { EvidenceState, Task } from "./generated/protocol";
 import { momentPhrase, pathsNote } from "./paths-model";
 import { evidenceUrl } from "./socket";
@@ -40,19 +39,8 @@ export function PathCard({ task }: { task: Task }) {
         <img className="paths-faint" src={evidenceUrl(state.before)} alt={alt("before", from)} />
       </button>
       <figcaption className="paths-caption">
-        <span className="paths-legend">
-          <span className="paths-key">
-            <span className="paths-swatch paths-swatch-faint" aria-hidden="true" />
-            Faint: before
-          </span>
-          <span className="paths-key">
-            <span className="paths-swatch" aria-hidden="true" />
-            Bright: after
-          </span>
-        </span>
-        <span>
-          Predicted from {from}. The game's two renders, overlaid.
-        </span>
+        <span className="paths-legend">Faint: before the change. Bright: after.</span>
+        <span>Predicted from {from}. The game's two renders, overlaid.</span>
       </figcaption>
       {open && <PathDialog task={task} state={state} onClose={() => setOpen(false)} />}
     </figure>
@@ -102,48 +90,45 @@ function Pair({ task, state }: { task: Task; state: Shown }) {
   );
 }
 
-/** The pair, large; Escape, Close or the backdrop closes it, and focus goes back. */
+/**
+ * The pair, large, in a native modal dialog: the rest of the page is inert
+ * and Tab stays inside; Escape, Close or the backdrop closes it, and focus
+ * goes back where it was.
+ */
 function PathDialog({ task, state, onClose }: { task: Task; state: Shown; onClose: () => void }) {
-  // Read while rendering, before Close takes the focus.
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = useRef<HTMLButtonElement>(null);
+  // Read while rendering, before the dialog takes the focus.
   const [before] = useState(() => document.activeElement as HTMLElement | null);
-  const close = () => {
-    onClose();
-    before?.focus();
-  };
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
-  };
-  return createPortal(
-    <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && close()}>
-      <div
-        className="modal paths-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="paths-title"
-        onKeyDown={onKeyDown}
-        data-testid="paths-dialog"
-      >
-        <header className="modal-head">
-          <h2 id="paths-title" className="pane-title">
-            Predicted path
-          </h2>
-        </header>
-        <div className="paths-dialog-body">
-          <Pair task={task} state={state} />
-        </div>
-        <footer className="modal-foot paths-dialog-foot">
-          <p className="hint">
-            From {momentPhrase(task)}, under the old code and the new. Each is the game's own render.
-          </p>
-          <button type="button" className="button" autoFocus onClick={close}>
-            Close
-          </button>
-        </footer>
+  useEffect(() => {
+    dialog.current?.showModal();
+    close.current?.focus();
+    return () => before?.focus();
+  }, [before]);
+  return (
+    <dialog
+      ref={dialog}
+      className="modal paths-dialog"
+      aria-labelledby="paths-title"
+      data-testid="paths-dialog"
+      onClose={onClose}
+      // The backdrop is the dialog itself; its content is not.
+      onClick={(e) => e.target === e.currentTarget && dialog.current?.close()}
+    >
+      <header className="modal-head">
+        <h2 id="paths-title" className="pane-title">
+          Predicted path
+        </h2>
+      </header>
+      <div className="paths-dialog-body">
+        <Pair task={task} state={state} />
       </div>
-    </div>,
-    document.body,
+      <footer className="modal-foot paths-dialog-foot">
+        <p className="hint">From {momentPhrase(task)}, under the old code and the new. Each is the game's own render.</p>
+        <button type="button" className="button" ref={close} onClick={() => dialog.current?.close()}>
+          Close
+        </button>
+      </footer>
+    </dialog>
   );
 }

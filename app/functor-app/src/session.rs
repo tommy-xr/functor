@@ -39,9 +39,9 @@ const FAST_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MARKS_INTERVAL: Duration = Duration::from_millis(250);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long output written just before an exit is still collected.
-const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
+pub(crate) const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
-const TAIL_LINES: usize = 20;
+pub(crate) const TAIL_LINES: usize = 20;
 /// Between checks of an ended session's project files for a change.
 const SOURCE_POLL: Duration = Duration::from_millis(500);
 /// How long a layout change waits to be written, so a burst (a splitter
@@ -329,18 +329,21 @@ impl Driver {
                 project,
                 baseline,
                 tree,
-            } => {
-                if let Some(git) = self.git.clone() {
-                    self.evidence.take(crate::evidence::Job {
-                        task,
-                        git,
-                        dir,
-                        project,
-                        baseline,
-                        tree,
-                    });
+            } => match self.git.clone() {
+                Some(git) => self.evidence.take(crate::evidence::Job {
+                    task,
+                    git,
+                    dir,
+                    project,
+                    baseline,
+                    tree,
+                }),
+                None => {
+                    let reason = "changes are tracked only in a git repository".to_string();
+                    let state = functor_app_core::evidence::EvidenceState::Withheld { reason };
+                    let _ = self.events.send(Event::Evidence { task, tree, state });
                 }
-            }
+            },
             Command::DropEvidence { files } => {
                 let dir = crate::store::evidence_dir(&self.home);
                 for file in files.iter().filter(|f| crate::evidence::is_name(f)) {
@@ -777,7 +780,7 @@ async fn exchange_bytes(
 }
 
 /// `GET /state`'s `frame`, pointer surface and `clock`.
-async fn poll_state(debug_url: &str) -> Result<Polled, String> {
+pub(crate) async fn poll_state(debug_url: &str) -> Result<Polled, String> {
     let body = request(debug_url, "GET", "/state?model=0", &[], "").await?;
     parse_state(&body)
 }

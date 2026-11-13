@@ -31,6 +31,7 @@ import {
   git,
   ROOT,
   requireBuilt,
+  setJump,
   shot,
   startServer,
   stopServer,
@@ -54,13 +55,6 @@ function platformer() {
   setJump(dir, "13.0", "8.0 ");
   git(dir, "commit", "-qam", "weak jump");
   return dir;
-}
-
-function setJump(dir, from, to) {
-  const file = join(dir, "game.fun");
-  const text = readFileSync(file, "utf8");
-  if (!text.includes(`let jumpVelocity = ${from}`)) throw new Error(`no jumpVelocity = ${from}`);
-  writeFileSync(file, text.replace(`let jumpVelocity = ${from}`, `let jumpVelocity = ${to}`));
 }
 
 const post = async (url, path, body) => {
@@ -156,14 +150,15 @@ async function stored(browser) {
       // Both renders, overlaid: the old one faint.
       const imgs = paths.locator("img");
       await expect(imgs).toHaveCount(2);
-      await expect(imgs.nth(0)).toHaveAttribute("alt", "Predicted path after the change, from frame 5, the same 121 recorded input steps");
-      await expect(imgs.nth(1)).toHaveAttribute("alt", "Predicted path before the change, from frame 5, the same 121 recorded input steps");
+      await expect(imgs.nth(0)).toHaveAttribute("alt", "Predicted path after the change, from frame 5, replaying the same 121 recorded input steps");
+      await expect(imgs.nth(1)).toHaveAttribute("alt", "Predicted path before the change, from frame 5, replaying the same 121 recorded input steps");
       await expect.poll(() => imgs.evaluateAll((els) => els.every((i) => i.complete && i.naturalWidth > 0))).toBe(true);
-      expect(await imgs.nth(1).evaluate((i) => getComputedStyle(i).opacity)).toBe("0.4");
-      await expect(paths).toContainText("Predicted from frame 5, the same 121 recorded input steps.");
+      expect(await imgs.nth(1).evaluate((i) => getComputedStyle(i).opacity)).toBe("0.3");
+      await expect(paths).toContainText("Predicted from frame 5, replaying the same 121 recorded input steps.");
       await expect(paths).toContainText("overlaid");
       const box = await paths.locator(".paths-overlay").boundingBox();
       expect(box.width, "fills the card").toBeGreaterThan(200);
+      await paths.scrollIntoViewIfNeeded();
       await shot(page, `paths-card-${width}`);
 
       // The larger view: side by side, Escape closes and focus returns.
@@ -176,6 +171,7 @@ async function stored(browser) {
       await expect(dialog.getByRole("img", { name: /^Predicted path before the change/ })).toBeVisible();
       await expect(dialog.getByRole("img", { name: /^Predicted path after the change/ })).toBeVisible();
       await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+      expect(await dialog.evaluate((d) => d.matches(":modal")), "modal: the page behind is inert").toBe(true);
       await shot(page, `paths-dialog-${width}`);
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
@@ -284,7 +280,7 @@ async function gpu(browser) {
       expect(golden[1], "after matches its golden").toBeLessThan(0.5);
       const paths = page.locator(".chat").getByTestId("paths-card");
       await expect(paths).toBeVisible();
-      await expect(paths).toContainText("Predicted from frame 5, the same 121 recorded input steps.");
+      await expect(paths).toContainText("Predicted from frame 5, replaying the same 121 recorded input steps.");
       await shot(page, "paths-run-1440");
     } finally {
       await page.close();

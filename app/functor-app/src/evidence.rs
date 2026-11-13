@@ -10,12 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use functor_app_core::evidence::{EvidenceState, Moment};
+use functor_app_core::projects::project_prefix;
 use functor_app_core::{listening_url, Event};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::changes::Git;
-use crate::session::{request, request_bytes};
+use crate::session::{poll_state, request, request_bytes};
 
 /// The most one pair of captures may take.
 const JOB_TIMEOUT: Duration = Duration::from_secs(60);
@@ -53,13 +54,20 @@ pub async fn take_moment(debug_url: &str, file: &Path) -> Moment {
                 .to_string(),
         );
     }
+    // A replay would send them again.
+    let http = &state["http"];
+    if ["pending", "completed", "failed"]
+        .iter()
+        .any(|k| http[k].as_u64().unwrap_or(0) > 0)
+    {
+        return missing("the game made network requests, which a replay would send again".into());
+    }
     let kept = Kept {
         frame,
         model: state["model"].clone(),
         log,
     };
-    let text = serde_json::to_vec(&kept).expect("the moment serializes");
-    if let Err(e) = crate::store::save_private(file, &text) {
+    if let Err(e) = crate::store::save_json(file, &kept) {
         return missing(format!("the moment could not be kept ({e})"));
     }
     Moment::Taken { frame, steps }
@@ -210,7 +218,7 @@ async fn pair(
     ] {
         let dir = work.0.join(name);
         materialize(job, tree, &dir).await?;
-        let side = replay(functor, &dir, &log, moment, check)
+        let side = replay(functor, &dir, (&log, &kept.log), moment, check)
             .await
             .map_err(|e| {
                 format!(
@@ -228,47 +236,33 @@ async fn pair(
     Ok((before.png != after.png).then_some((before.png, after.png)))
 }
 
-/// Snapshot `tree`'s project files as `dir`, with the working tree's ignored
-/// files (fetched assets) linked in: no snapshot holds them, and the change
-/// cannot have changed them.
+/// Snapshot `tree`'s project files as `dir`, with copies of the working
+/// tree's ignored files (fetched assets): no snapshot holds them, and the
+/// change cannot have changed them. Ignored directories (saves, build output)
+/// are left out, so nothing a replay writes reaches the user's files.
 async fn materialize(job: &Job, tree: &str, dir: &Path) -> Result<(), String> {
     job.git
         .export(tree, &job.project, dir)
         .await
         .map_err(|e| format!("cannot write its files: {e}"))?;
     let root = job.git.root();
-    let prefix = match job.project.as_str() {
-        "." => String::new(),
-        p => format!("{p}/"),
-    };
+    let prefix = project_prefix(&job.project);
     for path in job.git.ignored(&job.project).await? {
-        let path = path.trim_end_matches('/');
-        let Some(rest) = path.strip_prefix(&prefix).filter(|r| !r.is_empty()) else {
+        let Some(rest) = path.strip_prefix(&prefix).filter(|r| !r.ends_with('/')) else {
             continue;
         };
-        let link = dir.join(rest);
-        if link.symlink_metadata().is_ok() {
-            continue;
-        }
-        if let Some(parent) = link.parent() {
+        let copy = dir.join(rest);
+        if let Some(parent) = copy.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        symlink(&root.join(path), &link).map_err(|e| format!("cannot link {rest}: {e}"))?;
+        std::fs::copy(root.join(&path), &copy).map_err(|e| format!("cannot copy {rest}: {e}"))?;
     }
     Ok(())
 }
 
-#[cfg(unix)]
-fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(windows)]
-fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-    match target.is_dir() {
-        true => std::os::windows::fs::symlink_dir(target, link),
-        false => std::os::windows::fs::symlink_file(target, link),
-    }
+fn failed(tail: &VecDeque<String>) -> String {
+    let cause = crate::session::cause(tail).unwrap_or("it exited");
+    format!("the game did not load or replay: {cause}")
 }
 
 /// One side's capture, with the camera it was drawn from.
@@ -284,14 +278,16 @@ struct Side {
 async fn replay(
     functor: &Path,
     dir: &Path,
-    log: &Path,
+    (log, recorded): (&Path, &Value),
     (frame, steps): (u64, u64),
     check: Option<&Value>,
 ) -> Result<Side, String> {
+    // No sockets: their traffic stays in the session (`embedder`), unsent.
     let mut child = tokio::process::Command::new(functor)
         .arg("-d")
         .arg(dir)
         .args(["run", "native", "--hidden", "--preview-presence", "1"])
+        .args(["--net-transport", "embedder"])
         .arg("--replay-input")
         .arg(log)
         .args(["--debug-port", "0"])
@@ -308,20 +304,15 @@ async fn replay(
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     let push = |tail: &Mutex<VecDeque<String>>, line: String| {
         let mut tail = tail.lock().unwrap();
-        if tail.len() == 20 {
+        if tail.len() == crate::session::TAIL_LINES {
             tail.pop_front();
         }
         tail.push_back(line);
     };
-    let failed = |tail: &Mutex<VecDeque<String>>| {
-        let tail = tail.lock().unwrap();
-        let cause = crate::session::cause(&tail).unwrap_or("it exited");
-        format!("the game did not load or replay: {cause}")
-    };
     let url = loop {
         let Some(line) = lines.recv().await else {
             let _ = child.wait().await;
-            return Err(failed(&tail));
+            return Err(failed(&tail.lock().unwrap()));
         };
         let url = listening_url(&line);
         push(&tail, line);
@@ -330,7 +321,7 @@ async fn replay(
         }
     };
     let kept = tail.clone();
-    tokio::spawn(async move {
+    let reader = tokio::spawn(async move {
         while let Some(line) = lines.recv().await {
             push(&kept, line);
         }
@@ -338,19 +329,28 @@ async fn replay(
     // Replayed: paused on the last step.
     loop {
         if let Ok(Some(_)) = child.try_wait() {
-            return Err(failed(&tail));
+            // Lines written just before the exit may still be in the pipes.
+            let _ = tokio::time::timeout(crate::session::DRAIN_TIMEOUT, reader).await;
+            return Err(failed(&tail.lock().unwrap()));
         }
-        let state = request(&url, "GET", "/state?model=0", &[], "").await;
-        if let Ok(state) = state.and_then(|s| json_of(&s)) {
-            let newest = state["clock"]["recorded"]["newest"].as_u64().unwrap_or(0);
-            if state["clock"]["paused"] == true
-                && state["frame"].as_u64() == Some(steps)
-                && newest == steps
-            {
+        if let Ok(polled) = poll_state(&url).await {
+            let clock = polled.clock.unwrap_or_default();
+            let newest = clock.recorded.map_or(0, |[_, newest]| newest);
+            if clock.paused && polled.frame == steps && newest == steps {
                 break;
             }
         }
         tokio::time::sleep(POLL).await;
+    }
+    // The shell rebuilds sampled input from the events: it must be what
+    // the game was given.
+    let replayed = json_of(&request(&url, "GET", "/input-log", &[], "").await?)?;
+    let inputs = |log: &Value| -> Vec<Value> {
+        let steps = log["steps"].as_array().map(Vec::as_slice).unwrap_or_default();
+        steps.iter().map(|s| s["input"].clone()).collect()
+    };
+    if inputs(&replayed) != inputs(recorded) {
+        return Err("its replayed input differs from what the game was given".into());
     }
     if frame != steps {
         request(
@@ -369,7 +369,7 @@ async fn replay(
     if check.is_some_and(|model| state["model"] != *model) {
         return Err(
             "replaying the recorded inputs did not reach the game's state at that \
-             moment, so its paths could mislead"
+             moment (randomness, the clock or files can do that), so its paths could mislead"
                 .into(),
         );
     }
@@ -393,10 +393,12 @@ async fn replay(
 struct Scratch(PathBuf);
 
 impl Scratch {
+    /// Private (0700): it holds the project's files and recorded inputs.
     fn new() -> Result<Self, String> {
         let dir =
             std::env::temp_dir().join(format!("functor-paths-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot make a work directory: {e}"))?;
+        crate::store::create_private_dir(&dir)
+            .map_err(|e| format!("cannot make a work directory: {e}"))?;
         Ok(Self(dir))
     }
 }
