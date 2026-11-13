@@ -40,7 +40,7 @@ const git = (cwd, ...args) =>
   });
 
 /** A fresh git workspace for `scenario` in `tmp`: its example at the root,
- *  the repo's functor-lang skill (the preamble points to it), setup applied. */
+ *  the repo's functor-lang skill (as a project in this repo has), setup applied. */
 export function workspace(scenario, tmp) {
   const ws = path.join(tmp, "ws");
   fs.cpSync(path.join(repo, "examples", scenario.project), ws, { recursive: true });
