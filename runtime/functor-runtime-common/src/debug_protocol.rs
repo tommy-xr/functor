@@ -238,7 +238,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 41 adds `events` on each `GET /input-log` step: its recorded edge events
 /// as replay data, which `run native --replay-input` replays.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 41;
+///
+/// 42 adds `voice` on `GET /state`'s `link` ([`VoiceToast`]): the headset's
+/// push-to-talk toast. Omitted while it is hidden.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 42;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -650,6 +653,43 @@ pub struct DeviceLinkState {
     pub linked: bool,
     /// A pairing in progress or just ended, as the headset's overlay shows it.
     pub pairing: Option<PairingState>,
+    /// The push-to-talk toast, while it shows (v42).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceToast>,
+}
+
+/// The headset's push-to-talk toast: where an utterance is, and what the
+/// desktop heard while it is recent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct VoiceToast {
+    pub stage: VoiceStage,
+    pub transcript: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum VoiceStage {
+    /// Paired, but the link is down.
+    NotConnected,
+    /// The microphone permission was asked for.
+    AllowMicrophone,
+    /// Recording: `level` 0–[`crate::link_overlay::METER`];
+    /// `seconds_left` in the last few seconds before it sends by itself.
+    Listening {
+        level: u8,
+        seconds_left: Option<u32>,
+    },
+    Sending,
+    Heard,
+    Working,
+    Reloaded,
+    /// The desktop could not act on it.
+    Failed { reason: String },
+    /// It never reached the desktop whole: cancelled, or the link failed.
+    NotSent { reason: String },
 }
 
 /// A pairing as the headset shows it.
