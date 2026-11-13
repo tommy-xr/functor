@@ -8,7 +8,7 @@ import { basename, pickHarness } from "./chat-model";
 import { NoProject, ProjectPicker, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
-import { focusedPane, isTyping, panesOf, placementOf, tabTitles, viewKey } from "./layout-model";
+import { focusedPane, isTyping, panesOf, placementOf, tabbed, tabTitles, viewKey } from "./layout-model";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
 import { TransportContext } from "./TransportBar";
@@ -141,7 +141,7 @@ export function App() {
             notice={notice}
             canvasWord={canvasWord(state)}
             // In Mini or its own window the game is already in view.
-            onOpenGame={() => placementOf(state?.active ? state.layouts[state.active] : null) === "pane" && openBeside({ kind: "game" })}
+            onOpenGame={() => tabbed(placementOf(state?.active ? state.layouts[state.active] : null)) && openBeside({ kind: "game" })}
             selected={selected}
             onSelect={setSelected}
             onViewDiff={viewDiff}
@@ -298,6 +298,9 @@ function TitleBar({
   // The project, else the open folder.
   const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
   const word = sessionWord(state?.session);
+  // Where the session runs: here, or on a headset (D5).
+  const layout = state?.active ? state.layouts[state.active] : null;
+  const where = placementOf(layout) === "headset" ? "Headset session" : "Local session";
   // The app window shows it as its title.
   useEffect(() => {
     document.title = name ? `Functor — ${name}` : "Functor";
@@ -327,7 +330,7 @@ function TitleBar({
         )}
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}
-      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>Local session · {word}</span>
+      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>{where} · {word}</span>
       <button
         type="button"
         className={`pill pill-button pill-hs-${headset}${deferred ? " pill-attention" : ""}${conn === "open" ? "" : " pill-stale"}`}

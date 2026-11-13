@@ -7,8 +7,8 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
-import type { AppState, GameInput, MouseButton } from "./generated/protocol";
-import { fitRect, streamUrl, toSurface, wireKey, type Rect, type Size } from "./game-view";
+import type { AppState, Device, GameInput, MouseButton } from "./generated/protocol";
+import { fitRect, headsetNote, streamUrl, toSurface, wireKey, type Rect, type Size } from "./game-view";
 import { placementOf } from "./layout-model";
 import type { Send } from "./socket";
 import { TransportBar, useTransport } from "./TransportBar";
@@ -20,6 +20,11 @@ const RESIZE_DEBOUNCE_MS = 200;
 /** The Game tab: the session's state in one line, or its live frames. */
 export function GameView({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
   const status = state?.session?.status ?? { kind: "stopped" };
+  const layout = state?.active ? state.layouts[state.active] : null;
+  if (placementOf(layout) === "headset") {
+    const device = state!.devices.list.find((d) => d.id === layout!.game.headset) ?? null;
+    return <HeadsetGame state={state!} device={device} online={online} send={send} />;
+  }
   // Shown only in a pane or Mini, so a running session is a hidden one.
   if (status.kind === "running") {
     return (
@@ -37,6 +42,44 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
   // Start game sits beside the placement control (D22, D37).
   const reason = status.kind === "failed" || status.kind === "exited" ? status.reason : null;
   return <GameMessage text={reason ?? "The game is stopped"} error={reason !== null} />;
+}
+
+/**
+ * The game on a headset (D5, D21): it owns the state, so this view says
+ * where it runs and how its clock stands (read through the tunnel), with
+ * the link's one fix while it is down, the transport bar's controls that
+ * work there, and the way back to this computer.
+ */
+function HeadsetGame({ state, device, online, send }: { state: AppState; device: Device | null; online: boolean; send: Send }) {
+  const { transport, marks } = useTransport();
+  const visible = usePageVisible();
+  const note = headsetNote(device, state.session, transport);
+  const running = state.session?.status.kind === "running" && device?.state.state === "connected";
+  return (
+    <div className="game-stack">
+      <div className="game game-headset" data-testid="game-view">
+        <div className="game-message">
+          <p className="headset-title">{note.title}</p>
+          {note.detail && <p className={note.fix ? undefined : "headset-detail"}>{note.detail}</p>}
+          {note.fix && <p className="reason">{note.fix}</p>}
+          <button
+            type="button"
+            className="button button-compact"
+            disabled={!online}
+            onClick={() => send({ type: "layout", op: { type: "place", placement: "pane" } })}
+          >
+            Run it on this computer
+          </button>
+        </div>
+        <span className="game-banner" role="status">
+          On the headset
+        </span>
+      </div>
+      {running && transport?.clock && visible && (
+        <TransportBar transport={transport} marks={marks} online={online} send={send} compact={false} extrapolates={false} hideExtrapolate />
+      )}
+    </div>
+  );
 }
 
 function GameMessage({ text, error = false }: { text: string; error?: boolean }) {

@@ -23,7 +23,7 @@ struct App {
     link: String,
     socket: Socket,
     home: tempfile::TempDir,
-    _project: tempfile::TempDir,
+    _project: Option<tempfile::TempDir>,
 }
 
 impl Drop for App {
@@ -51,12 +51,19 @@ async fn app_with(link: &[&str]) -> App {
     )
     .unwrap();
     std::fs::write(project.path().join("game.fun"), "").unwrap();
+    let mut app = app_in(project.path(), link).await;
+    app._project = Some(project);
+    app
+}
+
+/// `functor-app --headless --no-gpu` on `project` with `args`.
+async fn app_in(project: &Path, args: &[&str]) -> App {
     let home = tempfile::tempdir().unwrap();
     let mut child = Command::new(BIN)
         .args(["--headless", "--no-gpu", "--port", "0"])
-        .args(link)
+        .args(args)
         .arg("-d")
-        .arg(project.path())
+        .arg(project)
         .env("FUNCTOR_APP_HOME", home.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -91,14 +98,20 @@ async fn app_with(link: &[&str]) -> App {
         link,
         socket,
         home,
-        _project: project,
+        _project: None,
     }
 }
 
 impl App {
     /// Reads states until `done` holds for the devices, within 20s.
     async fn devices_where(&mut self, what: &str, done: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let state = self.state_where(what, 20, |s| done(&s["devices"])).await;
+        state["devices"].clone()
+    }
+
+    /// Reads states until `done` holds for one, within `secs`.
+    async fn state_where(&mut self, what: &str, secs: u64, done: impl Fn(&Value) -> bool) -> Value {
+        let deadline = Instant::now() + Duration::from_secs(secs);
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let msg = tokio::time::timeout(left, self.socket.next())
@@ -110,9 +123,8 @@ impl App {
             if json["type"] != "state" {
                 continue;
             }
-            let devices = json["state"]["devices"].clone();
-            if done(&devices) {
-                return devices;
+            if done(&json["state"]) {
+                return json["state"].clone();
             }
         }
     }
@@ -477,7 +489,7 @@ async fn a_second_app_on_one_home_leaves_the_headsets_to_the_first() {
     let mut second = Command::new(BIN)
         .args(["--headless", "--no-gpu", "--port", "0"])
         .args(["--device-link", "127.0.0.1:0", "--no-mdns", "-d"])
-        .arg(first._project.path())
+        .arg(first._project.as_ref().unwrap().path())
         .env("FUNCTOR_APP_HOME", first.home.path())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1491,7 +1503,8 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         return;
     }
     let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
-    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
+    let app = app_with(&["--device-link", "0.0.0.0:0"]).await;
+    let (mut app, id, devices) = pair_quest_by_cable(&quest, app).await;
     let serial = quest.serial.clone();
     let on_cable = |d: &Value| -> Option<Value> {
         d["attached"]
@@ -1586,7 +1599,8 @@ async fn quest_runs_a_project_over_the_link() {
     }
     let Some(functor) = functor_bin() else { return };
     let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
-    let (mut app, id, devices) = pair_quest_by_cable(&quest).await;
+    let app = app_with(&["--device-link", "0.0.0.0:0"]).await;
+    let (mut app, id, devices) = pair_quest_by_cable(&quest, app).await;
     let tunnel = card_by_id(&devices, &id).unwrap()["tunnel"]
         .as_str()
         .unwrap()
@@ -1671,10 +1685,220 @@ async fn quest_runs_a_project_over_the_link() {
     .await;
 }
 
+/// The Headset placement on a Quest (`npm run test:quest-placement`, needs
+/// `FUNCTOR_BIN`): an app with a game open, paused here, pairs the Quest over
+/// the cable; choosing the headset over the app's socket runs the project
+/// there through its tunnel (source, frames, the card's name); the
+/// transport pauses and steps it there; after its app restarts the game is
+/// loaded there again; `functor mcp` attaches to it and a
+/// capture comes back through the tunnel; Pane returns the headset to its
+/// boot scene and the game runs here again, paused on frame 0.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_runs_the_game_in_the_headset_placement() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let Some(functor) = functor_bin() else { return };
+    let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
+    let projects = tempfile::tempdir().unwrap();
+    let project = cubes_project(projects.path(), &[]);
+    let functor_arg = functor.to_string_lossy().to_string();
+    let app = app_in(
+        &project,
+        &["--device-link", "0.0.0.0:0", "--functor", &functor_arg],
+    )
+    .await;
+    let (mut app, id, _) = pair_quest_by_cable(&quest, app).await;
+    let session = |s: &Value| s["session"].clone();
+    let here = app
+        .state_where("the game runs here", 60, |s| {
+            session(s)["status"]["kind"] == "running"
+        })
+        .await;
+    let native = session(&here)["status"]["debug_url"].clone();
+
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    let there = app
+        .state_where("it runs on the headset", 90, |s| {
+            let url = &session(s)["status"]["debug_url"];
+            session(s)["status"]["kind"] == "running" && *url != native && !url.is_null()
+        })
+        .await;
+    let tunnel = session(&there)["status"]["debug_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        card_by_id(&there["devices"], &id).unwrap()["tunnel"],
+        tunnel.as_str()
+    );
+    let get_json = |path: &str| -> Value {
+        let (status, body) = get(&tunnel, path).unwrap();
+        assert_eq!(status, 200, "{path}: {body}");
+        serde_json::from_str(&body).unwrap()
+    };
+    assert!(get_json("/project").to_string().contains("hello-cubes"));
+    let first = get_json("/state?model=0");
+    until("it renders and steps there", || {
+        let now = get_json("/state?model=0");
+        (now["rendered_frames"].as_u64()? > first["rendered_frames"].as_u64()?
+            && now["frame"].as_u64()? > first["frame"].as_u64()?)
+        .then_some(())
+    })
+    .await;
+    app.devices_where("the card names the project", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["project"] == "cubes")
+    })
+    .await;
+
+    // The transport bar's calls reach the headset: pause, then one step.
+    app.send(json!({"type": "transport", "call": {"type": "pause"}}))
+        .await;
+    until("it pauses there", || {
+        (get_json("/state?model=0")["clock"]["paused"] == true).then_some(())
+    })
+    .await;
+    let paused = get_json("/state?model=0")["frame"].as_u64().unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        get_json("/state?model=0")["frame"].as_u64().unwrap(),
+        paused
+    );
+    app.send(json!({"type": "transport", "call": {"type": "step"}}))
+        .await;
+    until("one step there", || {
+        (get_json("/state?model=0")["frame"].as_u64()? == paused + 1).then_some(())
+    })
+    .await;
+
+    // Its app restarts (the link drops and comes back): the game is loaded
+    // there again, by the same session.
+    quest.launch().await;
+    until("the game is back on the headset", || {
+        get(&tunnel, "/project")
+            .ok()
+            .filter(|(status, body)| *status == 200 && body.contains("hello-cubes"))
+    })
+    .await;
+
+    // The agent's tool server attaches through the tunnel: it reads the
+    // state there and captures both eyes (a PNG through the tunnel).
+    let mut mcp = Command::new(&functor)
+        .args(["mcp", "--attach", &tunnel])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut to = mcp.stdin.take().unwrap();
+    let mut from = BufReader::new(mcp.stdout.take().unwrap());
+    // A request (`Some` id) waits for its answer; a notification does not.
+    let mut call = |id: Option<u64>, method: &str, params: Value| -> Value {
+        let mut msg = json!({"jsonrpc": "2.0", "method": method, "params": params});
+        let Some(id) = id else {
+            writeln!(to, "{msg}").unwrap();
+            return Value::Null;
+        };
+        msg["id"] = json!(id);
+        writeln!(to, "{msg}").unwrap();
+        loop {
+            let mut line = String::new();
+            assert!(
+                from.read_line(&mut line).unwrap() > 0,
+                "the tool server ended"
+            );
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            if reply["id"] == id {
+                return reply;
+            }
+        }
+    };
+    let init = json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0"},
+    });
+    call(Some(1), "initialize", init);
+    call(None, "notifications/initialized", json!({}));
+    let tool = |name: &str, arguments: Value| json!({"name": name, "arguments": arguments});
+    let listed = call(Some(2), "tools/call", tool("list_sessions", json!({})));
+    let text = listed["result"]["content"][0]["text"].as_str().unwrap();
+    let sessions: Value = serde_json::from_str(text).unwrap();
+    let id_of = sessions["sessions"][0]["session"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no session: {text}"))
+        .to_string();
+    let state = call(
+        Some(3),
+        "tools/call",
+        tool("get_state", json!({"session": id_of})),
+    );
+    assert_ne!(state["result"]["isError"], true, "{state}");
+    assert!(state.to_string().contains("rendered_frames"), "{state}");
+    let capture = call(
+        Some(4),
+        "tools/call",
+        tool("capture_frame", json!({"session": id_of})),
+    );
+    assert_ne!(capture["result"]["isError"], true, "{capture}");
+    let image = capture["result"]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "image")
+        .unwrap_or_else(|| panic!("no image: {capture}"));
+    assert_eq!(image["mimeType"], "image/png");
+    eprintln!(
+        "capture through the tunnel: {} base64 bytes",
+        image["data"].as_str().unwrap().len()
+    );
+    drop(call);
+    drop(to);
+    let _ = mcp.wait();
+
+    // Back here: the headset shows its boot scene, the game runs here paused.
+    app.send(json!({"type": "layout", "op": {"type": "place", "placement": "pane"}}))
+        .await;
+    let back = app
+        .state_where("it runs here again", 60, |s| {
+            let url = &session(s)["status"]["debug_url"];
+            session(s)["status"]["kind"] == "running" && url.as_str() != Some(tunnel.as_str())
+        })
+        .await;
+    until("the headset is back at its boot scene", || {
+        get_json("/project")
+            .to_string()
+            .contains("boot scene")
+            .then_some(())
+    })
+    .await;
+    let url = session(&back)["status"]["debug_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, body) = get(&url, "/state?model=0").unwrap();
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (state["frame"].as_u64(), state["clock"]["paused"].as_bool()),
+        (Some(0), Some(true))
+    );
+
+    app.send(json!({"type": "forget_device", "device": id}))
+        .await;
+    app.devices_where("it is forgotten", |d| card_by_id(d, &id).is_none())
+        .await;
+    until("the headset's pairing is gone", || {
+        quest.pairing_file().secret.is_none().then_some(())
+    })
+    .await;
+}
+
 /// `quest` unpaired (keeping its id, which the desktop knows it by), then
-/// paired over the cable by one click in a new app, linked over Wi-Fi: the
-/// app, the headset's id and the devices once its tunnel is up.
-async fn pair_quest_by_cable(quest: &Quest) -> (App, String, Value) {
+/// paired over the cable by one click in `app` (its link on), linked over
+/// Wi-Fi: the app, the headset's id and the devices once its tunnel is up.
+async fn pair_quest_by_cable(quest: &Quest, mut app: App) -> (App, String, Value) {
     let mut file = quest.pairing_file();
     let id = file.device.clone();
     file.desktop = None;
@@ -1682,7 +1906,6 @@ async fn pair_quest_by_cable(quest: &Quest) -> (App, String, Value) {
     file.secret = None;
     quest.put_pairing(file.to_json().as_bytes());
 
-    let mut app = app_with(&["--device-link", "0.0.0.0:0"]).await;
     quest.launch().await;
     let serial = quest.serial.clone();
     let devices = app

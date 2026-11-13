@@ -14,7 +14,7 @@ use crate::changes::Change;
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
-use crate::devices::{self, on_link, Devices, LinkCommand, LinkEvent};
+use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
@@ -131,6 +131,10 @@ pub struct AppState {
     pub contexts: BTreeMap<u64, AppContext>,
     /// Headsets, app-wide.
     pub devices: Devices,
+    /// The session waiting for its headset's tunnel to start on it.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub headset_waits: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +192,7 @@ impl AppState {
             user_layout_at: None,
             contexts: BTreeMap::new(),
             devices: Devices::default(),
+            headset_waits: None,
         }
     }
 
@@ -314,6 +319,15 @@ pub enum Command {
         id: u64,
         dir: PathBuf,
         display: Display,
+    },
+    /// Spawn `functor -d <dir> run vr --device-url <tunnel>`: the game on a
+    /// paired headset, pushed through its tunnel, which is then the
+    /// session's debug server. Stopping it returns the headset to its boot
+    /// scene.
+    StartHeadset {
+        id: u64,
+        dir: PathBuf,
+        tunnel: String,
     },
     /// Kill session `id`'s child.
     StopSession { id: u64 },
@@ -561,7 +575,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             }
             let (changed, link) = on_link(&mut state.devices, event, state.now);
             commands.extend(link.into_iter().map(Command::Link));
-            (changed, false)
+            let started = start_headset(&mut state, &mut commands);
+            (changed || started, false)
         }
         Event::Client(ClientMsg::AllowPairing { request }) => {
             match devices::allow(&mut state.devices, request, state.now) {
@@ -1030,6 +1045,7 @@ fn opened(
         user_layout_at: _,
         contexts: _,
         devices: _,
+        headset_waits: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -1080,13 +1096,14 @@ fn opened(
 }
 
 /// Whether opening the active project starts its game: in the app (not
-/// `--print` or `task`), shown in a pane or Mini rather than its own window.
+/// `--print` or `task`), shown in a pane or Mini or on a headset rather than
+/// its own window.
 fn starts_on_open(state: &AppState) -> bool {
     state.start_on_open
         && state
             .active
             .as_ref()
-            .is_some_and(|p| placement(state, p).session_mode() == SessionMode::Hidden)
+            .is_some_and(|p| placement(state, p).session_mode() != SessionMode::Window)
 }
 
 /// Starts a new project's first task once its game session is past
@@ -1291,7 +1308,7 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     };
     let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
     let placement = layout.game.placement;
-    if placement == Placement::Pane && layout.find(&View::Game).is_none() {
+    if placement.tabbed() && layout.find(&View::Game).is_none() {
         let open = LayoutOp::Open {
             view: View::Game,
             target: Target::Focused,
@@ -1302,13 +1319,60 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     }
     let id = state.session.as_ref().map_or(1, |s| s.id + 1);
     let dir = project_dir(Path::new(&state.repo_root), &path);
-    let display = Display::new(placement.session_mode(), state.no_gpu);
-    commands.push(Command::StartSession { id, dir, display });
     state.session = Some(Session {
         id,
         pid: None,
         status: SessionStatus::Starting,
     });
+    match Display::new(placement.session_mode(), state.no_gpu) {
+        Some(display) => commands.push(Command::StartSession { id, dir, display }),
+        None => {
+            state.headset_waits = Some(id);
+            start_headset(state, commands);
+        }
+    }
+    true
+}
+
+/// Starts the session waiting on a headset once its tunnel is known; fails
+/// it if the headset is not paired here or the link is off. Whether
+/// anything changed.
+fn start_headset(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
+    let (Some(id), Some(path)) = (state.headset_waits, state.active.clone()) else {
+        return false;
+    };
+    let headset = state
+        .layouts
+        .get(&path)
+        .and_then(|l| l.game.headset.clone());
+    let card = headset.and_then(|h| state.devices.list.iter().find(|d| d.id == h && d.paired));
+    let outcome = match (card.and_then(|d| d.tunnel.clone()), card) {
+        _ if state.devices.started && state.devices.listening.is_none() => Err(
+            "The device link is off in this app, so no headset can be reached. Choose Pane to run \
+the game here."
+                .to_string(),
+        ),
+        (Some(tunnel), _) => Ok(tunnel),
+        // Its tunnel opens just after the link starts.
+        (None, Some(_)) => return false,
+        (None, None) if !state.devices.started => return false,
+        (None, None) => Err(
+            "That headset is no longer paired with this computer. Choose Pane to run the game here."
+                .to_string(),
+        ),
+    };
+    state.headset_waits = None;
+    let Some(session) = state.session.as_mut().filter(|s| s.id == id) else {
+        return false;
+    };
+    match outcome {
+        Ok(tunnel) => commands.push(Command::StartHeadset {
+            id,
+            dir: project_dir(Path::new(&state.repo_root), &path),
+            tunnel,
+        }),
+        Err(reason) => session.status = SessionStatus::Failed { reason },
+    }
     true
 }
 
@@ -1323,6 +1387,7 @@ fn stop(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     if session.status.is_live() {
         commands.push(Command::StopSession { id: session.id });
     }
+    state.headset_waits = None;
     session.status = SessionStatus::Stopped;
     session.pid = None;
     true
@@ -1357,6 +1422,21 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
     };
     let before = state.layouts.get(&project).cloned().unwrap_or_default();
     let mut layout = before.clone();
+    // The game goes to a headset only while it is connected, and named.
+    match &op {
+        LayoutOp::Place {
+            placement: Placement::Headset,
+        } => {
+            return reject(
+                commands,
+                "choose which headset to run the game on".to_string(),
+            )
+        }
+        LayoutOp::PlaceOnHeadset { device } if !connected(&state.devices, device) => {
+            return reject(commands, "that headset is not connected".to_string())
+        }
+        _ => {}
+    }
     let restore = op == LayoutOp::Restore;
     let live = state.session.as_ref().is_some_and(|s| s.status.is_live());
     // A running game keeps its tab: "Close agent tabs" leaves it, unmarked.
@@ -1370,7 +1450,7 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
             // back in, when the snapshot has none.
             if restore
                 && live
-                && layout.game.placement == Placement::Pane
+                && layout.game.placement.tabbed()
                 && layout.find(&View::Game).is_none()
             {
                 let game = LayoutOp::Open {
@@ -1379,24 +1459,34 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
                 };
                 let _ = layout.apply(game, |_| Ok(()));
             }
-            if live
-                && layout.game.placement == Placement::Pane
-                && layout.find(&View::Game).is_none()
-            {
+            if live && layout.game.placement.tabbed() && layout.find(&View::Game).is_none() {
                 let reason = "the game is running: stop it, or switch it to Mini, to close its tab";
                 return reject(commands, reason.to_string());
             }
-            let restart =
-                before.game.placement.session_mode() != layout.game.placement.session_mode();
+            // Another headset runs it elsewhere too.
+            let runs = |l: &Layout| (l.game.placement.session_mode(), l.game.headset.clone());
+            let restart = runs(&before) != runs(&layout);
             save_layout(state, &project, layout, commands);
             if restart {
                 restart_live(state, commands);
+            }
+            // An ended run's reason was another placement's.
+            if let Some(s) = state.session.as_mut().filter(|s| restart && !s.status.is_live()) {
+                s.status = SessionStatus::Stopped;
             }
             true
         }
         Ok(false) => false,
         Err(reason) => reject(commands, reason),
     }
+}
+
+/// Paired device `id` is linked now.
+fn connected(devices: &Devices, id: &str) -> bool {
+    devices
+        .list
+        .iter()
+        .any(|d| d.id == id && d.paired && matches!(d.state, DeviceState::Connected { .. }))
 }
 
 /// `project`'s game placement.
@@ -5266,5 +5356,237 @@ mod tests {
             }),
         );
         assert_eq!(s.devices.headset, Headset::NotPaired);
+    }
+
+    /// `s` with headsets `ids` paired, their tunnels open at
+    /// `http://127.0.0.1:600<i>` and those in `linked` connected.
+    fn with_headsets(s: AppState, ids: &[&str], linked: &[&str]) -> AppState {
+        use crate::devices::{LinkEvent, LinkKind, Paired};
+        let paired = ids
+            .iter()
+            .map(|id| Paired {
+                id: id.to_string(),
+                name: format!("Quest {id}"),
+                first_seen: 1,
+                last_seen: 1,
+            })
+            .collect();
+        let listening = Some("0.0.0.0:7000".to_string());
+        let (mut s, _) = update(s, Event::Link(LinkEvent::Started { listening, paired }));
+        for (i, id) in ids.iter().enumerate() {
+            let url = format!("http://127.0.0.1:600{i}");
+            let device = id.to_string();
+            s = update(s, Event::Link(LinkEvent::TunnelOpened { device, url })).0;
+        }
+        for (conn, id) in linked.iter().enumerate() {
+            let connected = LinkEvent::Connected {
+                conn: conn as u64,
+                device: id.to_string(),
+                name: format!("Quest {id}"),
+                app_version: "0.0.0".into(),
+                link: LinkKind::Wifi,
+            };
+            s = update(s, Event::Link(connected)).0;
+        }
+        s
+    }
+
+    fn on_headset(device: &str) -> Event {
+        client(ClientMsg::Layout {
+            op: LayoutOp::PlaceOnHeadset {
+                device: device.into(),
+            },
+        })
+    }
+
+    fn start_headset(id: u64, tunnel: &str) -> Command {
+        Command::StartHeadset {
+            id,
+            dir: PathBuf::from("/repo/examples/a"),
+            tunnel: tunnel.into(),
+        }
+    }
+
+    /// Headset is a choice only for a connected headset, named; choosing it
+    /// moves a live game there (D5: the desktop session ends), keeps the
+    /// Game tab, and choosing Pane brings it back here, paused on frame 0.
+    #[test]
+    fn the_game_moves_to_a_connected_headset_and_back() {
+        let live = with_headsets(
+            with_session(1, Some(42), running(Some(3))),
+            &["aa", "bb"],
+            &["aa"],
+        );
+        let place = |placement| {
+            client(ClientMsg::Layout {
+                op: LayoutOp::Place { placement },
+            })
+        };
+        let (_, commands) = update(live.clone(), place(Placement::Headset));
+        assert_eq!(
+            commands[0],
+            rejected("choose which headset to run the game on")[0]
+        );
+        for away in ["bb", "cc"] {
+            let (_, commands) = update(live.clone(), on_headset(away));
+            assert_eq!(
+                commands[0],
+                rejected("that headset is not connected")[0],
+                "{away}"
+            );
+        }
+
+        let (there, commands) = update(live, on_headset("aa"));
+        let game = &there.layouts["examples/a"].game;
+        assert_eq!(
+            (game.placement, game.headset.as_deref()),
+            (Placement::Headset, Some("aa"))
+        );
+        assert!(
+            there.layouts["examples/a"].find(&View::Game).is_some(),
+            "the tab stays"
+        );
+        let starts: Vec<_> = commands
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::StopSession { .. } | Command::StartHeadset { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                &Command::StopSession { id: 1 },
+                &start_headset(2, "http://127.0.0.1:6000")
+            ]
+        );
+        assert_eq!(
+            there.session.as_ref().unwrap().status,
+            SessionStatus::Starting
+        );
+        assert_eq!(there.headset_waits, None);
+
+        // Its run prints the tunnel as its debug server: polled there.
+        let listening = SessionEvent::Listening {
+            debug_url: "http://127.0.0.1:6000".into(),
+        };
+        let (there, _) = update(there, session(2, listening));
+        assert!(matches!(
+            &there.session.as_ref().unwrap().status,
+            SessionStatus::Running { debug_url, .. } if debug_url == "http://127.0.0.1:6000"
+        ));
+
+        let (back, commands) = update(there, place(Placement::Pane));
+        assert_eq!(back.layouts["examples/a"].game.headset, None);
+        let starts: Vec<_> = commands
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::StopSession { .. } | Command::StartSession { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            [
+                &Command::StopSession { id: 2 },
+                &start_cmd(3, "examples/a", Display::Hidden)
+            ]
+        );
+        assert_eq!(Display::Hidden.flags(), ["--hidden", "--paused"]);
+    }
+
+    /// With two connected, each is a choice; moving between them restarts.
+    #[test]
+    fn another_headset_runs_it_afresh() {
+        let s = with_headsets(
+            with_session(1, Some(42), running(Some(3))),
+            &["aa", "bb"],
+            &["aa", "bb"],
+        );
+        let (s, _) = update(s, on_headset("aa"));
+        let (s, commands) = update(s, on_headset("bb"));
+        assert_eq!(s.layouts["examples/a"].game.headset.as_deref(), Some("bb"));
+        assert!(commands.contains(&start_headset(3, "http://127.0.0.1:6001")));
+        // The same one again changes nothing.
+        let (_, commands) = update(s, on_headset("bb"));
+        assert!(!commands
+            .iter()
+            .any(|c| matches!(c, Command::StartHeadset { .. })));
+    }
+
+    /// A project placed on a headset starts there once its tunnel is known,
+    /// whether or not it is linked (the run waits for it); one no longer
+    /// paired fails, saying how to run it here.
+    #[test]
+    fn a_saved_headset_placement_waits_for_its_tunnel() {
+        let placed = |headset: &str| {
+            let mut s = state();
+            let layout = s
+                .layouts
+                .entry("examples/a".into())
+                .or_insert_with(Layout::initial);
+            layout.game.placement = Placement::Headset;
+            layout.game.headset = Some(headset.into());
+            s
+        };
+        // Before the link starts: waiting, nothing spawned.
+        let (s, commands) = update(placed("aa"), client(ClientMsg::StartSession));
+        assert!(!commands.iter().any(|c| matches!(
+            c,
+            Command::StartSession { .. } | Command::StartHeadset { .. }
+        )));
+        assert_eq!(s.headset_waits, Some(1));
+        assert_eq!(s.session.as_ref().unwrap().status, SessionStatus::Starting);
+        // Paired, its tunnel opens: started there, though it is away.
+        use crate::devices::LinkEvent;
+        let (s, _) = update(
+            s,
+            Event::Link(LinkEvent::Started {
+                listening: Some("0.0.0.0:7000".into()),
+                paired: vec![crate::devices::Paired {
+                    id: "aa".into(),
+                    name: "Quest aa".into(),
+                    first_seen: 1,
+                    last_seen: 1,
+                }],
+            }),
+        );
+        assert_eq!(s.headset_waits, Some(1), "no tunnel yet");
+        let opened = LinkEvent::TunnelOpened {
+            device: "aa".into(),
+            url: "http://127.0.0.1:6000".into(),
+        };
+        let (s, commands) = update(s, Event::Link(opened));
+        assert!(commands.contains(&start_headset(1, "http://127.0.0.1:6000")));
+        assert_eq!(s.headset_waits, None);
+        assert_eq!(s.session.as_ref().unwrap().status, SessionStatus::Starting);
+
+        // The link off: no headset can be reached.
+        let (s, _) = update(placed("aa"), client(ClientMsg::StartSession));
+        let off = LinkEvent::Started {
+            listening: None,
+            paired: vec![],
+        };
+        let (s, _) = update(s, Event::Link(off));
+        assert!(matches!(
+            &s.session.as_ref().unwrap().status,
+            SessionStatus::Failed { reason } if reason.contains("link is off")
+        ));
+
+        // Forgotten: the link has started and does not list it.
+        let s = with_headsets(
+            update(placed("zz"), client(ClientMsg::StartSession)).0,
+            &["aa"],
+            &[],
+        );
+        assert_eq!(s.headset_waits, None);
+        assert!(matches!(
+            &s.session.as_ref().unwrap().status,
+            SessionStatus::Failed { reason } if reason.contains("no longer paired")
+        ));
     }
 }
