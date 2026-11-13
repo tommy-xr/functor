@@ -6,9 +6,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::decision::{Check, Report};
+use crate::decision::{style_flags, Check, Report};
 use crate::layout::{LayoutOp, Placed, Placement, Target, View};
 use crate::projects::check_relative;
+use crate::review::ReviewState;
 use crate::session::{Session, SessionMode, SessionStatus};
 use crate::state::{
     broadcast_items, check_view, layout_op, placement, save, save_layout, AppState, Command,
@@ -70,6 +71,16 @@ pub enum ViewRequest {
         notes: Option<Vec<String>>,
         #[serde(default)]
         evidence: Vec<Check>,
+    },
+    /// A review's report on the change (D31), replacing the agent's; with
+    /// highlights when the agent gave no walkthrough.
+    Report {
+        summary: String,
+        notes: Vec<String>,
+        #[serde(default)]
+        evidence: Vec<Check>,
+        #[serde(default)]
+        steps: Vec<WalkthroughStep>,
     },
 }
 
@@ -276,15 +287,99 @@ pub(crate) fn agent_view(
     state: &mut AppState,
     task: u64,
     run: u64,
+    review: bool,
     request: ViewRequest,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let (ok, message, changed) = match handle(state, task, run, request, commands) {
+    let handled = match review {
+        true => report(state, task, run, request, commands),
+        false => handle(state, task, run, request, commands),
+    };
+    let (ok, message, changed) = match handled {
         Ok((message, changed)) => (true, message, changed),
         Err(message) => (false, message, false),
     };
     commands.push(Command::ViewReply(ViewReply { ok, message }));
     changed
+}
+
+/// A review's `report`: its report replaces the agent's, and its steps
+/// become the walkthrough when the run that made the change gave none.
+fn report(
+    state: &mut AppState,
+    id: u64,
+    run: u64,
+    request: ViewRequest,
+    commands: &mut Vec<Command>,
+) -> Result<(String, bool), String> {
+    let ViewRequest::Report {
+        summary,
+        notes,
+        evidence,
+        steps,
+    } = request
+    else {
+        return Err("a review only reports: nothing was shown".to_string());
+    };
+    let preparing = |t: &crate::tasks::Task| {
+        t.id == id
+            && (t.review.as_ref()).is_some_and(|r| r.run == run && r.state == ReviewState::Preparing)
+    };
+    let task = state
+        .tasks
+        .iter()
+        .find(|t| preparing(t))
+        .ok_or("this review has ended: nothing was saved")?;
+    let project = task.project.clone();
+    // The run's own items: after its user message.
+    let start = run as usize + 1;
+    let walked = (task.transcript.iter().skip(start)).any(|i| matches!(i, Item::Walkthrough { .. }));
+    let report = Report::new(Some(summary), Some(notes), evidence)
+        .map_err(|e| format!("{e}; nothing was saved"))?
+        .filter(|r| r.summary.is_some())
+        .ok_or("a report needs a summary; nothing was saved")?;
+    let flags = style_flags(report.summary.as_deref().unwrap_or_default());
+    let mut also = String::new();
+    let steps = match (steps.is_empty(), walked) {
+        (true, _) => None,
+        (false, true) => {
+            also = " The agent's own walkthrough stays: your steps were left out.".to_string();
+            None
+        }
+        _ if state.active.as_deref() != Some(project.as_str()) => {
+            also = " The user has another project open: your steps were left out.".to_string();
+            None
+        }
+        (false, false) => {
+            check_steps(&steps)?;
+            for (i, step) in steps.iter().enumerate() {
+                check_target(state, &project, id, &step.view)
+                    .map_err(|e| format!("step {}: {e}; nothing was saved", i + 1))?;
+            }
+            Some(steps)
+        }
+    };
+    let root = Path::new(&state.repo_root).to_path_buf();
+    let task = state.tasks.iter_mut().find(|t| preparing(t)).expect("found");
+    task.report = Some(Report {
+        reviewed: true,
+        ..report
+    });
+    if let Some(steps) = steps {
+        task.transcript.push(Item::Walkthrough {
+            steps,
+            current: None,
+        });
+        broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+    }
+    commands.push(save(&root, task));
+    if !flags.is_empty() {
+        also += &format!(
+            " Its summary breaks Simplified Technical English rules: {} Call `report` again to fix it, or stop.",
+            flags.join(" ")
+        );
+    }
+    Ok((format!("Saved on the decision page.{also}"), true))
 }
 
 fn handle(
@@ -294,6 +389,9 @@ fn handle(
     request: ViewRequest,
     commands: &mut Vec<Command>,
 ) -> Result<(String, bool), String> {
+    if matches!(request, ViewRequest::Report { .. }) {
+        return Err("only a review reports: use `present`".to_string());
+    }
     let active = state.active.clone();
     let task = state
         .tasks
@@ -317,6 +415,7 @@ fn handle(
     *views += 1;
     let arranges = state.layouts.get(&project).is_none_or(|l| l.agent.arranges);
     match request {
+        ViewRequest::Report { .. } => unreachable!("refused above"),
         ViewRequest::Show { view } => {
             check_target(state, &project, id, &view)?;
             if !arranges {
@@ -687,6 +786,7 @@ mod tests {
         Event::AgentView {
             task: 1,
             run: 0,
+            review: false,
             request: ViewRequest::Show { view: target },
         }
     }
@@ -702,6 +802,7 @@ mod tests {
         Event::AgentView {
             task: 1,
             run: 0,
+            review: false,
             request: ViewRequest::Present {
                 steps,
                 summary: None,
@@ -848,7 +949,14 @@ mod tests {
             let request = ViewRequest::Show {
                 view: ViewTarget::Game,
             };
-            let (_, commands) = update(s.clone(), Event::AgentView { task, run, request });
+            let review = false;
+            let event = Event::AgentView {
+                task,
+                run,
+                review,
+                request,
+            };
+            let (_, commands) = update(s.clone(), event);
             assert!(
                 reply(&commands).message.contains("this run has ended"),
                 "{commands:?}"
@@ -964,6 +1072,7 @@ mod tests {
         let request = |notes: Option<Vec<String>>| Event::AgentView {
             task: 1,
             run: 0,
+            review: false,
             request: ViewRequest::Present {
                 steps: vec![step("The game", ViewTarget::Game)],
                 summary: Some("The agent changed one value.".into()),
@@ -1387,6 +1496,7 @@ mod tests {
             Event::AgentView {
                 task: 1,
                 run,
+                review: false,
                 request,
             },
         );
