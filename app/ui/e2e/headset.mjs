@@ -6,7 +6,8 @@
 // Game tab says so with the clock read through the tunnel; pause works, the
 // Extrapolate switch is not offered → the stub stops: Away with its fix, the
 // choice kept → it relinks: Running again → a second headset: each by name →
-// Pane: the headset is sent back to its boot scene and the game is here
+// Pane: the headset is sent back to its boot scene (once it is back, if it
+// is away) and the game is here
 // again, paused on frame 0 (D37). Runs at 1440×900 and 700×900.
 //
 //   FUNCTOR_BIN=target/debug/functor npm run test:app-ui
@@ -128,6 +129,18 @@ async function headset(browser, width, height) {
       await expect.poll(() => project(name), { timeout: 15_000 }).toBeNull();
     }
     await shot(page, `headset-back-${width}`);
+
+    // Back here while the headset is away: it is stopped there once it is back.
+    await control.getByRole("button", { name: "Quest 3" }).click();
+    await quest.line("request POST /load-project");
+    await expect(view).toContainText("Running on Quest 3");
+    await quest.stop();
+    await expect(view).toContainText("Quest 3: Away");
+    await control.getByRole("button", { name: "Pane" }).click();
+    await expect.poll(() => status()?.kind, { timeout: 60_000 }).toBe("running");
+    quest = stub(server.link, store, "Quest 3");
+    await quest.line("linked ");
+    await quest.line("request POST /load-project 2");
 
     expect(errors, "console errors").toEqual([]);
     expect(external, "non-loopback requests from the page").toEqual([]);
