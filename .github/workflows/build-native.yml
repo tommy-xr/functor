@@ -72,7 +72,14 @@ jobs:
       # and the desktop app's (app/ui/src/generated/protocol.ts).
       - name: Run tests
         run: |
-          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid -p functor-app-core -p functor-app -p functor-device-link --features functor_runtime_common/ts,functor-app-core/ts,functor-device-link/client
+          cargo test -p functor_runtime_common -p functor-lang -p functor-docgen -p functor-solid -p functor-app-core -p functor-app -p functor-device-link -p functor-stt --features functor_runtime_common/ts,functor-app-core/ts,functor-device-link/client
+
+      # Local speech-to-text: whisper.cpp builds (no model is fetched; its
+      # transcription test runs only with FUNCTOR_STT_REAL=1, locally).
+      # macOS only, as the app's window is.
+      - name: Test speech-to-text with whisper.cpp
+        if: matrix.os == 'macos-latest'
+        run: cargo test -p functor-stt --features whisper
 
       - name: Validate API documentation generation
         run: npm run check:docs
