@@ -656,3 +656,52 @@ fn an_app_that_does_not_answer_times_out_cleanly() {
     let result = mcp.request("tools/call", json!({"name": "show_view", "arguments": {"view": {"kind": "game"}}}));
     assert!(result["content"][0]["text"].as_str().unwrap().contains("cannot reach the app"), "{result}");
 }
+
+/// `--review`: only read-only tools and its own two; `task_change` reads the
+/// brief, `report` forwards; no attaching a game, and an app is required.
+#[test]
+fn a_review_server_reads_its_brief_and_forwards_its_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let brief = dir.path().join("brief.md");
+    std::fs::write(&brief, "# Task: Faster\n\n## The diff\n").unwrap();
+    let brief = brief.to_str().unwrap();
+    let (url, requests) = stub_app(vec![Some(json!({"ok": true, "message": "Saved on the decision page."}))]);
+    let server = HttpServer::start_env(&["--app-url", &url, "--review", brief], &[("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)]);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let list = mcp.request("tools/list", json!({}));
+    let mut want = vec![
+        "api_reference", "capture_frame", "get_scene", "get_state", "language_guide", "launch_game",
+        "list_sessions", "pause", "report", "resume", "send_input", "step", "stop_game", "task_change",
+    ];
+    want.sort();
+    assert_eq!(tool_names(&list), want);
+    assert_eq!(mcp.call("task_change", json!({})), "# Task: Faster\n\n## The diff\n");
+    let report = json!({
+        "summary": "The hero jumps 2 m higher.",
+        "notes": [],
+        "evidence": [{"ran": "capture_frame", "result": "the hero clears the gap", "ok": true}],
+    });
+    assert_eq!(mcp.call("report", report.clone()), "Saved on the decision page.");
+    let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.body["op"], "report");
+    for field in ["summary", "notes", "evidence"] {
+        assert_eq!(got.body[field], report[field], "{field}");
+    }
+    assert_eq!(got.body["steps"], json!([]));
+    // A write tool is refused, not just unlisted.
+    let refused = mcp.response("tools/call", json!({"name": "save_project", "arguments": {}}));
+    assert!(refused["error"].is_object() || refused["result"]["isError"] == true, "{refused}");
+
+    let attach = ["--app-url", &url, "--review", brief, "--attach", "http://127.0.0.1:9"];
+    for args in [&["--review", brief][..], &attach[..]] {
+        let output = functor()
+            .args(["mcp", "--http", "0"])
+            .args(args)
+            .env("FUNCTOR_MCP_TOKEN", TOKEN)
+            .env("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+}

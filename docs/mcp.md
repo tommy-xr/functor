@@ -77,7 +77,8 @@ FUNCTOR_MCP_TOKEN=$(openssl rand -hex 32) functor mcp --http 0 --attach http://1
 - **Sessions are shared.** Every MCP connection sees the same game sessions.
 - **Common tools load up front.** `app_context`, `get_state`, `step`,
   `resume`, `send_input`, `capture_frame`, `language_guide`, `api_reference`,
-  `show_view` and `present` carry `_meta: {"anthropic/alwaysLoad": true}`, so
+  `show_view`, `present`, `task_change` and `report` (each where it is
+  served) carry `_meta: {"anthropic/alwaysLoad": true}`, so
   Claude Code offers them without a tool-search turn; other clients ignore it.
 - **Lifecycle.** The server stops on SIGINT/SIGTERM (Ctrl-C on Windows) or when
   its **stdin reaches EOF** — the convention for a child, which works on every
@@ -123,6 +124,23 @@ line range, a step count outside 1–8) is refused before anything is sent.
 The app answers `200` with `{"ok": true|false, "message": "…"}`: `message`
 becomes the tool's text, an error when `ok` is false. Any other answer, no
 answer within 5 s, or no app at all is a tool error.
+
+### Review tools (`--review`)
+
+`--review <brief>` (with `--app-url`; not with `--attach`) serves a
+**review**: a separate agent that reads a change and writes the report the
+user decides from. Its tools are read-only: `language_guide`,
+`api_reference`, and the game tools for games it launches itself
+(`launch_game`, `list_sessions`, `stop_game`, `get_state`, `get_scene`,
+`capture_frame`, `step`, `send_input`, `resume`, `pause`). Nothing that
+writes project files (`save_project`, `init_game`, the reloads), attaches to
+another game (`connect_game`), runs code or shows views is listed or callable.
+Two tools of its own, both loaded up front:
+
+| Tool | What it does |
+| --- | --- |
+| `task_change` | Returns the brief file as written: the app's account of the change (the request, what the agent did, the files and the diff, the evidence so far). |
+| `report` | `POST`s `{"op": "report", "summary", "notes": […], "evidence": [{"ran", "result", "ok"}, …], "steps": [{"title", "note"?, "view"}, …]}` to `--app-url`, answered as the view tools are. `steps` (0–8) are highlights. |
 
 ### Reserved tool names
 
@@ -187,6 +205,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `app_context` | HTTP only. What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
 | `show_view` / `present` | `--app-url` only. Show the user one view in the embedding app, or a walkthrough of steps. See [View tools](#view-tools---app-url). |
+| `task_change` / `report` | `--review` only. Read the change to present; write the decision page's report. See [Review tools](#review-tools---review). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |
 
