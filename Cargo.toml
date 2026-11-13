@@ -4,6 +4,7 @@ resolver = "1"
 members = [
     "app/functor-app",
     "app/functor-app-core",
+    "app/functor-stt",
     "cli",
     "functor-prelude",
     "functor-solid",
