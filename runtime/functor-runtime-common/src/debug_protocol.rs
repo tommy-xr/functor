@@ -241,7 +241,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 42 adds `voice` on `GET /state`'s `link` ([`VoiceToast`]): the headset's
 /// push-to-talk toast. Omitted while it is hidden.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 42;
+///
+/// 43 adds `panel` on `GET /state`'s `link` ([`PanelState`]): the headset
+/// panel's navigation and the wrist light. Task ids only: titles and
+/// summaries stay on the link.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 43;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -657,6 +661,51 @@ pub struct DeviceLinkState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<VoiceToast>,
+    /// The headset panel (v43). Omitted before the shell has one.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<PanelState>,
+}
+
+/// The headset panel as navigated, and the wrist light shown while it is
+/// closed. Ids and counts only.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PanelState {
+    pub open: bool,
+    /// `now`, `talk`, `tasks` or `game_menu`.
+    pub section: String,
+    /// The task whose page shows.
+    pub page: Option<u64>,
+    /// The focused content item; `None`: the section list.
+    pub focus: Option<usize>,
+    /// The action waiting for its confirm press: `keep`, `revert`, `stop`.
+    pub confirm: Option<String>,
+    /// The desktop's task in front of the user, and how many it listed.
+    pub now: Option<u64>,
+    pub tasks: usize,
+    /// While closed and linked with a task.
+    pub wrist: Option<WristLight>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct WristLight {
+    pub stance: TaskStance,
+    /// Only for `waiting`.
+    pub pulsing: bool,
+}
+
+/// An agent's stance (D34), as the desktop reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStance {
+    Thinking,
+    Working,
+    Waiting,
+    Done,
+    Failed,
 }
 
 /// The headset's push-to-talk toast: where an utterance is, and what the

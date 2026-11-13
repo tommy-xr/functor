@@ -41,6 +41,7 @@
     "test:quest-run": "FUNCTOR_QUEST_E2E=1 cargo test -p functor-app --test device_link quest_runs_a_project_over_the_link -- --nocapture",
     "test:quest-voice": "FUNCTOR_QUEST_E2E=1 cargo test -p functor-device-link --features client --test quest_voice -- --nocapture",
     "test:quest-placement": "FUNCTOR_QUEST_E2E=1 cargo test -p functor-app --test device_link quest_runs_the_game_in_the_headset_placement -- --nocapture",
+    "test:quest-panel": "FUNCTOR_QUEST_E2E=1 cargo test -p functor-app --test device_link quest_panel_keeps_a_change_from_the_headset -- --nocapture",
     "test:golden": "npm run fetch:assets && npm run build:cli:debug && cargo test -p functor-runtime-desktop --test golden -- --ignored --nocapture --test-threads=1",
     "test:wasm-golden": "playwright test",
     "test:wasm-golden:update": "playwright test --update-snapshots",

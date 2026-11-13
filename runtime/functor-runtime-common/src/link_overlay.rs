@@ -3,8 +3,10 @@
 //! controller gestures that drive them. Shell-owned: the game sees neither
 //! the panel nor the presses.
 //!
-//! Hold the left menu button [`HOLD`] to start pairing; while the code
-//! shows, A says it matches the desktop's and B cancels. Once paired, hold
+//! The left menu button is the shell's: a press shorter than [`HOLD`]
+//! opens or closes the headset panel ([`crate::link_panel`]), a hold starts
+//! pairing; while the code shows, A says it matches the desktop's and B
+//! cancels. Once paired, hold
 //! the right thumbstick click [`TALK_HOLD`] to talk, release to send; B
 //! while talking cancels.
 
@@ -29,6 +31,8 @@ pub enum Gesture {
     Pair,
     Matches,
     Cancel,
+    /// A short menu press: open or close the panel.
+    Panel,
 }
 
 /// Turns controller samples into [`Gesture`]s, on press edges.
@@ -48,6 +52,11 @@ impl Gestures {
         open: bool,
         now: Instant,
     ) -> Option<Gesture> {
+        // No sample (focus went to the system): a hold in progress is dropped,
+        // not read as a release.
+        if xr.is_none() {
+            self.menu_since = None;
+        }
         let (menu, a, b) = xr.map_or((false, false, false), |xr| {
             (
                 xr.left.menu_pressed,
@@ -57,12 +66,17 @@ impl Gestures {
         });
         let pressed = |was: &mut bool, is: bool| !std::mem::replace(was, is) && is;
         let (a, b) = (pressed(&mut self.a, a), pressed(&mut self.b, b));
-        let held = if menu {
-            now.duration_since(*self.menu_since.get_or_insert(now))
-        } else {
-            self.menu_since = None;
-            self.menu_fired = false;
-            Duration::ZERO
+        if menu {
+            self.menu_since.get_or_insert(now);
+        }
+        let held = self
+            .menu_since
+            .map_or(Duration::ZERO, |since| now.duration_since(since));
+        let released = !menu && self.menu_since.take().is_some();
+        // A hold that paired, or began over the pairing panel, is spent.
+        let fired = match menu {
+            true => self.menu_fired,
+            false => std::mem::take(&mut self.menu_fired),
         };
         if open {
             // A hold that outlasts the overlay must be released first.
@@ -77,7 +91,8 @@ impl Gestures {
             self.menu_fired = true;
             return Some(Gesture::Pair);
         }
-        None
+        // Decided on release, so a hold never opens the panel first.
+        (released && !fired && held < HOLD).then_some(Gesture::Panel)
     }
 }
 
@@ -163,6 +178,12 @@ impl PushToTalk {
             return Some(Talk::Start);
         }
         None
+    }
+
+    /// The click is held, or B is still the gesture's: the panel leaves
+    /// the right hand alone.
+    pub fn busy(&self) -> bool {
+        self.since.is_some() || self.talking || self.keep_b
     }
 
     /// The shell ended the utterance itself (its time limit, a lost link):
@@ -394,7 +415,7 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
 
 /// `text` in lines of at most `width` characters, broken at spaces where
 /// it can be; at most `lines` of them, the last cut with `...`.
-fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
+pub(crate) fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
@@ -473,43 +494,82 @@ const STRIDE: usize = 8;
 const PAD: f32 = 0.03;
 const GAP: f32 = 0.018;
 
-/// The panel's triangles in metres, centred on the origin, y up: a
-/// background, then one quad per visible glyph.
-pub fn mesh(lines: &[Line]) -> Vec<f32> {
+/// What the painter draws, in metres, y up; colors are authored sRGB.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Shape {
+    /// `rect` is `[x, y, w, h]` from its bottom-left corner.
+    Rect { rect: [f32; 4], color: [f32; 4] },
+    /// One line from its top-left corner `at`; `size` is the cell height
+    /// (and advance) of the monospace font.
+    Text {
+        at: [f32; 2],
+        size: f32,
+        color: [f32; 3],
+        text: String,
+    },
+}
+
+/// `lines` centred on a background card around the origin.
+pub fn card(lines: &[Line]) -> Vec<Shape> {
     let width = |l: &Line| sprite_font::advance_count(&l.text) as f32 * l.size;
     let inner_w = lines.iter().map(width).fold(0.0, f32::max);
     let inner_h =
         lines.iter().map(|l| l.size).sum::<f32>() + GAP * lines.len().saturating_sub(1) as f32;
     let (w, h) = (inner_w + 2.0 * PAD, inner_h + 2.0 * PAD);
-    let mut out = Vec::new();
-    let bg = crate::color_space::srgb_to_linear3([BACKGROUND[0], BACKGROUND[1], BACKGROUND[2]]);
-    quad(
-        &mut out,
-        [-w / 2.0, -h / 2.0, w, h],
-        None,
-        [bg[0], bg[1], bg[2], BACKGROUND[3]],
-    );
+    let mut out = vec![Shape::Rect {
+        rect: [-w / 2.0, -h / 2.0, w, h],
+        color: BACKGROUND,
+    }];
     let mut top = h / 2.0 - PAD;
+    for line in lines {
+        out.push(Shape::Text {
+            at: [-width(line) / 2.0, top],
+            size: line.size,
+            color: line.color,
+            text: line.text.clone(),
+        });
+        top -= line.size + GAP;
+    }
+    out
+}
+
+/// The triangles for `shapes`, in order: one quad per rect and per
+/// visible glyph.
+pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
+    let mut out = Vec::new();
     let atlas = [
         sprite_font::ATLAS_WIDTH as f32,
         sprite_font::ATLAS_HEIGHT as f32,
     ];
-    for line in lines {
-        let [r, g, b] = crate::color_space::srgb_to_linear3(line.color);
-        let mut x = -width(line) / 2.0;
-        for character in line.text.chars() {
-            if let Some((cx, cy, cw, ch)) = sprite_font::glyph_cell(character) {
-                let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
-                quad(
-                    &mut out,
-                    [x, top - line.size, line.size, line.size],
-                    Some(uv),
-                    [r, g, b, 1.0],
-                );
+    let linear = |c: [f32; 3]| crate::color_space::srgb_to_linear3(c);
+    for shape in shapes {
+        match shape {
+            Shape::Rect { rect, color } => {
+                let [r, g, b] = linear([color[0], color[1], color[2]]);
+                quad(&mut out, *rect, None, [r, g, b, color[3]]);
             }
-            x += line.size;
+            Shape::Text {
+                at,
+                size,
+                color,
+                text,
+            } => {
+                let [r, g, b] = linear(*color);
+                let mut x = at[0];
+                for character in text.chars() {
+                    if let Some((cx, cy, cw, ch)) = sprite_font::glyph_cell(character) {
+                        let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
+                        quad(
+                            &mut out,
+                            [x, at[1] - size, *size, *size],
+                            Some(uv),
+                            [r, g, b, 1.0],
+                        );
+                    }
+                    x += size;
+                }
+            }
         }
-        top -= line.size + GAP;
     }
     out
 }
@@ -564,7 +624,7 @@ pub struct LinkOverlayPainter {
     vbo: glow::Buffer,
     atlas: glow::Texture,
     /// What the mesh shows, so it is rebuilt only on change.
-    shown: Vec<Line>,
+    shown: Vec<Shape>,
     vertices: i32,
 }
 
@@ -660,14 +720,14 @@ impl LinkOverlayPainter {
         }
     }
 
-    /// Draws `lines` ([`lines`], [`toast_lines`]) at `alpha` over the bound
-    /// framebuffer, unoccluded; `transform` maps panel metres to clip space
-    /// ([`head_locked_transform`]). Restores the capabilities it toggles, but
-    /// leaves the viewport and blend function set.
+    /// Draws `shapes` (a [`card`] of [`lines`] or [`toast_lines`], the
+    /// panel) at `alpha` over the bound framebuffer, unoccluded; `transform`
+    /// maps metres to clip space ([`head_locked_transform`]). Restores the
+    /// capabilities it toggles, but leaves the viewport and blend function set.
     pub fn draw(
         &mut self,
         gl: &glow::Context,
-        lines: &[Line],
+        shapes: &[Shape],
         alpha: f32,
         transform: Matrix4<f32>,
         viewport: (u32, u32),
@@ -681,15 +741,15 @@ impl LinkOverlayPainter {
             glow::BLEND,
         ];
         unsafe {
-            if self.shown != lines {
-                let mesh = mesh(lines);
+            if self.shown != shapes {
+                let mesh = mesh(shapes);
                 let bytes = crate::terrain_renderer::slice_bytes(&mesh);
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.vbo));
                 gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytes, glow::DYNAMIC_DRAW);
                 gl.bind_buffer(glow::ARRAY_BUFFER, None);
                 crate::gpu_counters::gpu_counters().uploaded(bytes.len());
                 self.vertices = (mesh.len() / STRIDE) as i32;
-                self.shown = lines.to_vec();
+                self.shown = shapes.to_vec();
             }
             let was = caps.map(|cap| gl.is_enabled(cap));
             for cap in caps {
@@ -758,15 +818,29 @@ mod tests {
             g.step(Some(&xr(true, false, false)), false, t0 + HOLD * 3),
             None
         );
-        // A short press is the game's.
+        // Released after pairing: nothing more.
         let t1 = t0 + HOLD * 4;
         assert_eq!(g.step(Some(&xr(false, false, false)), false, t1), None);
+        // A short press opens the panel, on release.
         assert_eq!(g.step(Some(&xr(true, false, false)), false, t1), None);
         assert_eq!(
             g.step(Some(&xr(false, false, false)), false, t1 + HOLD / 2),
-            None
+            Some(Gesture::Panel)
         );
         assert_eq!(g.step(None, false, t1 + HOLD * 2), None);
+        // Focus lost mid-press: not a release.
+        assert_eq!(g.step(Some(&xr(true, false, false)), false, t1), None);
+        assert_eq!(g.step(None, false, t1), None);
+        assert_eq!(
+            g.step(Some(&xr(false, false, false)), false, t1 + HOLD / 4),
+            None
+        );
+        // A press that began over the pairing panel is not the panel's.
+        assert_eq!(g.step(Some(&xr(true, false, false)), true, t1), None);
+        assert_eq!(
+            g.step(Some(&xr(false, false, false)), false, t1 + HOLD / 4),
+            None
+        );
     }
 
     #[test]
@@ -819,7 +893,7 @@ mod tests {
         assert_eq!(lines[0].text, "PAIR WITH MAC");
         assert_eq!(lines[1].text, "482 913");
         assert!(lines[3].text.contains("Matches"));
-        let mesh = mesh(&lines);
+        let mesh = mesh(&card(&lines));
         // Background plus one quad per visible glyph (spaces draw nothing).
         let glyphs: usize = lines
             .iter()

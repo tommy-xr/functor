@@ -48,6 +48,7 @@ use functor_runtime_common::{
     rig_reference, Frame, FrameTime, GameClock, InputSnapshot, Key, SceneContext, TrackingPose,
     Viewport, XrControllerSnapshot, XrInputSnapshot,
 };
+use cgmath::{Matrix4, SquareMatrix};
 use khronos_egl as egl;
 use openxr as xr;
 
@@ -55,6 +56,7 @@ mod battery;
 mod link;
 mod environment_depth;
 mod passthrough;
+mod panel;
 mod passthrough_camera;
 mod voice;
 
@@ -902,6 +904,17 @@ struct DebugLoopState {
     link_gestures: functor_runtime_common::link_overlay::Gestures,
     /// Push-to-talk and its toast, while paired.
     voice: voice::Voice,
+    /// The headset panel and the wrist light.
+    panel: panel::HeadsetPanel,
+    /// The wrist light's place in head space, from the overlay's sample.
+    wrist_at: Option<[f32; 3]>,
+}
+
+/// Where a link overlay is drawn: head-locked, or by a matrix from its
+/// metres to head space.
+enum Place {
+    HeadLocked,
+    Head(Matrix4<f32>),
 }
 
 /// What the game samples: an injected `xr` sample wins over live tracking.
@@ -1105,7 +1118,9 @@ fn service_debug_request(
             let stages = debug.stages;
             let frame_stats = debug.telemetry.stats();
             let toast = debug.voice.toast(Instant::now()).map(|(toast, _)| toast.clone());
-            let link = debug.link.as_ref().map(|client| link::state(client, toast));
+            let link = debug.link.as_ref().map(|client| {
+                link::state(client, toast, debug.panel.debug(client.linked()))
+            });
             let reload = debug.reload.state(Instant::now());
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
@@ -1760,6 +1775,9 @@ pub fn android_main(app: AndroidApp) {
     let mut reload_painter: Option<ReloadIndicatorPainter> = None;
     // The pairing overlay, built the first time it shows.
     let mut link_painter: Option<functor_runtime_common::link_overlay::LinkOverlayPainter> = None;
+    let mut wrist_painter: Option<functor_runtime_common::link_overlay::LinkOverlayPainter> = None;
+    // The wrist light's pulse.
+    let pulse_clock = Instant::now();
 
     // The real Functor Lang producer, booting the embedded scene. A broken embedded
     // scene is a build bug, not a runtime condition — fail loud.
@@ -2131,9 +2149,10 @@ pub fn android_main(app: AndroidApp) {
                     })
             })
             .flatten();
-        // The pairing overlay, shown over any game. Driven by the live sample
-        // (read here, before any injected one replaces it) or by a sample
-        // injected on this device's own debug port, never the link's.
+        // The pairing overlay and the panel, shown over any game. Driven by
+        // the live sample (read here, before any injected one replaces it) or
+        // by a sample injected on this device's own debug port, never the
+        // link's.
         let pairing = debug.link.as_ref().and_then(|client| {
             let shown = client.pairing();
             let sample = if debug.xr_override_pairs {
@@ -2143,17 +2162,30 @@ pub fn android_main(app: AndroidApp) {
             };
             if let Some(gesture) = debug.link_gestures.step(sample, shown.is_some(), Instant::now()) {
                 log::info!("device link: {gesture:?} pressed");
-                client.send(link::command(gesture));
+                match link::command(gesture) {
+                    Some(command) => client.send(command),
+                    None => debug.panel.toggle(),
+                }
             }
             shown.map(link::pairing_state)
         });
-        // Push-to-talk, from the same sample as pairing.
+        // Push-to-talk and the panel, from the same sample as pairing.
         if let Some(client) = &debug.link {
             let sample = if debug.xr_override_pairs {
                 debug.xr_override.as_ref()
             } else {
                 debug.input.xr.as_ref()
             };
+            // The wrist light rides the left grip.
+            debug.wrist_at = sample.and_then(|xr| {
+                functor_runtime_common::link_panel::wrist_position(xr.head?, xr.left.grip?)
+            });
+            let received = client.received();
+            for (channel, data) in &received {
+                if *channel == functor_device_link::panel::UPDATE_CHANNEL {
+                    debug.panel.received(data, Instant::now());
+                }
+            }
             let (frame, tts) = (debug.frame_count, clock.current_tts());
             let capsule = || {
                 let frame = sim.call(|g| g.state_frame()).unwrap_or(frame);
@@ -2161,7 +2193,15 @@ pub fn android_main(app: AndroidApp) {
             };
             // Not while the pairing panel hides the toast.
             let armed = client.paired() && pairing.is_none();
-            debug.voice.frame(client, sample, armed, capsule, Instant::now());
+            debug.voice.frame(client, &received, sample, armed, capsule, Instant::now());
+            if pairing.is_some() {
+                debug.panel.nav.close();
+            }
+            // What is said shows in Talk.
+            if debug.voice.listening() {
+                debug.panel.nav.talk();
+            }
+            debug.panel.frame(client, sample, debug.voice.busy());
         }
 
         if !xr_frame_state.should_render {
@@ -2237,6 +2277,9 @@ pub fn android_main(app: AndroidApp) {
             if pairing.is_some() {
                 functor_runtime_common::link_overlay::without_presses(xr);
             }
+            // An injected sample the overlay does not read keeps its menu press.
+            let owns_menu = debug.link.is_some() && (debug.xr_override.is_none() || debug.xr_override_pairs);
+            debug.panel.game_view(xr, !sub_frames.is_empty(), owns_menu);
             debug.voice.game_view(xr, !sub_frames.is_empty());
         }
         for sub_frame in &sub_frames {
@@ -2472,21 +2515,46 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
-        // The pairing panel or, under it, the voice toast: lines, opacity
-        // and head-space placement, worked out once for both eyes.
-        let panel = match &pairing {
-            Some(pairing) => Some((
-                functor_runtime_common::link_overlay::lines(pairing),
-                1.0,
-                None,
-            )),
-            None => tracked_center.and_then(|head| {
+        // The pairing card, else the open panel, else the voice toast:
+        // shapes, opacity and placement, worked out once for both eyes.
+        use functor_runtime_common::link_overlay::{card, toast_lines};
+        use functor_runtime_common::link_panel::{placement, pose_matrix, wrist_shapes};
+        let panel = match (&pairing, &debug.link) {
+            (Some(pairing), _) => {
+                let shapes = card(&functor_runtime_common::link_overlay::lines(pairing));
+                Some((shapes, 1.0, Place::HeadLocked))
+            }
+            (None, Some(client)) if debug.panel.nav.is_open() => tracked_center.map(|head| {
+                // Where it opened, in the world: back into head space.
+                let anchor = *debug.panel.anchor.get_or_insert_with(|| placement(head));
+                let world = pose_matrix(head).invert().unwrap_or(Matrix4::identity());
+                let toast = debug.voice.toast(Instant::now()).map(|(t, _)| t.clone());
+                let shapes = debug.panel.nav.shapes(
+                    debug.panel.data.as_ref(),
+                    &panel::connection(&client.view()),
+                    toast.as_ref(),
+                    Instant::now(),
+                );
+                (shapes, 1.0, Place::Head(world * anchor))
+            }),
+            _ => tracked_center.and_then(|head| {
                 let (toast, alpha) = debug.voice.toast(Instant::now())?;
-                let lines = functor_runtime_common::link_overlay::toast_lines(toast);
+                let shapes = card(&toast_lines(toast));
                 let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((lines, alpha, Some(place)))
+                Some((shapes, alpha, Place::Head(place)))
             }),
         };
+        // The wrist light, while the panel is closed.
+        let wrist = debug
+            .link
+            .as_ref()
+            .filter(|_| pairing.is_none())
+            .and_then(|client| debug.panel.wrist(client.linked()))
+            .zip(debug.wrist_at)
+            .map(|(light, at)| {
+                let (shapes, alpha) = wrist_shapes(light, pulse_clock.elapsed().as_secs_f32());
+                (shapes, alpha, Matrix4::from_translation(at.into()))
+            });
 
         for (index, (eye, view)) in eyes.iter_mut().zip(views.iter()).enumerate() {
             use glow::HasContext;
@@ -2541,7 +2609,7 @@ images cannot be posed"
             // Head-locked over the game, placed from the head center so both
             // eyes agree on their depth.
             let eye_in_head = tracked_center
-                .filter(|_| reload_look.is_some() || panel.is_some())
+                .filter(|_| reload_look.is_some() || panel.is_some() || wrist.is_some())
                 .and_then(|center| tracking_pose_from_view(view).relative_to(center));
             if let Some(eye_in_head) = eye_in_head {
                 let fov = [view.fov.angle_left, view.fov.angle_right, view.fov.angle_down, view.fov.angle_up];
@@ -2559,19 +2627,33 @@ images cannot be posed"
                         scene_context.output_srgb_encode(),
                     );
                 }
-                if let Some((lines, alpha, place)) = &panel {
+                if let Some((shapes, alpha, place)) = &panel {
                     let painter = link_painter.get_or_insert_with(|| {
                         functor_runtime_common::link_overlay::LinkOverlayPainter::new(&gl, "#version 300 es")
                     });
                     let transform = match place {
-                        Some(place) => functor_runtime_common::reload_indicator::head_to_clip(fov, eye_in_head) * place,
-                        None => functor_runtime_common::link_overlay::head_locked_transform(fov, eye_in_head),
+                        Place::Head(place) => functor_runtime_common::reload_indicator::head_to_clip(fov, eye_in_head) * place,
+                        Place::HeadLocked => functor_runtime_common::link_overlay::head_locked_transform(fov, eye_in_head),
                     };
                     painter.draw(
                         &gl,
-                        lines,
+                        shapes,
                         *alpha,
                         transform,
+                        (eye.width, eye.height),
+                        scene_context.output_srgb_encode(),
+                    );
+                }
+                // A painter of its own, so neither re-uploads its mesh each frame.
+                if let Some((shapes, alpha, place)) = &wrist {
+                    let painter = wrist_painter.get_or_insert_with(|| {
+                        functor_runtime_common::link_overlay::LinkOverlayPainter::new(&gl, "#version 300 es")
+                    });
+                    painter.draw(
+                        &gl,
+                        shapes,
+                        *alpha,
+                        functor_runtime_common::reload_indicator::head_to_clip(fov, eye_in_head) * place,
                         (eye.width, eye.height),
                         scene_context.output_srgb_encode(),
                     );

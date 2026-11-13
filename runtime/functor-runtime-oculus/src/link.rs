@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use functor_device_link::client::{Client, Command, Config, Host, Pairing};
 use functor_device_link::wire::Status;
-use functor_runtime_common::debug_protocol::{DeviceLinkState, PairingState, VoiceToast};
+use functor_runtime_common::debug_protocol::{
+    DeviceLinkState, PairingState, PanelState, VoiceToast,
+};
 use functor_runtime_common::link_overlay::Gesture;
 use jni::objects::JObject;
 use jni::refs::Global;
@@ -137,11 +139,14 @@ pub fn start(
     }
 }
 
-pub fn command(gesture: Gesture) -> Command {
+/// The client's command for `gesture`; `None` for the panel's, which is
+/// the shell's own.
+pub fn command(gesture: Gesture) -> Option<Command> {
     match gesture {
-        Gesture::Pair => Command::Pair,
-        Gesture::Matches => Command::Confirm,
-        Gesture::Cancel => Command::Cancel,
+        Gesture::Pair => Some(Command::Pair),
+        Gesture::Matches => Some(Command::Confirm),
+        Gesture::Cancel => Some(Command::Cancel),
+        Gesture::Panel => None,
     }
 }
 
@@ -162,13 +167,14 @@ pub fn pairing_state(pairing: Pairing) -> PairingState {
     }
 }
 
-/// `/state.link`, with the voice toast showing.
-pub fn state(client: &Client, voice: Option<VoiceToast>) -> DeviceLinkState {
+/// `/state.link`, with the voice toast showing and the panel.
+pub fn state(client: &Client, voice: Option<VoiceToast>, panel: PanelState) -> DeviceLinkState {
     let view = client.view();
     DeviceLinkState {
         paired: view.paired,
         linked: view.linked,
         pairing: view.pairing.map(pairing_state),
         voice,
+        panel: Some(panel),
     }
 }

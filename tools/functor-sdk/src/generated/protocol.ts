@@ -128,7 +128,11 @@ pairing: PairingState | null,
 /**
  * The push-to-talk toast, while it shows (v42).
  */
-voice?: VoiceToast, };
+voice?: VoiceToast, 
+/**
+ * The headset panel (v43). Omitted before the shell has one.
+ */
+panel?: PanelState, };
 
 /**
  * A headset display's refresh-rate state, in Hz, as `GET /state` reports it.
@@ -553,6 +557,36 @@ released: MouseButtons, };
 export type PairingState = { "stage": "searching" } | { "stage": "code", desktop: string, code: string, confirmed: boolean, } | { "stage": "paired", desktop: string, } | { "stage": "failed", reason: string, };
 
 /**
+ * The headset panel as navigated, and the wrist light shown while it is
+ * closed. Ids and counts only.
+ */
+export type PanelState = { open: boolean, 
+/**
+ * `now`, `talk`, `tasks` or `game_menu`.
+ */
+section: string, 
+/**
+ * The task whose page shows.
+ */
+page: number | null, 
+/**
+ * The focused content item; `None`: the section list.
+ */
+focus: number | null, 
+/**
+ * The action waiting for its confirm press: `keep`, `revert`, `stop`.
+ */
+confirm: string | null, 
+/**
+ * The desktop's task in front of the user, and how many it listed.
+ */
+now: number | null, tasks: number, 
+/**
+ * While closed and linked with a task.
+ */
+wrist: WristLight | null, };
+
+/**
  * How a shell is showing the real world behind `Frame.withPassthrough`
  * frames, as `GET /state.passthrough` reports it.
  */
@@ -901,6 +935,11 @@ export type StagePercentiles = { p50_us: number, p99_us: number, max_us: number,
 export type StageTimings = { frames: number, sim_ms: number, render_ms: number, sim_wait_ms: number, frame_ms: number, };
 
 /**
+ * An agent's stance (D34), as the desktop reports it.
+ */
+export type TaskStance = "thinking" | "working" | "waiting" | "done" | "failed";
+
+/**
  * One frame's terrain draws, summed over every draw of the frame (a stereo
  * frame draws the shared patch set once per eye, so it counts twice).
  * `vertices` is patches × the patch mesh's vertex count (grid + skirt).
@@ -964,6 +1003,12 @@ export type UiEventKind = "Clicked" | { "SliderChanged": number } | { "TextChang
  * desktop heard while it is recent.
  */
 export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
+
+export type WristLight = { stance: TaskStance, 
+/**
+ * Only for `waiting`.
+ */
+pulsing: boolean, };
 
 /**
  * `config`'s XR knobs, read before the XR session starts rendering the game.

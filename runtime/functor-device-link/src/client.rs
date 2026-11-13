@@ -112,6 +112,9 @@ pub struct View {
     pub paired: Option<String>,
     pub linked: bool,
     pub pairing: Option<Pairing>,
+    /// The desktop refused this app's link protocol version: one of the
+    /// two needs an update. Forgeable, so only shown.
+    pub outdated: bool,
 }
 
 #[derive(Default)]
@@ -800,6 +803,7 @@ impl Connection<'_> {
                     worker.shared.outbox.lock().unwrap().reset(true);
                     worker.shared.update(|v| {
                         v.linked = true;
+                        v.outdated = false;
                         v.paired = Some(desktop_name);
                     });
                 }
@@ -820,7 +824,9 @@ impl Connection<'_> {
                 }
                 // Forgeable: report, never drop the stored secret over it.
                 device::Event::Rejected(reject) => {
-                    log::warn!("device link: the desktop refused: {reject:?}")
+                    log::warn!("device link: the desktop refused: {reject:?}");
+                    let outdated = matches!(reject, crate::wire::Reject::Version(_));
+                    worker.shared.update(|v| v.outdated = outdated);
                 }
             }
         }
