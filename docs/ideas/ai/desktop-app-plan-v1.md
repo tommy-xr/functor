@@ -104,6 +104,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.19 | Agent-run metrics: a fixed set of scenarios run through `functor-app task`, recording turns, tokens, time and outcome per scenario to a file, so prompt and settings changes can be compared and regressions seen. | The scenarios run against `FakeAgent` in CI; one opt-in live run with its numbers recorded here. |
 | 1.20 | Extrapolate in the app (D38): the control on the transport bar, the path drawn in the game view, and the automatic peek when an edit lands while paused; reuses the runtime's extrapolation and the web scrubber's model. Then re-record the site's app-loop capture with it. | Core and shell tests; Playwright with a fixture edit: the path changes after the edit; stills. |
 | 1.21 | Extrapolation as evidence (D38): the old and new paths from the task's moment on the change card, taken headlessly from the task's baseline and current files with the same inputs. | A fixture change whose two paths differ; captures match goldens. |
+| 1.23 | Instruction scope (D39): three levels — yours and the project's, the project's only, isolated — per project, per task from the composer, and separately for the presentation agent; permissions unchanged; the level stored with the task and in the metrics. Needs the agent runner to choose which settings a run loads. | Core tests; a fake-agent test that each level reaches the runner; a metrics pass comparing the three. |
 
 ## M2 — devices and the Wi-Fi link
 

@@ -371,13 +371,13 @@ impl Frame {
                 method: r.text16(MAX_METHOD)?,
                 target: r.text16(MAX_TARGET)?,
                 headers: r.headers()?,
-                body: r.blob()?,
+                body: r.blob(MAX_FRAME)?,
             }),
             2 => Frame::Response(Response {
                 id: r.u32()?,
                 status: r.u16()?,
                 headers: r.headers()?,
-                body: r.blob()?,
+                body: r.blob(MAX_FRAME)?,
             }),
             3 => Frame::Status(Status {
                 battery: match r.u8()? {
@@ -396,7 +396,7 @@ impl Frame {
             5 => Frame::Pong(r.u64()?),
             6 => Frame::Channel {
                 channel: r.u16()?,
-                data: r.blob()?,
+                data: r.blob(MAX_FRAME)?,
             },
             7 => Frame::Close(r.text16(MAX_REASON)?),
             16 => Frame::PairNonce(r.array()?),
@@ -441,19 +441,19 @@ pub(crate) fn decode_desktop(
 }
 
 #[derive(Default)]
-struct Writer(Vec<u8>);
+pub(crate) struct Writer(pub(crate) Vec<u8>);
 
 impl Writer {
-    fn u8(&mut self, v: u8) {
+    pub(crate) fn u8(&mut self, v: u8) {
         self.0.push(v);
     }
     fn u16(&mut self, v: u16) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u32(&mut self, v: u32) {
+    pub(crate) fn u32(&mut self, v: u32) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
-    fn u64(&mut self, v: u64) {
+    pub(crate) fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_be_bytes());
     }
     fn bytes(&mut self, v: &[u8]) {
@@ -465,12 +465,12 @@ impl Writer {
         self.u8(s.len() as u8);
         self.bytes(s.as_bytes());
     }
-    fn str16(&mut self, s: &str) {
+    pub(crate) fn str16(&mut self, s: &str) {
         let s = clip(s, u16::MAX as usize);
         self.u16(s.len() as u16);
         self.bytes(s.as_bytes());
     }
-    fn blob(&mut self, v: &[u8]) {
+    pub(crate) fn blob(&mut self, v: &[u8]) {
         self.u32(v.len() as u32);
         self.bytes(v);
     }
@@ -487,14 +487,17 @@ impl Writer {
 /// Text a peer may send: no control characters, and no invisible ones
 /// that reorder or hide text (a name that reads like another's).
 fn allowed(text: &str) -> bool {
-    !text.chars().any(|c| {
-        c.is_control()
-            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
-    })
+    !text.chars().any(refused)
+}
+
+/// A character [`allowed`] refuses.
+pub(crate) fn refused(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 /// `s` cut to at most `max` bytes, on a character boundary.
-fn clip(s: &str, max: usize) -> &str {
+pub(crate) fn clip(s: &str, max: usize) -> &str {
     let mut end = s.len().min(max);
     while !s.is_char_boundary(end) {
         end -= 1;
@@ -502,13 +505,13 @@ fn clip(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], Error> {
@@ -521,10 +524,10 @@ impl<'a> Reader<'a> {
     fn array<const N: usize>(&mut self) -> Result<[u8; N], Error> {
         Ok(self.take(N)?.try_into().expect("N bytes"))
     }
-    fn u8(&mut self) -> Result<u8, Error> {
+    pub(crate) fn u8(&mut self) -> Result<u8, Error> {
         Ok(self.take(1)?[0])
     }
-    fn flag(&mut self) -> Result<bool, Error> {
+    pub(crate) fn flag(&mut self) -> Result<bool, Error> {
         match self.u8()? {
             0 => Ok(false),
             1 => Ok(true),
@@ -534,10 +537,10 @@ impl<'a> Reader<'a> {
     fn u16(&mut self) -> Result<u16, Error> {
         Ok(u16::from_be_bytes(self.array()?))
     }
-    fn u32(&mut self) -> Result<u32, Error> {
+    pub(crate) fn u32(&mut self) -> Result<u32, Error> {
         Ok(u32::from_be_bytes(self.array()?))
     }
-    fn u64(&mut self) -> Result<u64, Error> {
+    pub(crate) fn u64(&mut self) -> Result<u64, Error> {
         Ok(u64::from_be_bytes(self.array()?))
     }
     fn text(&mut self, len: usize, max: usize) -> Result<String, Error> {
@@ -554,13 +557,14 @@ impl<'a> Reader<'a> {
         let len = self.u8()? as usize;
         self.text(len, max)
     }
-    fn text16(&mut self, max: usize) -> Result<String, Error> {
+    pub(crate) fn text16(&mut self, max: usize) -> Result<String, Error> {
         let len = self.u16()? as usize;
         self.text(len, max)
     }
-    fn blob(&mut self) -> Result<Vec<u8>, Error> {
+    /// Bytes with a length prefix, at most `max` of them.
+    pub(crate) fn blob(&mut self, max: usize) -> Result<Vec<u8>, Error> {
         let len = self.u32()? as usize;
-        if len > MAX_FRAME {
+        if len > max {
             return Err(Error::TooLarge);
         }
         Ok(self.take(len)?.to_vec())
@@ -579,7 +583,7 @@ impl<'a> Reader<'a> {
             })
             .collect()
     }
-    fn end(&self) -> Result<(), Error> {
+    pub(crate) fn end(&self) -> Result<(), Error> {
         match self.at == self.bytes.len() {
             true => Ok(()),
             false => Err(Error::Malformed("trailing bytes")),
