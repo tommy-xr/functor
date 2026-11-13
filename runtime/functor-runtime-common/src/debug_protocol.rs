@@ -2122,6 +2122,7 @@ mod tests {
             "POST /sync-assets",
             "POST /rewind",
             "POST /seek",
+            "POST /preview",
             "POST /camera",
             "POST /display-refresh-rate",
             "GET /net/outbound",
