@@ -8,6 +8,7 @@
 //! and draws [`Client::pairing`]; an unpaired, idle client costs the shell
 //! one atomic load per call.
 
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
@@ -47,6 +48,12 @@ const FORWARD_TIMEOUT: Duration = Duration::from_secs(200);
 const OUTCOME_SHOWN: Duration = Duration::from_secs(4);
 /// Request headers passed to the debug runtime (the ones it reads).
 const FORWARDED: [&str; 3] = ["content-type", "accept", "origin"];
+/// Bytes of bounded channel data queued for the desktop, past which
+/// [`Client::send_channel`] refuses more: about 8 s of voice audio.
+pub const OUTBOX_LIMIT: usize = 256 * 1024;
+/// Channel messages from the desktop kept until the shell takes them; the
+/// oldest go first.
+const INBOX_LIMIT: usize = 32;
 
 pub struct Config {
     /// The pairing file ([`Stored`]).
@@ -114,11 +121,22 @@ struct Shown {
     hide_at: Option<Instant>,
 }
 
+/// Channel messages waiting for the desktop, and their bounded bytes.
+#[derive(Default)]
+struct Outbox {
+    queue: VecDeque<(u16, Vec<u8>)>,
+    bounded: usize,
+}
+
 #[derive(Default)]
 struct Shared {
     shown: Mutex<Shown>,
     /// A pairing is shown: the shell's fast path.
     pairing: AtomicBool,
+    outbox: Mutex<Outbox>,
+    inbox: Mutex<VecDeque<(u16, Vec<u8>)>>,
+    /// The inbox holds something: the shell's fast path.
+    received: AtomicBool,
 }
 
 impl Shared {
@@ -188,6 +206,41 @@ impl Client {
 
     pub fn view(&self) -> View {
         self.shared.view()
+    }
+
+    /// Queues `data` on `channel` for the linked desktop. `false` (dropped)
+    /// when not linked, or when `bounded` and the queue already holds
+    /// [`OUTBOX_LIMIT`] bytes of bounded data. A link drop empties the queue:
+    /// nothing is resent on the next link.
+    pub fn send_channel(&self, channel: u16, data: Vec<u8>, bounded: bool) -> bool {
+        if !self.shared.view().linked {
+            return false;
+        }
+        let mut outbox = self.shared.outbox.lock().unwrap();
+        if bounded {
+            if outbox.bounded >= OUTBOX_LIMIT {
+                return false;
+            }
+            outbox.bounded += data.len();
+        }
+        outbox.queue.push_back((channel, data));
+        true
+    }
+
+    /// Channel messages from the desktop since the last call, oldest first.
+    pub fn received(&self) -> Vec<(u16, Vec<u8>)> {
+        if !self.shared.received.swap(false, Ordering::Acquire) {
+            return Vec::new();
+        }
+        self.shared.inbox.lock().unwrap().drain(..).collect()
+    }
+}
+
+/// Push-to-talk's messages go on the voice clip channel; audio is bounded.
+impl crate::talk::Sink for &Client {
+    fn send(&mut self, clip: crate::voice::Clip, audio: bool) -> bool {
+        clip.encode()
+            .is_ok_and(|data| self.send_channel(crate::voice::CLIP_CHANNEL, data, audio))
     }
 }
 
@@ -273,6 +326,8 @@ impl<H: Host> Worker<H> {
                 Found::Gone => Ended::Gone,
             };
             self.shared.update(|v| v.linked = false);
+            // Nothing queued for this link reaches the next one.
+            *self.shared.outbox.lock().unwrap() = Outbox::default();
             match ended {
                 Ended::Gone => return,
                 Ended::PairRequested => {
@@ -474,7 +529,8 @@ impl<H: Host> Worker<H> {
             let mut next_beat = now() + HEARTBEAT_MS;
             let mut next_recheck = now() + IDLE_RECHECK.as_millis() as u64;
             loop {
-                let poll = if conn.in_flight > 0 {
+                let queued = !self.shared.outbox.lock().unwrap().queue.is_empty();
+                let poll = if conn.in_flight > 0 || queued {
                     POLL_BUSY
                 } else {
                     POLL_IDLE
@@ -545,6 +601,15 @@ impl<H: Host> Worker<H> {
                             let _ = conn.send_all(msgs);
                         }
                         return Err(Ended::over(true, "the pairing file changed"));
+                    }
+                }
+                if machine.linked() {
+                    let queued = std::mem::take(&mut *self.shared.outbox.lock().unwrap());
+                    for (channel, data) in queued.queue {
+                        let msgs = machine
+                            .send(&Frame::Channel { channel, data })
+                            .map_err(|e| Ended::over(true, e.to_string()))?;
+                        conn.send_all(msgs)?;
                     }
                 }
                 if machine.linked() && t >= next_beat {
@@ -688,6 +753,8 @@ impl Connection<'_> {
                 device::Event::Linked { desktop_name, .. } => {
                     log::info!("device link: linked to {desktop_name}");
                     self.linked = true;
+                    // Queued in the moment the last link dropped: not for this one.
+                    *worker.shared.outbox.lock().unwrap() = Outbox::default();
                     worker.shared.update(|v| {
                         v.linked = true;
                         v.paired = Some(desktop_name);
@@ -700,7 +767,14 @@ impl Connection<'_> {
                         let _ = tx.send(forward(debug, &request));
                     });
                 }
-                device::Event::Channel { .. } => {}
+                device::Event::Channel { channel, data } => {
+                    let mut inbox = worker.shared.inbox.lock().unwrap();
+                    if inbox.len() == INBOX_LIMIT {
+                        inbox.pop_front();
+                    }
+                    inbox.push_back((channel, data));
+                    worker.shared.received.store(true, Ordering::Release);
+                }
                 // Forgeable: report, never drop the stored secret over it.
                 device::Event::Rejected(reject) => {
                     log::warn!("device link: the desktop refused: {reject:?}")
