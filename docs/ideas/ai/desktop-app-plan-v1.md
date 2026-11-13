@@ -362,3 +362,60 @@ pass (changes 1–3 without `api_reference` up front or the no-game note) gave
   tokens a turn); the per-tool `_meta` mark the server sets is the finer
   control and needs no change there. Its `Usage` event still lacks the split
   listed above, so cached input cannot be told apart.
+
+### Reviews (4.6a, 2026-11-13, rev `c4436f3c`, the review on `sonnet`)
+
+When a run ends with a change for the user (ready for review, tracked), a
+separate review run prepares the decision page's report (D31):
+
+- **Read-only by the harness, not by asking.** Claude: `mis-agent`'s
+  read-only mode (`dontAsk`: what no rule allows is denied; the only rule is
+  the review's tool server; the user's settings are not loaded, as their
+  rules could allow writes, so reviews are isolated from D19). Checked live:
+  `Edit`, `Write` and a `sed -i` through `Bash` were each denied, the file
+  unchanged. Codex: `exec` with no sandbox override (read-only), refused
+  when its config sets another `sandbox_mode`. The tool server runs
+  `--review`: read-only tools and games it launches itself, never the
+  user's (`--attach` is refused). The tree is measured after the review: an
+  edit anyway voids its report.
+- **Tools:** `task_change` (the app's brief: request, the run's calls and
+  last words, files, evidence so far, the agent's report, the diff up to
+  48 KB) and `report` (summary, notes, evidence, highlights when the agent
+  gave none), both loaded up front.
+- **Setting per project** (`review.json`; the composer's "Review" panel): on
+  by default; agent = the task's; model = `sonnet` for Claude, Codex's own
+  default; optional instructions. Off: the agent's own report is shown.
+- **Precedence:** the review's report replaces the agent's and is labelled
+  "Prepared by a separate review"; the app's own path evidence stays. While
+  it prepares, the page stands on what it has, with "Preparing the
+  summary…"; Keep and Revert work at once and stop it. A failed or cut
+  review leaves the page as it was and says why. A new run, Keep, Revert or
+  a different change ends it.
+- **Bounds:** one per change; cut at 300k input tokens (Claude only reports
+  as it goes) or 180 s.
+- **Style check:** sentences over 20 words, over 120 words, or more than one
+  paragraph are flagged on the page and in `report`'s answer; never blocked.
+
+The working runs, then the reviews of the three that changed a file:
+
+| scenario | outcome | wall s | tool calls | by kind | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 5.9 | 1 | game 1 | 76,393 | 58 |
+| no-tools | pass | 7.5 | 0 | none | 37,709 | 4 |
+| weak-jump | pass | 27.5 | 13 | files 4, game 9 | 213,217 | 1,686 |
+| spawn-in-chasm | pass | 22.1 | 6 | files 3, game 3 | 171,132 | 1,126 |
+| two-step | pass | 25.3 | 12 | files 4, game 5, shell 3 | 215,616 | 1,629 |
+
+| review of | outcome | wall s | input tokens | output tokens | style flags |
+| --- | --- | --- | --- | --- | --- |
+| weak-jump | prepared | 25.7 | 111,990 | 974 | 0 |
+| spawn-in-chasm | prepared | 18.3 | 112,336 | 939 | 0 |
+| two-step | prepared | 9.5 | 82,944 | 838 | 0 |
+
+- **A review costs about half its run:** 83–112k input (52% of the run's on
+  average), 9.5–25.7 s, all well under the bounds. Its turns are cheaper
+  (no user settings), but it still reads the brief and the files.
+- **Every report was concrete:** 4–5 notes each, naming what nobody ran
+  (`functor test`, the jump from the new spawn), and only checks that ran,
+  credited to the agent. None launched its own game.
+- One run each; not measured: Codex reviews, a review cut by its bounds.
