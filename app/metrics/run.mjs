@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Agent-run metrics (plan 1.19): runs each scenario in scenarios.json through
-// `functor-app task` on a fresh copy of its example, judges the outcome by
-// its checks, and records turns, tokens, time and outcome per scenario.
+// `functor-app task --review` on a fresh copy of its example, judges the
+// outcome by its checks, and records turns, tokens, time and outcome per
+// scenario, and the review of a change (D31) as its own `review`.
 //
 //   node app/metrics/run.mjs                 FakeAgent, replaying fixtures/<id>.jsonl
 //   FUNCTOR_APP_LIVE=1 node app/metrics/run.mjs --live
@@ -25,9 +26,10 @@ const repo = path.resolve(here, "../..");
 const exe = process.platform === "win32" ? ".exe" : "";
 
 // Live limits per scenario: past either, the run is stopped and no further
-// scenario starts.
+// scenario starts. The time covers the run and its review (D31), which the
+// app itself cuts at 300k input tokens or 180 s.
 const MAX_INPUT = 600_000;
-const LIVE_TIMEOUT_S = 300;
+const LIVE_TIMEOUT_S = 300 + 180;
 const FAKE_TIMEOUT_S = 60;
 
 // Git that reads no user or system config.
@@ -121,11 +123,15 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
     const metricsFile = path.join(tmp, "metrics.json");
     const env = { ...process.env, FUNCTOR_APP_HOME: path.join(tmp, "home"), FUNCTOR_BIN: functor };
     delete env.FUNCTOR_APP_FAKE_AGENT;
-    if (!live) env.FUNCTOR_APP_FAKE_AGENT = path.join(here, "fixtures", `${scenario.id}.jsonl`);
+    delete env.FUNCTOR_APP_FAKE_REVIEW;
+    if (!live) {
+      env.FUNCTOR_APP_FAKE_AGENT = path.join(here, "fixtures", `${scenario.id}.jsonl`);
+      env.FUNCTOR_APP_FAKE_REVIEW = path.join(here, "fixtures", "review.jsonl");
+    }
     const args = ["--headless", "--no-device-link", "-d", ws];
     // Live sessions get a GPU, as in the app, so captures work.
     if (!live) args.push("--no-gpu");
-    args.push("task", scenario.prompt, "--harness", "claude", "--start-session");
+    args.push("task", scenario.prompt, "--harness", "claude", "--start-session", "--review");
     args.push("--metrics", metricsFile, "--max-input", String(MAX_INPUT));
     const timeout = live ? LIVE_TIMEOUT_S : FAKE_TIMEOUT_S;
     const { code, timedOut } = await run(app, args, env, timeout);
@@ -156,6 +162,8 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       reason: failures.length ? failures.join("; ") : `${scenario.checks.length} checks pass`,
       exit: code,
       answer: m.answer,
+      // The review of its change (D31), when it left one: its own numbers.
+      review: m.review,
       kept: keep ? tmp : undefined,
     };
   } catch (e) {
@@ -213,6 +221,22 @@ export function table(records) {
       `| ${r.scenario} | ${outcome}${cut} | ${secs(r.wall_ms)} | ${secs(r.first_event_ms)} | ${r.messages} | ` +
         `${r.tool_calls} | ${kinds(r.calls)} | ${r.input_tokens ?? "–"} | ${r.output_tokens ?? "–"} |`,
     );
+  }
+  const reviewed = records.filter((r) => r.review);
+  if (reviewed.length) {
+    lines.push(
+      "",
+      "Reviews (D31), apart from the runs above:",
+      "",
+      "| scenario | review | model | wall s | input tokens | output tokens | style flags |",
+      "| --- | --- | --- | --- | --- | --- | --- |",
+    );
+    for (const { scenario, review: v } of reviewed) {
+      lines.push(
+        `| ${scenario} | ${v.ended} | ${v.model ?? "–"} | ${secs(v.wall_ms)} | ${v.input_tokens ?? "–"} | ` +
+          `${v.output_tokens ?? "–"} | ${v.style?.length ?? 0} |`,
+      );
+    }
   }
   return lines.join("\n") + "\n";
 }

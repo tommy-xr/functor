@@ -41,6 +41,8 @@ function tempDir(t) {
 
 test("every scenario reproduces its fixture's numbers and passes", (t) => {
   const tmp = tempDir(t);
+  const byId = Object.fromEntries(scenarios.map((s) => [s.id, s]));
+  const review = recorded("review");
   const out = path.join(tmp, "fake.jsonl");
   const run = spawnSync(process.execPath, [path.join(here, "run.mjs"), "--out", out], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
@@ -65,9 +67,21 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
     assert.equal(r.input_tokens, want.input, r.scenario);
     assert.equal(r.output_tokens, want.output, r.scenario);
     assert.ok(r.first_event_ms != null && r.first_event_ms <= r.wall_ms, r.scenario);
+    // A change is reviewed after the run (D31), its numbers apart; an answer is not.
+    const edits = byId[r.scenario].checks.some((c) => c.changed);
+    if (edits) {
+      assert.equal(r.review.ended, "prepared", r.scenario);
+      assert.equal(r.review.input_tokens, review.input, r.scenario);
+      assert.equal(r.review.output_tokens, review.output, r.scenario);
+      assert.equal(r.review.summary, "The agent changed one value in `game.fun`. Check the game.", r.scenario);
+      assert.ok(r.review.wall_ms != null, r.scenario);
+    } else {
+      assert.equal(r.review, undefined, r.scenario);
+    }
   }
   const md = fs.readFileSync(path.join(tmp, "fake.md"), "utf8");
   for (const s of scenarios) assert.match(md, new RegExp(`^\\| ${s.id} \\| pass \\|`, "m"));
+  assert.match(md, /^\| weak-jump \| prepared \| claude-review-model \|/m);
 });
 
 test("compare shows each scenario's deltas, and those on one side only", () => {
