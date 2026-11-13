@@ -31,9 +31,12 @@ use axum::extract::State;
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
+use functor_app_core::panel::{Panel as CorePanel, PanelAction};
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
+use functor_device_link::panel;
 use functor_device_link::wire::{self, Frame, Hello, Mode, Reject, Reply};
 use functor_device_link::{hex, shared, DesktopId, End, Error, OsEntropy, Secret, VERSION};
 use functor_device_link::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE};
@@ -143,6 +146,8 @@ enum ConnCmd {
         wire::Request,
         oneshot::Sender<Result<wire::Response, String>>,
     ),
+    /// A frame for the device, once linked.
+    Send(Frame),
 }
 
 impl Hub {
@@ -360,6 +365,14 @@ impl Hub {
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
             }
+            LinkCommand::Panel { conn, panel } => to(
+                conn,
+                ConnCmd::Send(panel::Update::Panel(wire_panel(&panel)).frame()),
+            ),
+            LinkCommand::PanelRefused { conn, reason } => to(
+                conn,
+                ConnCmd::Send(panel::Update::Refused { reason }.frame()),
+            ),
         }
     }
 
@@ -735,6 +748,10 @@ impl Connection {
                         let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.close(None)).await;
                         return Ok(());
                     }
+                    ConnCmd::Send(frame) => match self.machine.send(&frame) {
+                        Ok(msgs) => desktop_output(msgs),
+                        Err(_) => continue,
+                    },
                     ConnCmd::Request(mut request, reply) => {
                         // Requests whose callers gave up free their slots.
                         self.waiting.retain(|_, r| !r.is_closed());
@@ -873,7 +890,10 @@ impl Connection {
                 project: s.project,
             }),
             desktop::Event::Latency(ms) => hub.send(LinkEvent::Latency { conn: self.id, ms }),
-            // No channels are defined yet.
+            desktop::Event::Channel {
+                channel: panel::ACTION_CHANNEL,
+                data,
+            } => self.panel_action(&data),
             desktop::Event::Channel { .. } => {}
             desktop::Event::Mismatch(pre) => hub.send(LinkEvent::Mismatch {
                 device: hex(&pre.device),
@@ -883,6 +903,18 @@ impl Connection {
             }),
         }
         Ok(())
+    }
+
+    /// The headset panel's action, for the core; one that does not decode
+    /// is dropped, not the link.
+    fn panel_action(&self, data: &[u8]) {
+        match panel::Action::decode(data) {
+            Ok(action) => self.hub.send(LinkEvent::Panel {
+                conn: self.id,
+                action: core_action(action),
+            }),
+            Err(e) => eprintln!("functor-app: a headset panel action we cannot read: {e}"),
+        }
     }
 
     fn unpend(&mut self) {
@@ -919,6 +951,47 @@ impl Connection {
                 lost: end.err().map(|e| e.to_string()),
             });
         }
+    }
+}
+
+fn wire_panel(p: &CorePanel) -> panel::Panel {
+    panel::Panel {
+        project: p.project.clone(),
+        placed: p.placed,
+        now: p.now,
+        tasks: p
+            .tasks
+            .iter()
+            .map(|t| panel::Task {
+                id: t.id,
+                title: t.title.clone(),
+                stance: match t.stance {
+                    Stance::Thinking => panel::Stance::Thinking,
+                    Stance::Working => panel::Stance::Working,
+                    Stance::Waiting => panel::Stance::Waiting,
+                    Stance::Done => panel::Stance::Done,
+                    Stance::Failed => panel::Stance::Failed,
+                },
+                activity: t.activity.clone(),
+                decision: t.decision.as_ref().map(|d| panel::Decision {
+                    tree: d.tree.clone(),
+                    size: d.size.clone(),
+                    glance: d.glance,
+                    reason: d.reason.clone(),
+                    summary: d.summary.clone(),
+                    notes: d.notes.clone(),
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn core_action(action: panel::Action) -> PanelAction {
+    match action {
+        panel::Action::Select { task } => PanelAction::Select { task },
+        panel::Action::Keep { task } => PanelAction::Keep { task },
+        panel::Action::Revert { task, tree } => PanelAction::Revert { task, tree },
+        panel::Action::Stop { task } => PanelAction::Stop { task },
     }
 }
 

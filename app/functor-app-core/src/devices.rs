@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::panel::{Panel, PanelAction};
+
 /// A paired device whose link failed this long ago is away, not failing.
 pub const RECENT_MS: u64 = 120_000;
 /// Requests and unpaired cards shown at most (the shell caps them lower).
@@ -285,6 +287,11 @@ pub enum LinkEvent {
         serial: String,
         result: Result<Paired, String>,
     },
+    /// Linked connection `conn`'s headset panel asks for `action`.
+    Panel {
+        conn: u64,
+        action: PanelAction,
+    },
 }
 
 /// To the shell's device link.
@@ -311,6 +318,10 @@ pub enum LinkCommand {
         serial: String,
         replace: bool,
     },
+    /// Send the headset panel on connection `conn` its content.
+    Panel { conn: u64, panel: Box<Panel> },
+    /// Tell the panel on `conn` its last action was refused.
+    PanelRefused { conn: u64, reason: String },
 }
 
 impl Devices {
@@ -649,6 +660,8 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 devices.paired(device, &mut commands);
             }
         }
+        // The core turns these into client messages before they get here.
+        LinkEvent::Panel { .. } => {}
     }
     refresh(devices);
     (*devices != before, commands)

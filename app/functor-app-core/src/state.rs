@@ -19,6 +19,7 @@ use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent
 use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
+use crate::panel::{client_msg, refresh_panels, Panel};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
@@ -140,6 +141,10 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub headset_waits: Option<u64>,
+    /// Per connected headset, the connection and panel it was last sent.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub panels: BTreeMap<String, (u64, Panel)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +204,7 @@ impl AppState {
             contexts: BTreeMap::new(),
             devices: Devices::default(),
             headset_waits: None,
+            panels: BTreeMap::new(),
         }
     }
 
@@ -485,6 +491,19 @@ pub struct RunSpec {
 
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let mut commands = Vec::new();
+    // A headset panel's action is the client message for the same choice.
+    let (event, panel) = match event {
+        Event::Link(LinkEvent::Panel { conn, action }) => match client_msg(&state, conn, action) {
+            Ok(msg) => (Event::Client(msg), Some(conn)),
+            Err(refused) => {
+                commands.extend(refused.map(|reason| {
+                    Command::Link(LinkCommand::PanelRefused { conn, reason })
+                }));
+                return (state, commands);
+            }
+        },
+        event => (event, None),
+    };
     let get_state = event == Event::Client(ClientMsg::GetState);
     let shown = transport_shown(&state);
     // A handler may move only the highlight (a step click on a shown tab).
@@ -896,6 +915,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     state.activity = activity;
     state.decisions = decided;
     refresh_contexts(&mut state, &mut commands);
+    refresh_panels(&mut state, &mut commands);
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
     let msg = || ServerMsg::State {
@@ -912,6 +932,20 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         commands.push(Command::Reply(msg()));
     }
     send_transport(&state, shown, get_state, &mut commands);
+    // The headset has no reply: a refusal goes to its panel.
+    if let Some(conn) = panel {
+        commands.retain_mut(|c| match c {
+            Command::Reply(ServerMsg::Rejected { reason }) => {
+                *c = Command::Link(LinkCommand::PanelRefused {
+                    conn,
+                    reason: std::mem::take(reason),
+                });
+                true
+            }
+            Command::Reply(_) => false,
+            _ => true,
+        });
+    }
     (state, commands)
 }
 
@@ -1101,6 +1135,7 @@ fn opened(
         contexts: _,
         devices: _,
         headset_waits: _,
+        panels: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -5888,5 +5923,134 @@ mod tests {
             &s.session.as_ref().unwrap().status,
             SessionStatus::Failed { reason } if reason.contains("no longer paired")
         ));
+    }
+
+    // The headset panel.
+
+    fn panels(commands: &[Command]) -> Vec<&crate::panel::Panel> {
+        commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Link(LinkCommand::Panel { panel, .. }) => Some(&**panel),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn from_panel(conn: u64, action: crate::panel::PanelAction) -> Event {
+        Event::Link(LinkEvent::Panel { conn, action })
+    }
+
+    #[test]
+    fn a_linked_headset_is_sent_its_panel_on_link_and_on_change_only() {
+        use crate::activity::Stance;
+        use crate::devices::LinkKind;
+        let s = reviewed(one_file(2));
+        let connected = |conn| {
+            Event::Link(LinkEvent::Connected {
+                conn,
+                device: "aa".into(),
+                name: "Quest aa".into(),
+                app_version: "0.0.0".into(),
+                link: LinkKind::Wifi,
+            })
+        };
+        let s = with_headsets(s, &["aa"], &[]);
+        assert!(s.panels.is_empty(), "not linked: nothing sent");
+        let (s, commands) = update(s, connected(3));
+        let sent = panels(&commands);
+        assert_eq!(sent.len(), 1);
+        let panel = sent[0];
+        assert_eq!(panel.project.as_deref(), Some("examples/a"));
+        assert!(!panel.placed);
+        assert_eq!(panel.now, Some(1));
+        let t = &panel.tasks[0];
+        assert_eq!(
+            (t.title.as_str(), t.stance),
+            ("Make it spin", Stance::Waiting)
+        );
+        let d = t.decision.as_ref().unwrap();
+        assert_eq!(d.tree, "now-2");
+        assert_eq!(d.size, "+2 -1, 1 file, game logic");
+        assert!(!d.glance && !d.reason.is_empty());
+
+        // Nothing changed: nothing sent.
+        let (s, commands) = update(s, Event::Link(LinkEvent::Tick));
+        assert!(panels(&commands).is_empty());
+        // Kept on the desktop: the panel follows.
+        let (s, commands) = update(s, keep(1));
+        let t = &panels(&commands)[0].tasks[0];
+        assert_eq!((t.stance, t.decision.is_none()), (Stance::Done, true));
+        // Gone and back: sent again.
+        let gone = Event::Link(LinkEvent::Disconnected {
+            conn: 3,
+            lost: None,
+        });
+        let (s, _) = update(s, gone);
+        assert!(s.panels.is_empty());
+        let (s, commands) = update(s, connected(4));
+        assert_eq!(panels(&commands).len(), 1);
+        // Back on a new link before the old one drops: sent again.
+        let (s, commands) = update(s, connected(5));
+        assert_eq!(panels(&commands).len(), 1);
+        let late = Event::Link(LinkEvent::Disconnected {
+            conn: 4,
+            lost: None,
+        });
+        let (_, commands) = update(s, late);
+        assert!(panels(&commands).is_empty());
+    }
+
+    #[test]
+    fn panel_actions_are_the_client_messages_from_a_linked_headset_only() {
+        use crate::panel::PanelAction;
+        let s = with_headsets(reviewed(one_file(2)), &["aa"], &["aa"]);
+        let refused = |conn: u64, reason: &str| {
+            Command::Link(LinkCommand::PanelRefused {
+                conn,
+                reason: reason.into(),
+            })
+        };
+
+        // Keep is the desktop's Keep, with no reply to a client.
+        let (kept, commands) = update(s.clone(), from_panel(0, PanelAction::Keep { task: 1 }));
+        let (desktop, _) = update(s.clone(), keep(1));
+        assert_eq!(task(&kept, 1).status, task(&desktop, 1).status);
+        assert_eq!(task(&kept, 1).status, TaskStatus::Kept);
+        assert!(!commands.iter().any(|c| matches!(c, Command::Reply(_))));
+
+        // A revert names the change the user saw.
+        let stale = PanelAction::Revert {
+            task: 1,
+            tree: "now-1".into(),
+        };
+        let (_, commands) = update(s.clone(), from_panel(0, stale));
+        assert!(commands.contains(&refused(
+            0,
+            "task 1's change has changed since you saw it: review it again"
+        )));
+        let seen = PanelAction::Revert {
+            task: 1,
+            tree: "now-2".into(),
+        };
+        let (reverting, _) = update(s.clone(), from_panel(0, seen));
+        assert!(task(&reverting, 1).reverting);
+
+        // Select is the chat's current task; Stop a run's stop.
+        let (selected, _) = update(s.clone(), from_panel(0, PanelAction::Select { task: 1 }));
+        assert_eq!(selected.current_task["examples/a"], Some(1));
+        let (_, commands) = update(s.clone(), from_panel(0, PanelAction::Stop { task: 1 }));
+        assert!(commands.contains(&refused(0, "task 1 is not running")));
+
+        // Not a linked headset's connection: dropped, nothing changes.
+        let (after, commands) = update(s.clone(), from_panel(7, PanelAction::Keep { task: 1 }));
+        assert!(commands.is_empty());
+        assert_eq!(after, s);
+        // A task outside the open project is not the panel's.
+        let mut other = s.clone();
+        other.tasks[0].project = "examples/b".into();
+        let (after, commands) = update(other.clone(), from_panel(0, PanelAction::Keep { task: 1 }));
+        assert_eq!(commands, vec![refused(0, "there is no task 1 here")]);
+        assert_eq!(after, other);
     }
 }

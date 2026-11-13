@@ -28,8 +28,8 @@
 //! message fails to decrypt and ends the connection.
 //!
 //! Other traffic rides [`wire::Frame::Channel`] on a numbered channel; a side
-//! drops channels it does not know. Channels 1 and 2 carry voice feedback:
-//! see [`voice`].
+//! drops channels it does not know. Channels 1 and 2 carry voice feedback
+//! (see [`voice`]); 3 and 4 the headset panel (see [`panel`]).
 
 pub mod adb;
 #[cfg(feature = "client")]
@@ -38,6 +38,7 @@ pub mod desktop;
 pub mod device;
 #[cfg(feature = "file")]
 pub mod file;
+pub mod panel;
 pub mod talk;
 pub mod voice;
 pub mod wire;
