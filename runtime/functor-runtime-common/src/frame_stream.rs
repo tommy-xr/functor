@@ -195,6 +195,12 @@ impl FrameTap {
         self.requested.swap(false, Ordering::AcqRel)
     }
 
+    /// Render side: whether a client is waiting for a frame, leaving the
+    /// request in place.
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
     /// Render side: replace the slot's frame and wake waiting clients.
     pub fn publish(&self, frame: StreamFrame) {
         let mut latest = self.latest.lock().unwrap();

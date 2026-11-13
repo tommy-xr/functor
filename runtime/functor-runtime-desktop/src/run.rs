@@ -1031,12 +1031,16 @@ unsafe fn capture_framebuffer(gl: &glow::Context, width: u32, height: u32, path:
 /// means the gauge can read high for an instant but never reads 0 while
 /// something already received is still undelivered — which is the only
 /// direction a driver waiting for quiescence can safely trust.
+///
+/// Whether any arrived.
 fn deliver_net_ws(
     sim: &mut SimDriver,
     net_rx: &std::sync::mpsc::Receiver<net_dispatch::NetResult>,
     ws_rx: &std::sync::mpsc::Receiver<ws_host::HostNetEvent>,
-) {
+) -> bool {
+    let mut delivered = false;
     while let Ok(result) = net_rx.try_recv() {
+        delivered = true;
         functor_runtime_common::net::note_inbound_delivered();
         functor_runtime_common::net::note_http_delivered(matches!(
             result,
@@ -1054,6 +1058,7 @@ fn deliver_net_ws(
         }
     }
     while let Ok(event) = ws_rx.try_recv() {
+        delivered = true;
         functor_runtime_common::net::note_inbound_delivered();
         match event {
             ws_host::HostNetEvent::Connected { key, id } => {
@@ -1070,6 +1075,74 @@ fn deliver_net_ws(
             }
         }
     }
+    delivered
+}
+
+/// Report the `playThen` sounds that finished since the last call. Whether
+/// any did.
+fn deliver_audio_finished(sim: &mut SimDriver, audio_rx: &std::sync::mpsc::Receiver<u64>) -> bool {
+    let mut delivered = false;
+    while let Ok(token) = audio_rx.try_recv() {
+        delivered = true;
+        sim.post(move |g| g.audio_push_finished(token as i32));
+    }
+    delivered
+}
+
+/// Evict each loaded asset whose file changed on disk, so the next draw
+/// re-reads it. Whether any did.
+fn evict_changed_assets(
+    watcher: &mut asset_watch::AssetWatcher,
+    asset_cache: &AssetCache,
+    scene_context: &SceneContext,
+    audio_player: Option<&mut audio::AudioPlayer>,
+) -> bool {
+    let changed = watcher.changed(asset_cache.loaded_paths());
+    for path in &changed {
+        log::info!("asset '{}' changed on disk; reloading", path);
+        asset_cache.evict(path);
+        scene_context.evict_asset(path);
+    }
+    if let Some(player) = audio_player {
+        for path in &changed {
+            player.evict_asset(path);
+        }
+    }
+    !changed.is_empty()
+}
+
+/// What can change a paused game's picture without a request or a delivery:
+/// a landed reload, a branch, a fold. `None` while a reload is in flight.
+fn paused_revision(sim: &mut SimDriver) -> Option<(u64, u64, u64)> {
+    sim.call(|g| {
+        (!g.load_pending()).then(|| {
+            (
+                g.scene_program_revision(),
+                g.scene_timeline_generation(),
+                g.model_revision(),
+            )
+        })
+    })
+}
+
+/// Whether answering `req` leaves the picture as it is: a paused hidden
+/// session may sleep after it. Anything not listed may change it.
+fn leaves_picture(req: &debug_server::DebugRequest) -> bool {
+    use debug_server::DebugRequest::*;
+    matches!(
+        req,
+        Capture(_)
+            | Stream(_)
+            | State(..)
+            | Scene(_)
+            | Trace(_)
+            | Frames(..)
+            | Spikes(_)
+            | InputLog(..)
+            | Project(_)
+            | ProjectFileRequests(_)
+            | NetOutbound(_)
+    )
 }
 
 /// Count a snapshot's controller pulses: desktop has no actuator, so each is
@@ -2396,6 +2469,9 @@ Escape releases while captured"
         // Built on the first reload's frame.
         let mut reload_painter: Option<ReloadIndicatorPainter> = None;
         let mut fused_room_mirror = functor_runtime_common::sim_driver::FusedRoomMirror::default();
+        // The request that woke a quiet session (see `quiet`), answered on
+        // this frame or, if something changed its picture first, the next.
+        let mut woken: Option<debug_server::DebugRequest> = None;
 
         while !window.should_close() {
             // `/frames`' `frame_us`: this iteration through its swap, so the
@@ -2457,7 +2533,7 @@ Escape releases while captured"
             // The loading snapshot for `Sub.assets`: pushed every frame, the
             // producer only acts when it changed since the game last saw it.
             let progress = asset_cache.progress();
-            let pushed_progress = sim.is_threaded().then(|| progress.clone());
+            let pushed_progress = progress.clone();
             sim.post(move |g| g.push_asset_progress(progress));
             // Whether this frame carries render-derived feedback to the sim.
             let mut feedback = false;
@@ -2536,14 +2612,12 @@ then restart the runner"
                     escape_armed = false;
                     eprintln!("[runner] captured mouse hooks were removed — cursor released");
                 }
-                for path in asset_watcher.changed(asset_cache.loaded_paths()) {
-                    log::info!("asset '{}' changed on disk; reloading", path);
-                    asset_cache.evict(&path);
-                    scene_context.evict_asset(&path);
-                    if let Some(player) = &mut audio_player {
-                        player.evict_asset(&path);
-                    }
-                }
+                evict_changed_assets(
+                    &mut asset_watcher,
+                    &asset_cache,
+                    &scene_context,
+                    audio_player.as_mut(),
+                );
             }
 
             glfw.poll_events();
@@ -3167,9 +3241,7 @@ Escape again to quit"
             // Deliver any `playThen` completions that finished since last frame,
             // before tick so this frame's executor drain delivers their messages.
             // (Windowed-only: the headless loop has no audio device.)
-            while let Ok(token) = audio_rx.try_recv() {
-                sim.post(move |g| g.audio_push_finished(token as i32));
-            }
+            deliver_audio_finished(&mut sim, &audio_rx);
 
             // Run this render frame's fixed model steps (0..N). Scripted input
             // (docs/time-travel.md T6b) is fed per fixed frame through the SAME
@@ -4113,150 +4185,267 @@ Escape again to quit"
                 }
             }
 
+            let assets_busy = || {
+                functor_runtime_common::sim_driver::assets_busy(&pushed_progress, &asset_cache.progress())
+            };
+            // A paused hidden session whose picture nothing is changing: its
+            // frame waits below instead of being redrawn at 60 Hz.
+            let quiet = hidden_pacer.is_some()
+                && clock.is_paused()
+                && sub_frames.is_empty()
+                && clock.pending_steps() == 0
+                && clock.pending_frames() == 0
+                && !feedback
+                && !loads_pending
+                // The extrapolation's fade, the reload mark's spin, the
+                // webview worker's repaints and a room fusing run on their own.
+                && (preview_presence_override.is_some()
+                    || preview_presence == if preview_selects { 1.0 } else { 0.0 })
+                && reload.look(Instant::now()).is_none()
+                && snapshot.webview_html.is_none()
+                && !snapshot.wants_fused_room
+                && !scrubber_visible
+                && xreal_tracker.is_none()
+                && !assets_busy();
+
             // Service any pending debug-server requests now that the frame is
             // fully rendered into the back buffer (same point --capture-frame
             // reads from). GL stays on this thread; we only reply over channels.
             let mut debug_active = false;
-            if let Some(rx) = &debug_requests {
-                while let Ok(req) = rx.try_recv() {
-                    debug_active = true;
-                    // `POST /camera`: shell state, like the timeline's Debug
-                    // camera, but it never captures the cursor. Requests after
-                    // it wait for the next frame, so a `/capture` that follows
-                    // reads the new view.
-                    let req = match req {
-                        debug_server::DebugRequest::Camera(command, resp) => {
-                            let _ = resp.send(apply_camera_command(
-                                &mut detached_camera,
-                                &frame,
-                                command,
-                            ));
-                            if !detached_camera.is_detached() {
-                                last_detached_cursor = None;
-                                if cursor_captured {
-                                    window.set_cursor_mode(glfw::CursorMode::Normal);
-                                    cursor_captured = false;
+            let mut picture_request = false;
+            // Whether `/stream` has this frame.
+            let mut streamed = false;
+            // When this frame began waiting below.
+            let mut waited_from: Option<Instant> = None;
+            // The sources no request signals are polled at least this often,
+            // however many requests arrive.
+            const IDLE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+            let mut next_poll = Instant::now() + IDLE_POLL;
+            loop {
+                if let Some(rx) = &debug_requests {
+                    while let Some(req) = woken.take().or_else(|| rx.try_recv().ok()) {
+                        debug_active = true;
+                        picture_request |= !leaves_picture(&req);
+                        // `POST /camera`: shell state, like the timeline's Debug
+                        // camera, but it never captures the cursor. Requests after
+                        // it wait for the next frame, so a `/capture` that follows
+                        // reads the new view.
+                        let req = match req {
+                            debug_server::DebugRequest::Camera(command, resp) => {
+                                let _ = resp.send(apply_camera_command(
+                                    &mut detached_camera,
+                                    &frame,
+                                    command,
+                                ));
+                                if !detached_camera.is_detached() {
+                                    last_detached_cursor = None;
+                                    if cursor_captured {
+                                        window.set_cursor_mode(glfw::CursorMode::Normal);
+                                        cursor_captured = false;
+                                    }
                                 }
+                                break;
                             }
-                            break;
-                        }
-                        // `POST /preview`: the timeline's Extrapolate switch.
-                        // Like `/camera`, later requests wait for the next frame.
-                        debug_server::DebugRequest::Preview(command, resp) => {
-                            preview_by_debug = true;
-                            extrapolate_on = command.extrapolate;
-                            let on = if extrapolate_on { "on" } else { "off" };
-                            let _ = resp.send(Ok(format!("extrapolate {on}")));
-                            break;
-                        }
-                        debug_server::DebugRequest::Stream(resp) => {
-                            let tap = stream_tap.get_or_insert_with(Default::default);
-                            let _ = resp.send(Ok(tap.share()));
-                            continue;
-                        }
-                        req => req,
-                    };
-                    let fixed_sample = clock.is_fixed_time() && input_script.is_none();
-                    let state_input = if fixed_sample {
-                        fixed_input_snapshot.clone()
-                    } else {
-                        desktop_input_snapshot(
-                            &held_keys,
-                            game_mouse_pos,
-                            held_buttons,
-                            &input_edges,
-                            xr_head_y,
-                            xr_primary_down || xr_primary_clicked,
-                            window.get_size(),
-                            xr_override.as_ref(),
-                            gamepad_override.as_ref(),
-                            polled_gamepad.as_ref(),
-                            touch_levels.as_ref(),
-                        )
-                    };
-                    let sampled_input_changed = service_debug_request(
-                        req,
-                        &mut sim,
-                        &frame,
-                        &mut frame_count,
-                        rendered_frames,
-                        time.tts,
-                        fb_width as u32,
-                        fb_height as u32,
-                        &mut held_keys,
-                        &mut game_mouse_pos,
-                        &mut held_buttons,
-                        &mut input_edges,
-                        &mut xr_override,
-                        &mut gamepad_override,
-                        &mut touch_levels,
-                        state_input,
-                        args.emulate_xr,
-                        &mut clock,
-                        &asset_cache,
-                        &scene_context,
-                        audio_player.as_mut(),
-                        // The webview focus gate: injected keys type into a
-                        // focused webview field (queued for the next frame's
-                        // overlay pass) instead of reaching the game.
-                        if webview_wants_keyboard {
-                            Some(&mut webview_keys)
+                            // `POST /preview`: the timeline's Extrapolate switch.
+                            // Like `/camera`, later requests wait for the next frame.
+                            debug_server::DebugRequest::Preview(command, resp) => {
+                                preview_by_debug = true;
+                                extrapolate_on = command.extrapolate;
+                                let on = if extrapolate_on { "on" } else { "off" };
+                                let _ = resp.send(Ok(format!("extrapolate {on}")));
+                                break;
+                            }
+                            debug_server::DebugRequest::Stream(resp) => {
+                                // A new client gets this frame, even from a
+                                // tap that has it (it would skip it as stale).
+                                streamed = false;
+                                let tap = stream_tap.get_or_insert_with(Default::default);
+                                let _ = resp.send(Ok(tap.share()));
+                                continue;
+                            }
+                            req => req,
+                        };
+                        let fixed_sample = clock.is_fixed_time() && input_script.is_none();
+                        let state_input = if fixed_sample {
+                            fixed_input_snapshot.clone()
                         } else {
-                            None
-                        },
-                        args.net_transport,
-                        &sim_thread,
-                        stage_timings,
-                        &telemetry,
-                        &mut reload,
-                        // GL readback on the render thread (a real Failed on error).
-                        &|| {
-                            functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
-                                &gl,
-                                fb_width as u32,
-                                fb_height as u32,
+                            desktop_input_snapshot(
+                                &held_keys,
+                                game_mouse_pos,
+                                held_buttons,
+                                &input_edges,
+                                xr_head_y,
+                                xr_primary_down || xr_primary_clicked,
+                                window.get_size(),
+                                xr_override.as_ref(),
+                                gamepad_override.as_ref(),
+                                polled_gamepad.as_ref(),
+                                touch_levels.as_ref(),
                             )
-                                .map_err(debug_server::CaptureError::Failed)
-                        },
-                    );
-                    if fixed_sample && sampled_input_changed {
-                        fixed_input_snapshot = desktop_input_snapshot(
-                            &held_keys,
-                            game_mouse_pos,
-                            held_buttons,
-                            &input_edges,
-                            xr_head_y,
-                            xr_primary_down || xr_primary_clicked,
-                            window.get_size(),
-                            xr_override.as_ref(),
-                            gamepad_override.as_ref(),
-                            polled_gamepad.as_ref(),
-                            touch_levels.as_ref(),
+                        };
+                        let sampled_input_changed = service_debug_request(
+                            req,
+                            &mut sim,
+                            &frame,
+                            &mut frame_count,
+                            rendered_frames,
+                            time.tts,
+                            fb_width as u32,
+                            fb_height as u32,
+                            &mut held_keys,
+                            &mut game_mouse_pos,
+                            &mut held_buttons,
+                            &mut input_edges,
+                            &mut xr_override,
+                            &mut gamepad_override,
+                            &mut touch_levels,
+                            state_input,
+                            args.emulate_xr,
+                            &mut clock,
+                            &asset_cache,
+                            &scene_context,
+                            audio_player.as_mut(),
+                            // The webview focus gate: injected keys type into a
+                            // focused webview field (queued for the next frame's
+                            // overlay pass) instead of reaching the game.
+                            if webview_wants_keyboard {
+                                Some(&mut webview_keys)
+                            } else {
+                                None
+                            },
+                            args.net_transport,
+                            &sim_thread,
+                            stage_timings,
+                            &telemetry,
+                            &mut reload,
+                            // GL readback on the render thread (a real Failed on error).
+                            &|| {
+                                functor_runtime_common::frame_capture::encode_bound_framebuffer_png(
+                                    &gl,
+                                    fb_width as u32,
+                                    fb_height as u32,
+                                )
+                                    .map_err(debug_server::CaptureError::Failed)
+                            },
                         );
+                        if fixed_sample && sampled_input_changed {
+                            fixed_input_snapshot = desktop_input_snapshot(
+                                &held_keys,
+                                game_mouse_pos,
+                                held_buttons,
+                                &input_edges,
+                                xr_head_y,
+                                xr_primary_down || xr_primary_clicked,
+                                window.get_size(),
+                                xr_override.as_ref(),
+                                gamepad_override.as_ref(),
+                                polled_gamepad.as_ref(),
+                                touch_levels.as_ref(),
+                            );
+                        }
                     }
                 }
-            }
-            // `GET /stream`: read back only a frame a client asked for (same
-            // point as `/capture`); its connection thread encodes it.
-            if let Some(tap) = stream_tap.as_ref().filter(|tap| tap.take_request()) {
-                match functor_runtime_common::frame_capture::read_bound_framebuffer_rgba(
-                    &gl,
-                    fb_width as u32,
-                    fb_height as u32,
-                ) {
-                    Ok(rgba) => tap.publish(StreamFrame {
-                        width: fb_width as u32,
-                        height: fb_height as u32,
-                        rgba,
-                        rendered_frame: rendered_frames,
-                        captured_ms: functor_runtime_common::frame_stream::unix_ms(),
-                    }),
-                    Err(error) => eprintln!("[debug-server] stream readback failed: {error}"),
+                // `GET /stream`: read back only a frame a client asked for (same
+                // point as `/capture`), once; its connection thread encodes it.
+                if let Some(tap) = stream_tap.as_ref().filter(|tap| !streamed && tap.take_request()) {
+                    match functor_runtime_common::frame_capture::read_bound_framebuffer_rgba(
+                        &gl,
+                        fb_width as u32,
+                        fb_height as u32,
+                    ) {
+                        Ok(rgba) => {
+                            tap.publish(StreamFrame {
+                                width: fb_width as u32,
+                                height: fb_height as u32,
+                                rgba,
+                                rendered_frame: rendered_frames,
+                                captured_ms: functor_runtime_common::frame_stream::unix_ms(),
+                            });
+                            streamed = true;
+                        }
+                        Err(error) => eprintln!("[debug-server] stream readback failed: {error}"),
+                    }
+                }
+                // The last client left: drop the tap and its held frame.
+                if stream_tap.as_ref().is_some_and(FrameTapOwner::unshared) {
+                    stream_tap = None;
+                }
+                // A quiet session's frame stays here, unswapped, and answers
+                // what arrives (reads, captures, stream clients) until
+                // something can change its picture: a request that may ends
+                // the wait at once, and the other sources are polled every
+                // `IDLE_POLL` (and before answering a request), so a saved
+                // edit still reloads within ~50 ms.
+                if !quiet || picture_request || snapshot.seq != sim.posted() {
+                    break;
+                }
+                let Some(revision) = paused_revision(&mut sim) else {
+                    break;
+                };
+                waited_from.get_or_insert_with(Instant::now);
+                // Whether what ended the wait is answered on this frame.
+                let answer = loop {
+                    let wait = next_poll.saturating_duration_since(Instant::now());
+                    if !wait.is_zero() {
+                        let requested = match &debug_requests {
+                            Some(rx) => match rx.recv_timeout(wait) {
+                                Ok(req) => {
+                                    woken = Some(req);
+                                    true
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                    std::thread::sleep(wait);
+                                    false
+                                }
+                            },
+                            None => {
+                                std::thread::sleep(wait);
+                                false
+                            }
+                        };
+                        if !requested {
+                            continue;
+                        }
+                    }
+                    next_poll = Instant::now() + IDLE_POLL;
+                    sim.post(move |g| g.check_hot_reload(time));
+                    // Window events and asset files every 250 ms: AppKit's
+                    // event poll is most of an idle poll's cost.
+                    let assets_changed = last_asset_poll.elapsed().as_millis() >= 250 && {
+                        last_asset_poll = Instant::now();
+                        glfw.poll_events();
+                        evict_changed_assets(
+                            &mut asset_watcher,
+                            &asset_cache,
+                            &scene_context,
+                            audio_player.as_mut(),
+                        )
+                    };
+                    // A changed picture renders first; a request that woke
+                    // the wait is then answered on the next frame.
+                    if assets_changed
+                        || window.should_close()
+                        || deliver_net_ws(&mut sim, &net_rx, &ws_rx)
+                        || deliver_audio_finished(&mut sim, &audio_rx)
+                        || paused_revision(&mut sim) != Some(revision)
+                    {
+                        break false;
+                    }
+                    if woken.is_some()
+                        || (!streamed && stream_tap.as_ref().is_some_and(|tap| tap.is_requested()))
+                    {
+                        break true;
+                    }
+                };
+                if !answer {
+                    break;
                 }
             }
-            // The last client left: drop the tap and its held frame.
-            if stream_tap.as_ref().is_some_and(FrameTapOwner::unshared) {
-                stream_tap = None;
+            // The wait, and the polls made during it, are not this frame's cost.
+            let slept = waited_from.map_or(std::time::Duration::ZERO, |from| from.elapsed());
+            if waited_from.is_some() {
+                sim.forget_busy();
             }
             reload.poll(Instant::now(), rendered_frames);
 
@@ -4267,7 +4456,7 @@ Escape again to quit"
             let swap_ns = swap_started.elapsed().as_nanos() as u64;
             rendered_frames += 1;
             record.present_us = us(swap_ns);
-            record.frame_us = us(iteration_started.elapsed().as_nanos() as u64);
+            record.frame_us = us((iteration_started.elapsed() - slept).as_nanos() as u64);
             record.frame = frame_count;
             record.rendered_frame = rendered_frames;
             telemetry.record_gpu(&mut record);
@@ -4279,9 +4468,9 @@ Escape again to quit"
             // folds it into the same rolling window it averages tick/draw over.
             sim.post(move |g| g.record_gl_timing(render_ns, swap_ns));
 
-            if let Some(pushed) = pushed_progress {
+            if sim.is_threaded() {
                 lockstep = feedback
-                    || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())
+                    || assets_busy()
                     || loads_pending
                     // Fused inline, a room fused while rendering frame N
                     // reaches physics at N+1's step, as inline.
@@ -4297,7 +4486,9 @@ Escape again to quit"
                     || scrubber_visible
                     || preview_by_debug
                     || args.trajectory
-                    || args.strobe;
+                    || args.strobe
+                    // So the frame shown before sleeping is the newest.
+                    || quiet;
             }
 
             // Hidden and `--fixed-time` runs skip vsync above, and a hidden
@@ -4308,8 +4499,13 @@ Escape again to quit"
             // does). `--capture-frame` runs are exempt: they exit at the
             // capture, and `--capture-at-frame N` counts sim frames, so the
             // cap would stretch a near-instant scripted capture to N/60 s.
+            // The wait is not real time the next frame catches up on.
+            last_time += slept.as_secs_f32();
             if let Some(pacer) = &mut hidden_pacer {
-                std::thread::sleep(pacer.delay(Instant::now()));
+                // A frame that waited above goes on at once.
+                if slept.is_zero() {
+                    std::thread::sleep(pacer.delay(Instant::now()));
+                }
             } else if (hidden || args.fixed_time.is_some()) && args.capture_frame.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(16));
             }
