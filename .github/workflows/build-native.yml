@@ -95,6 +95,14 @@ jobs:
         env:
           FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
 
+      # Agent-run metrics (plan 1.19): every scenario through `functor-app
+      # task` under FakeAgent, its recorded numbers and outcome checks asserted.
+      - name: Test agent-run metrics
+        if: runner.os != 'Windows'
+        run: npm run test:metrics-app
+        env:
+          FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor
+
       # The app's real window (macOS only): opens it, waits until its page has
       # connected, closes it. The page needs the UI bundle, hence npm.
       - name: Window smoke

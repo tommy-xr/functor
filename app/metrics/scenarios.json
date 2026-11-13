@@ -1,0 +1,54 @@
+[
+  {
+    "id": "state-question",
+    "about": "A question about the running game's state; no edit.",
+    "project": "counter",
+    "setup": [{ "file": "game.fun", "old": "let init = { count: 0.0 }", "new": "let init = { count: 7.0 }" }],
+    "prompt": "What is the count in the running game right now? Answer with just the number.",
+    "checks": [{ "unchanged": true }, { "answer": "\\b7(\\.0)?\\b" }]
+  },
+  {
+    "id": "no-tools",
+    "about": "Answerable without tools: the fixed cost of a run.",
+    "project": "counter",
+    "prompt": "Without using any tools, reply with only the word: ready",
+    "checks": [{ "unchanged": true }, { "max_tools": 0 }, { "answer": "^\\W*ready\\W*$" }]
+  },
+  {
+    "id": "weak-jump",
+    "about": "A one-line edit with an obvious check.",
+    "project": "platformer",
+    "setup": [{ "file": "game.fun", "old": "let jumpVelocity = 13.0", "new": "let jumpVelocity = 10.0" }],
+    "prompt": "The hero's jump is too weak to clear the chasm. Raise jumpVelocity so the jump clears it.",
+    "checks": [
+      { "changed": "game.fun" },
+      { "expect": ["Game.runSpeed * (2.0 * Game.jumpVelocity / Game.gravity) > 2.0 * Game.chasmHalf"] },
+      { "functor": "build" }
+    ]
+  },
+  {
+    "id": "spawn-in-chasm",
+    "about": "An edit that needs a look at the game.",
+    "project": "platformer",
+    "setup": [{ "file": "game.fun", "old": "let startX = -6.0", "new": "let startX = 0.0" }],
+    "prompt": "Look at the running game: when it starts, the hero drops straight into the chasm. Find out why and fix it.",
+    "checks": [
+      { "changed": "game.fun" },
+      { "expect": ["Game.startX < 0.0 - Game.chasmHalf || Game.startX > Game.chasmHalf"] },
+      { "functor": "build" }
+    ]
+  },
+  {
+    "id": "two-step",
+    "about": "A change in several steps: a message, a button, a test.",
+    "project": "counter",
+    "prompt": "Add a Dec message that subtracts 1 from the count, a \"-1\" button next to the \"+1\" button that sends it, and an expect test for Dec.",
+    "checks": [
+      { "changed": "game.fun" },
+      { "matches": { "file": "game.fun", "pattern": "Ui\\.button\\(\"-1\", *Dec\\)" } },
+      { "matches": { "file": "game.fun", "pattern": "expect[^\\n]*\\bDec\\b" } },
+      { "expect": ["Game.update(Game.init, Game.Dec).count == Game.init.count - 1.0"] },
+      { "functor": "test" }
+    ]
+  }
+]

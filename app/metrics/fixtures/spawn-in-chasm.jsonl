@@ -1,0 +1,21 @@
+{"ms":0,"event":{"type":"started","session":"fake-spawn-in-chasm","model":"claude-model"}}
+{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
+{"ms":0,"event":{"type":"tool_result","content":""}}
+{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
+{"ms":0,"event":{"type":"tool_result","content":""}}
+{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
+{"ms":0,"event":{"type":"tool_result","content":""}}
+{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
+{"ms":0,"event":{"type":"tool_result","content":""}}
+{"ms":0,"event":{"type":"tool_use","name":"ToolSearch","input":{"query":"select:mcp__mis__get_state","max_results":5}}}
+{"ms":0,"event":{"type":"tool_result","content":""}}
+{"ms":10,"mcp":{"tool":"list_sessions","arguments":{}}}
+{"ms":20,"mcp":{"tool":"step","arguments":{"session":"s1","frames":30}}}
+{"ms":30,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}
+{"ms":40,"event":{"type":"tool_result","content":"let startX = 0.0         // character spawn (on the left platform)"}}
+{"ms":50,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun","old_string":"let startX = 0.0","new_string":"let startX = -6.0"}}}
+{"ms":60,"edit":{"path":"game.fun","old":"let startX = 0.0","new":"let startX = -6.0"}}
+{"ms":70,"event":{"type":"tool_result","content":"The file has been updated."}}
+{"ms":80,"event":{"type":"text","text":"The hero spawned at x = 0, the middle of the chasm. It now spawns at x = -6 on the left platform."}}
+{"ms":90,"event":{"type":"usage","input":545776,"output":3437}}
+{"ms":100,"event":{"type":"finished","ok":true,"summary":"Moved the spawn onto the left platform."}}
