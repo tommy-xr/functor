@@ -26,6 +26,19 @@
 //! After the handshake every message is a Noise transport message: AEAD
 //! with an implicit counter, so a tampered, replayed, reordered or dropped
 //! message fails to decrypt and ends the connection.
+//!
+//! Other traffic rides [`wire::Frame::Channel`] on a numbered channel; a side
+//! drops channels it does not know.
+//!
+//! - **Voice** ([`voice`]): channel [`voice::CLIP_CHANNEL`] carries a spoken
+//!   clip headset → desktop (`Start` with an optional JSON [capsule] of what
+//!   the user saw, `Chunk`s of 16 kHz mono PCM16LE up to
+//!   [`voice::MAX_CHUNK`] bytes each, `End` or `Cancel`; at most
+//!   [`voice::MAX_SECONDS`] per utterance); channel [`voice::STATUS_CHANNEL`]
+//!   carries the desktop's progress back (heard → transcribed → working →
+//!   reloaded, or failed). Each message leads with [`voice::VERSION`].
+//!
+//! [capsule]: voice::Capsule
 
 pub mod adb;
 #[cfg(feature = "client")]
@@ -34,6 +47,7 @@ pub mod desktop;
 pub mod device;
 #[cfg(feature = "file")]
 pub mod file;
+pub mod voice;
 pub mod wire;
 
 mod crypto;
