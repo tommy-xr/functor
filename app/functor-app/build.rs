@@ -6,6 +6,16 @@ use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // macOS shows this file's microphone purpose when the composer's mic
+    // first records; a bare binary carries it in its `__info_plist` section.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let plist = Path::new(env!("CARGO_MANIFEST_DIR")).join("Info.plist");
+        println!("cargo:rerun-if-changed={}", plist.display());
+        println!(
+            "cargo:rustc-link-arg-bins=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+            plist.display()
+        );
+    }
     let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
     let dist = ui.join("dist");
     let mut files = Vec::new();

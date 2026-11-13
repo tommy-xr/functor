@@ -2700,6 +2700,12 @@ blockquote {
   border: 0;
 }
 
+/* The mic while it records. */
+.round.recording {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .round-send {
   border: 0;
   background: var(--accent);

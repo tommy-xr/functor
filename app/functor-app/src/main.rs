@@ -279,6 +279,7 @@ async fn app(
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;
+    state.speech = hub.speaks();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
     let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
     driver.link = Some(hub.clone());

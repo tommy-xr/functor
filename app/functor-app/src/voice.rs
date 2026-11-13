@@ -255,6 +255,11 @@ impl Speech {
         Speech::Off
     }
 
+    /// Whether this app can turn speech into text.
+    pub fn available(&self) -> bool {
+        !matches!(self, Speech::Off)
+    }
+
     /// The text spoken in `pcm` (16 kHz mono), off the async threads.
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
         use functor_stt::Transcriber;
