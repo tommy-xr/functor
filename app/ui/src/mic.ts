@@ -9,46 +9,51 @@ const RATE = 16_000;
 /** A recording in progress: `stop()` resolves with its PCM. */
 export interface Recording {
   stop(): Promise<Int16Array>;
-  /** Drops the recording and frees the microphone. */
+  /** Drops the recording. */
   cancel(): void;
 }
 
-/** Starts recording from the default microphone. */
+/** Starts recording from the default microphone; it stops itself at MAX_SECONDS. */
 export async function record(): Promise<Recording> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const recorder = new MediaRecorder(stream);
-  const parts: Blob[] = [];
-  recorder.ondataavailable = (e) => e.data.size && parts.push(e.data);
-  const stopped = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));
+  // The microphone is freed whenever recording stops, however it stops.
   const release = () => stream.getTracks().forEach((t) => t.stop());
-  recorder.start();
-  const limit = setTimeout(() => recorder.state === "recording" && recorder.stop(), MAX_SECONDS * 1000);
+  const parts: Blob[] = [];
+  let recorder: MediaRecorder;
+  let stopped: Promise<void>;
+  try {
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => e.data.size && parts.push(e.data);
+    stopped = new Promise((resolve) => (recorder.onstop = () => (release(), resolve())));
+    recorder.start();
+  } catch (e) {
+    release();
+    throw e;
+  }
+  const end = () => recorder.state === "recording" && recorder.stop();
+  const limit = setTimeout(end, MAX_SECONDS * 1000);
   return {
     async stop() {
       clearTimeout(limit);
-      if (recorder.state === "recording") recorder.stop();
+      end();
       await stopped;
-      release();
       return pcm(await new Blob(parts, { type: recorder.mimeType }).arrayBuffer());
     },
     cancel() {
       clearTimeout(limit);
-      if (recorder.state === "recording") recorder.stop();
+      end();
       release();
     },
   };
 }
 
-/** `encoded` audio decoded, mixed to mono and resampled to 16 kHz 16-bit. */
+/** `encoded` audio decoded at 16 kHz (the context resamples), mixed to mono 16-bit, at most MAX_SECONDS. */
 async function pcm(encoded: ArrayBuffer): Promise<Int16Array> {
-  const context = new AudioContext();
-  const decoded = await context.decodeAudioData(encoded).finally(() => context.close());
-  const frames = Math.max(1, Math.ceil(decoded.duration * RATE));
-  const offline = new OfflineAudioContext(1, frames, RATE);
-  const source = offline.createBufferSource();
-  source.buffer = decoded;
-  source.connect(offline.destination);
-  source.start();
-  const samples = (await offline.startRendering()).getChannelData(0);
-  return Int16Array.from(samples, (s) => Math.round(Math.max(-1, Math.min(1, s)) * 32767));
+  const decoded = await new OfflineAudioContext(1, 1, RATE).decodeAudioData(encoded);
+  const frames = Math.min(decoded.length, MAX_SECONDS * RATE);
+  const channels = Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c));
+  return Int16Array.from({ length: frames }, (_, i) => {
+    const s = channels.reduce((sum, ch) => sum + ch[i], 0) / channels.length;
+    return Math.round(Math.max(-1, Math.min(1, s)) * 32767);
+  });
 }

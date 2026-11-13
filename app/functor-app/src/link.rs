@@ -361,7 +361,8 @@ impl Hub {
         self.0.speech.available()
     }
 
-    /// `pcm`'s text, waiting for any transcription in progress first.
+    /// `pcm`'s text, waiting for any transcription in progress first (the
+    /// composer's user sees "Transcribing…"; a headset is refused instead).
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
         let _turn = self.0.transcribing.acquire().await.map_err(|e| e.to_string())?;
         self.0.speech.transcribe(pcm).await

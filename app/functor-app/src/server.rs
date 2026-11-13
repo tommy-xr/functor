@@ -522,15 +522,19 @@ async fn ws(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // The token, and from a browser our own page (a non-browser client sends
-    // no Origin): see the module docs.
-    let own_origin = headers
-        .get(header::ORIGIN)
-        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
-    if !own_origin || !ctx.token.presented_in(uri.query()) {
+    if !from_our_page(&ctx, &headers, &uri) {
         return StatusCode::FORBIDDEN.into_response();
     }
     upgrade.on_upgrade(move |socket| client(ctx, socket))
+}
+
+/// The token, and from a browser our own page (a non-browser client sends
+/// no Origin): see the module docs.
+fn from_our_page(ctx: &Ctx, headers: &HeaderMap, uri: &Uri) -> bool {
+    let own_origin = headers
+        .get(header::ORIGIN)
+        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
+    own_origin && ctx.token.presented_in(uri.query())
 }
 
 async fn client(ctx: Arc<Ctx>, socket: WebSocket) {
@@ -606,10 +610,7 @@ async fn transcribe(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let own_origin = headers
-        .get(header::ORIGIN)
-        .is_none_or(|origin| ctx.origins.iter().any(|o| origin == o.as_str()));
-    if !own_origin || !ctx.token.presented_in(uri.query()) {
+    if !from_our_page(&ctx, &headers, &uri) {
         return StatusCode::FORBIDDEN.into_response();
     }
     if body.is_empty() || body.len() % 2 == 1 {

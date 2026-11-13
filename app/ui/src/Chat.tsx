@@ -83,38 +83,65 @@ type Line = { id: number; project: string | null; task: number | null; at: numbe
 
 const MIC_LABEL = {
   idle: "Speak a message",
+  starting: "Starting the mic…",
   recording: "Stop and transcribe",
   transcribing: "Transcribing…",
 } as const;
+
+type MicStage = keyof typeof MIC_LABEL;
 
 /**
  * The composer's mic (D15): a click records, the next one transcribes it on
  * this machine and adds the words to the draft, for the user to send.
  */
 function useMic(draft: string, onDraft: (d: string) => void, onNotice: (reason: string) => void) {
-  const [stage, setStage] = useState<keyof typeof MIC_LABEL>("idle");
+  const [stage, setStage] = useState<MicStage>("idle");
+  // The stage as clicks see it: set at once, so a second click cannot start twice.
+  const now = useRef<MicStage>("idle");
+  const go = (s: MicStage) => {
+    now.current = s;
+    setStage(s);
+  };
   const recording = useRef<Recording | null>(null);
+  const mounted = useRef(true);
   // The draft as it is when the words arrive, not when recording began.
   const latest = useRef(draft);
   latest.current = draft;
-  useEffect(() => () => recording.current?.cancel(), []);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      recording.current?.cancel();
+    },
+    [],
+  );
+  const failed = (e: unknown) => onNotice(`The mic did not work: ${e instanceof Error ? e.message : String(e)}`);
   const toggle = async () => {
-    try {
-      if (stage === "idle") {
-        recording.current = await record();
-        setStage("recording");
-        return;
+    if (now.current === "idle") {
+      go("starting");
+      try {
+        const r = await record();
+        // Gone while the microphone was being granted: free it.
+        if (!mounted.current) return r.cancel();
+        recording.current = r;
+        go("recording");
+      } catch (e) {
+        failed(e);
+        go("idle");
       }
-      const r = recording.current;
-      recording.current = null;
-      setStage("transcribing");
-      const text = r ? (await transcribe(await r.stop())).trim() : "";
+      return;
+    }
+    if (now.current !== "recording") return;
+    const r = recording.current!;
+    recording.current = null;
+    go("transcribing");
+    try {
+      const text = (await transcribe(await r.stop())).trim();
       if (!text) onNotice("Heard no words.");
       else onDraft(latest.current.trim() ? `${latest.current.trimEnd()} ${text}` : text);
     } catch (e) {
-      onNotice(`The mic did not work: ${e instanceof Error ? e.message : String(e)}`);
+      failed(e);
     }
-    setStage("idle");
+    if (mounted.current) go("idle");
   };
   return { stage, toggle };
 }
@@ -885,7 +912,7 @@ function Composer({
             aria-label={MIC_LABEL[mic.stage]}
             title={MIC_LABEL[mic.stage]}
             aria-pressed={mic.stage === "recording"}
-            disabled={mic.stage === "transcribing"}
+            disabled={mic.stage === "starting" || mic.stage === "transcribing"}
             onClick={mic.toggle}
           >
             <Icon name="mic" />
