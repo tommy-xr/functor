@@ -2,17 +2,19 @@
 //! progress on it, desktop → headset. Both ride [`Frame::Channel`].
 //!
 //! - [`CLIP_CHANNEL`] carries [`Clip`] messages for one utterance at a
-//!   time: `Start` (format and the [capsule](Capsule)), `Chunk`s of 16 kHz
-//!   mono 16-bit little-endian PCM numbered from 0, then `End` (or
-//!   `Cancel`).
+//!   time: `Start` (with the `Capsule` JSON), `Chunk`s of audio numbered
+//!   from 0, then `End` (or `Cancel`). The audio is 16 kHz mono 16-bit
+//!   little-endian PCM, fixed by [`VERSION`].
 //! - [`STATUS_CHANNEL`] carries [`Status`]: `Heard` → `Transcribed` →
 //!   `Working` → `Reloaded`, or `Failed` at any point; `Idle` clears.
 //!
-//! Every message starts with [`VERSION`]; a peer of another version is
-//! refused with [`Error::Version`]. `decode` refuses anything over the limits
-//! below, so a receiver can trust the sizes. Big-endian, like [`crate::wire`].
+//! Every message starts with [`VERSION`]. `decode` refuses another version
+//! and anything over the per-message limits below; the receiver enforces
+//! [`MAX_CLIP`], `seq` order and one utterance at a time. A message that
+//! does not decode is dropped (and its utterance failed), never the link.
+//! Big-endian, like [`crate::wire`].
 
-use crate::wire::{allowed, clip, Frame, Reader, Writer};
+use crate::wire::{clip, refused, Frame, Reader, Writer};
 use crate::Error;
 
 /// The first byte of every voice message.
@@ -23,28 +25,24 @@ pub const CLIP_CHANNEL: u16 = 1;
 /// Desktop → headset: [`Status`] messages.
 pub const STATUS_CHANNEL: u16 = 2;
 
-/// The one format this version carries: 16 kHz mono 16-bit PCM, what
-/// speech-to-text takes without resampling.
+/// The audio's sample rate: what speech-to-text takes without resampling.
 pub const SAMPLE_RATE: u32 = 16_000;
-pub const CHANNELS: u8 = 1;
 /// Longest utterance.
 pub const MAX_SECONDS: u32 = 60;
-/// Most audio bytes in one utterance: [`MAX_SECONDS`] of the format.
+/// Most audio bytes in one utterance: [`MAX_SECONDS`] of 16-bit mono.
 pub const MAX_CLIP: usize = MAX_SECONDS as usize * SAMPLE_RATE as usize * 2;
 /// Most audio bytes in one `Chunk` (about a second), so each fits one
 /// [`crate::MAX_MESSAGE`] with room to spare.
 pub const MAX_CHUNK: usize = 32 * 1024;
 /// Most bytes of capsule JSON.
 pub const MAX_CAPSULE: usize = 16 * 1024;
+/// Most bytes of `Capsule::pointing_at`; longer is cut, so a capsule
+/// always fits [`MAX_CAPSULE`].
+pub const MAX_POINTING_AT: usize = 256;
 /// Most bytes of a transcript in `Transcribed`; longer is cut.
 pub const MAX_TEXT: usize = 1024;
 /// Most bytes of a reason in `Failed`; longer is cut.
 pub const MAX_REASON: usize = 256;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Format {
-    Pcm16Le,
-}
 
 /// One message of a spoken clip, headset → desktop.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,11 +50,8 @@ pub enum Clip {
     /// A new utterance; `utterance` is the headset's, unique per link.
     Start {
         utterance: u64,
-        sample_rate: u32,
-        channels: u8,
-        format: Format,
-        /// UTF-8 JSON of a [`Capsule`]; may be empty.
-        capsule: Vec<u8>,
+        /// JSON of a `Capsule`; may be empty.
+        capsule: String,
     },
     /// Audio, `seq` counting from 0 with no gaps.
     Chunk {
@@ -85,22 +80,13 @@ impl Clip {
         let mut w = Writer::default();
         w.u8(VERSION);
         match self {
-            Clip::Start {
-                utterance,
-                sample_rate,
-                channels,
-                format: Format::Pcm16Le,
-                capsule,
-            } => {
+            Clip::Start { utterance, capsule } => {
                 if capsule.len() > MAX_CAPSULE {
                     return Err(Error::TooLarge);
                 }
                 w.u8(1);
                 w.u64(*utterance);
-                w.u32(*sample_rate);
-                w.u8(*channels);
-                w.u8(0);
-                w.blob(capsule);
+                w.blob(capsule.as_bytes());
             }
             Clip::Chunk {
                 utterance,
@@ -135,35 +121,21 @@ impl Clip {
         })
     }
 
-    /// Refuses other versions, formats other than [`SAMPLE_RATE`] mono
-    /// `Pcm16Le`, a chunk over [`MAX_CHUNK`], a capsule over [`MAX_CAPSULE`]
-    /// or not UTF-8.
+    /// Refuses other versions, a chunk over [`MAX_CHUNK`], a capsule over
+    /// [`MAX_CAPSULE`] or not UTF-8.
     pub fn decode(bytes: &[u8]) -> Result<Clip, Error> {
         let mut r = Reader::new(bytes);
         version(&mut r)?;
         let clip = match r.u8()? {
-            1 => {
-                let utterance = r.u64()?;
-                let (sample_rate, channels, format) = (r.u32()?, r.u8()?, r.u8()?);
-                if sample_rate != SAMPLE_RATE || channels != CHANNELS || format != 0 {
-                    return Err(Error::Malformed("voice format"));
-                }
-                let capsule = blob(&mut r, MAX_CAPSULE)?;
-                if std::str::from_utf8(&capsule).is_err() {
-                    return Err(Error::Malformed("capsule"));
-                }
-                Clip::Start {
-                    utterance,
-                    sample_rate,
-                    channels,
-                    format: Format::Pcm16Le,
-                    capsule,
-                }
-            }
+            1 => Clip::Start {
+                utterance: r.u64()?,
+                capsule: String::from_utf8(r.blob(MAX_CAPSULE)?)
+                    .map_err(|_| Error::Malformed("capsule"))?,
+            },
             2 => Clip::Chunk {
                 utterance: r.u64()?,
                 seq: r.u32()?,
-                data: blob(&mut r, MAX_CHUNK)?,
+                data: r.blob(MAX_CHUNK)?,
             },
             3 => Clip::End {
                 utterance: r.u64()?,
@@ -270,32 +242,20 @@ impl Status {
     }
 }
 
+/// Another version is `Malformed("voice version")`: this channel's format,
+/// not the link's.
 fn version(r: &mut Reader) -> Result<(), Error> {
     match r.u8()? {
         VERSION => Ok(()),
-        theirs => Err(Error::Version {
-            theirs: theirs.into(),
-            ours: VERSION.into(),
-        }),
+        _ => Err(Error::Malformed("voice version")),
     }
-}
-
-fn blob(r: &mut Reader, max: usize) -> Result<Vec<u8>, Error> {
-    let len = r.u32()? as usize;
-    if len > max {
-        return Err(Error::TooLarge);
-    }
-    Ok(r.take(len)?.to_vec())
 }
 
 /// `text` with refused characters as spaces, cut to `max` bytes.
 fn tidy(text: &str, max: usize) -> String {
     let text: String = text
         .chars()
-        .map(|c| match allowed(c.encode_utf8(&mut [0; 4])) {
-            true => c,
-            false => ' ',
-        })
+        .map(|c| if refused(c) { ' ' } else { c })
         .collect();
     clip(&text, max).to_string()
 }
@@ -335,14 +295,19 @@ pub struct Pose {
 
 #[cfg(feature = "capsule")]
 impl Capsule {
-    pub fn to_json(&self) -> Vec<u8> {
-        serde_json::to_vec(self).expect("a capsule serializes")
+    /// Its JSON, within [`MAX_CAPSULE`]: `pointing_at` is cut to
+    /// [`MAX_POINTING_AT`].
+    pub fn to_json(&self) -> String {
+        let mut capsule = self.clone();
+        if let Some(p) = &mut capsule.pointing_at {
+            *p = clip(p, MAX_POINTING_AT).to_string();
+        }
+        serde_json::to_string(&capsule).expect("a capsule serializes")
     }
 
-    /// `None` for empty or unreadable JSON: a capsule is a hint, never a
-    /// reason to drop the utterance.
-    pub fn from_json(bytes: &[u8]) -> Option<Capsule> {
-        serde_json::from_slice(bytes).ok()
+    /// `None` for empty or unreadable JSON: the utterance goes on without it.
+    pub fn from_json(json: &str) -> Option<Capsule> {
+        serde_json::from_str(json).ok()
     }
 }
 
@@ -350,21 +315,18 @@ impl Capsule {
 mod tests {
     use super::*;
 
-    fn start(capsule: &[u8]) -> Clip {
+    fn start(capsule: &str) -> Clip {
         Clip::Start {
             utterance: 7,
-            sample_rate: SAMPLE_RATE,
-            channels: CHANNELS,
-            format: Format::Pcm16Le,
-            capsule: capsule.to_vec(),
+            capsule: capsule.to_string(),
         }
     }
 
     #[test]
     fn every_message_round_trips() {
         let clips = [
-            start(b""),
-            start(br#"{"frame":3}"#),
+            start(""),
+            start(r#"{"frame":3}"#),
             Clip::Chunk {
                 utterance: 7,
                 seq: 0,
@@ -411,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn decoding_enforces_limits_and_format() {
+    fn decoding_enforces_limits() {
         // Encode refuses what decode would.
         let big = Clip::Chunk {
             utterance: 1,
@@ -420,7 +382,7 @@ mod tests {
         };
         assert_eq!(big.encode(), Err(Error::TooLarge));
         assert_eq!(
-            start(&[b' '; MAX_CAPSULE + 1]).encode(),
+            start(&" ".repeat(MAX_CAPSULE + 1)).encode(),
             Err(Error::TooLarge)
         );
 
@@ -436,25 +398,9 @@ mod tests {
         bytes[at..at + 4].copy_from_slice(&(MAX_CHUNK as u32 + 1).to_be_bytes());
         assert_eq!(Clip::decode(&bytes), Err(Error::TooLarge));
 
-        let wrong = |rate: u32, channels: u8, format: u8| {
-            let mut bytes = start(b"").encode().unwrap();
-            bytes[10..14].copy_from_slice(&rate.to_be_bytes());
-            bytes[14] = channels;
-            bytes[15] = format;
-            Clip::decode(&bytes)
-        };
-        assert!(wrong(SAMPLE_RATE, CHANNELS, 0).is_ok());
-        for (rate, channels, format) in [(44_100, 1, 0), (SAMPLE_RATE, 2, 0), (SAMPLE_RATE, 1, 1)] {
-            assert_eq!(
-                wrong(rate, channels, format),
-                Err(Error::Malformed("voice format"))
-            );
-        }
-
-        assert_eq!(
-            Clip::decode(&start(&[0xff]).encode().unwrap()),
-            Err(Error::Malformed("capsule"))
-        );
+        let mut bad = start("x").encode().unwrap();
+        *bad.last_mut().unwrap() = 0xff;
+        assert_eq!(Clip::decode(&bad), Err(Error::Malformed("capsule")));
         assert!(Clip::decode(&[]).is_err());
         assert!(Clip::decode(&[VERSION, 9]).is_err());
         let mut trailing = Clip::End { utterance: 1 }.encode().unwrap();
@@ -471,10 +417,10 @@ mod tests {
     }
 
     #[test]
-    fn another_version_is_refused_with_ours() {
+    fn another_version_is_refused_as_this_channels() {
+        let version = Error::Malformed("voice version");
         let mut bytes = Clip::End { utterance: 1 }.encode().unwrap();
         bytes[0] = 2;
-        let version = Error::Version { theirs: 2, ours: 1 };
         assert_eq!(Clip::decode(&bytes), Err(version.clone()));
         let mut bytes = Status {
             utterance: None,
@@ -502,7 +448,7 @@ mod tests {
 
     #[cfg(feature = "capsule")]
     #[test]
-    fn a_capsule_round_trips_and_tolerates_unknown_or_bad_json() {
+    fn a_capsule_round_trips_fits_and_tolerates_unknown_or_bad_json() {
         let capsule = Capsule {
             frame: Some(1234),
             tts: Some(20.5),
@@ -514,9 +460,14 @@ mod tests {
             ..Capsule::default()
         };
         assert_eq!(Capsule::from_json(&capsule.to_json()), Some(capsule));
-        let later = br#"{"frame": 5, "gaze": [1, 2, 3]}"#;
+        let later = r#"{"frame": 5, "gaze": [1, 2, 3]}"#;
         assert_eq!(Capsule::from_json(later).unwrap().frame, Some(5));
-        assert_eq!(Capsule::from_json(b""), None);
-        assert_eq!(Capsule::from_json(b"not json"), None);
+        assert_eq!(Capsule::from_json(""), None);
+        assert_eq!(Capsule::from_json("not json"), None);
+        let long = Capsule {
+            pointing_at: Some("x".repeat(MAX_CAPSULE)),
+            ..Capsule::default()
+        };
+        assert!(start(&long.to_json()).encode().is_ok());
     }
 }

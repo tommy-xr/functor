@@ -28,17 +28,8 @@
 //! message fails to decrypt and ends the connection.
 //!
 //! Other traffic rides [`wire::Frame::Channel`] on a numbered channel; a side
-//! drops channels it does not know.
-//!
-//! - **Voice** ([`voice`]): channel [`voice::CLIP_CHANNEL`] carries a spoken
-//!   clip headset → desktop (`Start` with an optional JSON [capsule] of what
-//!   the user saw, `Chunk`s of 16 kHz mono PCM16LE up to
-//!   [`voice::MAX_CHUNK`] bytes each, `End` or `Cancel`; at most
-//!   [`voice::MAX_SECONDS`] per utterance); channel [`voice::STATUS_CHANNEL`]
-//!   carries the desktop's progress back (heard → transcribed → working →
-//!   reloaded, or failed). Each message leads with [`voice::VERSION`].
-//!
-//! [capsule]: voice::Capsule
+//! drops channels it does not know. Channels 1 and 2 carry voice feedback:
+//! see [`voice`].
 
 pub mod adb;
 #[cfg(feature = "client")]
