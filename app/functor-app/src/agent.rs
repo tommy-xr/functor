@@ -40,7 +40,9 @@ const TAIL_LINES: usize = 20;
 const PREAMBLE: &str = "You are working on a Functor game project: this directory. \
 Your MCP server `mis` has tools for its running game — state, scene, captures, input, \
 launching and stopping it — and `app_context`, which says what the user is looking at \
-in the Functor app. Prefer reading live state and captures over guessing. Functor Lang \
+in the Functor app. Prefer reading live state and captures over guessing. The app's \
+game opens paused on its first frame (`get_state`'s `clock.paused`): `step` or `resume` it \
+to run it, as input lands only when it does. Functor Lang \
 (`.fun`) is a custom language, not F#: its rules are in the repo's `functor-lang` skill \
 (`.claude/skills/functor-lang/`) and its docs; read them before writing it. \
 `show_view` and `present` show the user views in the app, beside their work. When you \

@@ -620,6 +620,11 @@ rebase — can move it. That is what makes golden captures byte-identical, so
 effect. To start pinned *and* step, launch WITHOUT `--fixed-time` and
 `POST {"type":"set","tts":T}` first.
 
+**`--paused` is an initial pause.** The clock starts paused on frame 0 (`init`,
+its zero-time bootstrap step, then `draw`), with no race against the first
+ticks; `resume` or `advance` runs it. The desktop app launches its sessions
+this way.
+
 While the clock is pinned (either way), **user keyboard/mouse input from the window is
 ignored**, but injected `/input` still applies — so an external driver has deterministic
 control.

@@ -63,9 +63,12 @@ async function placements(browser, width, height) {
     await expect.poll(() => tabs(page)).toEqual([["Game"]]);
     await expect(control(page).getByRole("button", { name: "Pane" })).toHaveAttribute("aria-pressed", "true");
     // A session, when there is a functor to run, shows Pane ↔ Mini keeps it.
+    // It starts on its own, paused (D37); played, a click captures input.
     if (FUNCTOR) {
-      await view.getByRole("button", { name: "Start game" }).click();
       await expect.poll(() => app.state?.session?.status.kind, { timeout: 60_000 }).toBe("running");
+      const transport = page.getByRole("group", { name: "Transport" });
+      await transport.getByRole("button", { name: "Play" }).click();
+      await expect(transport.getByRole("button", { name: "Pause" })).toBeVisible();
     }
     const session = app.state.session?.id ?? null;
     await explorer.getByRole("button", { name: "game.fun", exact: true }).click();
@@ -145,10 +148,8 @@ async function placements(browser, width, height) {
       await page.keyboard.press("Tab");
       await expect(control(mini).getByRole("button", { name })).toBeFocused();
     }
-    if (FUNCTOR) {
-      await page.keyboard.press("Tab");
-      await expect(mini.getByRole("button", { name: "Stop game" })).toBeFocused();
-    }
+    await page.keyboard.press("Tab");
+    await expect(mini.getByRole("button", { name: /^(Stop|Start) game$/ })).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(mini.getByRole("button", { name: "Dock" })).toBeFocused();
 

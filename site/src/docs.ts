@@ -2,7 +2,7 @@
 // give the runnable ones (class "runnable") a "▶ try it" button that opens
 // the program in the sandbox via the #src= fragment (see sandbox.ts).
 //
-// The tokenizer mirrors src/functor-lang.ts's CodeMirror StreamLanguage; it's a few
+// The tokenizer mirrors src/functor-lang-syntax.ts's stream parser; it's a few
 // regexes, so a static-HTML variant beats dragging CodeMirror onto the docs
 // page. Keep the two classifications in sync.
 //
@@ -44,7 +44,7 @@ const classify = (token: string): string | null => {
   return "tok-o";
 };
 
-// The nesting stack, mirroring functor-lang.ts's StreamLanguage contexts: an
+// The nesting stack, mirroring functor-lang-syntax.ts's parser contexts: an
 // interpolated string, and a `{…}` hole inside one that counts its own braces.
 type Context = { kind: "interpolated" } | { kind: "hole"; braces: number };
 

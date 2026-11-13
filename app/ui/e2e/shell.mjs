@@ -11,9 +11,9 @@
 // from this checkout. APP_UI_SHOTS=<dir> saves a PNG of each rail view at
 // each width.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, chooseProject, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -51,7 +51,7 @@ async function run(browser, width, height) {
   const external = watchExternal(page);
   const titlebar = page.locator(".titlebar");
   const explorer = page.getByRole("complementary", { name: "Explorer" });
-  const status = page.getByTestId("session-status");
+  const status = titlebar.locator("[class*='pill-session-']");
   try {
     // Without the launch's token (here, the printed URL's fragment) the page
     // cannot connect: its attempts are refused and no state arrives.
@@ -81,19 +81,19 @@ async function run(browser, width, height) {
     );
 
     // Switching project updates the title bar and the file list.
-    await page.getByLabel("Project").selectOption(SWITCH_TO);
+    await chooseProject(page, SWITCH_TO);
     await expect(titlebar).toContainText(nameOf(SWITCH_TO));
     await expect(explorer.getByRole("list", { name: "Files" }).getByRole("listitem")).toHaveText(
       expectedFiles(SWITCH_TO),
     );
 
-    const start = page.getByTestId("game-view").getByRole("button", { name: "Start game" });
+    // The project's game starts on its own, paused on its first frame (D37).
+    const start = page.getByRole("button", { name: "Start game" });
     const stop = page.getByRole("button", { name: "Stop game" });
     if (FUNCTOR) {
-      await start.click();
-      await expect(status).toHaveText("running", { timeout: 60_000 });
-      await expect(page.getByTestId("session-frame")).toHaveText(/^\d+$/, { timeout: 30_000 });
-      await expect(titlebar).toContainText("Local session · running");
+      await expect(status).toHaveText("Local session · running", { timeout: 60_000 });
+      // Paused on its first frame until Play.
+      await expect(page.getByTestId("transport-frame")).toHaveText(/^0( \/ 0)?$/, { timeout: 30_000 });
     } else {
       console.log(`SKIPPED (${tag}): Start/Stop session — set FUNCTOR_BIN (npm run build:cli:debug)`);
     }
@@ -109,7 +109,8 @@ async function run(browser, width, height) {
 
     if (FUNCTOR) {
       await stop.click();
-      await expect(status).toHaveText("stopped", { timeout: 30_000 });
+      await expect(status).toHaveText("Local session · stopped", { timeout: 30_000 });
+      await expect(page.getByTestId("game-view")).toHaveText("The game is stopped");
       await expect(start).toBeEnabled();
     }
 
@@ -128,7 +129,7 @@ async function run(browser, width, height) {
     server = await startServer(server.port, { home: server.home, token: server.token });
     await expect(titlebar).not.toContainText("Reconnecting…", { timeout: 15_000 });
     await expect(titlebar).toContainText(nameOf(DEFAULT));
-    await expect(page.getByLabel("Project")).toHaveValue(DEFAULT);
+    await expect(explorer.getByRole("button", { name: /^Project: / })).toHaveAccessibleName(`Project: ${DEFAULT}`);
 
     expect(external, "requests to non-loopback hosts").toEqual([]);
     console.log(`ok: ${tag}`);
@@ -156,8 +157,6 @@ async function gameViewNoGpu(browser) {
   const note = page.getByTestId("game-note");
   try {
     await page.goto(server.url);
-    await expect(view).toHaveText(/^No game running/);
-    await expect(view.getByRole("button", { name: "Start game" })).toBeEnabled();
     await expect(placement.getByRole("button", { name: "Pane" })).toHaveAttribute("aria-pressed", "true");
     // No headset placement until M2, not even disabled.
     await expect(placement.getByRole("button")).toHaveText(["Pane", "Mini", "Own window"]);
@@ -171,9 +170,13 @@ async function gameViewNoGpu(browser) {
       return;
     }
 
-    await view.getByRole("button", { name: "Start game" }).click();
+    // Opened, the game is there, paused; input waits for Play.
     await expect(view).toContainText("Frames need a GPU session", { timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" })).toBeVisible();
+    await expect(banner).toHaveText("Paused");
+    await page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" }).click();
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Pause" })).toBeVisible();
 
     // A click captures input; a held key reaches the session and Esc lets it go.
     await expect(banner).toHaveText("Click to play");
@@ -223,7 +226,8 @@ async function gameViewNoGpu(browser) {
     await expect(banner).toHaveText("Click to play");
 
     // Own window restarts the session in the other mode (headless here, so no
-    // window opens); the canvas says so, and bringing it back restarts it again.
+    // window opens); the canvas says so, and bringing it back restarts it,
+    // paused on its first frame again.
     for (const back of [false, true]) {
       const id = app.state.session.id;
       if (back) await note.getByRole("button", { name: "Bring back to a pane" }).click();
@@ -239,8 +243,36 @@ async function gameViewNoGpu(browser) {
       }
     }
     await expect(view).toContainText("Frames need a GPU session");
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" })).toBeVisible();
     expect(errors, "console errors").toEqual([]);
     console.log("ok: game view (no GPU)");
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
+/** A game that fails to load says why where its frame would be; fixed, it opens paused (D37). */
+async function brokenGame(browser) {
+  if (!FUNCTOR) {
+    console.log("SKIPPED: broken game — set FUNCTOR_BIN (npm run build:cli:debug)");
+    return;
+  }
+  const dir = tempProject("examples/counter");
+  const source = readFileSync(`${dir}/game.fun`, "utf8");
+  writeFileSync(`${dir}/game.fun`, `${source}\nlet oops = (\n`);
+  const server = await startServer(0, { dir });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const errors = watchErrors(page);
+  const view = page.getByTestId("game-view");
+  try {
+    await page.goto(server.url);
+    await expect(view.locator(".reason")).toContainText("expected an expression", { timeout: 60_000 });
+    await expect(page.getByRole("button", { name: "Start game" })).toBeEnabled();
+    writeFileSync(`${dir}/game.fun`, source);
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" })).toBeVisible({ timeout: 60_000 });
+    expect(errors, "console errors").toEqual([]);
+    console.log("ok: broken game");
   } finally {
     await page.close();
     await stopServer(server);
@@ -300,12 +332,25 @@ async function gameViewGpu(browser) {
   };
   try {
     await page.goto(server.url);
-    await view.getByRole("button", { name: "Start game" }).click();
     await expect(img).toBeVisible({ timeout: 60_000 });
     const debugUrl = app.state.session.status.debug_url;
     const port = Number(new URL(debugUrl).port);
 
-    // Non-blank frames that change.
+    // Opened paused: its first frame, non-blank, holding still (D37).
+    await page.waitForTimeout(1000);
+    const still = await img.screenshot();
+    expect(await spread(page, still), "luminance spread").toBeGreaterThan(10);
+    await page.waitForTimeout(500);
+    expect(still.equals(await img.screenshot()), "the paused frame held").toBe(true);
+    if (SHOTS) {
+      mkdirSync(SHOTS, { recursive: true });
+      await page.screenshot({ path: `${SHOTS}/game-opened-1440.png` });
+    }
+
+    // Played: non-blank frames that change.
+    await page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" }).click();
+    await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Pause" })).toBeVisible();
+    await page.waitForTimeout(300);
     const first = await img.screenshot();
     await page.waitForTimeout(500);
     const second = await img.screenshot();
@@ -447,7 +492,7 @@ async function gameViewGpu(browser) {
 
     // Stopping the session ends the stream.
     await page.getByRole("button", { name: "Stop game" }).click();
-    await expect(view).toHaveText(/^No game running/);
+    await expect(view).toHaveText("The game is stopped");
     await expect.poll(() => openStreams(port)).toBe(0);
     expect(errors, "console errors").toEqual([]);
     console.log("ok: live game view (GPU)");
@@ -462,6 +507,7 @@ try {
   await run(browser, 1440, 900);
   await run(browser, 700, 900);
   await gameViewNoGpu(browser);
+  await brokenGame(browser);
   await gameViewGpu(browser);
 } catch (e) {
   console.error(`FAIL: ${e.message}`);

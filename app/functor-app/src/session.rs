@@ -42,6 +42,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// Output lines kept for a failure report.
 const TAIL_LINES: usize = 20;
+/// Between checks of an ended session's project files for a change.
+const SOURCE_POLL: Duration = Duration::from_millis(500);
 /// How long a layout change waits to be written, so a burst (a splitter
 /// stepped by key) is one write.
 const LAYOUT_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -479,7 +481,7 @@ impl Driver {
             .arg("-d")
             .arg(dir)
             .args(["run", "native"])
-            .args(display.flag())
+            .args(display.flags())
             .args(["--debug-port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -502,6 +504,7 @@ impl Driver {
         let tail = Arc::new(Mutex::new(VecDeque::new()));
         let task = tokio::spawn(supervise(
             id,
+            dir.to_path_buf(),
             child,
             self.events.clone(),
             tail.clone(),
@@ -545,6 +548,7 @@ fn open_folder(home: &Path, opened: &Opened, id: u64, path: String, track: bool)
 /// or its sender drops.
 async fn supervise(
     id: u64,
+    dir: PathBuf,
     mut child: Child,
     events: UnboundedSender<Event>,
     tail: Arc<Mutex<VecDeque<String>>>,
@@ -553,6 +557,7 @@ async fn supervise(
     let send = |event| {
         let _ = events.send(Event::Session { id, event });
     };
+    let sources = source_stamp(&dir);
     // Both streams: the runtime logs to stderr, but the CLI's own messages
     // (load errors included) go to stdout when it is a pipe.
     let (line_tx, mut lines) = mpsc::unbounded_channel();
@@ -594,6 +599,28 @@ async fn supervise(
         Err(e) => e.to_string(),
     };
     send(SessionEvent::Exited { reason });
+    // Until stopped, says once that a project file changed: a fixed load
+    // error starts the game again.
+    loop {
+        tokio::select! {
+            _ = &mut stop => return,
+            _ = tokio::time::sleep(SOURCE_POLL) => if source_stamp(&dir) != sources {
+                return send(SessionEvent::SourceChanged);
+            },
+        }
+    }
+}
+
+/// `dir`'s project files and their modification times: any edit, addition
+/// or removal changes it.
+fn source_stamp(dir: &Path) -> Vec<(String, Option<SystemTime>)> {
+    read_project_files(dir)
+        .into_iter()
+        .map(|name| {
+            let modified = std::fs::metadata(dir.join(&name)).and_then(|m| m.modified());
+            (name, modified.ok())
+        })
+        .collect()
 }
 
 /// Sends `reader`'s lines until it closes. Reads to the end whatever the

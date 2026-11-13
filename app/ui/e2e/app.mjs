@@ -13,6 +13,12 @@ export const APP = `${ROOT}target/debug/functor-app${EXE}`;
 export const FUNCTOR = process.env.FUNCTOR_BIN && existsSync(process.env.FUNCTOR_BIN) ? process.env.FUNCTOR_BIN : null;
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
+/** A session's own clock (`/state`'s `frame` and `clock`), without the model. */
+export async function clock(debugUrl) {
+  const state = await (await fetch(`${debugUrl}/state?model=0`)).json();
+  return { frame: state.frame, ...state.clock };
+}
+
 /** Exits unless functor-app and the built UI exist. */
 export function requireBuilt() {
   for (const [path, what] of [
@@ -124,6 +130,12 @@ export function startServer(port = 0, { dir = ROOT, cwd, gpu = false, home = tem
 export async function reopen(page, url) {
   await page.goto("about:blank");
   await page.goto(url);
+}
+
+/** Chooses `name` (a project, Open folder…, New project…) from the Explorer's project picker. */
+export async function chooseProject(page, name) {
+  await page.getByRole("complementary", { name: "Explorer" }).getByRole("button", { name: /^Project: / }).click();
+  await page.getByRole("menu", { name: "Projects" }).getByRole("menuitem", { name, exact: true }).click();
 }
 
 /** Each pane's tab names, in reading order. */
