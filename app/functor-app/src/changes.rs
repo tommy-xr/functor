@@ -411,7 +411,7 @@ impl Git {
         };
         let index = TempIndex::new(&self.dir);
         self.git(&["read-tree", &spec], Some(&index.0)).await?;
-        let prefix = format!("--prefix={}/", dest.display());
+        let prefix = format!("--prefix={}/", plain(dest).display());
         self.git(&["checkout-index", "-a", "-f", &prefix], Some(&index.0))
             .await?;
         Ok(())
