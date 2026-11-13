@@ -85,6 +85,11 @@ tasks: Array<Task>,
  */
 activity: { [key in number]: Activity }, 
 /**
+ * Per task id whose change waits, its decision page's size and verdict
+ * (D35), refreshed after every event.
+ */
+decisions: { [key in number]: Decision }, 
+/**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
  * chooses one for the project; not kept across restarts.
@@ -184,12 +189,33 @@ more: number,
  */
 tree: string, };
 
+export type Check = { 
+/**
+ * What was run, e.g. `functor test`.
+ */
+ran: string, 
+/**
+ * What came of it, e.g. "14 expects pass".
+ */
+result: string, ok: boolean, };
+
 /**
  * UI → core.
  */
 export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+
+/**
+ * A waiting change's first page, as far as the app derives it.
+ */
+export type Decision = { size: Size, depth: Depth, 
+/**
+ * One or two short sentences.
+ */
+reason: string, };
+
+export type Depth = "glance" | "look";
 
 export type Device = { 
 /**
@@ -381,6 +407,11 @@ export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: 
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+/**
+ * What a changed file is, by its extension (and, for game logic, its place).
+ */
+export type Kind = "game_logic" | "assets" | "config" | "other";
+
 export type Layout = { 
 /**
  * `None`: an empty canvas.
@@ -563,6 +594,26 @@ path: string,
 missing: boolean, };
 
 /**
+ * The agent's account of its change (`present`), stored with the task: a
+ * presentation agent fills the same fields. A new run, a later edit to the
+ * files or the end of the review clears it.
+ */
+export type Report = { 
+/**
+ * One paragraph in Simplified Technical English.
+ */
+summary: string | null, 
+/**
+ * What was not verified, what was assumed, side effects; `None`: the
+ * agent did not say (unlike `Some([])`, "nothing to note").
+ */
+notes: Array<string> | null, 
+/**
+ * What was run, and the result.
+ */
+evidence: Array<Check>, };
+
+/**
  * One `"entries"` role: `"client.fun"`, or `{ "file", "module" | "prefix" }`
  * for roles sharing a file.
  */
@@ -609,6 +660,16 @@ surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { 
  * Which app needs the update.
  */
 export type Side = "headset" | "desktop";
+
+/**
+ * A change's size: lines over the listed files, files including those
+ * past the list (whose kinds and lines are unknown).
+ */
+export type Size = { added: number, removed: number, files: number, 
+/**
+ * Each kind once, in [`Kind`]'s order.
+ */
+kinds: Array<Kind>, };
 
 export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
 
@@ -674,6 +735,10 @@ moment: Moment | null,
  * The predicted paths before and after `change` (D38).
  */
 evidence: Evidence | null, 
+/**
+ * The last run's account of the change (D35), from its `present`.
+ */
+report: Report | null, 
 /**
  * When it was started: the shell's wall clock, ms since the Unix
  * epoch. Last active: a message, a run's event or a review. Both absent
