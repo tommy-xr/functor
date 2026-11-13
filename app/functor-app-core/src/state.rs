@@ -2049,8 +2049,11 @@ fn revert(state: &mut AppState, id: u64, tree: &str, commands: &mut Vec<Command>
     }
     let paths = change.paths();
     task.reverting = true;
-    // It would read a tree half put back.
-    drop_review(task, commands);
+    // One preparing would read a tree half put back; a prepared one stays
+    // with its report until the revert ends.
+    if task.review.as_ref().is_some_and(|r| r.state == ReviewState::Preparing) {
+        drop_review(task, commands);
+    }
     commands.push(Command::Revert {
         task: id,
         baseline: task.baseline.clone().expect("reviewable"),
@@ -2120,6 +2123,7 @@ fn on_change(
                 r.state = ReviewState::Failed {
                     reason: "the files changed while the review ran".to_string(),
                 };
+                r.staged = None;
             }
             _ => task.review = None,
         }
@@ -2234,10 +2238,8 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
     if !state.can_review || !setting.on || !ready {
         return false;
     }
-    let (harness, refused) = match review_harness(setting.harness) {
-        Ok(harness) => (harness, None),
-        Err(reason) => (Harness::Codex, Some(reason.to_string())),
-    };
+    // Only Claude's can be held read-only (`review_harness`), whatever the task's.
+    let harness = Harness::Claude;
     let model = setting.model.or(default_model(harness).map(String::from));
     let spec = ReviewSpec {
         task: id,
@@ -2251,8 +2253,7 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
         tree: change.tree.clone(),
         brief: brief(task),
     };
-    let unavailable = (!state.harnesses.contains(&harness)).then(|| unavailable(harness));
-    let review_state = match refused.or(unavailable) {
+    let review_state = match (!state.harnesses.contains(&harness)).then(|| unavailable(harness)) {
         None => {
             commands.push(Command::StartReview(Box::new(spec)));
             ReviewState::Preparing
@@ -2310,7 +2311,9 @@ fn on_review(
                     reason: "the review ended without a report".to_string(),
                 },
             };
-            task.review.as_mut().expect("found").state = state;
+            let review = task.review.as_mut().expect("found");
+            review.state = state;
+            review.staged = None;
             commands.push(save(&root, task));
             true
         }
@@ -4589,7 +4592,7 @@ mod tests {
         let reason = "claude is not available on this machine".to_string();
         assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
         // Codex cannot be held read-only: refused as a setting, and a stored
-        // one fails the review saying so.
+        // one is reviewed on Claude anyway.
         let codex = ReviewSetting {
             harness: Some(Harness::Codex),
             ..Default::default()
@@ -4609,9 +4612,8 @@ mod tests {
         let (s, _) = update(s, agent(1, 0, finished()));
         let (s, _) = update(s, change(1, "tree-1", one_file(2)));
         let (s, commands) = update(s, ended(1, 0));
-        assert!(review_specs(&commands).is_empty());
-        let reason = crate::review::NO_CODEX.to_string();
-        assert_eq!(review_state(&s), Some(&ReviewState::Failed { reason }));
+        assert_eq!(review_specs(&commands)[0].harness, Harness::Claude);
+        assert_eq!(review_state(&s), Some(&ReviewState::Preparing));
     }
 
     /// A Codex task's change is reviewed on Claude, and a check the agent

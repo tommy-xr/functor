@@ -1,5 +1,5 @@
 {"ms": 0, "event": {"type": "started", "session": "fake-review-prepared", "model": "claude-review-model"}}
 {"ms": 100, "mcp": {"tool": "task_change", "arguments": {}}}
-{"ms": 2500, "mcp": {"tool": "report", "arguments": {"summary": "The agent changed the colour of the cube in `game.fun` from blue to amber. The size and the rotation of the cube did not change. Look at the cube in the game to check the colour.", "notes": ["Nobody looked at the cube in the running game after the change."], "evidence": [{"ran": "functor test", "result": "3 expects pass (the agent's run)", "ok": true}]}}}
+{"ms": 2500, "mcp": {"tool": "report", "arguments": {"summary": "The agent changed the colour of the cube in `game.fun` from blue to amber. The size and the rotation of the cube did not change. Look at the cube in the game to check the colour.", "notes": ["Nobody looked at the cube in the running game after the change."], "evidence": []}}}
 {"ms": 2600, "event": {"type": "usage", "input": 41234, "output": 512}}
 {"ms": 2700, "event": {"type": "finished", "ok": true, "summary": "Reported."}}

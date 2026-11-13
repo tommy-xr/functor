@@ -90,9 +90,9 @@ pub fn default_model(harness: Harness) -> Option<&'static str> {
 pub const NO_CODEX: &str =
     "Codex reviews cannot be held read-only yet: choose Claude for reviews";
 
-/// The harness a review runs on: the setting's, else the task's — but only
-/// Claude can be held read-only, so a Codex task's review runs on Claude and
-/// a setting naming Codex is refused ([`NO_CODEX`]).
+/// The harness a setting may name for reviews: only Claude can be held
+/// read-only, so Codex is refused ([`NO_CODEX`]). Every review, a Codex
+/// task's too, runs on Claude.
 pub fn review_harness(setting: Option<Harness>) -> Result<Harness, &'static str> {
     match setting {
         Some(Harness::Codex) => Err(NO_CODEX),

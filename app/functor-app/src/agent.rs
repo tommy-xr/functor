@@ -140,8 +140,9 @@ backticks.
 nobody verified, what was assumed, a side effect, a risk. Write `[]` only when you checked and \
 found nothing.
 
-`evidence`: only checks that really ran, with their real result, as `task_change` shows them \
-(say they are the agent's). Reading code is not evidence. Set `ok` false for a check that failed.
+`evidence`: the page keeps the checks in the agent's own report. Add only checks that really \
+ran and that report does not list, with their real result as `task_change` shows them (say they \
+are the agent's). Reading code is not evidence. Set `ok` false for a check that failed.
 
 `steps`: only when `task_change` says the agent gave no walkthrough: 1 to 4 highlights, each a \
 changed file range (`{\"kind\": \"file\", \"path\", \"lines\": [first, last]}`, the path relative \

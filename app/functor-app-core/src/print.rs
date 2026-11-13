@@ -427,6 +427,13 @@ mod tests {
     use crate::projects::{Project, Role};
     use crate::Session;
 
+    #[test]
+    fn cuts_mark_themselves() {
+        assert_eq!(cut("abcdef", 3), "abc…");
+        assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("ééé", 2), "éé…");
+    }
+
     /// A timeline polled once at `frame`.
     fn polled_at(frame: u64) -> crate::transport::Timeline {
         let mut timeline = crate::transport::Timeline::default();

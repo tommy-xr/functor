@@ -368,9 +368,10 @@ fn report(
     Ok((format!("{saved}{also}"), false))
 }
 
-/// A review that ended: its staged report replaces the agent's, keeping the
-/// agent's failed checks (the verdict's first rule reads them), and its
-/// steps become the walkthrough. Whether it had one.
+/// A review that ended: its staged report replaces the agent's summary and
+/// notes; the agent's checks stay as they ran (the verdict's first rule
+/// reads a failed one), the review's added after them; its steps become the
+/// walkthrough (checked when staged). Whether it had one.
 pub(crate) fn publish_review(task: &mut crate::tasks::Task, commands: &mut Vec<Command>) -> bool {
     let Some((mut report, steps)) = task.review.as_mut().and_then(|r| r.staged.take()) else {
         return false;
@@ -378,7 +379,6 @@ pub(crate) fn publish_review(task: &mut crate::tasks::Task, commands: &mut Vec<C
     // First, so the cap never drops them.
     let mut evidence: Vec<Check> = (task.report.iter())
         .flat_map(|r| &r.evidence)
-        .filter(|c| !c.ok)
         .cloned()
         .collect();
     let reviews: Vec<Check> = (std::mem::take(&mut report.evidence).into_iter())

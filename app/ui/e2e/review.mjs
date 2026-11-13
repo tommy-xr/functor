@@ -67,7 +67,7 @@ async function prepared(browser, size) {
     await expect(p.getByTestId("first-summary")).toHaveText(/^The agent changed the colour of the cube in `game\.fun` from blue to amber\./);
     await expect(p.getByTestId("first-verdict")).toHaveText("Look into thisThe review notes 1 thing.");
     await expect(p.getByTestId("first-notes")).toHaveText("Nobody looked at the cube in the running game after the change.");
-    await expect(p.getByTestId("first-evidence")).toHaveText("functor test 3 expects pass (the agent's run)");
+    await expect(p.getByTestId("first-evidence")).toHaveText("functor test 3 expects pass");
     await expect(p.getByTestId("first-style")).toHaveCount(0);
     await shot(page, `review-prepared-${size[0]}`);
     expect(errors, "console errors").toEqual([]);
