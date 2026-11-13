@@ -85,8 +85,10 @@ pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, String> {
             b"data" => {
                 return match format {
                     Some((1, 1, SAMPLE_RATE, 16)) => Ok(body
-                        .chunks_exact(2)
-                        .map(|s| i16::from_le_bytes([s[0], s[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|s| i16::from_le_bytes(*s))
                         .collect()),
                     _ => Err(format!(
                         "the WAV must be 16-bit PCM, mono, {SAMPLE_RATE} Hz"
