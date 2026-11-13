@@ -180,7 +180,10 @@ pub fn print_devices(devices: &crate::Devices) -> Vec<String> {
             }
         };
         let pairing = if a.pairing { ", pairing" } else { "" };
-        lines.push(format!("  cable {}: {}, {state}{pairing}", a.serial, a.name));
+        lines.push(format!(
+            "  cable {}: {}, {state}{pairing}",
+            a.serial, a.name
+        ));
     }
     lines
 }
@@ -841,7 +844,14 @@ recents: 2
             pairing: false,
             pairable: false,
         }];
-        on_link(&mut d, LinkEvent::Cable { adb: true, attached }, 0);
+        on_link(
+            &mut d,
+            LinkEvent::Cable {
+                adb: true,
+                attached,
+            },
+            0,
+        );
         assert_eq!(
             print_devices(&d).join("\n"),
             "headset: asking to pair (link 0.0.0.0:53122)\n  \

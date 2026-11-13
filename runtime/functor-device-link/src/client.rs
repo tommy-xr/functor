@@ -20,8 +20,8 @@ use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
 use crate::device::{self, Device, Identity};
-use crate::wire::{Frame, Request, Response, Status};
 pub use crate::file::Stored;
+use crate::wire::{Frame, Request, Response, Status};
 use crate::{hex, shared, DesktopId, DeviceId, End, Error, OsEntropy, Output, Secret};
 use crate::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE, PATH, REPAIRED, SERVICE};
 

@@ -80,7 +80,9 @@ pub enum HeadsetPairing {
     /// This desktop.
     This,
     /// Another desktop, by the name it stored.
-    Other { name: String },
+    Other {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1139,13 +1141,22 @@ mod tests {
     #[test]
     fn cable_pairing_is_one_at_a_time_and_its_outcome_adds_the_card() {
         let mut d = started(&[]);
-        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        cable(
+            &mut d,
+            vec![on_cable("s", ready("x", HeadsetPairing::Nobody))],
+        );
         assert!(d.attached[0].pairable);
         assert!(pair_by_cable(&mut d, "s", false).is_ok());
         assert!(!d.attached[0].pairable);
-        assert!(pair_by_cable(&mut d, "s", false).is_err(), "already writing");
+        assert!(
+            pair_by_cable(&mut d, "s", false).is_err(),
+            "already writing"
+        );
         // adb's next look keeps it marked as being written.
-        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        cable(
+            &mut d,
+            vec![on_cable("s", ready("x", HeadsetPairing::Nobody))],
+        );
         assert!(d.attached[0].pairing);
         let (_, cmds) = on_link(
             &mut d,
@@ -1173,7 +1184,10 @@ mod tests {
     #[test]
     fn a_failed_cable_pairing_leaves_no_card_and_can_be_tried_again() {
         let mut d = started(&[]);
-        cable(&mut d, vec![on_cable("s", ready("x", HeadsetPairing::Nobody))]);
+        cable(
+            &mut d,
+            vec![on_cable("s", ready("x", HeadsetPairing::Nobody))],
+        );
         pair_by_cable(&mut d, "s", false).unwrap();
         let (_, cmds) = on_link(
             &mut d,

@@ -89,7 +89,13 @@ struct Args {
     no_mdns: bool,
 
     /// The `adb` that finds headsets on a USB cable (tests pass a fake).
-    #[arg(long, hide = true, value_name = "PATH", default_value = "adb", global = true)]
+    #[arg(
+        long,
+        hide = true,
+        value_name = "PATH",
+        default_value = "adb",
+        global = true
+    )]
     adb: PathBuf,
 
     /// The fake agent's child: print a recorded run's events, then exit.

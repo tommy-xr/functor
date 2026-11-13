@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use functor_device_link::device::{self, Device, Identity};
-use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
 use functor_device_link::file::Stored;
+use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
 use functor_device_link::{hex, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
 use functor_device_link::{HEARTBEAT_MS, MAX_MESSAGE, VERSION};
 use futures_util::{SinkExt, StreamExt};
@@ -66,7 +66,6 @@ enum Misbehave {
     /// Once linked, send a message over the size limit.
     Oversize,
 }
-
 
 fn say(line: &str) {
     let mut out = std::io::stdout();

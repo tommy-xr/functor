@@ -37,7 +37,12 @@ struct Ran {
 
 impl Hub {
     /// Runs adb with `args`, writing `stdin` (then closing it) if given.
-    async fn adb(&self, serial: Option<&str>, args: &[&str], stdin: Option<&[u8]>) -> io::Result<Ran> {
+    async fn adb(
+        &self,
+        serial: Option<&str>,
+        args: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> io::Result<Ran> {
         let Some(program) = self.0.adb.get() else {
             return Err(io::Error::other("the device link is off"));
         };
@@ -109,7 +114,7 @@ impl Hub {
             }
             looks = looks.wrapping_add(1);
             probe = tokio::select! {
-                _ = tokio::time::sleep(EVERY) => looks % PROBE_EVERY == 0,
+                _ = tokio::time::sleep(EVERY) => looks.is_multiple_of(PROBE_EVERY),
                 _ = self.0.cable_poke.notified() => true,
             };
         }
@@ -167,7 +172,11 @@ impl Hub {
     /// Replaces the app's pairing file with `file`, then reads it back.
     async fn write_pairing(&self, serial: &str, file: &str) -> Result<(), String> {
         let ran = self
-            .adb(Some(serial), &["shell", WRITE_PAIRING], Some(file.as_bytes()))
+            .adb(
+                Some(serial),
+                &["shell", WRITE_PAIRING],
+                Some(file.as_bytes()),
+            )
             .await
             .map_err(|e| e.to_string())?;
         if !ran.ok {
@@ -278,7 +287,9 @@ impl Hub {
         let name = name.to_string();
         tokio::spawn(async move {
             if let Err(e) = hub.clear_pairing(&serial).await {
-                let reason = format!("forgot {name} here, but could not remove its pairing from the headset: {e}");
+                let reason = format!(
+                    "forgot {name} here, but could not remove its pairing from the headset: {e}"
+                );
                 hub.send(LinkEvent::Failed { reason });
             }
             hub.0.cable_poke.notify_one();

@@ -716,7 +716,12 @@ impl Quest {
     /// Replaces the pairing file with `bytes`, as the app does.
     fn put_pairing(&self, bytes: &[u8]) {
         let mut child = Command::new("adb")
-            .args(["-s", &self.serial, "shell", functor_device_link::adb::WRITE_PAIRING])
+            .args([
+                "-s",
+                &self.serial,
+                "shell",
+                functor_device_link::adb::WRITE_PAIRING,
+            ])
             .stdin(Stdio::piped())
             .spawn()
             .unwrap();
@@ -1010,7 +1015,14 @@ mod cable {
 
     async fn app_on(adb: &FakeAdb) -> App {
         let program = adb.program();
-        app_with(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", &program]).await
+        app_with(&[
+            "--device-link",
+            "127.0.0.1:0",
+            "--no-mdns",
+            "--adb",
+            &program,
+        ])
+        .await
     }
 
     fn attached(devices: &Value) -> Value {
@@ -1080,8 +1092,10 @@ mod cable {
                     && !card(d, "Client Quest").unwrap()["tunnel"].is_null()
             })
             .await;
-        until("the headset is linked", || quest.view().linked.then_some(()))
-            .await;
+        until("the headset is linked", || {
+            quest.view().linked.then_some(())
+        })
+        .await;
         let file = fake.file();
         assert_eq!(file.device, id, "the headset keeps its id");
         let secret = file.secret.clone().unwrap();
@@ -1207,26 +1221,38 @@ mod cable {
         b.send(json!({"type": "pair_by_cable", "serial": SERIAL}))
             .await;
         assert!(b.rejected().await.contains("is paired with"));
-        assert!(fake.file().secret.is_some_and(|s| a.pairings().contains(&s)));
+        assert!(fake
+            .file()
+            .secret
+            .is_some_and(|s| a.pairings().contains(&s)));
         b.send(json!({"type": "pair_by_cable", "serial": SERIAL, "replace": true}))
             .await;
         b.devices_where("B has it", |d| card(d, "Quest 3").is_some())
             .await;
         let devices = a
-            .devices_where("A is told", |d| state_of(d, "Client Quest") == "cannot_reach")
+            .devices_where("A is told", |d| {
+                state_of(d, "Client Quest") == "cannot_reach"
+            })
             .await;
         let reason = card(&devices, "Client Quest").unwrap()["state"]["reason"].clone();
         assert!(
-            reason.as_str().unwrap().contains(functor_device_link::REPAIRED),
+            reason
+                .as_str()
+                .unwrap()
+                .contains(functor_device_link::REPAIRED),
             "{reason}"
         );
         // This client dials A by address; the real one finds B by mDNS.
         drop(quest);
         let quest = client_to(&b, &fake, runtime);
-        b.devices_where("it links to B", |d| state_of(d, "Client Quest") == "connected")
-            .await;
-        until("the headset is linked", || quest.view().linked.then_some(()))
-            .await;
+        b.devices_where("it links to B", |d| {
+            state_of(d, "Client Quest") == "connected"
+        })
+        .await;
+        until("the headset is linked", || {
+            quest.view().linked.then_some(())
+        })
+        .await;
     }
 }
 
@@ -1278,9 +1304,8 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         .await;
     let devices = app
         .devices_where("it connects over Wi-Fi", |d| {
-            card_by_id(d, &id).is_some_and(|c| {
-                c["state"]["state"] == "connected" && !c["tunnel"].is_null()
-            })
+            card_by_id(d, &id)
+                .is_some_and(|c| c["state"]["state"] == "connected" && !c["tunnel"].is_null())
         })
         .await;
     eprintln!("cable pairing → connected in {:?}", started.elapsed());
@@ -1324,7 +1349,10 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         .await;
     let reason = card_by_id(&devices, &id).unwrap()["state"]["reason"].clone();
     assert!(
-        reason.as_str().unwrap().contains(functor_device_link::REPAIRED),
+        reason
+            .as_str()
+            .unwrap()
+            .contains(functor_device_link::REPAIRED),
         "{reason}"
     );
     app.send(json!({"type": "pair_by_cable", "serial": serial, "replace": true}))
@@ -1333,7 +1361,10 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
         card_by_id(d, &id).is_some_and(|c| c["state"]["state"] == "connected")
     })
     .await;
-    assert_ne!(quest.pairing_file().desktop_name.as_deref(), Some("Studio Mac"));
+    assert_ne!(
+        quest.pairing_file().desktop_name.as_deref(),
+        Some("Studio Mac")
+    );
 
     // Forget: gone here, its pairing gone from the headset, its id kept.
     app.send(json!({"type": "forget_device", "device": id}))
@@ -1353,8 +1384,5 @@ async fn quest_pairs_over_the_cable_and_links_over_wifi() {
 
 /// The card for device `id`, if any.
 fn card_by_id<'a>(devices: &'a Value, id: &str) -> Option<&'a Value> {
-    devices["list"]
-        .as_array()?
-        .iter()
-        .find(|d| d["id"] == id)
+    devices["list"].as_array()?.iter().find(|d| d["id"] == id)
 }

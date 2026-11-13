@@ -91,9 +91,15 @@ mod tests {
                 transport: Some("1".into()),
             }
         );
-        assert_eq!((list[1].state.as_str(), list[1].usb), ("unauthorized", true));
+        assert_eq!(
+            (list[1].state.as_str(), list[1].usb),
+            ("unauthorized", true)
+        );
         assert!(!list[2].usb, "over the network");
-        assert_eq!((list[3].serial.as_str(), list[3].state.as_str()), ("X", "offline"));
+        assert_eq!(
+            (list[3].serial.as_str(), list[3].state.as_str()),
+            ("X", "offline")
+        );
     }
 
     #[test]
