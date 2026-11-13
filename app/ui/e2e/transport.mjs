@@ -4,13 +4,15 @@
 // the clock exists without frames. Then input and hot-reload marks on a copy
 // of examples/breakout (it has an `input` hook). FUNCTOR_APP_GPU=1 adds a hidden session
 // on examples/primitives: the picture holds still while paused, changes on a
-// step, and a seek back shows the earlier picture again.
+// step, and a seek back shows the earlier picture again; and one on a weak-jump
+// platformer: Extrapolate draws its path, and an edit landing while paused
+// peeks at the new one, whose arc over the gap is new.
 //
 //   npm run test:app-ui     # needs FUNCTOR_BIN (npm run build:cli:debug); skipped without it
 //
 // APP_UI_SHOTS=<dir> saves stills at 1440 and 700 wide and of the mini view,
 // and (with a GPU) the frames of a play → pause → step → drag back → resume loop.
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
 import {
   clock,
@@ -82,6 +84,8 @@ async function noGpu(browser) {
     const playhead = bar.getByRole("slider", { name: "Selected frame" });
     const now = () => clock(debugUrl);
 
+    // Without frames there is no path to draw.
+    await expect(bar.getByRole("button", { name: /^Extrapolate/ })).toBeDisabled();
     // Playing: the playhead follows the session's frame.
     await expect(bar.getByRole("button", { name: "Pause" })).toBeVisible();
     const first = await shown(bar);
@@ -241,16 +245,21 @@ async function marks(browser) {
   }
 }
 
-/** The mean absolute difference of two PNGs' pixels, decoded in the page (0–255). */
-function difference(page, a, b) {
+/**
+ * The mean absolute difference of two PNGs' pixels, decoded in the page
+ * (0–255); within `region` (`[x0, y0, x1, y1]`, fractions of the image) when given.
+ */
+function difference(page, a, b, region = [0, 0, 1, 1]) {
   return page.evaluate(
-    async ([a, b]) => {
+    async ([a, b, [x0, y0, x1, y1]]) => {
       const pixels = async (b64) => {
         const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
         const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
         const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
         canvas.getContext("2d").drawImage(bitmap, 0, 0);
-        return canvas.getContext("2d").getImageData(0, 0, bitmap.width, bitmap.height).data;
+        const [x, y] = [Math.round(x0 * bitmap.width), Math.round(y0 * bitmap.height)];
+        const [w, h] = [Math.round(x1 * bitmap.width) - x, Math.round(y1 * bitmap.height) - y];
+        return canvas.getContext("2d").getImageData(x, y, w, h).data;
       };
       const [pa, pb] = [await pixels(a), await pixels(b)];
       if (pa.length !== pb.length) return 255;
@@ -258,7 +267,7 @@ function difference(page, a, b) {
       for (let i = 0; i < pa.length; i++) sum += Math.abs(pa[i] - pb[i]);
       return sum / pa.length;
     },
-    [a.toString("base64"), b.toString("base64")],
+    [a.toString("base64"), b.toString("base64"), region],
   );
 }
 
@@ -338,11 +347,144 @@ async function gpu(browser) {
   }
 }
 
+/** Resolves with the session's state (with its model) once `test(state)` holds. */
+async function until(debugUrl, test) {
+  let state;
+  // Polled tightly: the jump must land before the platform's edge.
+  await expect
+    .poll(async () => test((state = await (await fetch(`${debugUrl}/state`)).json())), { timeout: 20_000, intervals: [5] })
+    .toBe(true);
+  return state;
+}
+
+/**
+ * Extrapolate (D38) on examples/platformer with the jump weakened to 8.0:
+ * paused before a recorded run and jump, the switch draws the path that falls
+ * into the gap; an edit to 16.0 landing while paused peeks at the arc that
+ * clears it, then the view goes back to the switch (off). The arc's region,
+ * above the gap, changes only under the new code. Then the switch in Mini.
+ */
+async function extrapolate(browser) {
+  if (!GPU) {
+    console.log("SKIPPED: extrapolate — set FUNCTOR_APP_GPU=1 and FUNCTOR_BIN to a functor built from this checkout");
+    return;
+  }
+  const dir = tempProject("examples/platformer");
+  const file = `${dir}/game.fun`;
+  const source = readFileSync(file, "utf8");
+  const tuned = "let jumpVelocity = 13.0";
+  if (!source.includes(tuned)) throw new Error(`game.fun has no ${tuned}`);
+  writeFileSync(file, source.replace(tuned, "let jumpVelocity = 8.0"));
+  const server = await startServer(0, { dir, gpu: true });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const app = watchState(page);
+  const errors = watchErrors(page);
+  const view = page.getByTestId("game-view");
+  const img = view.locator("img");
+  const shots = process.env.APP_UI_SHOTS;
+  try {
+    const { bar, debugUrl } = await begin(page, app, server);
+    await expect(img).toBeVisible({ timeout: 60_000 });
+    const button = bar.getByRole("button", { name: /^Extrapolate/ });
+    // Run right and jump short of the left edge (x = -3): it falls in.
+    await page.waitForTimeout(300);
+    await view.click();
+    await page.keyboard.down("ArrowRight");
+    await until(debugUrl, (s) => s.model.x >= -4.6);
+    await page.keyboard.press("ArrowUp");
+    const takeoff = await until(debugUrl, (s) => !s.model.grounded);
+    expect(takeoff.model.vy, "a jump, not a walk off the edge").toBeGreaterThan(0);
+    await until(debugUrl, (s) => s.model.grounded);
+    // Right stays held past where a full jump lands: the replayed release
+    // would otherwise stop the new arc over the gap.
+    await page.waitForTimeout(1300);
+    await page.keyboard.up("ArrowRight");
+    await page.keyboard.press("Escape");
+
+    // Paused on the oldest frame, before the run: the recorded inputs are ahead.
+    await bar.getByRole("button", { name: "Pause" }).click();
+    await bar.getByRole("slider", { name: "Selected frame" }).focus();
+    await page.keyboard.press("Home");
+    await until(debugUrl, (s) => s.clock.paused && s.frame === s.clock.recorded.oldest && s.model.x === -6);
+    const settle = () => page.waitForTimeout(1000);
+    await settle();
+    const plain = await img.screenshot();
+    // Above the gap (x in [-3, 3], y in [1.6, 4.4] of the 24 × 13.5 view):
+    // only an arc that clears it passes there.
+    const arc = [0.4, 0.17, 0.6, 0.38];
+
+    // On: the weak path is drawn (it falls into the gap), not the arc.
+    await button.click();
+    await expect(button).toHaveAttribute("aria-pressed", "true");
+    await expect(bar.locator(".transport-past")).toHaveCount(1);
+    await settle();
+    const weak = await img.screenshot();
+    const drawn = await difference(page, plain, weak);
+    const weakArc = await difference(page, plain, weak, arc);
+    await shot(page, "extrapolate-weak");
+    // Off: back to the plain frame.
+    await button.click();
+    await expect(button).toHaveAttribute("aria-pressed", "false");
+    await settle();
+    const off = await difference(page, plain, await img.screenshot());
+
+    // The agent's edit lands while paused: a peek shows the new path by
+    // itself, the switch stays off, then the view returns to it.
+    const before = await clock(debugUrl);
+    writeFileSync(file, source.replace(tuned, "let jumpVelocity = 16.0"));
+    await expect(button).toHaveClass(/peeking/, { timeout: 20_000 });
+    expect((await clock(debugUrl)).program_revision).toBe(before.program_revision + 1);
+    await expect(button).toHaveAttribute("aria-pressed", "false");
+    await page.waitForTimeout(700);
+    const strong = await img.screenshot();
+    const strongArc = await difference(page, plain, strong, arc);
+    const changed = await difference(page, weak, strong, arc);
+    await shot(page, "extrapolate-peek");
+    // With APP_UI_SHOTS, the rest of the peek as frames (for a GIF).
+    for (let i = 0; shots && i < 12; i++) {
+      await page.locator(".game-stack").screenshot({ path: `${shots}/extrapolate-loop-${String(i).padStart(2, "0")}.png` });
+      await page.waitForTimeout(150);
+    }
+    await expect(button).not.toHaveClass(/peeking/, { timeout: 5_000 });
+    await settle();
+    const after = await difference(page, plain, await img.screenshot());
+    console.log(
+      `extrapolate: drawn ${drawn.toFixed(2)}, weak arc ${weakArc.toFixed(2)}, off ${off.toFixed(2)}, ` +
+        `peek arc ${strongArc.toFixed(2)}, changed ${changed.toFixed(2)}, after ${after.toFixed(2)}`,
+    );
+    expect(drawn, "the weak path is drawn").toBeGreaterThan(0.3);
+    expect(off, "off: the plain frame").toBeLessThan(0.3);
+    expect(strongArc, "the peek draws the arc over the gap").toBeGreaterThan(4 * Math.max(weakArc, 0.5));
+    expect(changed, "the path changed").toBeGreaterThan(4 * Math.max(weakArc, 0.5));
+    expect(after, "the peek ends: the plain frame").toBeLessThan(0.3);
+    expect((await clock(debugUrl)).paused, "still paused").toBe(true);
+
+    // Mini: the same switch.
+    await page.locator(".pane-bar").getByRole("group", { name: "Where the game shows" }).getByRole("button", { name: "Mini" }).click();
+    const compact = page.getByTestId("mini").getByRole("group", { name: "Transport" });
+    const miniImg = page.getByTestId("mini").locator("img");
+    await expect(miniImg).toBeVisible();
+    await settle();
+    const miniPlain = await miniImg.screenshot();
+    await compact.getByRole("button", { name: /^Extrapolate/ }).click();
+    await expect(compact.getByRole("button", { name: /^Extrapolate/ })).toHaveAttribute("aria-pressed", "true");
+    await settle();
+    expect(await difference(page, miniPlain, await miniImg.screenshot(), arc), "the arc in Mini").toBeGreaterThan(2);
+    await shot(page, "extrapolate-mini");
+    expect(errors, "console errors").toEqual([]);
+    console.log("ok: extrapolate (GPU)");
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
 const browser = await chromium.launch();
 try {
   await noGpu(browser);
   await marks(browser);
   await gpu(browser);
+  await extrapolate(browser);
 } finally {
   await browser.close();
 }

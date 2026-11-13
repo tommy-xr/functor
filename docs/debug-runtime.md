@@ -134,6 +134,7 @@ simulated rate also runs in real time); `--fixed-time` and `--input-script` runs
 | `POST /project-files` | answer one request: big-endian u32 header length, JSON header `{session, path, status: "bytes"\|"current"\|"missing", version?, message?}`, then the bytes; 409 for another session or an unrequested path (protocol v24) |
 | `POST /sync-assets` | finish a sync from a JSON array of current asset paths; uploaded paths absent from the manifest are removed |
 | `POST /camera` | point the shell's debug camera at `{"type":"set","eye":[x,y,z],"target":[x,y,z],"fov":60}` (fov optional), or return to the authored camera with `{"type":"attach"}` — see below (protocol v32) |
+| `POST /preview` | `{"extrapolate":true}` draws the extrapolation into the rendered frame, as the timeline's Extrapolate switch does; `false` stops it — see below (protocol v38) |
 | `GET /input-log` | the recorded sampled input and edge-event `marks` of each retained step from `?from=N` on, numbered as `/state` numbers `frame` — see below (protocol v33; `marks` v37) |
 | `POST /rewind` | restore recorded model + physics to `{"frame":42}` — the state `GET /state` reported as frame 42 — and branch from there (pin the clock first) |
 | `POST /seek` | show the recorded state `{"frame":42}`, paused, keeping the recorded future; the next step or resume branches from it — see below (protocol v37) |
@@ -656,6 +657,30 @@ An invalid view (eye equal to target, looking straight up or down, a field of
 view outside 0–180°) is a 400 and shows the authored view again. So is
 `--headless` (nothing is rendered) and the headset, whose view follows the
 wearer.
+
+### `POST /preview` — the extrapolation (protocol v38)
+
+The timeline's **Extrapolate** switch (🔮, [time travel](time-travel.md)) for a
+client that draws its own timeline, such as the desktop app's transport bar.
+`{"extrapolate": true}` draws the shown frame's recorded past (cyan) and
+predicted future (pink) into every rendered frame — so `/capture` and
+`/stream` carry it — with the timeline's defaults: trail and strobe, 2 s each
+way. The future is the current code run forward from the shown frame (a seek
+included), replaying recorded input where there is some. `false` fades it out
+and stops the work. Shell state only, like `/camera`: the model, input log
+and replay never see it.
+
+Cost: one computation runs the game's step over the future at 1/60 s (120
+steps for 2 s) and draws 40 samples of it and 40 of the recorded past. While
+paused it is cached, and recomputed when the frame, the code or the history
+changes, else every 30 frames; while playing about 10 times a second. Off,
+there is none. A 400 under `--headless`
+(nothing is rendered) and on the headset.
+
+```sh
+curl -s -X POST $H/preview -d '{"extrapolate":true}'
+curl -s -X POST $H/capture -o future.png
+```
 
 ### `GET /stream` — live frames (protocol v36)
 
