@@ -690,6 +690,17 @@ whom is readable at a glance (tethers, or a faint tree on the floor), two
 levels shown and deeper ones folded into a count. The tasks panel shows the
 same tree.
 
+**Forks that converge.** Parallel subagents each work in their own copy of
+the code, so their changes stay apart. The room shows it: the code shelf
+splits into a lane per subagent, each showing only what that fork changed and
+ending in its own miniature running that version. When a subagent finishes,
+its lane swings back and its blocks drop into the base. Where two forks
+changed the same block, a clean merge interleaves and a conflict holds the
+two versions apart for the orchestrator, or the user, to settle. The user can
+keep one fork, several, or send one back, and sees the combined result as one
+more miniature before the final Keep — two forks that each work but not
+together show up there.
+
 **What watching them is for — all three.** Progress in real time (position,
 link, bubble, context). Steering: an agent can be addressed — look or point
 at a figure and talk to that one; talking to the orchestrator redirects the
