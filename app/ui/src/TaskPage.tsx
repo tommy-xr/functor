@@ -162,13 +162,9 @@ export function TaskPage({
           <span className="mono">{task.model ? `${task.harness} · ${task.model}` : task.harness}</span>
           {created && <span>Started {created}</span>}
           {active && <span>Last active {active}</span>}
+          {/* The last spoken request's stages, each since the button was let go. */}
+          {task.voice?.line && <span data-testid="voice-timing">Spoken: {task.voice.line}</span>}
         </p>
-        {/* How long the last spoken request took, stage by stage, since the button was let go. */}
-        {task.voice?.line && (
-          <p className="task-meta" data-testid="voice-timing">
-            <span>Spoken: {task.voice.line}</span>
-          </p>
-        )}
         <div className="review-buttons">
           <button type="button" className="button button-small" disabled={!state} onClick={onContinue}>
             Continue in chat
