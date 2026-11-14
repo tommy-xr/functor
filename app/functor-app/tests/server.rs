@@ -236,6 +236,43 @@ fn transcribe_needs_the_token_and_takes_16_bit_audio() {
     assert!(heard.ends_with(r#"{"text":"make it red"}"#), "{heard}");
 }
 
+/// A launcher may read only the `listening on` line and close the pipe (as
+/// `serve` here does): a later write to stderr would then fail, and
+/// `eprintln!` panics on it, taking the server down mid-request (seen on
+/// Linux as connection resets). With the link off, the app writes nothing
+/// more unless something happens, also when its `functor` is unusable (that
+/// is said in its page and `--print`).
+#[test]
+fn nothing_follows_the_listening_line_when_the_cli_is_unusable() {
+    let tmp = tree();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_functor-app"))
+        .args(["--headless", "--no-device-link", "--port", "0", "-d"])
+        .arg(tmp.path())
+        .args(["--functor", "/nonexistent/functor"])
+        .env("FUNCTOR_APP_HOME", tmp.path().join(".app-home"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    stderr.read_line(&mut line).unwrap();
+    let addr = line
+        .trim()
+        .strip_prefix("[functor-app] listening on http://")
+        .and_then(|url| url.split_once("/#token="))
+        .map(|(addr, _)| addr.to_string())
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"));
+    // Served (and the session refused) before anything more could be said.
+    assert!(get(&addr, "/").starts_with("HTTP/1.1 200"));
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert_eq!(rest, "", "written after the listening line");
+}
+
 /// `GET path` over HTTP/1.1: the status line, headers and body as text.
 fn get(addr: &str, path: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
