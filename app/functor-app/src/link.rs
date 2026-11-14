@@ -145,6 +145,20 @@ struct HubState {
     unsent: HashMap<String, voice::Status>,
 }
 
+/// `status` as the frames a headset is sent. One from before `Answered`
+/// drops that stage unread, so `Idle` goes first: its toast clears rather
+/// than stays on Working.
+fn status_frames(status: &voice::Status) -> Vec<wire::Frame> {
+    let clear = matches!(status.stage, voice::Stage::Answered { .. }).then(|| {
+        voice::Status {
+            utterance: status.utterance,
+            stage: voice::Stage::Idle,
+        }
+        .frame()
+    });
+    clear.into_iter().chain([status.frame()]).collect()
+}
+
 struct Conn {
     cmds: UnboundedSender<ConnCmd>,
     /// Hex id, once linked.
@@ -424,19 +438,10 @@ impl Hub {
                     utterance: Some(utterance),
                     stage,
                 };
-                // A headset from before `Answered` drops it unread: `Idle`
-                // first, so its toast clears rather than stays on Working.
-                let before = matches!(status.stage, voice::Stage::Answered { .. }).then(|| {
-                    voice::Status {
-                        utterance: Some(utterance),
-                        stage: voice::Stage::Idle,
-                    }
-                });
                 let sent = self.link_of(&device).is_some_and(|link| {
-                    before
+                    status_frames(&status)
                         .into_iter()
-                        .chain([status.clone()])
-                        .all(|s| link.send(ConnCmd::Send(s.frame())).is_ok())
+                        .all(|frame| link.send(ConnCmd::Send(frame)).is_ok())
                 });
                 if !sent {
                     self.0.state.lock().unwrap().unsent.insert(device, status);
@@ -964,7 +969,7 @@ impl Connection {
                 self.unpend();
                 hub.seen(&device);
                 if let Some(status) = hub.0.state.lock().unwrap().unsent.remove(&device) {
-                    self.outgoing.push(status.frame());
+                    self.outgoing.extend(status_frames(&status));
                 }
                 self.linked = Some(device.clone());
                 hub.send(LinkEvent::Connected {

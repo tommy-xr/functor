@@ -75,6 +75,9 @@ pub struct Job {
     /// Since when (`AppState::clock`) the run has ended ok with the
     /// headset linked.
     ended: Option<u64>,
+    /// The task's change when the run started: the same one at its end is
+    /// an earlier run's, not one waiting to load.
+    pub(crate) before: Option<crate::changes::Change>,
 }
 
 /// Where an utterance goes.
@@ -159,6 +162,7 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
         revision,
         reloaded: false,
         ended: None,
+        before: t.change.clone(),
     });
     if run.is_some() {
         status(commands, &u.device, u.utterance, Stage::Working);
@@ -195,6 +199,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             (None, Some(run)) => {
                 job.run = Some(run.id);
                 job.revision = revision;
+                job.before = task.change.clone();
                 status(commands, &job.device, job.utterance, Stage::Working);
                 return true;
             }
@@ -234,7 +239,8 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
                 }
                 // A failure only when a change is known to be waiting;
                 // otherwise (changes untracked) it is the agent's answer.
-                match state.tracks_changes && crate::tasks::has_change(task) {
+                let waiting = crate::tasks::has_change(task) && task.change != job.before;
+                match state.tracks_changes && waiting {
                     true => end(Stage::Failed(
                         "the agent finished, but the game did not reload".to_string(),
                     )),

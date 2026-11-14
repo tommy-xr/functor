@@ -261,7 +261,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
+///
+/// 48 adds the `answered` voice stage.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a

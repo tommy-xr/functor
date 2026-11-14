@@ -514,7 +514,10 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
             vec![line("NOT SENT", HEADING, PINK), line(reason, BODY, WHITE)]
         }
     };
-    if let Some(text) = &toast.transcript {
+    // An answer has the toast to itself: the question was just asked.
+    let transcript = (toast.transcript.as_ref())
+        .filter(|_| !matches!(toast.stage, VoiceStage::Answered { .. }));
+    if let Some(text) = transcript {
         let quoted = format!("\"{text}\"");
         out.extend(
             wrap(&quoted, WRAP, WRAP_LINES)
@@ -1295,6 +1298,9 @@ mod tests {
         let lines = toast_lines(shown);
         assert_eq!((lines[0].text.as_str(), lines[0].color), ("ANSWERED", CYAN));
         assert_eq!(lines[1].text, "The ball is red already, so there");
+        let mut asked = shown.clone();
+        asked.transcript = Some("is the ball red?".into());
+        assert_eq!(toast_lines(&asked), lines, "without what was asked");
         assert!(toast.look(at(14.0)).is_some());
         assert!(toast.look(at(16.0)).is_none(), "then it fades");
     }

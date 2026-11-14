@@ -8533,11 +8533,16 @@ mod tests {
         changed.tracks_changes = true;
         changed.tasks[0].baseline = Some("t0".to_string());
         changed.tasks[0].change = Some(one_file(1));
-        let (_, commands) = update(changed, Event::Link(LinkEvent::Tick));
+        let (_, commands) = update(changed.clone(), Event::Link(LinkEvent::Tick));
         assert!(
             matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("did not reload")),
             "{commands:?}"
         );
+        // The same change as when the run started (a question about an
+        // earlier run's change): nothing new is waiting.
+        changed.voice[0].before = changed.tasks[0].change.clone();
+        let (_, commands) = update(changed, Event::Link(LinkEvent::Tick));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Answered(_))]));
 
         let reason = "the game stopped on the headset".to_string();
         let gone = [(1, Stage::Failed(reason))];
