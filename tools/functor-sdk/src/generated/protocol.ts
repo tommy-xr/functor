@@ -625,7 +625,20 @@ now: number | null, tasks: number,
 /**
  * While closed and linked with a task.
  */
-wrist: WristLight | null, };
+wrist: WristLight | null, 
+/**
+ * The task whose conversation page shows (v46).
+ */
+conversation: number | null, 
+/**
+ * That page shows the newest text (not scrolled up).
+ */
+following: boolean, 
+/**
+ * Items in the conversation the desktop sent, and whether the agent
+ * waits on a question.
+ */
+said: number, question: boolean, };
 
 /**
  * How a shell is showing the real world behind `Frame.withPassthrough`
@@ -1061,7 +1074,12 @@ export type UiEventKind = "Clicked" | { "SliderChanged": number } | { "TextChang
  * The headset's push-to-talk toast: where an utterance is, and what the
  * desktop heard while it is recent.
  */
-export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
+export type VoiceToast = { transcript: string | null, 
+/**
+ * Seconds the current step has been going, once it is long enough to
+ * say so (v46).
+ */
+waiting?: number, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "microphone_allowed" } | { "stage": "microphone_denied" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 export type WristLight = { stance: TaskStance, 
 /**
