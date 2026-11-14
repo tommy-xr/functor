@@ -2750,11 +2750,21 @@ async fn a_spoken_switch_runs_the_new_project_on_the_headset() {
     assert_eq!(said.unwrap(), "voice 1 done Switched to b");
     let state = app
         .state_where("b on the headset", 10, |s| {
-            s["active"] == "b" && s["layouts"]["b"]["game"]["placement"] == "headset"
+            s["active"] == "b"
+                && s["layouts"]["b"]["game"]["placement"] == "headset"
+                && s["session"]["pid"].is_u64()
         })
         .await;
     assert_eq!(state["agent_switch"]["to"], "b");
     assert_eq!(state["tasks"][0]["project"], "a", "the task stays");
+    // Stopped here, and gone: `run vr` outlives an app that is killed.
+    let pid = state["session"]["pid"].as_u64().expect("b's run vr").to_string();
+    app.send(json!({"type": "stop_session"})).await;
+    let alive = || {
+        let probe = Command::new("kill").args(["-0", &pid]).stderr(Stdio::null()).status();
+        probe.is_ok_and(|s| s.success())
+    };
+    until("b's run vr exits", || (!alive()).then_some(())).await;
 }
 
 /// The router (D29) end to end on loopback, under the fake agent,
