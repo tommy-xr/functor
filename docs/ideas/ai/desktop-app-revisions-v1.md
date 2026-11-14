@@ -745,17 +745,16 @@ Everything waiting on the user is also one list, in order — who, what they
 need, how long they have waited — at the top of the tasks panel and on the
 palm-up glance; choosing a row brings that agent and its thing forward.
 
-**The code map is a code city** (D33;
-[code-city](https://github.com/bryan-uipath/code-city)): folders are
+**The code map is a code city** (D33, D46): folders are
 districts, files are blocks, and every definition is a building, on the desk
 beside the miniature. It is the place the agents are seen working, several at
 once in the same codebase:
 
 - **Agents stand in the city.** A worker is at the building it is reading or
   editing, with its link going into it; where two agents touch the same file
-  the block shows it, as that project shows two pull requests meeting.
+  the block shows it.
 - **What is changing shows as construction.** Uncommitted work paints the
-  city as its working-tree layer does: changed buildings by how much was
+  city: changed buildings by how much was
   added and removed, new ones rising, deleted ones as empty lots. Each fork
   is such a layer, so forks are seen diverging and converging on one city
   rather than as copies of it.
