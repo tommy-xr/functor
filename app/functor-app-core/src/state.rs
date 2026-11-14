@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::activity::{activities, Activity};
+use crate::agent_switch::{self, AgentSwitch};
 use crate::agent_view::{
     agent_view, app_context, auto_apply, prune_highlight, publish_review, refresh_contexts,
     step_clicked, AppContext, Highlight, ViewReply, ViewRequest,
@@ -148,6 +149,9 @@ pub struct AppState {
     pub first_task: Option<(u64, String, Harness)>,
     /// What the agent or a walkthrough step last pointed at (D25).
     pub highlight: Option<Highlight>,
+    /// The agent's last project switch, asked for by the user (D42), until
+    /// they undo it, dismiss it or switch themselves.
+    pub agent_switch: Option<AgentSwitch>,
     /// The page's canvas is too narrow for panes side by side, so they
     /// stack: the agent's views make no splits there.
     #[serde(skip)]
@@ -269,6 +273,7 @@ impl AppState {
             last_parent: None,
             first_task: None,
             highlight: None,
+            agent_switch: None,
             highlight_seq: 0,
             canvas_stacked: false,
             transport_watched: false,
@@ -409,7 +414,7 @@ pub enum Event {
 
 /// Why the user cannot open a folder now: [`can_open`], or a new project
 /// being created (it opens itself).
-fn can_open_now(state: &AppState) -> Result<(), String> {
+pub(crate) fn can_open_now(state: &AppState) -> Result<(), String> {
     match &state.new_project {
         Some(np) if np.step.busy() => Err("a new project is being created".to_string()),
         _ => can_open(state),
@@ -653,25 +658,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let (changed, from_client) = match event {
         Event::Client(ClientMsg::GetState) => (false, true),
         Event::Client(ClientMsg::SetActiveProject { path }) => {
-            let switch = state.active.as_ref() != Some(&path)
-                && state.projects.iter().any(|p| p.path == path);
-            if switch {
-                commands.push(Command::ListFiles {
-                    dir: project_dir(Path::new(&state.repo_root), &path),
-                    path: path.clone(),
-                });
-                // Cleared, so the old project's files never show under the new name.
-                state.files.clear();
-                state.active = Some(path);
-                remember_active(&mut state, &mut commands);
-                // The session follows the active project.
-                stop(&mut state, &mut commands);
-                if starts_on_open(&state) {
-                    start(&mut state, &mut commands);
-                }
+            let switched = switch_active(&mut state, path, &mut commands);
+            // The user chose: the agent's switch is no longer theirs to undo.
+            if switched {
+                state.agent_switch = None;
             }
-            (switch, true)
+            (switched, true)
         }
+        Event::Client(ClientMsg::UndoSwitch) => match agent_switch::undo(&mut state, &mut commands) {
+            Ok(changed) => (changed, true),
+            Err(reason) => (reject(&mut commands, reason), false),
+        },
+        Event::Client(ClientMsg::DismissSwitch) => (state.agent_switch.take().is_some(), true),
         // Input arrives at pointer rate, so it is never answered with the state.
         // Only to a hidden session the game view shows: never to a game in
         // its own window or on a headset (whose mirror is view-only).
@@ -865,7 +863,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         } => {
             let id = state.opening + 1;
             let open = can_open_now(&state).map(|()| Command::OpenFolder { id, path });
-            (try_open(&mut state, open, &mut commands), false)
+            let undone = open.is_ok() && state.agent_switch.take().is_some();
+            (try_open(&mut state, open, &mut commands) || undone, false)
         }
         Event::Picked { path: None, .. } => (false, false),
         Event::Picked {
@@ -1082,9 +1081,10 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             remember_window(&mut state, task, run, &event, &mut commands);
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
+            let opened = ended && agent_switch::run_ended(&mut state, task, &mut commands);
             let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
             let review = changed && ended && start_review(&mut state, task, run, &mut commands);
-            (changed || shown || evidence || review, false)
+            (changed || shown || evidence || review || opened, false)
         }
         Event::TasksLoaded { tasks } => {
             state.tasks = tasks
@@ -1299,7 +1299,7 @@ fn read_marks(state: &mut AppState, commands: &mut Vec<Command>) {
 
 /// Starts opening a folder with `command`, or records why not in
 /// `open_error`; whether the state changed.
-fn try_open(
+pub(crate) fn try_open(
     state: &mut AppState,
     command: Result<Command, String>,
     commands: &mut Vec<Command>,
@@ -1345,6 +1345,7 @@ fn opened(
         not_opened(state, id);
         return true;
     }
+    let headset = headset_game(state);
     stop(state, commands);
     // Their results would land on the old folder's tasks.
     for task in &state.tasks {
@@ -1395,6 +1396,7 @@ fn opened(
         last_parent: _,
         first_task: _,
         highlight: _,
+        agent_switch: _,
         highlight_seq: _,
         canvas_stacked: _,
         transport_watched: _,
@@ -1429,6 +1431,7 @@ fn opened(
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
+    carry_headset(state, headset, commands);
     // Speech waiting on the router was said to the old folder's game.
     for (u, _) in std::mem::take(&mut state.routing) {
         let reason = "another folder was opened".to_string();
@@ -1672,6 +1675,52 @@ fn created(
         },
     };
     true
+}
+
+/// Makes `path`, a project in the open folder, the active one, as the
+/// project picker does: its files listed, the old game stopped and the new
+/// one started (D37), on the headset the old one ran on. Whether it switched.
+pub(crate) fn switch_active(state: &mut AppState, path: String, commands: &mut Vec<Command>) -> bool {
+    if state.active.as_ref() == Some(&path) || !state.projects.iter().any(|p| p.path == path) {
+        return false;
+    }
+    commands.push(Command::ListFiles {
+        dir: project_dir(Path::new(&state.repo_root), &path),
+        path: path.clone(),
+    });
+    let headset = headset_game(state);
+    // Cleared, so the old project's files never show under the new name.
+    state.files.clear();
+    state.active = Some(path);
+    remember_active(state, commands);
+    carry_headset(state, headset, commands);
+    // The session follows the active project.
+    stop(state, commands);
+    if starts_on_open(state) {
+        start(state, commands);
+    }
+    true
+}
+
+/// The headset the active project's game is placed on, if it is.
+fn headset_game(state: &AppState) -> Option<String> {
+    let game = &state.layouts.get(state.active.as_ref()?)?.game;
+    game.headset.clone().filter(|_| game.placement == Placement::Headset)
+}
+
+/// The active project, just opened, runs its game on `headset` too while
+/// it is connected: a switch asked for in the headset stays there (D42).
+fn carry_headset(state: &mut AppState, headset: Option<String>, commands: &mut Vec<Command>) {
+    let (Some(device), Some(path)) = (headset, state.active.clone()) else {
+        return;
+    };
+    if !connected(&state.devices, &device) {
+        return;
+    }
+    let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
+    if layout.apply(LayoutOp::PlaceOnHeadset { device }, |_| Ok(())) == Ok(true) {
+        save_layout(state, &path, layout, commands);
+    }
 }
 
 /// Puts the active project first in the recent projects.
@@ -2160,6 +2209,10 @@ fn create_task(
         return Err(wait.reason());
     }
     state.current_task.insert(project.clone(), Some(id));
+    // A request after the agent's switch takes it: nothing left to undo.
+    if state.agent_switch.as_ref().is_some_and(|s| !s.waiting) {
+        state.agent_switch = None;
+    }
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,
@@ -2387,6 +2440,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     let prompt = queue::prompt(task);
     task.run = Some(Run {
         id: run,
+        started_at: state.clock,
         ..Default::default()
     });
     // The report speaks for the run that made it; this one presents its own.

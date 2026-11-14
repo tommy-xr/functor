@@ -395,6 +395,7 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         VoiceStage::Heard => vec![line("HEARD", HEADING, CYAN)],
         VoiceStage::Working => vec![line("WORKING...", HEADING, CYAN)],
         VoiceStage::Reloaded => vec![line("RELOADED", HEADING, CYAN)],
+        VoiceStage::Done { text } => vec![line("DONE", HEADING, CYAN), line(text, BODY, WHITE)],
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
         }

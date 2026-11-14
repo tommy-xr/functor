@@ -251,6 +251,7 @@ impl Voice {
             }
             Stage::Working => VoiceStage::Working,
             Stage::Reloaded => VoiceStage::Reloaded,
+            Stage::Done { text } => VoiceStage::Done { text },
             Stage::Failed { reason } => VoiceStage::Failed { reason },
             Stage::Idle => return self.toast.hide(now),
         };

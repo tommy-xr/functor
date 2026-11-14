@@ -64,7 +64,9 @@ const NO_GAME: &str = "No game is running: `launch_game` starts one.";
 /// The app's view tools (`--app-url`).
 const VIEWS: &str = "`mcp__mis__show_view` and `mcp__mis__present` show the user views in \
 the app, beside their work. When you finish a change, call `present` once: the changed file \
-ranges, then the game. Do not show anything else they did not ask to see.";
+ranges, then the game. Do not show anything else they did not ask to see. When the user asks to \
+switch to another project or sample, `mcp__mis__list_projects` lists them and \
+`mcp__mis__open_project` switches the app.";
 
 /// What a run may do unattended: folder-scoped on the repo root. Edits
 /// anywhere in the repo are accepted, the game tools are allowed (`mis-agent`
@@ -1243,12 +1245,13 @@ mod tests {
     fn the_preamble_names_only_the_tools_a_run_has() {
         let bare = prompt("hi", false, false, false);
         assert!(
-            !bare.contains("present") && !bare.contains("`s1`"),
+            !bare.contains("present") && !bare.contains("`s1`") && !bare.contains("open_project"),
             "{bare}"
         );
         assert!(bare.contains(NO_GAME), "{bare}");
         let app = prompt("hi", false, true, true);
         assert!(app.contains(ATTACHED) && app.contains(VIEWS), "{app}");
+        assert!(app.contains("mcp__mis__open_project"), "{app}");
         let task = prompt("hi", false, true, false);
         assert!(
             task.contains(ATTACHED) && !task.contains("present"),

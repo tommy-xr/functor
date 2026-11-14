@@ -185,6 +185,40 @@ impl FunctorMcp {
         }))
         .await
     }
+
+    /// The projects the Functor app can switch to: those in its open folder
+    /// (the open one marked) and recent ones elsewhere.
+    #[tool]
+    async fn list_projects(&self) -> Result<CallToolResult, ErrorData> {
+        self.forward_view(json!({ "op": "list_projects" })).await
+    }
+
+    /// Switch the Functor app to another project, only when the user asked
+    /// for it in this task. `path` is one `list_projects` gave. Its game
+    /// replaces this one; this task stays where it is.
+    #[tool]
+    async fn open_project(
+        &self,
+        Parameters(args): Parameters<OpenProjectArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .forward_view(json!({ "op": "open_project", "path": args.path }))
+            .await;
+        // The app's game is another project's now (a headset's keeps its
+        // URL): this run's tools must not reach it.
+        if matches!(&result, Ok(r) if r.is_error != Some(true)) {
+            self.forget_attached("the app switched to another project, so this run's game is gone")
+                .await;
+        }
+        result
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenProjectArgs {
+    /// A path exactly as `list_projects` gave it.
+    pub path: String,
 }
 
 #[derive(Deserialize, JsonSchema)]

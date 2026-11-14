@@ -582,6 +582,9 @@ struct Registry {
     groups: BTreeMap<String, Arc<tokio::sync::Mutex<Group>>>,
     session_groups: BTreeMap<String, String>,
     next_group: u32,
+    /// Attached sessions forgotten on purpose, by id, with why: a call
+    /// naming one says so rather than listing the others.
+    gone: BTreeMap<String, String>,
 }
 
 impl Registry {
@@ -751,6 +754,7 @@ impl Registry {
                 Err(format!("session {id:?} is stopping; no new operation can start"))
             }
             Some(session) => Ok(session.url.clone()),
+            None if self.gone.contains_key(id) => Err(format!("session {id:?}: {}", self.gone[id])),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
             )),
@@ -781,6 +785,7 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
                 quarantined: session.quarantined.clone(),
                 closing: session.closing.clone(),
             }),
+            None if self.gone.contains_key(id) => Err(format!("session {id:?}: {}", self.gone[id])),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
             )),
@@ -870,6 +875,20 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
     /// owned. Detaching an attached id is intentionally insufficient.
     fn clear_owned_url_tombstone(&mut self, url: &str) {
         self.url_quarantines.remove(url);
+    }
+
+    /// Forget every attached session, `why` named to a later call; their
+    /// ids. Launched ones stay.
+    fn forget_attached(&mut self, why: &str) -> Vec<String> {
+        let ids: Vec<String> = (self.sessions.iter())
+            .filter(|(_, s)| !s.owned)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            self.sessions.remove(id);
+            self.gone.insert(id.clone(), why.to_string());
+        }
+        ids
     }
 
     /// Kill every owned child. Attached sessions are only forgotten.
@@ -2396,6 +2415,14 @@ impl FunctorMcp {
         // lifecycle closing. Recheck atomically with insertion.
         let id = reservation.finish()?;
         Ok((id, discovery))
+    }
+
+    /// Forget every attached session (see [`Registry::forget_attached`]).
+    pub(super) async fn forget_attached(&self, why: &str) {
+        let ids = (self.sessions.lock().expect("mcp registry poisoned")).forget_attached(why);
+        for id in ids {
+            self.forget_group_member(&id).await;
+        }
     }
 
     /// Store the embedding app's context object for the `app_context` tool.

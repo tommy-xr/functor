@@ -413,6 +413,7 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
+                    Core::Done(text) => voice::Stage::Done { text },
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {

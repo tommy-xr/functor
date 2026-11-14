@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent_switch;
 use crate::decision::{style_flags, Check, Report};
 use crate::layout::{LayoutOp, Placed, Placement, Target, View};
 use crate::projects::check_relative;
@@ -80,6 +81,12 @@ pub enum ViewRequest {
         evidence: Vec<Check>,
         #[serde(default)]
         steps: Vec<WalkthroughStep>,
+    },
+    /// The projects the app can switch to (D42).
+    ListProjects,
+    /// Switch the app to `path`, one `ListProjects` gave (D42).
+    OpenProject {
+        path: String,
     },
 }
 
@@ -293,9 +300,13 @@ pub(crate) fn agent_view(
     request: ViewRequest,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let handled = match review {
-        true => report(state, task, run, request),
-        false => handle(state, task, run, request, commands),
+    let handled = match (review, request) {
+        (_, ViewRequest::ListProjects) => agent_switch::list(state, task, run, review),
+        (_, ViewRequest::OpenProject { path }) => {
+            agent_switch::open(state, task, run, review, &path, commands)
+        }
+        (true, request) => report(state, task, run, request),
+        (false, request) => handle(state, task, run, request, commands),
     };
     let (ok, message, changed) = match handled {
         Ok((message, changed)) => (true, message, changed),
@@ -438,6 +449,9 @@ fn handle(
     let arranges = state.layouts.get(&project).is_none_or(|l| l.agent.arranges);
     match request {
         ViewRequest::Report { .. } => unreachable!("refused above"),
+        ViewRequest::ListProjects | ViewRequest::OpenProject { .. } => {
+            unreachable!("agent_switch's")
+        }
         ViewRequest::Show { view } => {
             check_target(state, &project, id, &view)?;
             if !arranges {

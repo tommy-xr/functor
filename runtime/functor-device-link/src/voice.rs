@@ -168,6 +168,11 @@ pub enum Stage {
     },
     /// Nothing in progress: clear the toast.
     Idle,
+    /// The desktop did what was asked, in a few words ("Switched to
+    /// examples/hello"). A headset that does not know it ignores it.
+    Done {
+        text: String,
+    },
 }
 
 /// The desktop's progress, desktop → headset.
@@ -205,6 +210,10 @@ impl Status {
                 w.str16(&tidy(reason, MAX_REASON));
             }
             Stage::Idle => w.u8(6),
+            Stage::Done { text } => {
+                w.u8(7);
+                w.str16(&tidy(text, MAX_REASON));
+            }
         }
         w.0
     }
@@ -235,6 +244,9 @@ impl Status {
                 reason: r.text16(MAX_REASON)?,
             },
             6 => Stage::Idle,
+            7 => Stage::Done {
+                text: r.text16(MAX_REASON)?,
+            },
             _ => return Err(Error::Malformed("voice stage")),
         };
         r.end()?;
@@ -352,6 +364,9 @@ mod tests {
                 reason: "no project".into(),
             },
             Stage::Idle,
+            Stage::Done {
+                text: "Switched to examples/hello".into(),
+            },
         ];
         for (i, stage) in stages.into_iter().enumerate() {
             let status = Status {

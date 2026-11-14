@@ -21,6 +21,7 @@ import {
   STATUS_WORDS,
   stepAvailable,
   stepPhrase,
+  switchLine,
   toolKind,
   usageBefore,
   usageText,
@@ -230,6 +231,7 @@ export function ChatDock({
   const places = destinations(state, current);
   const place = places && (switched && places[1] ? places[1] : places[0]);
   const other = places && (switched ? places[0] : places[1]);
+  const agentSwitch = switchLine(state?.agent_switch ?? null);
 
   const submit = () => {
     const text = draft;
@@ -291,6 +293,26 @@ export function ChatDock({
         }
       />
       <div className="composer-wrap">
+        {agentSwitch && (
+          <p className="switch-line" role="status" data-testid="agent-switch">
+            <span>
+              Switched to <code>{agentSwitch.to}</code> — asked by you in “{agentSwitch.task}”.
+            </span>
+            <button type="button" className="link-button" disabled={!online} onClick={() => send({ type: "undo_switch" })}>
+              Undo
+            </button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Dismiss"
+              title="Dismiss"
+              disabled={!online}
+              onClick={() => send({ type: "dismiss_switch" })}
+            >
+              <Icon name="cross" />
+            </button>
+          </p>
+        )}
         {shownNotice && (
           <p className="notice" role="status" data-testid="chat-notice">
             {shownNotice}

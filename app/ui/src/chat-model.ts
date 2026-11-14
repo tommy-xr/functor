@@ -1,7 +1,7 @@
 // The chat dock's pure parts: tool-call phrases, transcript updates, outcome
 // pills, connection lines and scroll-follow. No React, so `node --test` runs them.
 
-import type { AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage, ViewTarget } from "./generated/protocol";
+import type { AgentSwitch, AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage, ViewTarget } from "./generated/protocol";
 
 export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
   queued: "Queued",
@@ -49,6 +49,7 @@ const GAME_TOOLS = new Map(
     save_project: "Saved the project",
     app_context: "Checked what you are looking at",
     present: "Presented a walkthrough",
+    list_projects: "Listed the projects",
     api_reference: "Read the API reference",
     language_guide: "Read the language guide",
   }),
@@ -95,6 +96,10 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
     case "show_view": {
       const view = isObject(input) ? input.view : null;
       return view && isObject(view) ? { text: "Showed", ...viewPhrase(view as ViewTarget) } : { text: "Showed a view" };
+    }
+    case "open_project": {
+      const path = arg("path");
+      return path ? { text: "Switched to", code: path } : { text: "Switched the project" };
     }
   }
   return { text: GAME_TOOLS.get(bare) ?? bare };
@@ -273,4 +278,15 @@ export function connectionLines(prev: Snapshot, next: Snapshot): string[] {
 /** Whether a scroller is at (within `slack` px of) its bottom. */
 export function atBottom(el: { scrollTop: number; scrollHeight: number; clientHeight: number }, slack = 24): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= slack;
+}
+
+/**
+ * The chat's line for the agent's project switch (D42): where it went, and
+ * the task that asked, to undo it to. `null` while another folder waits to open.
+ */
+export function switchLine(sw: AgentSwitch | null): { to: string; task: string } | null {
+  if (!sw || sw.waiting) return null;
+  // Another folder's is absolute: its name reads better.
+  const absolute = /^([a-zA-Z]:)?[\\/]/.test(sw.to);
+  return { to: absolute ? basename(sw.to) : sw.to, task: sw.title || "Untitled task" };
 }

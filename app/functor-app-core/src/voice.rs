@@ -37,6 +37,8 @@ pub enum Stage {
     Working,
     /// The game on the headset reloaded after the run's edit.
     Reloaded,
+    /// The run did what was asked, in a few words: "Switched to examples/b".
+    Done(String),
     Failed(String),
 }
 
@@ -117,6 +119,18 @@ pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, 
         utterance,
         stage,
     }));
+}
+
+/// `task`'s run switched the project (D42): its utterances' outcome is
+/// `what`, said now, as the game they were said to has gone.
+pub(crate) fn switched(state: &mut AppState, task: u64, what: &str, commands: &mut Vec<Command>) {
+    state.voice.retain(|job| {
+        let done = job.task == task;
+        if done {
+            status(commands, &job.device, job.utterance, Stage::Done(what.to_string()));
+        }
+        !done
+    });
 }
 
 /// Follows `task`'s run, started for `u` (`Working` now), or the one it

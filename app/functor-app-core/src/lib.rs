@@ -4,6 +4,7 @@
 //! feeds results in as events.
 
 pub mod activity;
+pub mod agent_switch;
 pub mod agent_view;
 pub mod changes;
 pub mod cli;

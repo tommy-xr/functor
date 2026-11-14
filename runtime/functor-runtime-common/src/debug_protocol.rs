@@ -817,6 +817,8 @@ pub enum VoiceStage {
     Reloaded,
     /// The desktop could not act on it.
     Failed { reason: String },
+    /// The desktop did what was asked, without a reload: "Switched to …".
+    Done { text: String },
     /// It never reached the desktop whole: cancelled, or the link failed.
     NotSent { reason: String },
 }
