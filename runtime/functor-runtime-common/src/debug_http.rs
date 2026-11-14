@@ -282,6 +282,44 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        // The render loop hands over shared pointers; the JSON is written
+        // here, on this connection's thread, so a poll costs it no frame time.
+        ("GET", "/mirror") => {
+            let (resp_tx, resp_rx) = mpsc::channel();
+            if tx.send(DebugRequest::Mirror(resp_tx)).is_err() {
+                return runtime_gone(&mut stream, cors_origin);
+            }
+            match recv(resp_rx).map(|snapshot| snapshot.map(|s| serde_json::to_vec(&s))) {
+                Ok(Some(Ok(json))) if json.len() > debug_protocol::MAX_MIRROR_BYTES => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    413,
+                    "Payload Too Large",
+                    &format!(
+                        "the frame is {} MiB as JSON, over the mirror's {} MiB",
+                        json.len() >> 20,
+                        debug_protocol::MAX_MIRROR_BYTES >> 20
+                    ),
+                ),
+                Ok(Some(Ok(json))) => {
+                    respond_bytes(&mut stream, cors_origin, 200, "OK", "application/json", &json)
+                }
+                Ok(None) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    503,
+                    "Service Unavailable",
+                    "no frame rendered yet",
+                ),
+                Ok(Some(Err(_))) | Err(_) => respond_text(
+                    &mut stream,
+                    cors_origin,
+                    500,
+                    "Internal Server Error",
+                    "mirror failed",
+                ),
+            }
+        }
         ("GET", "/scene") | ("GET", "/trace") => {
             let (resp_tx, resp_rx) = mpsc::channel();
             let request = if path == "/scene" {
@@ -1301,6 +1339,49 @@ mod tests {
 
         assert_eq!(query_number::<usize>("", "last"), Ok(None));
         assert!(query_number::<usize>("last=many", "last").is_err());
+    }
+
+    /// `GET /mirror` answered with `snapshot`: the raw response.
+    fn mirror(snapshot: Option<debug_protocol::MirrorSnapshot>) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = connect(&listener, "GET /mirror HTTP/1.1\r\n\r\n".into());
+        let (tx, rx) = mpsc::channel();
+        let server = std::thread::spawn(move || handle(listener.accept().unwrap().0, &tx));
+        match rx.recv().unwrap() {
+            DebugRequest::Mirror(response) => response.send(snapshot).unwrap(),
+            _ => panic!("expected a mirror request"),
+        }
+        server.join().unwrap();
+        client.join().unwrap()
+    }
+
+    #[test]
+    fn mirror_serves_the_frame_and_its_view_compactly_and_bounded() {
+        use crate::{Camera, Frame, Scene3D};
+        let snapshot = |scene: Scene3D| debug_protocol::MirrorSnapshot {
+            rendered_frames: 7,
+            tts: 1.5,
+            view: Some(Camera::default()),
+            scene: std::sync::Arc::new(Frame::new(Camera::default(), scene)),
+        };
+        let small = snapshot(Scene3D::cube());
+        let response = mirror(Some(small.clone()));
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        let body = response.split("\r\n\r\n").nth(1).unwrap();
+        assert!(!body.contains('\n'), "compact JSON");
+        let back: debug_protocol::MirrorSnapshot = serde_json::from_str(body).unwrap();
+        assert_eq!(back, small);
+
+        assert!(mirror(None).starts_with("HTTP/1.1 503 "));
+
+        // A frame past the bound is refused, not sent.
+        let huge = Scene3D {
+            obj: crate::SceneObject::Group(vec![Scene3D::cube(); 200_000]),
+            xform: cgmath::SquareMatrix::identity(),
+        };
+        let response = mirror(Some(snapshot(huge)));
+        assert!(response.starts_with("HTTP/1.1 413 "), "{}", &response[..80]);
+        assert!(response.contains("over the mirror's 8 MiB"));
     }
 
     #[test]

@@ -657,6 +657,13 @@ pub trait GameProducer {
     /// ([`crate::GameClock::alpha`]) handed to a three-parameter `draw`.
     fn render_at(&mut self, frame_time: crate::FrameTime, alpha: f32) -> crate::Frame;
 
+    /// The clock the frame [`Self::render_at`] just drew renders at, which
+    /// render-time animation (auto-playing clips, terrain time) samples: the
+    /// shell's, except for a producer drawing another session's frames.
+    fn render_time(&self, shell: crate::FrameTime) -> crate::FrameTime {
+        shell
+    }
+
     /// [`Self::render_at`] on a step boundary (`alpha` 0).
     fn render(&mut self, frame_time: crate::FrameTime) -> crate::Frame {
         self.render_at(frame_time, 0.0)
@@ -740,6 +747,16 @@ pub trait GameProducer {
     /// under it (the replay producer replays recorded frames).
     fn model_revision(&self) -> u64 {
         0
+    }
+
+    /// Whether anyone sees the shell's frames: a visible window, a capture
+    /// run, or a client streaming a hidden one. A producer that fetches its
+    /// frames from elsewhere (the mirror) fetches only while watched.
+    fn set_watched(&mut self, _watched: bool) {}
+
+    /// `/state.mirror`: `Some` only for a producer mirroring another session.
+    fn mirror_state(&self) -> Option<crate::debug_protocol::MirrorState> {
+        None
     }
 
     /// The paused-inspector trace (visual-debugger PR2): the wire-contract JSON
