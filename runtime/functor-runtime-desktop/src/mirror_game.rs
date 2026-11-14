@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use cgmath::{Matrix4, SquareMatrix};
 use functor_runtime_common::debug_protocol::{MirrorSnapshot, MirrorState};
 use functor_runtime_common::ui::View;
-use cgmath::{Matrix4, SquareMatrix};
 use functor_runtime_common::{Camera, Frame, FrameTime, Scene3D, SceneObject};
 
 use crate::game::Game;
@@ -131,7 +131,9 @@ fn fetch(client: &reqwest::blocking::Client, url: &str) -> Result<MirrorSnapshot
         }
     })?;
     let status = response.status();
-    let body = response.bytes().map_err(|e| format!("cannot read the frame: {e}"))?;
+    let body = response
+        .bytes()
+        .map_err(|e| format!("cannot read the frame: {e}"))?;
     match status.as_u16() {
         200 => serde_json::from_slice(&body).map_err(|e| format!("not a mirror frame: {e}")),
         404 => Err("it runs a Functor too old to mirror (no GET /mirror); update it".to_string()),
