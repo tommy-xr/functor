@@ -93,8 +93,11 @@ async function run(browser, width, height) {
     const held = async () => (await sessionInput(app.state.session.status.debug_url)).held_keys;
     if (FUNCTOR) {
       await main.getByRole("tab", { name: "Game", exact: true }).click();
-      await main.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" }).click();
+      const transport = main.getByRole("group", { name: "Transport" });
+      await transport.getByRole("button", { name: "Play" }).click();
+      await expect(transport.getByRole("button", { name: "Pause" })).toBeVisible();
       await main.getByTestId("game-view").click();
+      await expect(main.getByTestId("game-view").getByRole("status")).toHaveText(RELEASE_HINT);
       await main.keyboard.down("KeyW");
       await expect.poll(held).toEqual(["W"]);
     }
