@@ -109,8 +109,7 @@ impl Cli {
         if path.components().count() > 1 {
             return std::path::absolute(&path).unwrap_or(path);
         }
-        let named = self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty());
-        if let (Some(contents), false) = (self.contents(), named) {
+        if let (Some(contents), false) = (self.contents(), self.named()) {
             return contents.join("Helpers").join(path);
         }
         let dirs = std::env::var_os("PATH").unwrap_or_default();
@@ -118,6 +117,11 @@ impl Cli {
             .map(|dir| dir.join(&path))
             .find(|p| p.is_absolute() && executable(p));
         on_path.unwrap_or(path)
+    }
+
+    /// A `functor` was named (`--functor`, `FUNCTOR_BIN`): it is used, wherever it is.
+    fn named(&self) -> bool {
+        self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty())
     }
 
     /// The `Contents` of the `Functor.app` this app runs from, if it does.
@@ -130,12 +134,13 @@ impl Cli {
     /// it, when it runs from a checkout's `target/debug` or `target/release`.
     /// `None` when one is named (`--functor`, `FUNCTOR_BIN`): that wins.
     fn build(&self) -> Option<String> {
-        let named = self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty());
-        let dir = self.exe.as_deref().and_then(Path::parent).filter(|_| !named)?;
-        let script = match () {
-            _ if dir.ends_with("target/debug") => "npm run build:cli:debug",
-            _ if dir.ends_with("target/release") => "npm run build",
-            _ => return None,
+        let dir = self.exe.as_deref().and_then(Path::parent).filter(|_| !self.named())?;
+        let script = if dir.ends_with("target/debug") {
+            "npm run build:cli:debug"
+        } else if dir.ends_with("target/release") {
+            "npm run build"
+        } else {
+            return None;
         };
         let into = dir.join(format!("functor{}", std::env::consts::EXE_SUFFIX));
         Some(format!("{script}, into {}", shown(&into)))

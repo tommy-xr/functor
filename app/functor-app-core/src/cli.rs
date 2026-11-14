@@ -42,11 +42,13 @@ impl CliProblem {
             (CliCause::Unusable(why), _) => format!("cannot be used: {why}"),
         };
         let stopped = "so games and the agent's tools cannot start";
+        // `npm run app` opens the window, which is macOS-only for now.
+        let app = match cfg!(target_os = "macos") {
+            true => "; npm run app builds and opens the app with its own",
+            false => "",
+        };
         let fix = match &self.build {
-            Some(build) => format!(
-                "Build a current one ({build}), or pass --functor <path>; npm run app builds \
-and opens the app with its own."
-            ),
+            Some(build) => format!("Build a current one ({build}), or pass --functor <path>{app}."),
             None => "Pass --functor <path> to a current one.".to_string(),
         };
         match (&self.cause, self.bundled) {
@@ -89,19 +91,26 @@ mod tests {
 
     #[test]
     fn says_which_binary_what_is_wrong_and_the_fix() {
+        // The window, and so `npm run app`, is macOS-only for now.
+        let app = match cfg!(target_os = "macos") {
+            true => "; npm run app builds and opens the app with its own",
+            false => "",
+        };
         assert_eq!(
             problem(CliCause::TooOld, Some("0.1.2"), false).message(),
-            "The functor CLI at ~/.functor/bin/functor (0.1.2) is older than this app, so games \
-and the agent's tools cannot start. Build a current one (npm run build, into \
-target/release/functor), or pass --functor <path>; npm run app builds and opens the app with \
-its own."
+            format!(
+                "The functor CLI at ~/.functor/bin/functor (0.1.2) is older than this app, so \
+games and the agent's tools cannot start. Build a current one (npm run build, into \
+target/release/functor), or pass --functor <path>{app}."
+            )
         );
         assert_eq!(
             problem(CliCause::Unusable("Permission denied".into()), None, false).message(),
-            "The functor CLI at ~/.functor/bin/functor cannot be used: Permission denied, so \
+            format!(
+                "The functor CLI at ~/.functor/bin/functor cannot be used: Permission denied, so \
 games and the agent's tools cannot start. Build a current one (npm run build, into \
-target/release/functor), or pass --functor <path>; npm run app builds and opens the app with \
-its own."
+target/release/functor), or pass --functor <path>{app}."
+            )
         );
         // A development build has no version to compare: when it was built is what differs.
         let dev = CliProblem {

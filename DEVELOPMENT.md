@@ -122,7 +122,8 @@ npm run package:app                    # macOS: target/package/Functor.app
   changing the web runtime). Release by default, as the live game view is far
   too slow in debug; `npm run app:debug` compiles faster when you only check
   that something loads. The app and every game and tool it starts are that one
-  executable, so they never mismatch.
+  executable, so they never mismatch. The window is macOS-only for now:
+  elsewhere use `npm run app -- --headless` and open the printed URL.
 - **`npm run package:app`** bundles the release `functor` as `Functor.app`
   (below).
 
@@ -169,7 +170,9 @@ The app's own binary, `functor-app`, is still built for the tests and scripts
 that start it by name (`npm run build:app`, `cargo build -p functor-app`). It
 runs the `functor` it finds (`--functor`, `FUNCTOR_BIN`, next to itself, then
 PATH) and checks it first: one too old for the app is named in a banner with
-the build that fixes it, and nothing is started with it.
+the build that fixes it, and nothing is started with it. A `functor` built
+without the app runs that `functor-app` instead (next to itself,
+`FUNCTOR_APP_BIN`, PATH).
 
 Run it:
 
