@@ -247,23 +247,28 @@ pub(crate) fn client_msg(
     else {
         return Err(None);
     };
-    // A route is the headset's own utterance's.
-    if let PanelAction::Move { id, to } = action {
-        if !state
-            .routed
-            .iter()
-            .any(|o| o.id == id && o.device == device.id)
-        {
-            return Err(Some("that utterance can no longer be moved".to_string()));
+    let (task, msg) = match action {
+        // A route is the headset's own utterance's, as its panel shows it.
+        PanelAction::Move { id, to } => {
+            let own = state
+                .routed
+                .iter()
+                .any(|o| o.id == id && o.device == device.id);
+            if !own || !state.routes.iter().any(|r| r.id == id) {
+                return Err(Some("that message can no longer be moved".to_string()));
+            }
+            return Ok(ClientMsg::MoveUtterance { id, to });
         }
-        return Ok(ClientMsg::MoveUtterance { id, to });
-    }
-    let task = match &action {
-        PanelAction::Select { task }
-        | PanelAction::Keep { task }
-        | PanelAction::Revert { task, .. }
-        | PanelAction::Stop { task } => *task,
-        PanelAction::Move { .. } => unreachable!("answered above"),
+        PanelAction::Select { task } => (
+            task,
+            ClientMsg::SelectTask {
+                task: Some(task),
+                if_unset: false,
+            },
+        ),
+        PanelAction::Keep { task } => (task, ClientMsg::KeepChange { task }),
+        PanelAction::Revert { task, tree } => (task, ClientMsg::RevertChange { task, tree }),
+        PanelAction::Stop { task } => (task, ClientMsg::StopTask { task }),
     };
     if !state
         .tasks
@@ -272,15 +277,5 @@ pub(crate) fn client_msg(
     {
         return Err(Some(format!("there is no task {task} here")));
     }
-    let msg = match action {
-        PanelAction::Select { task } => ClientMsg::SelectTask {
-            task: Some(task),
-            if_unset: false,
-        },
-        PanelAction::Keep { task } => ClientMsg::KeepChange { task },
-        PanelAction::Revert { task, tree } => ClientMsg::RevertChange { task, tree },
-        PanelAction::Stop { task } => ClientMsg::StopTask { task },
-        PanelAction::Move { .. } => unreachable!("answered above"),
-    };
     Ok(msg)
 }
