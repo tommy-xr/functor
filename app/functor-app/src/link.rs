@@ -1163,7 +1163,7 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
             stance: wire_stance(c.stance),
             activity: c.activity.clone(),
             question: c.question,
-            earlier: c.earlier,
+            first: c.first,
             items: (c.items.iter())
                 .map(|i| panel::Said {
                     role: match i.role {

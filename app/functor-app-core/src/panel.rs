@@ -79,8 +79,9 @@ pub struct Conversation {
     pub activity: String,
     /// The agent asked a question it waits on.
     pub question: bool,
-    /// Older items than these exist.
-    pub earlier: bool,
+    /// The index of `items[0]` among all the task's items: older ones stay
+    /// on the desktop, and a headset can hold its place as the window moves.
+    pub first: u32,
     /// Oldest first, at most [`SAID`].
     pub items: Vec<Said>,
 }
@@ -232,8 +233,15 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
             line: r.line.clone(),
             moves: r.moves.clone(),
         });
-    let current = state.current_task.get(&project).copied().flatten();
-    let conversation = current
+    // The task this headset last opened, else the one in front.
+    let opened = state.panel_tasks.get(device).copied();
+    let conversation = opened
+        .filter(|id| {
+            state
+                .tasks
+                .iter()
+                .any(|t| t.id == *id && t.project == project)
+        })
         .or(now)
         .and_then(|id| {
             state
@@ -338,9 +346,14 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
                     push(&mut items, Role::App, false, line);
                 }
             }
-            Item::Agent { text, .. } => push(&mut items, Role::Agent, false, text),
+            Item::Agent { text, .. } => push(&mut items, Role::Agent, false, &without_code(text)),
             Item::Tool { input, .. } if ask => {
-                push(&mut items, Role::Agent, false, question(input));
+                push(
+                    &mut items,
+                    Role::Agent,
+                    false,
+                    &without_code(question(input)),
+                );
             }
             Item::Tool { .. } => {
                 let label = call.map(|c| c.label).unwrap_or_default();
@@ -354,11 +367,14 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
                 };
                 push(&mut items, Role::App, false, &text);
             }
-            Item::Finished { ok, summary } => {
-                let head = if *ok { "Done" } else { "Failed" };
-                let text = match summary.as_deref().map(str::trim) {
-                    Some(s) if !s.is_empty() => format!("{head}: {s}"),
-                    _ => head.to_string(),
+            // As the chat says it: a success's summary is the agent's last
+            // message, already above; a failure, its first line.
+            Item::Finished { ok: true, .. } => push(&mut items, Role::App, false, "Done"),
+            Item::Finished { ok: false, summary } => {
+                let first = summary.as_deref().and_then(|s| s.lines().next());
+                let text = match first.map(str::trim) {
+                    Some(s) if !s.is_empty() => format!("Failed: {}", crate::print::cut(s, 120)),
+                    _ => "Failed".to_string(),
                 };
                 push(&mut items, Role::App, false, &text);
             }
@@ -368,15 +384,15 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
             Item::Usage { .. } | Item::Walkthrough { .. } => {}
         }
     }
-    let earlier = items.len() > SAID;
-    items.drain(..items.len().saturating_sub(SAID));
+    let first = items.len().saturating_sub(SAID);
+    items.drain(..first);
     Conversation {
         task: task.id,
         title: task.title.clone(),
         stance: activity.map_or(Stance::Done, |a| a.stance),
         activity: activity_line(activity),
         question: activity.is_some_and(|a| a.calls.iter().any(|c| c.kind == CallKind::Ask)),
-        earlier,
+        first: first as u32,
         items,
     }
 }
@@ -408,6 +424,25 @@ fn decision(state: &AppState, task: &Task) -> Option<PanelDecision> {
     })
 }
 
+/// `text` without code: a fenced block becomes one "[code on the desktop]"
+/// line, and diff headers go. Paths the agent writes in prose stay, as the
+/// chat shows them.
+fn without_code(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if !fenced {
+                out.push("[code on the desktop]");
+            }
+            fenced = !fenced;
+        } else if !fenced && !line.starts_with("diff --git") && !line.starts_with("@@ ") {
+            out.push(line);
+        }
+    }
+    out.join("\n")
+}
+
 /// What a task is doing: its running call's label, else its error, else
 /// nothing.
 fn activity_line(a: Option<&Activity>) -> String {
@@ -431,11 +466,15 @@ pub(crate) fn refresh_panels(state: &mut AppState, commands: &mut Vec<Command>) 
         .panels
         .retain(|id, _| connected.iter().any(|(c, _)| c == id));
     for (device, conn) in connected {
-        let panel = panel(state, &device);
         let sent = state.panels.get(&device);
         let relinked = sent.is_none_or(|(c, ..)| *c != conn);
-        let due = sent.is_none_or(|(_, p, at)| *p != panel && state.clock >= at + RESEND_MS);
-        if relinked || due {
+        // Built only when it could be sent.
+        if !relinked && sent.is_some_and(|(_, _, at)| state.clock < at + RESEND_MS) {
+            continue;
+        }
+        let panel = panel(state, &device);
+        let changed = sent.is_none_or(|(_, p, _)| *p != panel);
+        if relinked || changed {
             let at = state.clock;
             state
                 .panels

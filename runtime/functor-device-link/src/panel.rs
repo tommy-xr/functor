@@ -115,8 +115,9 @@ pub struct Conversation {
     pub activity: String,
     /// The agent waits on a question it asked.
     pub question: bool,
-    /// Older items than these exist.
-    pub earlier: bool,
+    /// The index of `items[0]` among all the task's items (older ones stay
+    /// on the desktop).
+    pub first: u32,
     /// Oldest first; at most [`MAX_SAID`].
     pub items: Vec<Said>,
 }
@@ -324,7 +325,7 @@ impl Update {
                         w.u8(c.stance.code());
                         w.str16(&tidy(&c.activity, MAX_ACTIVITY));
                         w.u8(c.question.into());
-                        w.u8(c.earlier.into());
+                        w.u32(c.first);
                         let items = &c.items[c.items.len().saturating_sub(MAX_SAID)..];
                         w.u8(items.len() as u8);
                         for i in items {
@@ -432,7 +433,7 @@ impl Update {
                         stance: Stance::from_code(r.u8()?)?,
                         activity: r.text16(MAX_ACTIVITY)?,
                         question: r.flag()?,
-                        earlier: r.flag()?,
+                        first: r.u32()?,
                         items: (0..count(&mut r, MAX_SAID)?)
                             .map(|_| {
                                 Ok(Said {
@@ -638,7 +639,7 @@ mod tests {
                     stance: Stance::Waiting,
                     activity: String::new(),
                     question: true,
-                    earlier: false,
+                    first: 0,
                     items: vec![
                         Said {
                             role: Role::You,
@@ -733,7 +734,7 @@ mod tests {
                 stance: Stance::Working,
                 activity: long(1000),
                 question: false,
-                earlier: true,
+                first: 28,
                 items: (0..40)
                     .map(|i| Said {
                         role: Role::Agent,
