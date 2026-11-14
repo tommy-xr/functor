@@ -79,7 +79,9 @@ jobs:
       # macOS only, as the app's window is.
       - name: Test speech-to-text with whisper.cpp
         if: matrix.os == 'macos-latest'
-        run: cargo test -p functor-stt --features whisper
+        run: |
+          cargo test -p functor-stt --features whisper
+          cargo check -p functor-app --features whisper
 
       - name: Validate API documentation generation
         run: npm run check:docs

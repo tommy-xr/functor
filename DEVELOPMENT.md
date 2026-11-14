@@ -171,7 +171,8 @@ developer). Opened from Finder or the Dock, it opens the last project and takes
 `PATH` from your login shell, so `claude`, `codex` and `adb` are found. While it
 runs, `open` only brings it forward: `--args` reach a fresh launch. The first
 mic recording and the first headset search ask for microphone and
-local-network access.
+local-network access, and ask again after each rebuild (an ad-hoc signature
+changes with the binary).
 
 ## What `build`/`run` do under the hood
 

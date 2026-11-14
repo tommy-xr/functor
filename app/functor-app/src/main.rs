@@ -741,6 +741,7 @@ const PATH_END: &str = "__FUNCTOR_PATH_END__";
 /// `claude`, `codex` or `adb`. Gives up after 3s, keeping the PATH it has.
 #[cfg(target_os = "macos")]
 fn use_login_path() {
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().unwrap_or_default();
     if !exe
@@ -758,6 +759,9 @@ fn use_login_path() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // Its own group: an interactive shell on a terminal would take the
+        // terminal's foreground from this app.
+        .process_group(0)
         .spawn()
     else {
         return;
@@ -789,7 +793,8 @@ fn use_login_path() {
 fn login_path(out: &str) -> Option<&str> {
     let (before, _) = out.split_once(PATH_END)?;
     let (_, path) = before.rsplit_once(PATH_START)?;
-    Some(path).filter(|p| !p.is_empty())
+    // Absolute, so a shell that left `$PATH` unexpanded is not taken at its word.
+    Some(path).filter(|p| p.starts_with('/'))
 }
 
 /// Resolves to the signal number on SIGINT, SIGTERM or SIGHUP (Ctrl-C off Unix).
@@ -829,5 +834,6 @@ mod tests {
         assert_eq!(login_path(&format!("{PATH_START}/opt/bin")), None);
         assert_eq!(login_path("no mark"), None);
         assert_eq!(login_path(&format!("{PATH_START}{PATH_END}")), None);
+        assert_eq!(login_path(&format!("{PATH_START}$PATH{PATH_END}")), None);
     }
 }
