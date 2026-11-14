@@ -76,6 +76,15 @@ pub fn msdf_glsl() -> String {
     )
 }
 
+/// The overlay's type scale, as line heights (`size`) in metres for a
+/// surface 1 m away: multiply by the surface's distance. At the Quest 3's
+/// ~15 px/deg eye buffer, body x-height is 0.78° (about 12 px), small 0.61°
+/// (9 px), titles 1.04° (16 px). Every overlay surface sizes its text from
+/// these, so they read alike.
+pub const TITLE: f32 = 0.0267;
+pub const BODY: f32 = 0.020;
+pub const SMALL: f32 = 0.0156;
+
 /// Em per `size`: capitals a little taller than the old 8x8 font's.
 const EM_PER_SIZE: f32 = 1.25;
 /// From a line's top to its baseline, in `size`.
