@@ -241,7 +241,7 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
     let activity = state.activity.get(&task.id);
     let mut items: Vec<Said> = Vec::new();
     let mut steps = 0;
-    let mut push = |items: &mut Vec<Said>, role, spoken, text: &str| {
+    let push = |items: &mut Vec<Said>, role, spoken, text: &str| {
         let text = text.trim();
         if text.is_empty() {
             return;
