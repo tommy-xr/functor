@@ -883,6 +883,8 @@ struct DebugLoopState {
     /// The clock `last_frame` rendered at.
     last_tts: f32,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
+    /// The last capture's PNG encode: one at a time (each holds ~140 MB).
+    capture_encode: Option<std::thread::JoinHandle<()>>,
     /// `None` when the runtime lacks XR_FB_display_refresh_rate.
     display_refresh_rate: Option<DisplayRefreshRate>,
     /// The loaded game's launch `config` (`None` for the boot scene).
@@ -1061,7 +1063,9 @@ fn service_debug_request(
                 let _ = response.send(Err(CaptureError::Unavailable(
                     "capture is unsupported by this OpenXR runtime".to_string(),
                 )));
-            } else if debug.pending_capture.is_some() {
+            } else if debug.pending_capture.is_some()
+                || debug.capture_encode.as_ref().is_some_and(|encode| !encode.is_finished())
+            {
                 let _ = response.send(Err(CaptureError::Failed(
                     "another capture is already pending".to_string(),
                 )));
@@ -2793,20 +2797,27 @@ images cannot be posed"
             } else {
                 Ok((eyes[0].width, eyes[0].height, captured_eyes.expect("two captured views checked above")))
             };
-            // The PNG encodes off the frame: 140 ms for two eyes (seconds in
-            // a debug build), which froze the view.
-            std::thread::spawn(move || {
-                let png = result.and_then(|(width, height, captured)| {
-                    functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
-                        width,
-                        height,
-                        &captured[0],
-                        &captured[1],
-                    )
-                    .map_err(CaptureError::Failed)
-                });
-                let _ = response.send(png);
-            });
+            match result {
+                // The PNG encodes off the frame: 140 ms for two eyes (seconds
+                // in a debug build), which froze the view.
+                Ok((width, height, captured)) => {
+                    let encode = move || {
+                        let png = functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
+                            width,
+                            height,
+                            &captured[0],
+                            &captured[1],
+                        );
+                        let _ = response.send(png.map_err(CaptureError::Failed));
+                    };
+                    // Unstarted, the request's sender drops: it answers 500.
+                    debug.capture_encode =
+                        std::thread::Builder::new().name("functor-capture".to_string()).spawn(encode).ok();
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
         }
     }
 
