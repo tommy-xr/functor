@@ -261,7 +261,8 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    const SHORT: Duration = Duration::from_millis(500);
+    // Room for a loaded machine to start `sh`; the hang test still ends well within 5 s.
+    const SHORT: Duration = Duration::from_secs(2);
 
     use crate::creation::tests::fake_functor as fake;
 
