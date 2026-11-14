@@ -805,6 +805,19 @@ game's frame, as the mirror does (4.5). So:
 - **The same scene draws on the desktop,** where it is the agents' view in a
   pane (D34).
 
+**Themes.** Because the workshop is a scene over a contract, it can look like
+something else entirely while meaning the same: a plain office (the manager
+at the front desk, workers at theirs, the code city as an architect's model,
+what waits for the user in an in-tray), a starship's bridge and engineering
+(the game on the main screen, forks on side screens, workers at stations by
+what they do, the code city as the ship's systems display, "needs you" as an
+alert, going in through a door to the simulation). A theme is a scene and a
+mapping of roles; the data, the actions and the rules do not change, and the
+gestures, the progress line and where "waiting for you" appears stay the
+same so habit carries over. A theme has a passthrough form (furniture and
+figures in the real room) and may have an immersive one, for when the user is
+still. The user gets one by asking for it.
+
 What the engine must gain: a scene that holds another game (and answers for
 things tied to the player's view — sky, fog, post-effects — and the world's
 bounds), text and panels drawn in the world, hands as input, and the time to
