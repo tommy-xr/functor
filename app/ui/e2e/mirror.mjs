@@ -13,7 +13,7 @@
 // Skips without both (it needs a GL display). APP_UI_SHOTS=<dir> saves
 // stills of each state.
 import { chromium, expect } from "@playwright/test";
-import { difference, FUNCTOR, requireBuilt, ROOT, shot, startServer, stopServer, stub, tempDir, tempProject, watchErrors } from "./app.mjs";
+import { difference, FUNCTOR, requireBuilt, ROOT, shot, startServer, stopServer, stub, tempDir, tempProject, watchErrors, watchState } from "./app.mjs";
 
 const PROJECT = "examples/primitives";
 const RECORDED = `${ROOT}runtime/functor-runtime-desktop/tests/fixtures/primitives-t2.mirror.json`;
@@ -27,15 +27,7 @@ if (!FUNCTOR || process.env.FUNCTOR_APP_GPU !== "1") {
 async function mirror(browser, width, height) {
   const server = await startServer(0, { dir: tempProject(PROJECT), deviceLink: true, gpu: true });
   let page = await browser.newPage({ viewport: { width, height } });
-  const app = { state: null };
-  const watch = (p) =>
-    p.on("websocket", (ws) =>
-      ws.on("framereceived", ({ payload }) => {
-        const msg = JSON.parse(payload);
-        if (msg.type === "state") app.state = msg.state;
-      }),
-    );
-  watch(page);
+  const app = watchState(page);
   const errors = watchErrors(page);
   const view = () => page.getByTestId("game-view");
   const camera = () => view().getByRole("group", { name: "Camera" });
@@ -83,7 +75,6 @@ async function mirror(browser, width, height) {
 
     // Back, then the link drops: the one fix, no stale mirror.
     page = await browser.newPage({ viewport: { width, height } });
-    watch(page);
     await page.goto(server.url);
     await expect(view()).toContainText(/\d+ fps/, { timeout: 15_000 });
     await quest.stop();

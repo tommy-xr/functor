@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{self, Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::agent::{Agents, Runner, ViewRoute};
+use crate::agent::{AbortOnDrop, Agents, Runner, ViewRoute};
 use crate::changes::Git;
 
 /// Between `/state` polls (`?model=0`, so the model is never serialized);
@@ -129,16 +129,7 @@ struct Live {
     /// The headset's tunnel when the game runs there.
     tunnel: Option<String>,
     /// Its mirror child (`functor run native --mirror`), killed with this.
-    mirror: Option<Aborts>,
-}
-
-/// A task aborted when dropped.
-struct Aborts(JoinHandle<()>);
-
-impl Drop for Aborts {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
+    mirror: Option<AbortOnDrop>,
 }
 
 impl Live {
@@ -715,7 +706,7 @@ impl Driver {
         match spawned {
             Ok(child) => {
                 let task = tokio::spawn(supervise_mirror(id, child, self.events.clone()));
-                live.mirror = Some(Aborts(task));
+                live.mirror = Some(AbortOnDrop(task));
             }
             Err(e) => send(SessionEvent::MirrorFailed {
                 reason: format!("cannot run {}: {e}", functor.display()),
@@ -879,6 +870,11 @@ async fn supervise_mirror(id: u64, mut child: Child, events: UnboundedSender<Eve
             },
         }
     };
+    // As in `supervise`: the error line may still be in the pipes.
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while let Ok(Some(line)) = tokio::time::timeout_at(deadline, lines.recv()).await {
+        tail.push_back(line);
+    }
     let reason = match status {
         Ok(status) => match cause(&tail) {
             Some(line) => format!("the mirror stopped ({status}): {line}"),
