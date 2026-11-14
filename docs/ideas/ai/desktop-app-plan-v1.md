@@ -140,6 +140,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.4a | Overlay panel (D28): the runtime draws the panel over any game on the menu button — Now and Talk first, then Tasks — fed over the link; the wrist light when closed. | Emulator captures; device when attached; `frame_bench` unchanged when the panel is closed. |
 | 4.4c | The conversation in the headset (D41): the current task's transcript on the panel channel, bounded and rate-limited; a Conversation page in the panel that follows new text and scrolls, a question shown first, push-to-talk inline; the agent's first reply and result as toasts when the panel is closed. | Protocol bounds and version tests; desktop tests that the transcript is bounded, redacted and rate-limited; overlay tests for follow, scroll and questions; `test:quest-panel` extended on the device. |
 | 4.4b | Router (D29, D30): one model call per utterance splitting it into steer / new task, the decision shown with overrides on desktop and headset, steer as stop-and-resume, a task queue that starts the next task with every later utterance attached. | Core unit tests for the queue; router tests on recorded utterances; fake-agent end to end. |
+| 4.4d | Request progress (D43): one progress record per request in the core (received, transcribed, processing, agent status, outcome, with times), shown as one line in the chat, the headset toast and the headset panel; minimum time on screen per step; a late step re-shows it; failures name their step. | Core tests for the record; a slow fake transcriber and a slow fake agent drive every step on the desktop and the stub headset; overlay tests with real timings. |
 | S3 | Spike before 4.5: can `/state.model` round-trip into a second session for `examples/vr-lab` and two other examples? List what breaks (closures, host handles). | Findings appended here. |
 | 4.5 | Mirror view (D5): desktop draws from the headset's state with head view and switchable dev cameras (D18, via the debug camera); fall back to the headset's own capture where S3 says the model does not round-trip. | Stub feeds recorded state; frame matches a golden. |
 | S5 | Spike before 4.7: two named state branches kept alive at once and switched with the code (D32), on desktop then device; what fails and what it costs in memory. | Findings appended here. |
@@ -148,10 +149,32 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.7 | Before and after in place, and the lab (D31, D32): switching versions by branch; the lab from a capsule's recorded moment; both in the headset panel. | Desktop tests under the XR emulator; device when attached. |
 | 4.8 | Agents in the room (D34): the characters as a Functor scene fed by 1.17, drawn by the runtime as an overlay beside the panel; look-and-press opens a task, look-and-talk steers it. The desktop cards move to the same scene if it holds up. | Emulator captures; device when attached; `frame_bench` unchanged when hidden. |
 | 4.9 | Presentation in the world (D36): notes and measured lines pinned to objects first; then two versions side by side and the ghost of the old, after S5. Drawn by the runtime as an overlay; each mark tied to its panel item. | Emulator captures; device when attached; `frame_bench` unchanged when nothing is shown. |
+| S6 | Spike for D44: draw a running game's frame as a miniature on a desk under passthrough, grabbed and scaled; what breaks (sky, fog, post-effects, first-person attachments, unknown bounds) and what it costs on device. | Findings appended here. |
+| S7 | Spike for D44: go in at a pointed spot and come back out with the game's state unchanged, for a VR example and a flat one. | Findings appended here. |
+| S8 | Spike for D44: an orchestrator run with two or three subagents each in its own worktree of the project, a game session per fork, merging back with conflicts surfaced; on the desktop first (a tasks tree and per-fork Keep), before any of it is drawn in the room. | Findings appended here. |
+| S9 | The workspace contract (D44): write down, from what the desktop page, the headset panel channel and the agent's app tools already exchange, one versioned schema of state and actions; say what each client uses, what is missing for the workshop (agent tree, forks, code map, request progress) and what must never be in it (secrets, file contents beyond what the chat shows). | A document under `docs/`, reviewed before anything is built on it. |
 
 ## M5 and later
 
 Code city as a rendering of presentations (D33).
+
+### The code city (D46)
+
+Design and budgets: [`docs/code-city.md`](../../code-city.md).
+
+| # | Task | Verify |
+|---|---|---|
+| C1 | `functor-city` crate on `functor-lang`: the analyzer and snapshot v1 (files, definitions with kind, span, size and shape hash, types with members, reference sites, the loop's entry points); `functor city --json`. | Snapshot tests over three examples. |
+| S12 | Spike before C2: replay the history of `examples/vr-lab` and two small examples through the slot layout; measure how far lots move per commit against a weight-sorted treemap. | Findings appended here. |
+| C2 | History per definition from git (shape hash per blob, cached); the model: stable layout, stacks, marks; the skyline pane. | Model unit tests; a pane capture; an edit moves no lot outside its file. |
+| C3 | Execution light and call dots while paused and scrubbing, joined from `/trace` coverage; full speed after S10. | A scripted pause lights the expected definitions; `frame_bench` unchanged. |
+| S10 | Spike before C3's full-speed half: per-definition and per-pair counters at call boundaries behind a flag, against sampled coverage replay. | `frame_bench` on and off; findings appended here. |
+| C4 | Agents and forks as layers, after S8 and the contract's agent and fork steps; kept tasks as events. | Recorded workspace state drives the skyline. |
+| C5 | Tours: a `present` step focuses its definitions. | Core test: step → focus. |
+| S11 | Spike before C6: a generated district of 50, 150 and 500 buildings with dots and labels as a Functor scene on the Quest, under passthrough beside a game. | Legibility and frame time; findings appended here. |
+| C6 | The district in the workshop scene, drawing the same marks (after S6, S11). | Emulator captures; device when attached. |
+| S13 | Spike for the city at scale: 2,000 and 8,000 instances whose tints change every frame — a rebuilt list, two instanced sets, a prototype per-instance attribute buffer. | Interpreter time, `allocs/frame`, device frame time; findings appended here. |
+| C7 | Files may draw themselves: the optional pure `diagram` binding per file or inline module, bounded in time and size, with a fault mark; a picture in the skyline and the editor, a scene in the workshop. Any time after C3. | Core tests for the budgets and the fault; a capture of a diagram above its file. |
 
 Developer menu and build info; agent-authored tuning UI (D7), which needs UI
 render targets wired in VR and the VR gamma fix first; TTS (Kokoro) played in
