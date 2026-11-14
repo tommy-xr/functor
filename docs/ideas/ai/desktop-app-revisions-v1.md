@@ -776,6 +776,37 @@ run two programs in one headset frame.
 the conversation beside it; the agents; the code shelf; two miniatures for a
 decision.
 
+### D45 — a project manager is the point of contact
+
+A direction, with D44. One agent, the project manager, is who the user talks
+to by default — in the chat and in the headset. It does not do the work; it
+takes requests, hands them out, and reports back.
+
+- **It replaces the router's guess with a colleague.** What the router decides
+  silently (D29: steer, new task, queue) the manager decides and says: "That
+  is for the jump task — I have told it", "New piece of work; it starts after
+  the current one." The decision is still shown and still movable with one
+  tap.
+- **It hands out the work** to worker agents (D44: the hierarchy, the forks),
+  keeps the queue (D30), and knows who is doing what.
+- **It gathers what needs the user.** Workers' questions and finished changes
+  come through it: it brings one summary rather than five interruptions, and
+  the pending list is its list.
+- **It reports.** "Two of three are done; the third wants a decision." The
+  voice the user hears back is the manager's.
+- **Workers can still be addressed directly.** Looking at one and talking
+  steers that worker; the manager is told.
+
+What it must be to work: quick and cheap. It answers within a second or two
+("Got it") before any work starts, so it runs lean — a small model, its own
+few tools (start, steer, queue, ask, summarise, switch project), none of the
+user's own setup, and a short memory of the effort rather than the code. An
+always-on agent that costs what a worker costs per sentence would not be
+worth having.
+
+To try first on the desktop: the chat's default recipient becomes the
+manager, over the existing router, queue and tasks (S8).
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
