@@ -2,6 +2,7 @@
 // card's bubble and stance say. No React, so `node --test` runs them.
 
 import type { Activity, AppState, CallKind, ContextFill, Stance, Subagent, Task } from "./generated/protocol";
+import { tokens } from "./chat-model.ts";
 import { newestFirst, untitled } from "./tasks-model.ts";
 
 export const STANCE_WORDS: Record<Stance, string> = {
@@ -57,13 +58,6 @@ export function room(fill: ContextFill | null): Room | null {
   const level = share >= 0.9 ? "out" : share >= 0.7 ? "low" : "ok";
   const percent = Math.min(100, Math.round(share * 100));
   return { percent, level, title: `Context ${percent}% full: ${tokens(fill.used)} of ${tokens(fill.window)} tokens` };
-}
-
-/** 1234 → "1.2k", 1000000 → "1M". */
-function tokens(n: number): string {
-  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${+(n / 1e3).toFixed(1)}k`;
-  return `${n}`;
 }
 
 /** A subagent's figure: working while a call of its own runs, its line that call or "thinking". */

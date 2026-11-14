@@ -276,7 +276,7 @@ pub fn classify(name: &str, input: &Value) -> Call {
             CallKind::Network,
             format!("searching the web for {}", s("query")),
         ),
-        "Task" | "Agent" => (CallKind::Agents, format!("subagent: {}", s("description"))),
+        _ if is_subagent(name) => (CallKind::Agents, format!("subagent: {}", s("description"))),
         "SendMessage" | "TaskStop" => (CallKind::Agents, "talking to a subagent".into()),
         "Skill" => (CallKind::Skills, format!("using {}", s("skill"))),
         "ToolSearch" => (CallKind::Skills, "loading tools".into()),
