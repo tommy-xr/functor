@@ -8636,8 +8636,12 @@ mod tests {
                 error: Some("boom".to_string()),
             },
         };
-        let (_, commands) = update(working, error);
+        let (_, commands) = update(working.clone(), error);
         assert_eq!(said_aloud(&commands), ["That did not work: boom"]);
+        // Stopped by the user: the toast says so; nothing is said.
+        let (_, commands) = update(working, client(ClientMsg::StopTask { task: 4 }));
+        assert_eq!(stages(&commands), [(1, Stage::Failed("stopped".to_string()))]);
+        assert_eq!(said_aloud(&commands), [] as [&str; 0]);
         // Typed: no line asked for.
         let (_, commands) = update(ready, nth_task(1, "go"));
         assert!(!spec(&commands).message.contains("Spoken:"));

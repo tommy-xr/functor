@@ -425,8 +425,9 @@ impl Hub {
             // On this machine's speakers for now, whichever headset asked.
             LinkCommand::Say { text, .. } => {
                 if let Some(replies) = self.0.replies.clone() {
+                    let reply = replies.next();
                     tokio::task::spawn_blocking(move || {
-                        if let Err(e) = replies.say(&text) {
+                        if let Err(e) = replies.say(reply, &text) {
                             eprintln!("functor-app: cannot say the reply: {e}");
                         }
                     });
@@ -1020,15 +1021,13 @@ impl Connection {
                 channel: voice::CLIP_CHANNEL,
                 data,
             } => {
-                // The user is talking: a reply still playing stops (barge-in).
-                if let (Ok(voice::Clip::Start { .. }), Some(replies)) =
-                    (voice::Clip::decode(&data), &self.hub.0.replies)
-                {
-                    replies.stop();
-                }
                 let before = self.voice.arriving();
                 let heard = self.voice.receive(&data, now_ms());
                 if let Some(utterance) = self.voice.arriving().filter(|u| before != Some(*u)) {
+                    // The user is talking: a reply still playing stops.
+                    if let Some(replies) = &self.hub.0.replies {
+                        replies.stop();
+                    }
                     self.hearing(utterance, HearingStage::Arriving);
                 }
                 if let Some(heard) = heard {

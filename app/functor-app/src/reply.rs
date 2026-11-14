@@ -50,19 +50,24 @@ impl Replies {
             return None;
         }
         #[cfg(target_os = "macos")]
-        return Some(Replies::new(Box::new(mac::Say), Box::new(mac::Afplay)));
+        let real = Some(Replies::new(Box::new(mac::Say), Box::new(mac::Afplay)));
         #[cfg(not(target_os = "macos"))]
-        None
+        let real = None;
+        real
     }
 
-    /// Says `text`, in place of whatever is playing. Blocks while it is
-    /// synthesised: call it off the async threads.
-    pub fn say(&self, text: &str) -> Result<(), String> {
-        let mine = {
-            let mut now = self.now.lock().unwrap();
-            *now = (now.0 + 1, None);
-            now.0
-        };
+    /// A new reply, in place of whatever is playing: its number, for
+    /// [`Replies::say`]. Taken where replies are asked for, so the last
+    /// asked for is the one heard.
+    pub fn next(&self) -> u64 {
+        let mut now = self.now.lock().unwrap();
+        *now = (now.0 + 1, None);
+        now.0
+    }
+
+    /// Says reply `mine`, unless stopped or replaced meanwhile. Blocks
+    /// while it is synthesised: call it off the async threads.
+    pub fn say(&self, mine: u64, text: &str) -> Result<(), String> {
         let pcm = self.synth.synth(text)?;
         let mut now = self.now.lock().unwrap();
         // Stopped, or replaced, while it was synthesised.
@@ -252,10 +257,15 @@ mod tests {
     fn a_reply_plays_a_new_one_replaces_it_and_talking_stops_it() {
         let (tx, seen) = mpsc::channel();
         let replies = Replies::new(Box::new(Fake), Box::new(Out(tx)));
-        replies.say("one").unwrap();
+        replies.say(replies.next(), "one").unwrap();
         assert_eq!(seen.try_recv(), Ok(Seen::Play(3)));
         // A new reply: the first stops, then the second plays.
-        replies.say("three").unwrap();
+        replies.say(replies.next(), "three").unwrap();
+        assert_eq!(seen.try_iter().collect::<Vec<_>>(), [Seen::Stop, Seen::Play(5)]);
+        // Asked for in order, synthesised out of order: the last asked for.
+        let (older, newer) = (replies.next(), replies.next());
+        replies.say(newer, "newer").unwrap();
+        replies.say(older, "old").unwrap();
         assert_eq!(seen.try_iter().collect::<Vec<_>>(), [Seen::Stop, Seen::Play(5)]);
         // The user starts talking.
         replies.stop();
@@ -273,7 +283,8 @@ mod tests {
         let replies = Replies::new(Box::new(slow), Box::new(Out(tx)));
         let saying = {
             let replies = replies.clone();
-            std::thread::spawn(move || replies.say("late"))
+            let mine = replies.next();
+            std::thread::spawn(move || replies.say(mine, "late"))
         };
         // Talking began before it was ready.
         synthesising.recv().unwrap();

@@ -31,11 +31,13 @@ pub fn spoken(items: &[Item], run: u64, stage: &Stage, review: bool) -> Option<S
                 _ => None,
             })
     };
-    let marked = replies()
-        .flat_map(str::lines)
-        .filter_map(|l| strip_mark(l.trim()))
-        .last();
-    let line = marked.or_else(|| replies().last()).map(for_the_ear);
+    // The last reply's line for the ear, else that reply.
+    let last = replies().last();
+    let marked = last.and_then(|reply| {
+        let lines = reply.lines().filter_map(|l| strip_mark(l.trim()));
+        lines.filter(|l| !l.is_empty()).last()
+    });
+    let line = marked.or(last).map(for_the_ear);
     let line = line.filter(|l| !l.is_empty());
     match stage {
         Stage::Working => None,
@@ -55,7 +57,7 @@ pub fn spoken(items: &[Item], run: u64, stage: &Stage, review: bool) -> Option<S
 }
 
 /// `line` after its `Spoken:` mark, whatever its case or emphasis.
-fn strip_mark(line: &str) -> Option<&str> {
+pub(crate) fn strip_mark(line: &str) -> Option<&str> {
     let line = line.trim_start_matches(['*', '_', '>', '-', ' ']);
     let head = line.get(..MARK.len())?;
     head.eq_ignore_ascii_case(MARK)
@@ -93,7 +95,7 @@ pub fn for_the_ear(text: &str) -> String {
             out.push(' ');
         }
         out.push_str(&word);
-        if word.ends_with(['.', '!', '?']) {
+        if ends_sentence(&word) {
             sentences += 1;
             if sentences == MAX_SENTENCES {
                 break;
@@ -121,9 +123,7 @@ fn word(raw: &str) -> Option<String> {
         return None;
     }
     let link = core.starts_with("http://") || core.starts_with("https://");
-    let parts = core.split('/').filter(|p| !p.is_empty()).count();
-    let path = core.contains('\\') || (parts > 1 && !slash_word(&core));
-    let said = match (link, path || file_name(&core)) {
+    let said = match (link, path(&core) || file_name(&core)) {
         (true, _) => "a link",
         (_, true) => "a file",
         _ => &core,
@@ -131,23 +131,34 @@ fn word(raw: &str) -> Option<String> {
     Some(format!("{lead}{said}{tail}"))
 }
 
-/// "and/or", "w/o": words, not paths.
-fn slash_word(word: &str) -> bool {
-    word.split('/').all(|p| p.len() <= 3 && p.chars().all(char::is_alphabetic))
+/// Whether `word` ends a sentence: not "e.g.", "etc." or a list's "1.".
+fn ends_sentence(word: &str) -> bool {
+    const SHORT: [&str; 7] = ["e.g", "i.e", "etc", "vs", "mr", "mrs", "dr"];
+    let Some(core) = word.strip_suffix(['.', '!', '?']) else {
+        return false;
+    };
+    let core = core.trim_start_matches(['(', '"']).to_lowercase();
+    !SHORT.contains(&core.as_str()) && !core.chars().all(|c| c.is_ascii_digit())
 }
 
-/// `game.fun`, `Cargo.toml`: a name, a dot, a short extension of letters.
+/// `src/game.fun`, `./assets`, `~/notes`, `a/b/c`, `src\\x`: not "and/or",
+/// "1/60" or "client/server".
+fn path(word: &str) -> bool {
+    let parts: Vec<&str> = word.split('/').filter(|p| !p.is_empty()).collect();
+    let rooted = word.starts_with(['/', '~']) || word.starts_with("./") || word.starts_with("../");
+    let names = rooted || parts.len() > 2 || parts.last().is_some_and(|p| file_name(p));
+    word.contains('\\') || (word.contains('/') && names)
+}
+
+/// `game.fun`, `Cargo.toml`: a name, a dot and a file extension. Not
+/// `Color.red` or `functor.games`.
 fn file_name(word: &str) -> bool {
-    match word.rsplit_once('.') {
-        Some((stem, ext)) => {
-            !stem.is_empty()
-                && (2..=5).contains(&ext.len())
-                && ext.chars().all(|c| c.is_ascii_lowercase())
-                && stem.chars().all(|c| c.is_alphanumeric() || "_-.".contains(c))
-                && !stem.chars().all(|c| c.is_ascii_digit())
-        }
-        None => false,
-    }
+    const EXTENSIONS: [&str; 24] = [
+        "fun", "funi", "rs", "toml", "json", "md", "txt", "ts", "tsx", "js", "mjs", "css",
+        "html", "png", "jpg", "jpeg", "hdr", "glb", "gltf", "wav", "ogg", "mp3", "lock", "yml",
+    ];
+    word.rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && EXTENSIONS.contains(&ext))
 }
 
 #[cfg(test)]
@@ -180,9 +191,13 @@ It bounces slower now. A third sentence is not said.";
             "I changed ballColor in a file to red (see the docs). It bounces slower now."
         );
         assert_eq!(
-            for_the_ear("Edit game.fun and/or src\\main.rs, e.g. v1.5 of it."),
-            "Edit a file and/or a file, e.g. v1.5 of it."
+            for_the_ear("Edit game.fun and/or src\\main.rs, e.g. v1.5 of it. Then ./run it."),
+            "Edit a file and/or a file, e.g. v1.5 of it. Then a file it."
         );
+        // The engine's own words, fractions and pairs are not files.
+        let kept = "Set Color.red on the client/server at 1/60 s, true/false. See functor.games now.";
+        assert_eq!(for_the_ear(kept), kept);
+        assert_eq!(for_the_ear("1. First step. 2. Second step. Third."), "1. First step. 2. Second step.");
         assert_eq!(for_the_ear("- one\n- two"), "one two");
         assert_eq!(for_the_ear("```\ncode\n```"), "");
         // Cut at a word, under the limit.
@@ -193,7 +208,7 @@ It bounces slower now. A third sentence is not said.";
     #[test]
     fn the_agents_spoken_line_is_said_else_its_replys_first_sentences() {
         let marked = run(&[
-            "Looking at the ball.",
+            "Spoken: Looking at the ball.",
             "I set `ballColor` in game.fun.\n\n**Spoken:** The ball is red now, and it bounces slower.",
         ]);
         assert_eq!(
@@ -210,8 +225,11 @@ It bounces slower now. A third sentence is not said.";
             spoken(&asks, 0, &Stage::Reloaded, true).as_deref(),
             Some("It is red and ready for you to look at.")
         );
-        // No line: the last reply, cleaned.
-        let plain = run(&["First.", "The ball is **red** already. Nothing to change. More."]);
+        // No line (or an empty one) in the last reply: that reply, cleaned.
+        let plain = run(&[
+            "Spoken: First.",
+            "The ball is **red** already. Nothing to change. More.\nSpoken:",
+        ]);
         let answered = Stage::Answered("The ball is red already.".to_string());
         assert_eq!(
             spoken(&plain, 0, &answered, false).as_deref(),
