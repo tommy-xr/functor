@@ -413,21 +413,116 @@ fn attach_makes_game_tools_work_without_a_launch() {
     assert!(stdio["content"][0]["text"].as_str().unwrap().contains("\"frame\":42"), "{stdio}");
 }
 
+/// A debug runtime behind a device tunnel: while `away` it answers every
+/// request 503 as the tunnel does, else as [`fake_debug_runtime`].
+fn tunnelled_runtime(away: std::sync::Arc<std::sync::atomic::AtomicBool>) -> String {
+    tunnelled_runtime_on(TcpListener::bind("127.0.0.1:0").unwrap(), away)
+}
+
+fn tunnelled_runtime_on(
+    listener: TcpListener,
+    away: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> String {
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            let head = read_head(&mut stream);
+            let path = head.split_whitespace().nth(1).unwrap_or("");
+            let (status, body) = match (away.load(std::sync::atomic::Ordering::SeqCst), path) {
+                (true, _) => ("503 Service Unavailable", "the headset is away; try again when it is back".to_string()),
+                (false, "/") => ("200 OK", json!({"service": "functor debug runtime", "protocol_version": 8}).to_string()),
+                (false, _) => ("200 OK", json!({"frame": 42, "model": {"count": 7}}).to_string()),
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+/// The tool call's error text, asserting it failed.
+fn call_error(mcp: &mut HttpMcp, tool: &str, arguments: Value) -> String {
+    let result = mcp.request("tools/call", json!({"name": tool, "arguments": arguments}));
+    assert_eq!(result["isError"], true, "{tool}: {result}");
+    result["content"][0]["text"].as_str().unwrap().to_string()
+}
+
+/// A headset that is away when the server starts: the server listens with
+/// its session, a game tool says why at once, and once it is back the same
+/// session works.
 #[test]
-fn attach_to_a_dead_url_fails_at_startup() {
-    let dead = {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        format!("http://{}", listener.local_addr().unwrap())
+fn attach_to_an_away_headset_keeps_its_session_until_it_is_back() {
+    let away = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let runtime = tunnelled_runtime(away.clone());
+    let server = HttpServer::start(&["--attach", &runtime]);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let sessions = mcp.call("list_sessions", json!({}));
+    assert!(sessions.contains("\"s1\"") && sessions.contains("\"alive\":false"), "{sessions}");
+    let asked = Instant::now();
+    let error = call_error(&mut mcp, "get_state", json!({"session": "s1"}));
+    assert!(asked.elapsed() < Duration::from_secs(3), "answered in {:?}", asked.elapsed());
+    assert!(error.contains("the headset is away; try again when it is back"), "{error}");
+    // Non-game tools are unaffected.
+    assert!(mcp.call("api_reference", json!({"query": "Ui.row"})).contains("Ui.row"));
+
+    away.store(false, std::sync::atomic::Ordering::SeqCst);
+    let state: Value = serde_json::from_str(&mcp.call("get_state", json!({"session": "s1"}))).unwrap();
+    assert_eq!(state["model"]["count"], 7);
+    // Away again: said by the tunnel's answer, and the server lives on.
+    away.store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = call_error(&mut mcp, "get_state", json!({"session": "s1"}));
+    assert!(error.contains("503") && error.contains("the headset is away"), "{error}");
+    away.store(false, std::sync::atomic::Ordering::SeqCst);
+    mcp.call("get_state", json!({"session": "s1"}));
+}
+
+/// A local game that stopped (nothing listens): the session is kept and
+/// works once a runtime listens there again.
+#[test]
+fn attach_to_a_dead_url_keeps_its_session() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let dead = format!("http://{addr}");
+    let server = HttpServer::start(&["--attach", &dead]);
+    let mut mcp = HttpMcp::connect(&server.url);
+    let asked = Instant::now();
+    let error = call_error(&mut mcp, "get_state", json!({"session": "s1"}));
+    assert!(error.contains("not answering yet") && error.contains(&dead), "{error}");
+    assert!(asked.elapsed() < Duration::from_secs(3), "answered in {:?}", asked.elapsed());
+    let Ok(listener) = TcpListener::bind(addr) else {
+        return; // The port was taken meanwhile: the rest cannot be shown.
     };
+    tunnelled_runtime_on(listener, Default::default());
+    let state: Value = serde_json::from_str(&mcp.call("get_state", json!({"session": "s1"}))).unwrap();
+    assert_eq!(state["model"]["count"], 7);
+}
+
+/// A URL that answers, but not as a Functor debug runtime, is still a
+/// startup error naming it.
+#[test]
+fn attach_to_something_else_fails_at_startup() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().map_while(Result::ok) {
+            read_head(&mut stream);
+            let body = "{\"service\": \"something else\"}";
+            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        }
+    });
     let output = functor()
-        .args(["mcp", "--http", "0", "--attach", &dead])
+        .args(["mcp", "--http", "0", "--attach", &other])
         .env("FUNCTOR_MCP_TOKEN", TOKEN)
         .stdin(Stdio::null())
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains(&dead) && !stderr.contains("listening"), "{stderr}");
+    assert!(stderr.contains(&other) && !stderr.contains("listening"), "{stderr}");
 }
 
 /// Closing stdin (the child convention) kills launched games but never an

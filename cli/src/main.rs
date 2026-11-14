@@ -334,6 +334,7 @@ enum Command {
 
         /// Register an already-running debug runtime (e.g.
         /// `http://127.0.0.1:8077`) as an attached session at startup.
+        /// One not answering yet keeps its session, checked on first use.
         /// Repeatable.
         #[arg(long, value_name = "URL")]
         attach: Vec<String>,

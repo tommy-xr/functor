@@ -1248,7 +1248,7 @@ async fn tunnel(State(t): State<Arc<Tunnel>>, request: axum::extract::Request) -
     let Some(link) = t.hub.link_of(&t.device) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            "the headset is not connected",
+            "the headset is away; try again when it is back",
         );
     };
     let request = wire::Request {
