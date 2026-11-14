@@ -99,7 +99,7 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
                 *m.calls.entry(classify(name, input).kind).or_default() += 1;
                 *m.tools.entry(name.clone()).or_default() += 1;
             }
-            Item::Usage { input, output } => {
+            Item::Usage { input, output, .. } => {
                 m.input_tokens = Some(*input);
                 m.output_tokens = Some(*output);
             }
@@ -146,6 +146,9 @@ mod tests {
             name: name.into(),
             input,
             result: Some("r".into()),
+            id: None,
+            parent_id: None,
+            is_error: None,
         };
         task.transcript = vec![
             Item::User {
@@ -175,6 +178,7 @@ mod tests {
             Item::Usage {
                 input: 900,
                 output: 30,
+                detail: None,
             },
             Item::Finished {
                 ok: true,

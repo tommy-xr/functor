@@ -205,6 +205,7 @@ pub fn brief(task: &Task) -> String {
                 name,
                 input,
                 result,
+                ..
             } => Some(format!(
                 "- `{name}` {} → {}",
                 cut(&compact(input), BRIEF_INPUT),

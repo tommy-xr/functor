@@ -85,6 +85,7 @@ pub fn activity(task: &Task) -> Activity {
                     name,
                     input,
                     result: None,
+                    ..
                 } => Some(classify(name, input)),
                 _ => None,
             })
@@ -726,6 +727,9 @@ mod tests {
             name: "Read".into(),
             input: json!({}),
             result: None,
+            id: None,
+            parent_id: None,
+            is_error: None,
         });
         assert_eq!(activity(&task).calls, []);
     }
@@ -737,6 +741,9 @@ mod tests {
             name: "Read".into(),
             input: json!({}),
             result: Some(content.into()),
+            id: None,
+            parent_id: None,
+            is_error: None,
         };
         // A file that quotes a refusal is not one, nor an error worked past.
         task.transcript.push(read(CLAUDE));

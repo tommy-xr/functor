@@ -299,11 +299,12 @@ pub fn print_item(item: &Item) -> String {
             name,
             input,
             result,
+            ..
         } => {
             let result = result.as_deref().map_or("(no result)".to_string(), clip);
             format!("tool: {name} {} -> {result}", clip(&input.to_string()))
         }
-        Item::Usage { input, output } => format!("usage: {input} in, {output} out"),
+        Item::Usage { input, output, .. } => format!("usage: {input} in, {output} out"),
         Item::Finished { ok: true, .. } => "finished: ok".to_string(),
         Item::Finished { ok: false, summary } => {
             format!("failed: {}", summary.as_deref().unwrap_or("no summary"))
@@ -729,6 +730,9 @@ recents: 2
                 name: "mcp__mis__get_state".into(),
                 input: serde_json::json!({"session": "s1"}),
                 result: Some("{\"frame\":180,\n\"count\":3}".into()),
+                id: None,
+                parent_id: None,
+                is_error: None,
             },
             Item::Agent {
                 text: "It is 3.".into(),
@@ -737,6 +741,7 @@ recents: 2
             Item::Usage {
                 input: 2400,
                 output: 75,
+                detail: None,
             },
             Item::Finished {
                 ok: false,

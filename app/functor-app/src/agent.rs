@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
+use functor_app_core::tasks::{TokenUsage, UsageDetail, Usd};
 use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec};
 use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts};
 use mis_types::{PermissionMode, Permissions};
@@ -766,10 +767,37 @@ fn mirror(event: mis_types::AgentEvent) -> Option<AgentEvent> {
         Up::Text { text } => AgentEvent::Text { text },
         Up::ToolUse { name, input } => AgentEvent::ToolUse { name, input },
         Up::ToolResult { content } => AgentEvent::ToolResult { content },
+        Up::ToolUseMeta { id, parent_id } => AgentEvent::ToolUseMeta { id, parent_id },
+        Up::ToolResultMeta { id, is_error } => AgentEvent::ToolResultMeta { id, is_error },
         Up::Usage { input, output } => AgentEvent::Usage { input, output },
+        Up::UsageDetail {
+            total,
+            last,
+            turns,
+            cost_usd,
+            api_ms,
+            context_window,
+        } => AgentEvent::UsageDetail(UsageDetail {
+            total: tokens(total),
+            last: last.map(tokens),
+            turns,
+            cost_usd: cost_usd.map(Usd),
+            api_ms,
+            context_window,
+        }),
         Up::Finished { ok, summary } => AgentEvent::Finished { ok, summary },
         _ => return None,
     })
+}
+
+fn tokens(up: mis_types::TokenUsage) -> TokenUsage {
+    TokenUsage {
+        input: up.input,
+        cache_read: up.cache_read,
+        cache_creation: up.cache_creation,
+        output: up.output,
+        reasoning_output: up.reasoning_output,
+    }
 }
 
 /// A fresh secret: 64 hex digits from two random UUIDs. As the tool server's
@@ -1015,7 +1043,8 @@ const FAKE_MCP_TOKEN_ENV: &str = "FUNCTOR_APP_FAKE_MCP_TOKEN";
 /// replacing `old`'s first match in `path` (from the working directory) as
 /// an agent's edit tool would. A line with `"mcp": {"tool", "arguments"}`
 /// calls that tool on the run's tool server over MCP, printing its
-/// `tool_use` and `tool_result` as the agent's.
+/// `tool_use` and `tool_result` as the agent's; with `"id"` (and
+/// `"parent_id"`, for a subagent's call), their `_meta` events too.
 pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
     use std::io::Write;
     let text =
@@ -1050,20 +1079,29 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
             let tool = call["tool"].as_str().ok_or_else(|| bad(&"no mcp.tool"))?;
             let arguments = call["arguments"].clone();
             let name = format!("mcp__mis__{tool}");
-            let used = serde_json::json!({"type": "tool_use", "name": name, "input": arguments});
-            writeln!(out, "{used}")
-                .and_then(|()| out.flush())
-                .map_err(|e| bad(&e))?;
-            let content = match mcp.get_or_insert_with(FakeMcp::from_env) {
-                Ok(client) => client
-                    .call(tool, arguments)
-                    .unwrap_or_else(|e| format!("error: {e}")),
-                Err(e) => format!("error: {e}"),
+            let id = call.get("id").filter(|id| id.is_string());
+            let mut print = |event: serde_json::Value| {
+                writeln!(out, "{event}")
+                    .and_then(|()| out.flush())
+                    .map_err(|e| bad(&e))
             };
-            let result = serde_json::json!({"type": "tool_result", "content": content});
-            writeln!(out, "{result}")
-                .and_then(|()| out.flush())
-                .map_err(|e| bad(&e))?;
+            print(serde_json::json!({"type": "tool_use", "name": name, "input": arguments}))?;
+            if let Some(id) = id {
+                let parent = &call["parent_id"];
+                print(serde_json::json!({"type": "tool_use_meta", "id": id, "parent_id": parent}))?;
+            }
+            let answer = match mcp.get_or_insert_with(FakeMcp::from_env) {
+                Ok(client) => client.call(tool, arguments),
+                Err(e) => Err(e.clone()),
+            };
+            let failed = answer.is_err();
+            let content = answer.unwrap_or_else(|e| format!("error: {e}"));
+            print(serde_json::json!({"type": "tool_result", "content": content}))?;
+            if let Some(id) = id {
+                print(
+                    serde_json::json!({"type": "tool_result_meta", "id": id, "is_error": failed}),
+                )?;
+            }
             continue;
         }
         let event = &mut line["event"];
@@ -1365,6 +1403,12 @@ mod tests {
             serde_json::json!({"type": "tool_use", "name": "Read", "input": {"x": 1}}),
             serde_json::json!({"type": "tool_result", "content": "c"}),
             serde_json::json!({"type": "usage", "input": 1, "output": 2}),
+            serde_json::json!({"type": "tool_use_meta", "id": "t2", "parent_id": "t1"}),
+            serde_json::json!({"type": "tool_result_meta", "id": "t2", "is_error": true}),
+            serde_json::json!({"type": "usage_detail",
+                "total": {"input": 10, "cache_read": 21431, "cache_creation": 14233, "output": 467, "reasoning_output": 120},
+                "last": {"input": 2, "cache_read": 8512, "cache_creation": 119, "output": 3, "reasoning_output": null},
+                "turns": 3, "cost_usd": 0.00287526, "api_ms": 4193, "context_window": 1000000}),
             serde_json::json!({"type": "finished", "ok": true, "summary": null}),
         ] {
             let mirrored = mirror(up(json.clone())).unwrap();

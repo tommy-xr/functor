@@ -1980,8 +1980,7 @@ fn start_run(
     });
     task.run = Some(Run {
         id: run,
-        usage: None,
-        views: 0,
+        ..Default::default()
     });
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
@@ -4051,8 +4050,7 @@ mod tests {
         });
         cut.run = Some(Run {
             id: 3,
-            usage: None,
-            views: 0,
+            ..Default::default()
         });
         cut.status = TaskStatus::InProgress;
         let (s, _) = update(
