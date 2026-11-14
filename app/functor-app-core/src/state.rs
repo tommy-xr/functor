@@ -181,7 +181,7 @@ pub struct AppState {
     /// Utterances waiting on the model router.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
-    pub routing: Vec<Utterance>,
+    pub routing: Vec<(Utterance, RouteRequest)>,
     /// The decisions behind `routes`; the last id given out.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
@@ -1331,7 +1331,7 @@ fn opened(
     };
     remember_active(state, commands);
     // Speech waiting on the router was said to the old folder's game.
-    for u in std::mem::take(&mut state.routing) {
+    for (u, _) in std::mem::take(&mut state.routing) {
         let reason = "another folder was opened".to_string();
         voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
     }
@@ -2317,6 +2317,7 @@ fn heard(
         text,
         by: By::Rule,
         title: None,
+        project: state.active.clone().unwrap_or_default(),
     };
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
@@ -2326,15 +2327,14 @@ fn heard(
         }
     };
     // With a choice to make, the model router decides, the rule its fallback.
-    let project = state.active.clone().unwrap_or_default();
-    let model = state.router && state.model_routes.contains(&project);
-    if let Some(request) = route::request(state, &project, &u.text).filter(|_| model) {
+    let model = state.router && state.model_routes.contains(&u.project);
+    if let Some(request) = route::request(state, &u.project, &u.text).filter(|_| model) {
         commands.push(Command::Route {
             device: u.device.clone(),
             utterance,
-            request: Box::new(request),
+            request: Box::new(request.clone()),
         });
-        state.routing.push(u);
+        state.routing.push((u, request));
         return false;
     }
     land(state, u, rule, commands)
@@ -2342,6 +2342,9 @@ fn heard(
 
 /// The fixed rule's place for `u` ([`voice::route`]), or why it has none.
 fn rule_place(state: &AppState, u: &Utterance) -> Result<Place, String> {
+    if state.active.as_ref() != Some(&u.project) {
+        return Err("the game on the headset changed".to_string());
+    }
     match voice::route(state, &u.device, &u.text) {
         Route::Nowhere(reason) => Err(reason),
         Route::Steer(id) => Ok(Place::Steer(id)),
@@ -2349,8 +2352,8 @@ fn rule_place(state: &AppState, u: &Utterance) -> Result<Place, String> {
     }
 }
 
-/// The model router's `choice` for an utterance: its place if it is one
-/// still offered, else the fixed rule's.
+/// The model router's `choice` for an utterance: its place if it was shown
+/// that place and it is still one, else the fixed rule's.
 fn routed(
     state: &mut AppState,
     device: &str,
@@ -2358,11 +2361,12 @@ fn routed(
     choice: Result<Choice, String>,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let Some(at) = (state.routing.iter()).position(|u| u.device == device && u.utterance == utterance)
+    let Some(at) = (state.routing.iter())
+        .position(|(u, _)| u.device == device && u.utterance == utterance)
     else {
         return false;
     };
-    let mut u = state.routing.remove(at);
+    let (mut u, shown) = state.routing.remove(at);
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
@@ -2370,9 +2374,11 @@ fn routed(
             return false;
         }
     };
-    let project = state.active.clone().unwrap_or_default();
-    let request = route::request(state, &project, &u.text);
-    let chosen = choice.ok().zip(request).and_then(|(c, r)| route::checked(&c, &r));
+    let now = route::request(state, &u.project, &u.text);
+    let still = |c: &Choice| now.as_ref().is_some_and(|r| route::checked(c, r).is_some());
+    let chosen = (choice.ok())
+        .filter(|c| still(c))
+        .and_then(|c| route::checked(&c, &shown));
     let place = match chosen {
         Some(place) => {
             u.by = By::Model;
@@ -2506,16 +2512,16 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
                 task: open.task,
                 run,
             });
+            // A `Stopped` in its place: the next run's id is new, so a late
+            // event of the cut one cannot land on it.
             t.transcript.truncate(open.item);
+            t.transcript.push(Item::Stopped);
             t.status = derive_status(t);
-            commands.push(save(&root, t));
             commands.push(Command::Broadcast(ServerMsg::Transcript {
                 task: t.id,
                 items: t.transcript.clone(),
             }));
-            if !matches!(t.transcript.last(), Some(Item::User { .. })) {
-                say(state, open.task, RESUMED.to_string(), None);
-            }
+            say(state, open.task, RESUMED.to_string(), None);
             start_run(state, open.task, commands);
         }
         Landed::Steered { .. } => {
@@ -2546,7 +2552,10 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         }
         Landed::Started { .. } => unreachable!("a started task has no moves"),
     }
+    let project = (state.tasks.iter().find(|t| t.id == open.task))
+        .map_or_else(|| state.active.clone().unwrap_or_default(), |t| t.project.clone());
     let u = Utterance {
+        project,
         device: open.device,
         utterance: open.utterance,
         text,
@@ -2578,6 +2587,10 @@ fn voice_task(
 ) -> bool {
     let started = match (id, voice::route(state, &u.device, &u.text)) {
         (Err(e), _) => Err(format!("cannot start a task: {e}")),
+        // Its task goes in its game's project, or nowhere.
+        _ if state.active.as_ref() != Some(&u.project) => {
+            Err("the project changed before the task started".to_string())
+        }
         // Moved by the user: where they put it, wherever the game is now.
         (_, Route::Nowhere(reason)) if u.by != By::You => Err(reason),
         // Chosen as a new task by the rule, which would steer it now.
@@ -7577,6 +7590,15 @@ mod tests {
             assert_eq!(route_of(&f, 3, 2).as_deref(), Some("Steered “make a ball”"));
             assert_eq!(f.routes[0].by, By::Rule);
         }
+        // A task queued while the model was asked was not shown to it: the rule.
+        let (later, _) = update(s.clone(), nth_task(9, "typed meanwhile"));
+        let (later, commands) = answered(later, 5, Ok(Choice::AddToQueued { task: 9 }));
+        assert_eq!(spec(&commands).task, 3);
+        assert_eq!(task(&later, 9).transcript.len(), 1);
+        // The project changed meanwhile: it goes nowhere, and the headset hears why.
+        let (moved, _) = update(s.clone(), switch("examples/b"));
+        let (_, commands) = answered(moved, 5, Ok(Choice::Steer { task: 3 }));
+        assert!(matches!(&stages(&commands)[..], [(5, Stage::Failed(_))]), "{commands:?}");
         // A late answer for an utterance no longer waiting changes nothing.
         let (_, commands) = answered(s.clone(), 4, Ok(Choice::Unclear));
         assert!(commands.is_empty(), "{commands:?}");
@@ -7604,7 +7626,8 @@ mod tests {
         });
         let (cut, commands) = update(s.clone(), early);
         assert!(commands.contains(&Command::StopRun { task: 3, run: 2 }));
-        assert_eq!(task(&cut, 3).transcript.len(), 3);
+        assert_eq!(task(&cut, 3).transcript.len(), 4);
+        assert_eq!(task(&cut, 3).run.as_ref().map(|r| r.id), Some(3), "not the cut run's id");
         assert_eq!(spec(&commands).message, RESUMED);
         assert_eq!(stages(&commands), []);
         let (s, _) = update(s, agent(3, 2, started("sess-1")));

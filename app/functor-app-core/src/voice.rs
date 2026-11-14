@@ -26,6 +26,8 @@ pub struct Utterance {
     pub by: By,
     /// The model router's title, for a new task.
     pub title: Option<String>,
+    /// The project of the game it was said to: it goes nowhere else.
+    pub project: String,
 }
 
 /// The stages the core reports.
