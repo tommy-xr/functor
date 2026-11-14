@@ -1231,6 +1231,9 @@ impl Drop for Quest {
         for (name, value) in &self.props {
             self.shell(&format!("setprop {name} {value}"));
         }
+        // Asleep again, so it does not keep rendering while nobody wears it.
+        self.shell(&format!("am force-stop {PACKAGE}"));
+        self.shell("am broadcast -a com.oculus.vrpowermanager.automation_disable");
         let port = self.debug.rsplit(':').next().unwrap().to_string();
         let _ = self.adb(&["forward", "--remove", &format!("tcp:{port}")]);
     }
@@ -2118,6 +2121,129 @@ async fn quest_runs_the_game_in_the_headset_placement() {
         quest.pairing_file().secret.is_none().then_some(())
     })
     .await;
+}
+
+/// `npm run test:quest-panel`: the headset panel on the attached Quest,
+/// driven by injected presses (`debug.functor.pair_input`). Paired over the
+/// cable to an app whose fake agent leaves a change to review: the wrist
+/// light waits; a short menu press opens the panel on Now; the stick moves
+/// to Tasks, A opens the task's decision page, A and A again keep it, and
+/// the desktop's task is kept; the menu closes it and the light shows done.
+/// Captures land in `FUNCTOR_QUEST_CAPTURES` when set.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn quest_panel_keeps_a_change_from_the_headset() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let quest = Quest::attach(&["debug.oculus.guardian_pause", "debug.functor.pair_input"]);
+    let review = Review::new();
+    let app = review.app(&["--device-link", "0.0.0.0:0"]).await;
+    let (mut app, _, _) = pair_quest_by_cable(&quest, app).await;
+    let panel = |quest: &Quest| quest.link()["panel"].clone();
+    let debug = quest.debug.clone();
+    // One sample of the right hand (or the left menu) held for `ms`.
+    let hold = |hand: &'static str, controls: Value, ms: u64| {
+        let debug = debug.clone();
+        async move {
+            let mut held = json!({"active": true});
+            held.as_object_mut()
+                .unwrap()
+                .extend(controls.as_object().unwrap().clone());
+            for sample in [held, json!({"active": true})] {
+                let body = json!({"type": "xr", hand: sample}).to_string();
+                let (status, text) = post(&debug, "/input", &body).unwrap();
+                assert_eq!(status, 200, "{text}");
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
+    };
+    let a = || hold("right", json!({"primary_pressed": true}), 150);
+    let down = || hold("right", json!({"thumbstick": [0.0, -1.0]}), 150);
+    let menu = || hold("left", json!({"menu_pressed": true}), 200);
+
+    until("linked, no task yet", || {
+        (panel(&quest)["tasks"] == 0 && quest.link()["linked"] == true).then_some(())
+    })
+    .await;
+    let id = task_to_review(&mut app).await;
+    until("the headset has it, waiting: its light pulses", || {
+        let p = panel(&quest);
+        (p["now"] == id && p["wrist"] == json!({"stance": "waiting", "pulsing": true}))
+            .then_some(())
+    })
+    .await;
+    // The light rides the left grip: one held low and ahead, for the capture.
+    let wrist = || {
+        let pose = |p: [f32; 3]| json!({"position": p, "orientation": [0.0, 0.0, 0.0, 1.0]});
+        let sample = json!({"type": "xr", "head": pose([0.0; 3]),
+            "left": {"active": true, "grip": pose([-0.1, -0.12, -0.45])}});
+        let (status, text) = post(&debug, "/input", &sample.to_string()).unwrap();
+        assert_eq!(status, 200, "{text}");
+    };
+    wrist();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    quest.capture("panel-wrist-waiting.png");
+
+    menu().await;
+    until("it opens on Now", || {
+        (panel(&quest)["open"] == true).then_some(())
+    })
+    .await;
+    assert_eq!(panel(&quest)["section"], "now");
+    assert!(panel(&quest)["wrist"].is_null(), "no light while open");
+    quest.capture("panel-now.png");
+
+    down().await;
+    until("Talk", || {
+        (panel(&quest)["section"] == "talk").then_some(())
+    })
+    .await;
+    quest.capture("panel-talk.png");
+    down().await;
+    until("Tasks", || {
+        (panel(&quest)["section"] == "tasks").then_some(())
+    })
+    .await;
+    hold("right", json!({"thumbstick": [1.0, 0.0]}), 150).await;
+    quest.capture("panel-tasks.png");
+    a().await;
+    until("its decision page", || {
+        (panel(&quest)["page"] == id).then_some(())
+    })
+    .await;
+    app.state_where("the desktop follows the headset's choice", 20, |s| {
+        s["current_task"]["a"] == id
+    })
+    .await;
+    quest.capture("panel-decision.png");
+    a().await;
+    until("Keep waits for its confirm", || {
+        (panel(&quest)["confirm"] == "keep").then_some(())
+    })
+    .await;
+    quest.capture("panel-confirm.png");
+    a().await;
+    app.state_where("the desktop's task is kept", 20, |s| {
+        s["tasks"][0]["status"]["kind"] == "kept"
+    })
+    .await;
+    until("the page has no decision left", || {
+        panel(&quest)["confirm"].is_null().then_some(())
+    })
+    .await;
+
+    menu().await;
+    until("closed, the light shows done", || {
+        let p = panel(&quest);
+        (p["open"] == false && p["wrist"] == json!({"stance": "done", "pulsing": false}))
+            .then_some(())
+    })
+    .await;
+    wrist();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    quest.capture("panel-wrist-done.png");
 }
 
 /// `quest` unpaired (keeping its id, which the desktop knows it by), then

@@ -176,9 +176,14 @@ path, following `CLAUDE.md`.
 
 ## Finish cleanly
 
-Restore proximity automation when unattended testing is complete:
+End every on-device test and manual session by stopping the app and
+releasing the proximity override, in the test's cleanup (`Drop`) so it
+happens on failure too. A headset left with `prox_close` believes it is worn
+and keeps rendering and tracking, and heats up. Never leave it awake while
+waiting on CI; set the override again at the start of the next run only.
 
 ```sh
+adb -s SERIAL shell am force-stop dev.functor.runner
 adb -s SERIAL shell am broadcast \
   -a com.oculus.vrpowermanager.automation_disable
 ```

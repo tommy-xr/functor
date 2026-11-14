@@ -64,19 +64,22 @@ impl Default for Voice {
 }
 
 impl Voice {
-    /// One frame: `sample` drives the gesture, `armed` while it may talk;
-    /// `capsule` (JSON) is made only when an utterance starts.
+    /// One frame: `received` is the link's channel messages since the last
+    /// (statuses are taken from it), `sample` drives the gesture, `armed`
+    /// while it may talk; `capsule` (JSON) is made only when an utterance
+    /// starts.
     pub fn frame(
         &mut self,
         client: &Client,
+        received: &[(u16, Vec<u8>)],
         sample: Option<&XrInputSnapshot>,
         armed: bool,
         capsule: impl FnOnce() -> String,
         now: Instant,
     ) {
-        for (channel, data) in client.received() {
-            if channel == STATUS_CHANNEL {
-                match Status::decode(&data) {
+        for (channel, data) in received {
+            if *channel == STATUS_CHANNEL {
+                match Status::decode(data) {
                     Ok(status) => self.status(status, now),
                     Err(e) => log::warn!("voice: a status we cannot read: {e}"),
                 }
@@ -122,6 +125,16 @@ impl Voice {
         if self.talk.utterance().is_some() {
             self.cancel(client, "The headset paused", now);
         }
+    }
+
+    /// The right hand is the gesture's: the panel leaves it alone.
+    pub fn busy(&self) -> bool {
+        self.gesture.busy()
+    }
+
+    /// Recording: what is said shows in the panel's Talk section.
+    pub fn listening(&self) -> bool {
+        self.talk.utterance().is_some()
     }
 
     /// The game's view of the right hand while the gesture holds it.

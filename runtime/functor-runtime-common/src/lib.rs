@@ -105,6 +105,7 @@ pub mod net;
 pub mod physics;
 pub mod protocol;
 pub mod link_overlay;
+pub mod link_panel;
 pub mod reload_indicator;
 pub mod render;
 pub mod runtime_settings;
