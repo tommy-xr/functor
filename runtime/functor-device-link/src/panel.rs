@@ -17,9 +17,10 @@ use crate::wire::{Frame, Reader, Writer};
 use crate::Error;
 
 /// The first byte of every panel message.
-/// 2 adds the conversation (D41). A peer of the other version refuses the
-/// message (`Malformed("panel version")`) and shows no panel content.
-pub const VERSION: u8 = 2;
+/// 2 adds the conversation (D41); 3 carries a message's whole text, up to
+/// [`MAX_SAID_TEXT`] (it was 600 bytes). A peer of another version refuses
+/// the message (`Malformed("panel version")`) and shows no panel content.
+pub const VERSION: u8 = 3;
 
 /// Desktop → headset: [`Update`] messages.
 pub const UPDATE_CHANNEL: u16 = 3;
@@ -46,9 +47,10 @@ pub const MAX_LABEL: usize = 96;
 pub const MAX_MOVES: usize = 3;
 /// Most bytes of a progress line's detail.
 pub const MAX_DETAIL: usize = 192;
-/// The conversation's most items, and most bytes of each one's text.
+/// The conversation's most items, and most bytes of each one's text: a
+/// long answer whole, while a full panel still fits one link message.
 pub const MAX_SAID: usize = 12;
-pub const MAX_SAID_TEXT: usize = 600;
+pub const MAX_SAID_TEXT: usize = 4000;
 
 /// What an agent is doing, as its character shows it (D34).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

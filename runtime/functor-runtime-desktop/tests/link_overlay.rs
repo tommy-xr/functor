@@ -134,7 +134,7 @@ fn write_views(gl: &glow::Context, painter: &mut LinkOverlayPainter, dir: &str) 
         waiting: None,
     };
     save("toast-transcript", &card(&toast_lines(&heard)), at(1.0, 0.0), Background::Bright);
-    for view in ["now", "tasks", "decision", "talk", "conversation", "cannot-reach"] {
+    for view in ["now", "tasks", "decision", "talk", "conversation", "conversation-all", "cannot-reach"] {
         save(&format!("panel-{view}"), &panel_view(view), at(0.9, 0.0), Background::Black);
     }
     let decision = panel_view("decision");
@@ -233,6 +233,17 @@ fn data() -> PanelData {
     }
 }
 
+/// An answer longer than the conversation shows before "Show all".
+const LONG_REPLY: &str = "Done. The left wall alone now uses a restitution of 0.85; the \
+    other three keep 0.6, so only that side feels livelier. I moved the value into a \
+    named constant, LEFT_WALL_BOUNCE, beside the others in physics.fun, so it is easy \
+    to tune. The trail is unchanged: it still fades over 0.4 seconds and costs one \
+    draw. I ran the 14 physics tests and they pass. Two things to try in the headset: \
+    a fast serve straight at the left wall, to check the ball does not escape the \
+    court at the higher speed, and a slow roll along it, where a high restitution \
+    can make the ball jitter. If either looks wrong, say so and I will lower it to \
+    0.75 and add a speed cap after a wall hit.";
+
 /// Task 1's conversation: a spoken request, a route, the agent's replies.
 fn conversation() -> ConversationData {
     let said = |role, spoken, text: &str| SaidLine {
@@ -259,7 +270,11 @@ fn conversation() -> ConversationData {
                  not only the left one \u{2014} say if you want just the left.",
             ),
             said(Role::You, false, "Only the left wall, please."),
-            said(Role::Agent, false, "Done: the left wall alone uses 0.85; the others keep 0.6."),
+            // Cut by the desktop: longer than it sends.
+            SaidLine {
+                cut: true,
+                ..said(Role::Agent, false, LONG_REPLY)
+            },
         ],
     }
 }
@@ -291,6 +306,12 @@ fn panel_at(view: &str, data: &PanelData) -> Panel {
         }
         "talk" => press(down),
         "conversation" => {
+            press(a);
+            press(a);
+        }
+        // Its long reply whole, from the top.
+        "conversation-all" => {
+            press(a);
             press(a);
             press(a);
         }
