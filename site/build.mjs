@@ -51,6 +51,7 @@ const PAGES = [
   "docs.html",
   "docs/index.html",
   "manual/index.html",
+  "manual/app/index.html",
   "demo-editor.html",
   "styles.css",
 ];
@@ -221,6 +222,7 @@ await writeFile(
 - [API reference (JSON)](https://functor.games/docs/api.json): the same reference as structured data (modules → items with \`qualified_name\`, \`kind\`, \`declaration\`, \`docs\`).
 - [API reference (HTML)](https://functor.games/docs/): the searchable rendering of the same data.
 - [Manual](https://functor.games/manual/): getting started, the MVU game contract, language principles, topic guides.
+- [The desktop app](https://functor.games/manual/app/): a preview, built from source — the running game beside a coding agent (Claude Code or Codex) that drives it through the same tools; the transport bar, the decision page (Keep / Revert), Meta Quest pairing, privacy, cost, troubleshooting.
 - [Driving games with agents](https://functor.games/manual/#agents): register \`functor mcp\`, then prefer \`run_game_code_unsafe\` with one bare \`async (game) => { ... }\` JavaScript function for trusted multi-step automation. It requires Node.js 20+ (\`FUNCTOR_NODE\` overrides the executable) and is deliberately RCE-equivalent, not sandboxed. The injected SDK observes state/scene/trace/captures, controls time and release-safe input, waits deterministically, reloads/rewinds, and returns a concrete call trace plus final state; captures are MCP image blocks. Use the lower-level tools for one-offs and clients without Node.
 - [Sandbox](https://functor.games/sandbox.html): run and edit the sample games in the browser.
 
