@@ -1067,7 +1067,9 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
 /// (and `--replay-input`, which then steps it).
 fn launch_clock(args: &Args) -> GameClock {
     let mut clock = GameClock::new(args.fixed_time);
-    if args.paused || args.replay_input.is_some() {
+    if args.paused {
+        clock.pause_at_start();
+    } else if args.replay_input.is_some() {
         clock.pause();
     }
     clock
@@ -1403,6 +1405,7 @@ fn service_debug_request(
         debug_server::DebugRequest::State(with_model, resp) => {
             let frame = *frame_count;
             let paused = clock.is_paused();
+            let paused_by = clock.paused_by();
             let frame_stats = telemetry.stats();
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
@@ -1429,7 +1432,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: debug_server::RuntimeViewport::new(width, height),
                     views: vec![debug_server::RuntimeView::new("main", width, height)],
                     model: if with_model {
@@ -1798,8 +1801,8 @@ fn service_debug_request(
             }
             let _ = resp.send(result);
         }
-        debug_server::DebugRequest::Time(cmd, resp) => {
-            let _ = resp.send(clock.apply(cmd));
+        debug_server::DebugRequest::Time(request, resp) => {
+            let _ = resp.send(clock.apply(request.command, request.by));
         }
     }
     sampled_input_changed
@@ -4785,7 +4788,9 @@ mod tests {
     #[test]
     fn paused_launches_on_a_paused_clock() {
         let paused = Args::try_parse_from(["functor", "--game-path", "g.fun", "--paused"]).unwrap();
-        assert!(launch_clock(&paused).is_paused());
+        let clock = launch_clock(&paused);
+        assert!(clock.is_paused());
+        assert_eq!(clock.paused_by(), Some(functor_runtime_common::debug_protocol::PausedBy::Start));
         let live = Args::try_parse_from(["functor", "--game-path", "g.fun"]).unwrap();
         assert!(!launch_clock(&live).is_paused());
         // A capture pin cannot also be paused.

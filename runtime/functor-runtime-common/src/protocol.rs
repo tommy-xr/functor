@@ -244,14 +244,17 @@ pub fn seek_to_state_frame<G: GameProducer + ?Sized>(
     })
 }
 
-/// `GET /state`'s `clock`: `paused` from the shell's clock, the rest from the
-/// producer's recorder, numbered as [`GameProducer::state_frame`].
+/// `GET /state`'s `clock`: `paused` and `paused_by` from the shell's clock,
+/// the rest from the producer's recorder, numbered as
+/// [`GameProducer::state_frame`].
 pub fn clock_state<G: GameProducer + ?Sized>(
     game: &G,
     paused: bool,
+    paused_by: Option<crate::debug_protocol::PausedBy>,
 ) -> crate::debug_protocol::ClockState {
     crate::debug_protocol::ClockState {
         paused,
+        paused_by,
         recorded: game
             .scene_frame_range()
             .map(|(lo, hi)| crate::debug_protocol::RecordedFrames {

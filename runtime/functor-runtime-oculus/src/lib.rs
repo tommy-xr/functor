@@ -1091,12 +1091,13 @@ fn service_debug_request(
             let mut input = debug.input.clone();
             apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
-            let (frame, rendered_frames, tts, pending_steps, paused) = (
+            let (frame, rendered_frames, tts, pending_steps, paused, paused_by) = (
                 debug.frame_count,
                 debug.rendered_frames,
                 clock.current_tts(),
                 clock.pending_steps(),
                 clock.is_paused(),
+                clock.paused_by(),
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
@@ -1140,7 +1141,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: if with_model {
@@ -1322,8 +1323,8 @@ desktop runtime's --headless/--debug-port path"
             }
             let _ = response.send(result);
         }
-        DebugRequest::Time(command, response) => {
-            let _ = response.send(clock.apply(command));
+        DebugRequest::Time(request, response) => {
+            let _ = response.send(clock.apply(request.command, request.by));
         }
         DebugRequest::Project(response) => {
             sim.post(move |g| {

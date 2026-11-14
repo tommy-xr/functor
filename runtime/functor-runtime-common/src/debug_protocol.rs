@@ -261,7 +261,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
+///
+/// 48 adds who paused the clock ([`PausedBy`]): an optional `by` on `POST
+/// /time`, reported back as `clock.paused_by` on `GET /state`. Additive: a
+/// pre-v48 runtime ignores `by` and omits `paused_by`.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -355,7 +359,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/time",
-        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"cancel\"} (drop queued steps, stay paused) | {\"type\":\"resume\"} — 409 while --fixed-time pins the clock",
+        description: "clock control — {\"type\":\"set\",\"tts\":2.0} (pause) | {\"type\":\"advance\",\"dts\":0.016,\"frames\":1} (queue that many steps; advances accumulate) | {\"type\":\"cancel\"} (drop queued steps, stay paused) | {\"type\":\"resume\"}; optional \"by\":\"agent\"|\"user\" says who asks, reported as /state's clock.paused_by — 409 while --fixed-time pins the clock",
     },
     DebugRoute {
         method: "POST",
@@ -877,6 +881,12 @@ pub struct ClockState {
     /// Pinned by `POST /time` (`set`, `advance`, `cancel`), `POST /seek`, or
     /// the shell's own scrubber. Steps an `advance` queued still run.
     pub paused: bool,
+    /// Who asked for the pause (v48). Omitted while running, and when the
+    /// request did not say (the shell's own scrubber, `POST /seek`, a client
+    /// that sends no `by`).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_by: Option<PausedBy>,
     /// The seekable window, numbered as `frame`. Omitted before the first
     /// recorded step, and for producers that record no history.
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -887,6 +897,19 @@ pub struct ClockState {
     pub generation: u64,
     /// Successful code swaps (hot reloads) since the program loaded.
     pub program_revision: u64,
+}
+
+/// Who paused the clock (v48).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PausedBy {
+    /// An agent's tools (`functor mcp`).
+    Agent,
+    /// A person, at a transport bar.
+    User,
+    /// The game opened paused (`--paused`).
+    Start,
 }
 
 /// The oldest and newest frames of a recorded window, inclusive.
@@ -1150,6 +1173,16 @@ pub enum TimeCommand {
 
 fn one_frame() -> u32 {
     1
+}
+
+/// `POST /time`'s body: a [`TimeCommand`], and who sends it (v48).
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+pub struct TimeRequest {
+    #[serde(flatten)]
+    pub command: TimeCommand,
+    /// Recorded as the cause when the command pauses.
+    #[serde(default)]
+    pub by: Option<PausedBy>,
 }
 
 /// A coupled model-and-physics rewind sent through `POST /rewind`.
@@ -1667,7 +1700,7 @@ pub enum DebugRequest {
     Input(InputCommand, Sender<Result<(), String>>),
     /// `Err` is a conflict the operator must resolve — today, a `/time` command
     /// under an unconditional `--fixed-time` pin, which the clock cannot honor.
-    Time(TimeCommand, Sender<Result<(), String>>),
+    Time(TimeRequest, Sender<Result<(), String>>),
     /// `None` when the producer's logic is not source-shaped (a replay, a
     /// compiled dylib) — reported as 501 rather than an empty project.
     Project(Sender<Option<ProjectSources>>),
@@ -1906,6 +1939,7 @@ mod tests {
             reload: Default::default(),
             clock: ClockState {
                 paused: true,
+                paused_by: Some(PausedBy::Agent),
                 recorded: Some(RecordedFrames {
                     oldest: 3,
                     newest: 42,
@@ -2033,6 +2067,7 @@ mod tests {
                 "reload": { "in_progress": false },
                 "clock": {
                     "paused": true,
+                    "paused_by": "agent",
                     "recorded": { "oldest": 3, "newest": 42 },
                     "generation": 2,
                     "program_revision": 1
@@ -2262,6 +2297,51 @@ mod tests {
             serde_json::from_str::<TimeCommand>(r#"{"type":"cancel"}"#).unwrap(),
             TimeCommand::Cancel
         );
+        // A clock nobody is recorded as pausing reports no cause; one from a
+        // runtime before it reads as none.
+        let clock = serde_json::to_value(ClockState::default()).unwrap();
+        assert_eq!(
+            clock,
+            json!({ "paused": false, "generation": 0, "program_revision": 0 })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClockState>(clock).unwrap(),
+            ClockState::default()
+        );
+        // `/time`'s body is the command, with or without who sends it.
+        let request = |json: &str| serde_json::from_str::<TimeRequest>(json).unwrap();
+        assert_eq!(
+            request(r#"{"type":"advance","dts":0.016,"frames":2,"by":"agent"}"#),
+            TimeRequest {
+                command: TimeCommand::Advance {
+                    dts: 0.016,
+                    frames: 2
+                },
+                by: Some(PausedBy::Agent),
+            }
+        );
+        assert_eq!(
+            request(r#"{"by":"user","type":"cancel"}"#),
+            TimeRequest {
+                command: TimeCommand::Cancel,
+                by: Some(PausedBy::User),
+            }
+        );
+        assert_eq!(
+            request(r#"{"type":"set","tts":2}"#),
+            TimeRequest {
+                command: TimeCommand::Set { tts: 2.0 },
+                by: None,
+            }
+        );
+        assert!(serde_json::from_str::<TimeRequest>(r#"{"type":"resume","by":"robot"}"#).is_err());
+        // A runtime before `by` parses the bare command and ignores it.
+        for (json, command) in [
+            (r#"{"type":"resume","by":"user"}"#, TimeCommand::Resume),
+            (r#"{"type":"set","tts":2,"by":"agent"}"#, TimeCommand::Set { tts: 2.0 }),
+        ] {
+            assert_eq!(serde_json::from_str::<TimeCommand>(json).unwrap(), command);
+        }
         assert_eq!(
             serde_json::from_str::<RewindCommand>(r#"{"frame":42}"#).unwrap(),
             RewindCommand { frame: 42 }
