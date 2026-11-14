@@ -20,7 +20,8 @@ use functor_runtime_common::debug_protocol::{PairingState, TaskStance, VoiceStag
 use functor_runtime_common::XrInputSnapshot;
 use functor_runtime_common::link_overlay::{card, lines, mesh, toast_lines, LinkOverlayPainter, Shape};
 use functor_runtime_common::link_panel::{
-    Connection, Destination, Panel, PanelData, PanelDecision, PanelRoute, PanelTask,
+    Connection, ConversationData, Destination, Panel, PanelData, PanelDecision, PanelRoute,
+    PanelTask, Role, SaidLine,
 };
 use functor_runtime_common::reload_indicator::head_to_clip;
 use functor_runtime_common::TrackingPose;
@@ -130,7 +131,7 @@ fn write_views(gl: &glow::Context, painter: &mut LinkOverlayPainter, dir: &str) 
         transcript: Some(TRANSCRIPT.into()),
     };
     save("toast-transcript", &card(&toast_lines(&heard)), at(1.0, 0.0), Background::Bright);
-    for view in ["now", "tasks", "decision", "talk", "cannot-reach"] {
+    for view in ["now", "tasks", "decision", "talk", "conversation", "cannot-reach"] {
         save(&format!("panel-{view}"), &panel_view(view), at(0.9, 0.0), Background::Black);
     }
     let decision = panel_view("decision");
@@ -223,6 +224,39 @@ fn data() -> PanelData {
                 ("Make it a new task".into(), Destination::New),
             ],
         }),
+        conversation: Some(conversation()),
+        progress: None,
+    }
+}
+
+/// Task 1's conversation: a spoken request, a route, the agent's replies.
+fn conversation() -> ConversationData {
+    let said = |role, spoken, text: &str| SaidLine {
+        role,
+        spoken,
+        cut: false,
+        text: text.into(),
+    };
+    ConversationData {
+        task: 1,
+        title: "Make the ball bounce higher off the left wall".into(),
+        stance: TaskStance::Waiting,
+        activity: String::new(),
+        question: false,
+        first: 0,
+        items: vec![
+            said(Role::You, true, TRANSCRIPT),
+            said(Role::App, false, "Steered \u{201c}Make the ball bounce higher\u{201d}"),
+            said(
+                Role::Agent,
+                false,
+                "I raised the wall restitution from 0.6 to 0.85 in physics.fun and added a \
+                 trail to the ball that fades over 0.4 seconds. Every wall bounces higher now, \
+                 not only the left one \u{2014} say if you want just the left.",
+            ),
+            said(Role::You, false, "Only the left wall, please."),
+            said(Role::Agent, false, "Done: the left wall alone uses 0.85; the others keep 0.6."),
+        ],
     }
 }
 
@@ -252,6 +286,10 @@ fn panel_at(view: &str, data: &PanelData) -> Panel {
             press(a);
         }
         "talk" => press(down),
+        "conversation" => {
+            press(a);
+            press(a);
+        }
         _ => {}
     }
     panel
