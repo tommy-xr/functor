@@ -388,6 +388,39 @@ fn cli_task_pairs_results_by_id_while_a_subagent_runs() {
     );
 }
 
+/// D39: each level reaches the runner, with the app's tool server and its
+/// context still there; Codex reads all of the user's setup whatever is
+/// asked; the metrics record the level.
+#[cfg(unix)]
+#[test]
+fn cli_task_each_scope_reaches_the_runner_with_the_tool_server() {
+    let fixture = fixture("claude-game-tool.jsonl");
+    for (harness, scope, setup) in [
+        ("claude", "user_and_project", "UserAndProject"),
+        ("claude", "project", "Project"),
+        ("claude", "isolated", "Isolated"),
+        ("codex", "isolated", "UserAndProject"),
+    ] {
+        let repo = tree();
+        let home = tempfile::tempdir().unwrap();
+        let (functor, requests) = stub::functor(home.path());
+        let metrics = home.path().join("metrics.json");
+        let out = task_command(repo.path(), home.path(), &functor, &fixture, "What is the count?")
+            .args(["--harness", harness, "--scope", scope, "--metrics"])
+            .arg(&metrics)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(out.status.success(), "{scope}: {stderr}");
+        assert!(stderr.contains(&format!("[fake agent] setup: {setup}\n")), "{scope}: {stderr}");
+        let put = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(put.head.starts_with("PUT /app-context "), "{}", put.head);
+        let record: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+        let recorded = if harness == "codex" { "user_and_project" } else { scope };
+        assert_eq!(record["scope"], recorded, "{record}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cli_task_with_a_failed_run_exits_1() {

@@ -6,7 +6,7 @@ use crate::changes::FileDiff;
 use crate::creation::{NewProjectRequest, Plan};
 use crate::layout::LayoutOp;
 use crate::review::ReviewSetting;
-use crate::tasks::{Harness, Item};
+use crate::tasks::{Harness, Item, Scope};
 use crate::transport::{Mark, Transport, TransportCall};
 use crate::AppState;
 
@@ -37,15 +37,23 @@ pub enum ClientMsg {
     WatchTransport {
         on: bool,
     },
-    /// Start a task in the active project with its first message.
+    /// Start a task in the active project with its first message; `scope`
+    /// for this request, else the project's (D39).
     NewTask {
         message: String,
         harness: Harness,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        scope: Option<Scope>,
     },
-    /// A follow-up on `task`, continuing its agent session.
+    /// A follow-up on `task`, continuing its agent session; `scope` for
+    /// this request, else the task's last.
     SendMessage {
         task: u64,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        scope: Option<Scope>,
     },
     /// Stop `task`'s run.
     StopTask {
@@ -59,6 +67,11 @@ pub enum ClientMsg {
     /// per project.
     SetHarness {
         harness: Harness,
+    },
+    /// How much of the user's own setup the active project's runs read
+    /// (D39); remembered per project.
+    SetScope {
+        scope: Scope,
     },
     /// How the active project's changes are reviewed (D31); remembered.
     SetReview {

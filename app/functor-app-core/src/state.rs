@@ -28,7 +28,7 @@ use crate::review::{
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
-    Item, Run, RunEvent, Spoken, Task, TaskStatus, Usage, UsageDetail,
+    Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
 use crate::voice::{self, Route, Stage, Utterance};
@@ -80,6 +80,9 @@ pub struct AppState {
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
     pub harness_choice: BTreeMap<String, Harness>,
+    /// Per project path, how much of the user's own setup its runs read
+    /// (D39); absent: all of it.
+    pub scope_choice: BTreeMap<String, Scope>,
     /// Per project path, how its changes are reviewed (D31); absent: the
     /// default.
     pub review_settings: BTreeMap<String, ReviewSetting>,
@@ -205,6 +208,7 @@ impl AppState {
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
+            scope_choice: BTreeMap::new(),
             review_settings: BTreeMap::new(),
             can_review: false,
             layouts,
@@ -296,6 +300,8 @@ pub enum Event {
         id: Result<u64, String>,
         message: String,
         harness: Harness,
+        /// This request's level (D39), else the project's.
+        scope: Option<Scope>,
         /// The utterance it was said as, from a headset.
         voice: Option<Box<Utterance>>,
     },
@@ -459,6 +465,8 @@ pub enum Command {
     DeleteTask { dir: PathBuf, task: u64 },
     /// Remember `harness` as the pick for new tasks in the project at `dir`.
     SaveHarness { dir: PathBuf, harness: Harness },
+    /// Remember `scope` for the runs of the project at `dir` (D39).
+    SaveScope { dir: PathBuf, scope: Scope },
     /// Remember `layout` for the project at `dir`; writes may be coalesced.
     SaveLayout { dir: PathBuf, layout: Box<Layout> },
     /// Read `path` (checked by [`check_relative`]) in project `project`'s
@@ -516,6 +524,8 @@ pub struct RunSpec {
     pub task: u64,
     pub run: u64,
     pub harness: Harness,
+    /// How much of the user's own setup the run reads (D39).
+    pub scope: Scope,
     /// The task's project directory: the agent's working directory.
     pub dir: PathBuf,
     /// What the agent may edit.
@@ -603,6 +613,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::StopSession) => (stop(&mut state, &mut commands), true),
         Event::Client(ClientMsg::SetHarness { harness }) => {
             (set_harness(&mut state, harness, &mut commands), true)
+        }
+        Event::Client(ClientMsg::SetScope { scope }) => {
+            (set_scope(&mut state, scope, &mut commands), true)
         }
         Event::Client(ClientMsg::SetReview { setting }) => {
             (set_review(&mut state, setting, &mut commands), true)
@@ -851,10 +864,11 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             id,
             message,
             harness,
+            scope,
             voice: None,
         } => match id {
             Ok(id) => (
-                new_task(&mut state, id, message, harness, None, &mut commands),
+                new_task(&mut state, id, message, harness, scope, None, &mut commands),
                 false,
             ),
             Err(e) => (
@@ -862,8 +876,12 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 false,
             ),
         },
-        Event::Client(ClientMsg::SendMessage { task, message }) => (
-            send_message(&mut state, task, message, &mut commands),
+        Event::Client(ClientMsg::SendMessage {
+            task,
+            message,
+            scope,
+        }) => (
+            send_message(&mut state, task, message, scope, &mut commands),
             false,
         ),
         Event::Client(ClientMsg::StopTask { task }) => {
@@ -1177,6 +1195,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        scope_choice,
         review_settings,
         layouts,
         // Derived from `tasks` at the end of the step.
@@ -1222,6 +1241,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        scope_choice,
         review_settings,
         layouts,
         // The old folder's highlight could name a project of the same path.
@@ -1580,6 +1600,23 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
     true
 }
 
+/// Records `scope` as the active project's level (D39); false when it
+/// already is.
+fn set_scope(state: &mut AppState, scope: Scope, commands: &mut Vec<Command>) -> bool {
+    let Some(path) = &state.active else {
+        return false;
+    };
+    if state.scope_choice.get(path).copied().unwrap_or_default() == scope {
+        return false;
+    }
+    commands.push(Command::SaveScope {
+        dir: project_dir(Path::new(&state.repo_root), path),
+        scope,
+    });
+    state.scope_choice.insert(path.clone(), scope);
+    true
+}
+
 /// Applies `op` to the active project's layout. A live game in a pane
 /// keeps its tab: closing it is refused (Stop game, or another placement,
 /// first). A placement whose session runs differently restarts it.
@@ -1858,12 +1895,14 @@ fn delete_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bo
     true
 }
 
-/// Starts task `id` in the active project with `message`.
+/// Starts task `id` in the active project with `message`, reading `scope`
+/// of the user's setup (else the project's level).
 fn new_task(
     state: &mut AppState,
     id: u64,
     message: String,
     harness: Harness,
+    scope: Option<Scope>,
     spoken: Option<Spoken>,
     commands: &mut Vec<Command>,
 ) -> bool {
@@ -1877,12 +1916,14 @@ fn new_task(
         return reject(commands, reason);
     }
     state.current_task.insert(project.clone(), Some(id));
+    let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     state.tasks.push(Task {
         id,
         project,
         title: title(&message),
         status: TaskStatus::InProgress,
         harness,
+        scope: scope.unwrap_or_default().for_harness(harness),
         model: None,
         session_id: None,
         run: None,
@@ -1906,15 +1947,20 @@ fn send_message(
     state: &mut AppState,
     id: u64,
     message: String,
+    scope: Option<Scope>,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
         commands.push(Command::Reply(no_task(id)));
         return false;
     };
-    if let Err(reason) = can_run(state, &task.project, Some(id), &message) {
+    let project = task.project.clone();
+    if let Err(reason) = can_run(state, &project, Some(id), &message) {
         return reject(commands, reason);
     }
+    let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
+    // This request's level, else the task's last.
+    task.scope = scope.unwrap_or(task.scope).for_harness(task.harness);
     start_run(state, id, message, None, commands);
     true
 }
@@ -2000,6 +2046,7 @@ fn start_run(
         task: id,
         run,
         harness: task.harness,
+        scope: task.scope,
         dir: project_dir(&root, &task.project),
         repo_root: root.clone(),
         message: prompt,
@@ -2112,6 +2159,7 @@ fn voice_task(
                 id,
                 u.text.clone(),
                 harness,
+                None,
                 Some(u.spoken.clone()),
                 commands,
             );
@@ -3722,6 +3770,7 @@ mod tests {
             message: message.to_string(),
             harness: Harness::Claude,
             voice: None,
+            scope: Default::default(),
         }
     }
 
@@ -3729,6 +3778,7 @@ mod tests {
         client(ClientMsg::SendMessage {
             task,
             message: message.to_string(),
+            scope: Default::default(),
         })
     }
 
@@ -3826,6 +3876,7 @@ mod tests {
                     attach: None,
                     moment: false,
                     context: crate::agent_view::app_context(&s0, "examples/a"),
+                    scope: Default::default(),
                 })),
                 Command::SaveTask {
                     dir: PathBuf::from("/repo/examples/a"),
@@ -3927,6 +3978,51 @@ mod tests {
         let (s, _) = update(s, send(1, "again"));
         assert_eq!(s.activity[&1].context, Some(ContextFill { used: 950, window: 1000 }));
         assert_eq!(s.context_windows, windows);
+    }
+
+    /// D39: the project's level by default, a request's own when it gives
+    /// one, kept with the task; Codex always reads all of the user's setup.
+    #[test]
+    fn a_runs_scope_is_the_requests_else_the_projects_and_never_less_for_codex() {
+        let task_with = |harness, scope| Event::NewTask {
+            id: Ok(1),
+            message: "hi".into(),
+            harness,
+            scope,
+            voice: None,
+        };
+        // The project's default, saved; setting it again changes nothing.
+        let (s, commands) = update(state(), client(ClientMsg::SetScope { scope: Scope::Isolated }));
+        assert!(commands.contains(&Command::SaveScope {
+            dir: PathBuf::from("/repo/examples/a"),
+            scope: Scope::Isolated
+        }));
+        let (s, commands) = update(s, client(ClientMsg::SetScope { scope: Scope::Isolated }));
+        assert!(!commands.iter().any(|c| matches!(c, Command::SaveScope { .. })));
+        let (s2, commands) = update(s.clone(), task_with(Harness::Claude, None));
+        assert_eq!(spec(&commands).scope, Scope::Isolated);
+        assert_eq!(task(&s2, 1).scope, Scope::Isolated);
+        // One request's level, then a follow-up keeps it unless it gives its own.
+        let (s2, commands) = update(s.clone(), task_with(Harness::Claude, Some(Scope::Project)));
+        assert_eq!(spec(&commands).scope, Scope::Project);
+        let (s2, _) = update(s2, agent(1, 0, finished()));
+        let (s2, _) = update(s2, ended(1, 0));
+        let (s2, commands) = update(s2, send(1, "more"));
+        assert_eq!(spec(&commands).scope, Scope::Project);
+        let (s2, _) = update(s2, agent(1, 2, finished()));
+        let (s2, _) = update(s2, ended(1, 2));
+        let again = client(ClientMsg::SendMessage {
+            task: 1,
+            message: "all of it".into(),
+            scope: Some(Scope::UserAndProject),
+        });
+        let (s2, commands) = update(s2, again);
+        assert_eq!(spec(&commands).scope, Scope::UserAndProject);
+        assert_eq!(task(&s2, 1).scope, Scope::UserAndProject);
+        // Codex: all of it, whatever the project or the request says.
+        let (s3, commands) = update(s, task_with(Harness::Codex, Some(Scope::Isolated)));
+        assert_eq!(spec(&commands).scope, Scope::UserAndProject);
+        assert_eq!(task(&s3, 1).scope, Scope::UserAndProject);
     }
 
     #[test]
@@ -4170,6 +4266,7 @@ mod tests {
             message: "hi".to_string(),
             harness: Harness::Claude,
             voice: None,
+            scope: Default::default(),
         };
         let (next, commands) = update(state(), failed);
         assert_eq!(next, state());
@@ -4177,6 +4274,7 @@ mod tests {
         let bare = client(ClientMsg::NewTask {
             message: "hi".to_string(),
             harness: Harness::Claude,
+            scope: Default::default(),
         });
         let (next, commands) = update(state(), bare);
         assert_eq!(next, state());
@@ -4283,7 +4381,8 @@ mod tests {
             msg,
             ClientMsg::NewTask {
                 message: "hi".to_string(),
-                harness: Harness::Codex
+                harness: Harness::Codex,
+                scope: Default::default(),
             }
         );
         let json = serde_json::to_value(ServerMsg::Item {
@@ -4867,6 +4966,7 @@ mod tests {
             message: "Make it spin".into(),
             harness: Harness::Codex,
             voice: None,
+            scope: Default::default(),
         };
         let (s, _) = update(s, codex_task);
         let (mut s, _) = update(s, baseline(1, 0, "tree-1"));
@@ -6716,6 +6816,7 @@ mod tests {
             message: "go".to_string(),
             harness: Harness::Claude,
             voice,
+            scope: Default::default(),
         };
         update(s, reserved).0
     }
@@ -6748,6 +6849,7 @@ mod tests {
             message: message.clone(),
             harness: *harness,
             voice: Some(u.clone()),
+            scope: Default::default(),
         };
         let (s, commands) = update(s, reserved);
         assert_eq!(

@@ -9,11 +9,13 @@ use serde::Serialize;
 use crate::activity::{classify, CallKind};
 use crate::decision::{style_flags, Check, Report};
 use crate::review::{Review, ReviewState};
-use crate::tasks::{Harness, Item, Task, UsageDetail, Usd};
+use crate::tasks::{Harness, Item, Scope, Task, UsageDetail, Usd};
 
 #[derive(Debug, Serialize)]
 pub struct RunMetrics {
     pub harness: Harness,
+    /// What the run read of the user's own setup (D39).
+    pub scope: Scope,
     /// As the agent reported it.
     pub model: Option<String>,
     /// `ok`, `failed: <summary>` or `stopped`.
@@ -123,6 +125,7 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
         .map_or(0, |i| i + 1);
     let mut m = RunMetrics {
         harness: task.harness,
+        scope: task.scope,
         model: task.model.clone(),
         ended: "unfinished".to_string(),
         messages: 0,
@@ -192,6 +195,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             transcript: vec![],
+            scope: Default::default(),
         };
         let tool = |name: &str, input| Item::Tool {
             name: name.into(),

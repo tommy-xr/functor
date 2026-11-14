@@ -119,6 +119,11 @@ harnesses: Array<Harness>,
  */
 harness_choice: { [key in string]: Harness }, 
 /**
+ * Per project path, how much of the user's own setup its runs read
+ * (D39); absent: all of it.
+ */
+scope_choice: { [key in string]: Scope }, 
+/**
  * Per project path, how its changes are reviewed (D31); absent: the
  * default.
  */
@@ -222,7 +227,7 @@ result: string, ok: boolean, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, scope?: Scope, } | { "type": "send_message", task: number, message: string, scope?: Scope, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_scope", scope: Scope, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
 
 /**
  * Tokens of context in use, of the model's `window`.
@@ -734,6 +739,12 @@ views: number,
 detail?: UsageDetail, };
 
 /**
+ * How much of the user's own setup an agent run reads (D39): instructions,
+ * skills, memory and settings. Permissions are the app's at every level.
+ */
+export type Scope = "user_and_project" | "project" | "isolated";
+
+/**
  * Core → UI.
  */
 export type ServerMsg = { "type": "state", state: AppState, } | { "type": "transcript", task: number, items: Array<Item>, } | { "type": "item", task: number, index: number, item: Item, } | { "type": "diff", task: number, tree: string | null, files: Array<FileDiff>, more: number, error: string | null, } | { "type": "file", root: string, project: string, path: string, text: string | null, error: string | null, } | { "type": "dirs", path: string, dirs: Array<string>, error: string | null, } | { "type": "new_project_plan", request: NewProjectRequest, plan: Plan | null, error: string | null, } | { "type": "rejected", reason: string, } | { "type": "transport", transport: Transport | null, } | { "type": "marks", marks: Array<Mark>, };
@@ -827,6 +838,11 @@ title: string,
  * From [`derive_status`], after every change.
  */
 status: TaskStatus, harness: Harness, 
+/**
+ * What its last run read of the user's setup (D39); tasks saved before
+ * it was kept read all of it.
+ */
+scope: Scope, 
 /**
  * As the agent reported it.
  */

@@ -58,6 +58,7 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
     assert.equal(r.pass, true, `${r.scenario}: ${r.reason}`);
     assert.equal(r.ended, "ok", r.scenario);
     assert.equal(r.model, "claude-model", r.scenario);
+    assert.equal(r.scope, "user_and_project", r.scenario);
     assert.deepEqual(r.tools, want.tools, r.scenario);
     assert.equal(r.tool_calls, Object.values(want.tools).reduce((a, n) => a + n, 0), r.scenario);
     assert.equal(
@@ -92,6 +93,7 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
   }
   const md = fs.readFileSync(path.join(tmp, "fake.md"), "utf8");
   for (const s of scenarios) assert.match(md, new RegExp(`^\\| ${s.id} \\| pass \\|`, "m"));
+  assert.match(md, /^fake run, .*, setup: user_and_project$/m);
   assert.match(md, /^\| weak-jump \| prepared \| claude-review-model \|/m);
   // The split's columns show where any record has them; a record without shows a dash.
   assert.match(md, /^\| scenario \| outcome \| .* \| output tokens \| uncached in \| cache read \| cache write \| cached % \| turns \| cost \$ \| API s \|$/m);

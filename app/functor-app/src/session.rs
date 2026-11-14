@@ -19,7 +19,7 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, Scope,
     SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -178,6 +178,7 @@ impl Driver {
         &mut self,
         message: String,
         harness: Harness,
+        scope: Option<Scope>,
         voice: Option<Box<functor_app_core::voice::Utterance>>,
     ) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
@@ -188,6 +189,7 @@ impl Driver {
             id: id.map_err(|e| e.to_string()),
             message,
             harness,
+            scope,
             voice,
         }
     }
@@ -300,7 +302,7 @@ impl Driver {
                 harness,
                 voice,
             } => {
-                let event = self.new_task(message, harness, voice);
+                let event = self.new_task(message, harness, None, voice);
                 let _ = self.events.send(event);
             }
             // Without a client to answer there is no one to check for.
@@ -339,6 +341,11 @@ impl Driver {
             Command::SaveHarness { dir, harness } => {
                 if let Err(e) = crate::store::save_harness(&self.home, &dir, harness) {
                     eprintln!("functor-app: cannot save the agent choice: {e}");
+                }
+            }
+            Command::SaveScope { dir, scope } => {
+                if let Err(e) = crate::store::save_scope(&self.home, &dir, scope) {
+                    eprintln!("functor-app: cannot save the instruction scope: {e}");
                 }
             }
             Command::SaveLayout { dir, layout } => {

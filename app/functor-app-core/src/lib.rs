@@ -35,7 +35,7 @@ pub use session::{
     listening_url, Display, Polled, PolledClock, Session, SessionEvent, SessionMode, SessionStatus,
 };
 pub use state::{update, AppState, Command, Event, GitInfo, RunSpec};
-pub use tasks::{AgentEvent, Harness, Item, RunEvent, Task, TaskStatus};
+pub use tasks::{AgentEvent, Harness, Item, RunEvent, Scope, Task, TaskStatus};
 pub use transport::{LogPage, SessionCall, Transport, TransportCall};
 
 #[cfg(all(test, feature = "ts"))]
