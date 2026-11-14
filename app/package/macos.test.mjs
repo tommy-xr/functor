@@ -13,7 +13,7 @@ test("Functor.app from stub binaries", { skip: process.platform !== "darwin" }, 
     const script = new URL("macos.mjs", import.meta.url).pathname;
     execFileSync("node", [script, "--app", "/usr/bin/true", "--functor", "/usr/bin/true", "--out", out]);
     const contents = join(out, "Functor.app/Contents");
-    for (const file of ["MacOS/functor-app", "MacOS/functor", "Resources/Functor.icns"]) {
+    for (const file of ["MacOS/functor-app", "Helpers/functor", "Resources/Functor.icns"]) {
       assert.ok(existsSync(join(contents, file)), file);
     }
     const plist = execFileSync("plutil", ["-convert", "json", "-o", "-", join(contents, "Info.plist")]);

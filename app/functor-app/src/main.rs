@@ -741,7 +741,10 @@ const PATH_MARK: &str = "__FUNCTOR_PATH__";
 fn use_login_path() {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe().unwrap_or_default();
-    if !exe.parent().is_some_and(|dir| dir.ends_with("Contents/MacOS")) {
+    if !exe
+        .parent()
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+    {
         return;
     }
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());

@@ -6,8 +6,8 @@
 //   node app/package/macos.mjs --app A --functor F [--out DIR]   bundles these
 //
 // Layout: Contents/MacOS/functor-app (the main executable; its UI is built
-// in) beside Contents/MacOS/functor, which the app finds as its sibling and
-// which finds the app the same way; Contents/Resources/Functor.icns.
+// in), Contents/Helpers/functor (the app looks there; outside MacOS, its game
+// children do not take the app's bundle id), Contents/Resources/Functor.icns.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,10 +32,9 @@ const functor = resolve(opts.functor ?? join(root, "target/release/functor"));
 const bundle = join(resolve(opts.out ?? join(root, "target/package")), "Functor.app");
 
 rmSync(bundle, { recursive: true, force: true });
-mkdirSync(join(bundle, "Contents/MacOS"), { recursive: true });
-mkdirSync(join(bundle, "Contents/Resources"), { recursive: true });
+for (const dir of ["MacOS", "Helpers", "Resources"]) mkdirSync(join(bundle, "Contents", dir), { recursive: true });
 cpSync(app, join(bundle, "Contents/MacOS/functor-app"));
-cpSync(functor, join(bundle, "Contents/MacOS/functor"));
+cpSync(functor, join(bundle, "Contents/Helpers/functor"));
 
 // One wording for the mic prompt: the plist the bare binary embeds.
 const embedded = join(root, "app/functor-app/Info.plist");

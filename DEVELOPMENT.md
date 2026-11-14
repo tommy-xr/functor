@@ -154,6 +154,25 @@ it, so open that exact URL (a reload of the page needs it again). Saved tasks,
 transcripts and the window's size and place live in `~/.functor/app/`
 (`FUNCTOR_APP_HOME` overrides).
 
+### Functor.app (macOS)
+
+```sh
+npm run package:app        # builds both release binaries → target/package/Functor.app
+open target/package/Functor.app
+open target/package/Functor.app --args -d ~/code/my-game
+cp -R target/package/Functor.app /Applications/
+```
+
+The bundle holds `functor-app` (UI built in), the `functor` it runs games with
+(`Contents/Helpers`), and the icon (`app/package/icon.svg`). It is ad-hoc
+signed: it runs on the Mac that built it, but Gatekeeper rejects it elsewhere
+(a downloaded copy is quarantined and blocked as from an unidentified
+developer). Opened from Finder or the Dock, it opens the last project and takes
+`PATH` from your login shell, so `claude`, `codex` and `adb` are found. While it
+runs, `open` only brings it forward: `--args` reach a fresh launch. The first
+mic recording and the first headset search ask for microphone and
+local-network access.
+
 ## What `build`/`run` do under the hood
 
 The `functor` binary is **self-contained**: the desktop runtime is linked in and the
