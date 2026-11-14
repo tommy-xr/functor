@@ -709,7 +709,8 @@ fn stance_word(stance: TaskStance) -> &'static str {
 }
 
 // Metres: 50° by 43° at 0.9 m, its text on the overlay's scale
-// ([`overlay_font::BODY`]: body x-height 0.78°).
+// ([`overlay_font::BODY`]: body x-height 0.78° at the panel's centre; the
+// upright panel's lowest rows, 26° below the eyes, are about a fifth smaller).
 pub const WIDTH: f32 = 0.84;
 pub const HEIGHT: f32 = 0.70;
 const PAD: f32 = 0.028;
@@ -994,6 +995,9 @@ impl Panel {
                 self.buttons(col, &[label], 1, bottom)
             }
             Section::Talk => {
+                // Room for every move's row, which the stick can focus.
+                let moves = data.route.as_ref().map_or(0, |r| r.moves.len());
+                col.floor = notice_top(bottom) + moves as f32 * (ROW + 0.006);
                 col.line("TALK", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
@@ -1028,6 +1032,7 @@ impl Panel {
                         .map_or("", |(l, _)| l);
                     return confirm(col, &format!("{label}?"), bottom);
                 }
+                col.floor = notice_top(bottom);
                 for (i, (label, _)) in route.moves.iter().enumerate() {
                     self.row(col, self.focus == Some(i), label, "", TEXT, "");
                 }
@@ -1113,8 +1118,8 @@ impl Panel {
             col.para(&d.summary, BODY, TEXT, 3);
         }
         // The heading only with room for a note under it.
+        col.gap(0.004);
         if !d.notes.is_empty() && col.room(SMALL) >= 2 {
-            col.gap(0.004);
             col.line("THINGS TO NOTE", SMALL, FAINT);
             for note in &d.notes {
                 col.line(&format!("- {note}"), SMALL, MUTED);
@@ -1196,14 +1201,6 @@ impl Panel {
         };
         col.line(&c.title, TITLE, TEXT);
         col.line(stance_word(c.stance), SMALL, stance_color(c.stance));
-        if let Some(q) = asked(c).map(|i| &c.items[i]) {
-            col.gap(0.004);
-            col.line("THE AGENT ASKS", SMALL, WARN);
-            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
-            col.para(&q.text, BODY, WARN, most);
-            col.line("Hold the right stick to answer", SMALL, TEXT);
-        }
-        col.gap(0.006);
         // Under the messages: push-to-talk's stages, then the work.
         let mut tail: Vec<(String, f32, [f32; 3])> = toast
             .map(|t| {
@@ -1224,7 +1221,18 @@ impl Panel {
             }
             None => {}
         }
-        let floor = bottom + SMALL * 1.6 + tail.iter().map(|l| advance(l.1)).sum::<f32>();
+        let floor = notice_top(bottom) + tail.iter().map(|l| advance(l.1)).sum::<f32>();
+        // The question too stays above the tail.
+        col.floor = floor;
+        if let Some(q) = asked(c).map(|i| &c.items[i]) {
+            col.gap(0.004);
+            col.line("THE AGENT ASKS", SMALL, WARN);
+            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
+            col.para(&q.text, BODY, WARN, most);
+            col.line("Hold the right stick to answer", SMALL, TEXT);
+        }
+        col.gap(0.006);
+        col.floor = notice_top(bottom);
         let lines = conversation_lines(c, self.expanded);
         // From the lines just laid out: has_more's cost, every frame, saved.
         let cut = lines.iter().any(|l| l.0.starts_with(SHOW_ALL)) || asked_long(c);
@@ -2054,6 +2062,12 @@ mod tests {
             d.summary = "Raised the wall restitution and added a short trail. ".repeat(12);
             d.notes = vec!["Not tried with two balls at once, or at the highest speed.".into(); 3];
         }
+        let route = full.route.as_mut().unwrap();
+        route.line = "Queued behind the task that adds a score counter above the net. ".repeat(3);
+        route.moves.push(("Make it a new task, after the others".into(), Destination::New));
+        let c = full.conversation.as_mut().unwrap();
+        c.question = true;
+        c.items.last_mut().unwrap().text = "Which wall should bounce higher? ".repeat(30);
         let mut long = d.clone();
         long.tasks[0].title = "é".repeat(300);
         long.tasks[0].activity = "\u{201c}x\u{201d} ".repeat(100);
@@ -2064,11 +2078,21 @@ mod tests {
         for item in &mut c.items {
             item.text = "word ".repeat(120);
         }
-        let toast = VoiceToast {
-            stage: crate::debug_protocol::VoiceStage::Heard,
-            transcript: Some("word ".repeat(80)),
-            waiting: None,
-        };
+        let toasts = [
+            VoiceToast {
+                stage: crate::debug_protocol::VoiceStage::Heard,
+                transcript: Some("word ".repeat(80)),
+                waiting: None,
+            },
+            VoiceToast {
+                stage: crate::debug_protocol::VoiceStage::Listening {
+                    level: 7,
+                    seconds_left: Some(3),
+                },
+                transcript: None,
+                waiting: None,
+            },
+        ];
         let now = Instant::now();
         let conns = [
             Connection::NotPaired,
@@ -2089,26 +2113,45 @@ mod tests {
                     None,
                     Some(Item::Keep(1, "tree-1".into())),
                     Some(Item::Stop(2)),
+                    Some(Item::Move(9, Destination::New)),
                 ] {
-                    let mut p = Panel {
-                        open: true,
-                        section,
-                        page,
-                        focus: Some(0),
-                        confirm,
-                        notice: Some(("x".repeat(400), now + NOTICE)),
-                        conversation: (section == Section::Talk).then_some(1),
-                        scroll: (page == Some(2)).then_some((2, 1)),
-                        ..Panel::default()
-                    };
-                    for data in [&d, &long, &full] {
-                        for c in &conns {
-                            views.push(p.shapes(Some(data), c, Some(&toast), now));
+                    for (conversation, expanded) in [(None, false), (Some(1), false), (Some(1), true)] {
+                        let mut p = Panel {
+                            open: true,
+                            section,
+                            page,
+                            focus: Some(0),
+                            confirm: confirm.clone(),
+                            notice: Some(("x".repeat(400), now + NOTICE)),
+                            conversation,
+                            expanded,
+                            scroll: (page == Some(2)).then_some((2, 1)),
+                            ..Panel::default()
+                        };
+                        for data in [&d, &long, &full] {
+                            for c in &conns {
+                                for toast in &toasts {
+                                    views.push(p.shapes(Some(data), c, Some(toast), now));
+                                }
+                            }
                         }
+                        p.focus = None;
+                        views.push(p.shapes(None, &conns[3], None, now));
                     }
-                    p.focus = None;
-                    views.push(p.shapes(None, &conns[3], None, now));
                 }
+            }
+        }
+        // Talk keeps a row for every move the stick can focus, under any toast.
+        let talk = Panel {
+            open: true,
+            section: Section::Talk,
+            ..Panel::default()
+        };
+        for toast in &toasts {
+            let shapes = talk.shapes(Some(&full), &conns[3], Some(toast), now);
+            for (label, _) in &full.route.as_ref().unwrap().moves {
+                let drawn = |s: &Shape| matches!(s, Shape::Text { text, .. } if text == label);
+                assert!(shapes.iter().any(drawn), "{label} not drawn");
             }
         }
         let (hw, hh) = (WIDTH / 2.0 + 1e-4, HEIGHT / 2.0 + 1e-4);
@@ -2133,7 +2176,7 @@ mod tests {
                     }
                 }
             }
-            // No line runs into another (each line's box: capitals to baseline).
+            // No line runs into another (each line's box: its top, one size down).
             for (i, (a, [ax0, ay0, ax1, ay1])) in boxes.iter().enumerate() {
                 for (b, [bx0, by0, bx1, by1]) in &boxes[i + 1..] {
                     let apart = ax1 <= bx0 || bx1 <= ax0 || ay1 <= by0 || by1 <= ay0;
