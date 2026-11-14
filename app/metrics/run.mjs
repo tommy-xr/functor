@@ -156,6 +156,7 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       tools: m.tools,
       input_tokens: m.input_tokens,
       output_tokens: m.output_tokens,
+      ...pick(m, SPLIT),
       ended: m.ended,
       cut: m.cut,
       pass: failures.length === 0,
@@ -205,38 +206,64 @@ const kinds = (calls) =>
     .map(([k, n]) => `${k} ${n}`)
     .join(", ") || "none";
 
+/** The usage split `functor-app task --metrics` records when the harness gives it. */
+const SPLIT = ["uncached_input", "cache_read", "cache_creation", "reasoning_output", "turns", "cost_usd", "api_ms"];
+const pick = (m, keys) => Object.fromEntries(keys.filter((k) => m?.[k] != null).map((k) => [k, m[k]]));
+
+/** The split's columns: [heading, value]; one shows only when some record has its value. */
+const SPLIT_COLUMNS = [
+  ["uncached in", (r) => r.uncached_input],
+  ["cache read", (r) => r.cache_read],
+  ["cache write", (r) => r.cache_creation],
+  ["cached %", (r) => cachedShare(r)],
+  ["turns", (r) => r.turns],
+  ["cost $", (r) => (r.cost_usd == null ? null : r.cost_usd.toFixed(3))],
+  ["API s", (r) => (r.api_ms == null ? null : secs(r.api_ms))],
+];
+
+/** The share of the prompt read from the cache, in percent. */
+function cachedShare(r) {
+  if (r.cache_read == null) return null;
+  const prompt = r.uncached_input + r.cache_read + r.cache_creation;
+  return prompt ? Math.round((r.cache_read / prompt) * 100) : null;
+}
+
+/** `rows` as a Markdown table under `heads`, then the split's columns any of `splits` has. */
+function grid(heads, rows, splits) {
+  const columns = SPLIT_COLUMNS.filter(([, value]) => splits.some((s) => value(s) != null));
+  const lines = [
+    `| ${[...heads, ...columns.map(([h]) => h)].join(" | ")} |`,
+    `| ${[...heads, ...columns].map(() => "---").join(" | ")} |`,
+  ];
+  rows.forEach((row, i) => {
+    const more = columns.map(([, value]) => value(splits[i]) ?? "–");
+    lines.push(`| ${[...row, ...more].join(" | ")} |`);
+  });
+  return lines;
+}
+
 /** The records as a Markdown table. */
 export function table(records) {
   const head = records[0] ?? {};
   const lines = [
     `${head.mode} run, ${head.date?.slice(0, 10)}, rev ${head.rev}, ${head.harness} (${head.model ?? "model unknown"})`,
     "",
-    "| scenario | outcome | wall s | first event s | messages | tool calls | by kind | input tokens | output tokens |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
-  for (const r of records) {
+  const heads = ["scenario", "outcome", "wall s", "first event s", "messages", "tool calls", "by kind", "input tokens", "output tokens"];
+  const rows = records.map((r) => {
     const outcome = r.pass ? "pass" : `FAIL: ${r.reason}`;
     const cut = r.cut ? ` (cut: ${r.cut})` : "";
-    lines.push(
-      `| ${r.scenario} | ${outcome}${cut} | ${secs(r.wall_ms)} | ${secs(r.first_event_ms)} | ${r.messages} | ` +
-        `${r.tool_calls} | ${kinds(r.calls)} | ${r.input_tokens ?? "–"} | ${r.output_tokens ?? "–"} |`,
-    );
-  }
+    return [r.scenario, `${outcome}${cut}`, secs(r.wall_ms), secs(r.first_event_ms), r.messages, r.tool_calls,
+      kinds(r.calls), r.input_tokens ?? "–", r.output_tokens ?? "–"];
+  });
+  lines.push(...grid(heads, rows, records));
   const reviewed = records.filter((r) => r.review);
   if (reviewed.length) {
-    lines.push(
-      "",
-      "Reviews (D31), apart from the runs above:",
-      "",
-      "| scenario | review | model | wall s | input tokens | output tokens | style flags |",
-      "| --- | --- | --- | --- | --- | --- | --- |",
-    );
-    for (const { scenario, review: v } of reviewed) {
-      lines.push(
-        `| ${scenario} | ${v.ended} | ${v.model ?? "–"} | ${secs(v.wall_ms)} | ${v.input_tokens ?? "–"} | ` +
-          `${v.output_tokens ?? "–"} | ${v.style?.length ?? 0} |`,
-      );
-    }
+    lines.push("", "Reviews (D31), apart from the runs above:", "");
+    const heads = ["scenario", "review", "model", "wall s", "input tokens", "output tokens", "style flags"];
+    const rows = reviewed.map(({ scenario, review: v }) => [scenario, v.ended, v.model ?? "–", secs(v.wall_ms),
+      v.input_tokens ?? "–", v.output_tokens ?? "–", v.style?.length ?? 0]);
+    lines.push(...grid(heads, rows, reviewed.map((r) => r.review)));
   }
   return lines.join("\n") + "\n";
 }

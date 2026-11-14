@@ -12,7 +12,7 @@ use crate::decision::{kind, size, Kind, Report};
 use crate::evidence::EvidenceState;
 use crate::print::cut;
 use crate::projects::project_prefix;
-use crate::tasks::{AgentEvent, Harness, Item, Task, Usage};
+use crate::tasks::{AgentEvent, Harness, Item, Task, Usage, UsageDetail};
 
 /// Longest model name and instructions a setting may hold, in characters.
 const MAX_MODEL: usize = 100;
@@ -113,6 +113,10 @@ pub struct Review {
     pub state: ReviewState,
     /// The latest (cumulative) usage it reported.
     pub usage: Option<Usage>,
+    /// The latest usage split it reported, when the harness gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub detail: Option<UsageDetail>,
     /// Its `report`, held until it ends and the files are measured unchanged
     /// since it started; then the task's.
     #[serde(skip)]

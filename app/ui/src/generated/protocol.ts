@@ -678,7 +678,11 @@ model: string | null, state: ReviewState,
 /**
  * The latest (cumulative) usage it reported.
  */
-usage: Usage | null, };
+usage: Usage | null, 
+/**
+ * The latest usage split it reported, when the harness gives one.
+ */
+detail?: UsageDetail, };
 
 /**
  * How a project's changes are reviewed; stored per project.
