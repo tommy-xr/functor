@@ -623,6 +623,39 @@ Until then the app checks the `functor` it found before using it and, when it
 is too old, says which one it is and how to fix it, in one place — not as
 launch errors in the game view and the chat.
 
+### D43 — every request shows where it is
+
+A principle, from using the headset for real: after the user says or types
+something, there is never a silent wait. One small progress line shows which
+step the request has reached, and it is the same line on the desktop and in
+the headset.
+
+The steps, in order:
+
+1. **Received** — the words or the clip arrived. Shown at once.
+2. **Transcribed** — for speech: the text, as heard. It stays long enough to
+   read, also when the next step follows at once.
+3. **Processing** — where it went (steers a task, a new task, queued), and
+   the agent is starting.
+4. **The agent's status** — thinking, or working with what it is doing now
+   (D34), then its reply.
+5. **The outcome** — answered, changed and reloaded, needs you, or failed
+   with the reason in a few words.
+
+Rules:
+
+- **One element that moves through the steps,** not a stack of messages; each
+  step shows how long it took once it is done.
+- **A step that takes long says so** rather than disappearing: after a couple
+  of seconds the current step shows it is still going.
+- **A late step brings the line back** if it had faded, and a step is never
+  skipped on screen because the next arrived quickly.
+- **The same state feeds every surface:** the chat, the headset toast and the
+  headset panel read one progress record held by the app, so they cannot
+  disagree.
+- **A failure names its step** ("Could not transcribe", "The headset is
+  away"), so the user knows what to try again.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
