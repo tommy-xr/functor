@@ -392,18 +392,14 @@ async fn session(
                     data,
                 } => match voice::Speech::decode(&data) {
                     Ok(speech) => {
-                        let line = match speech {
-                            voice::Speech::End { reply } => Some((reply, None)),
-                            voice::Speech::Stop { reply } => Some((reply, Some("stopped"))),
-                            _ => None,
-                        };
+                        let reply = speech.reply();
+                        let end = matches!(speech, voice::Speech::End { .. });
+                        let stop = matches!(speech, voice::Speech::Stop { .. });
                         player.receive(speech, voice::SAMPLE_RATE);
-                        match line {
-                            Some((reply, Some(what))) => say(&format!("speech {reply} {what}")),
-                            Some((reply, None)) => {
-                                say(&format!("speech {reply} {}", player.pending().len()))
-                            }
-                            None => {}
+                        if end {
+                            say(&format!("speech {reply} {}", player.pending().len()));
+                        } else if stop {
+                            say(&format!("speech {reply} stopped"));
                         }
                     }
                     Err(e) => say(&format!("speech unreadable {e}")),

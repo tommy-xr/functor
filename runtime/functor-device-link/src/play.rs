@@ -8,15 +8,16 @@ use crate::voice::{Speech, MAX_SECONDS};
 
 #[derive(Default)]
 pub struct Player {
+    /// The reply arriving or playing out.
+    reply: Option<u64>,
+    /// While more of it may arrive.
     open: Option<Open>,
     /// At the output's rate; played up to `at`.
     samples: Vec<i16>,
     at: usize,
 }
 
-/// The reply arriving.
 struct Open {
-    reply: u64,
     seq: u32,
     /// Audio bytes it may still send.
     room: usize,
@@ -30,8 +31,8 @@ impl Player {
         match speech {
             Speech::Start { reply, rate: from } => {
                 self.stop();
+                self.reply = Some(reply);
                 self.open = Some(Open {
-                    reply,
                     seq: 0,
                     room: MAX_SECONDS as usize * from as usize * 2,
                     resampler: Resampler::new(from, rate),
@@ -42,7 +43,7 @@ impl Player {
                     return;
                 };
                 let whole = data.len() % 2 == 0 && data.len() <= open.room;
-                if reply != open.reply || seq != open.seq || !whole {
+                if Some(reply) != self.reply || seq != open.seq || !whole {
                     return self.stop();
                 }
                 open.seq += 1;
@@ -55,13 +56,14 @@ impl Player {
             }
             // What arrived plays out.
             Speech::End { reply } => {
-                if self.open.as_ref().is_some_and(|o| o.reply == reply) {
+                if Some(reply) == self.reply {
                     self.open = None;
+                    // Nothing left of it to play.
+                    self.played(0);
                 }
             }
             Speech::Stop { reply } => {
-                // An ended reply still playing is the one last started.
-                if self.open.as_ref().is_none_or(|o| o.reply == reply) {
+                if Some(reply) == self.reply {
                     self.stop();
                 }
             }
@@ -187,8 +189,10 @@ mod tests {
         let mut talking = player_ended();
         talking.stop();
         assert!(!talking.playing() && talking.pending().is_empty());
-        // A stop for the reply before leaves the one arriving.
+        // A stop for the reply before leaves the one arriving or playing out.
         let mut newer = player([start(2), chunk(2, 0, &[1])]);
+        newer.receive(Speech::Stop { reply: 1 }, RATE);
+        newer.receive(Speech::End { reply: 2 }, RATE);
         newer.receive(Speech::Stop { reply: 1 }, RATE);
         assert_eq!(newer.pending(), [1]);
     }

@@ -38,6 +38,9 @@ const PERMISSION_WAIT: Duration = Duration::from_secs(120);
 /// The speaker closes after this long with nothing to play: longer than
 /// its buffer holds, so a reply's end is heard.
 const SPEAKER_IDLE: Duration = Duration::from_secs(2);
+/// Frames the speaker's stream holds: half a second at 16 kHz, so a frame
+/// that stalls leaves no gap, and under `SPEAKER_IDLE` at any rate.
+const SPEAKER_BUFFER: usize = 8_000;
 
 pub struct Voice {
     gesture: PushToTalk,
@@ -187,7 +190,12 @@ impl Voice {
     /// A message of the desktop's spoken reply. The speaker opens with a
     /// reply's `Start`; one that cannot open plays nothing.
     fn speech(&mut self, speech: Speech, now: Instant) {
-        if matches!(speech, Speech::Start { .. }) && self.speaker.is_none() {
+        let start = matches!(speech, Speech::Start { .. });
+        // Sent before the desktop knew the user is talking: not played.
+        if start && self.talk.utterance().is_some() {
+            return;
+        }
+        if start && self.speaker.is_none() {
             match Speaker::open(now) {
                 Ok(speaker) => self.speaker = Some(speaker),
                 Err(e) => log::warn!("voice: {e}"),
@@ -605,9 +613,9 @@ impl Speaker {
 
     /// Writes as much of what `player` has pending as the stream takes now.
     fn play(&mut self, player: &mut Player) -> Result<(), String> {
-        // No more than a second at a time: the stream holds less.
+        // No more than the stream holds.
         let pending = player.pending();
-        let pending = &pending[..pending.len().min(self.rate as usize)];
+        let pending = &pending[..pending.len().min(SPEAKER_BUFFER)];
         if pending.is_empty() {
             return Ok(());
         }
@@ -641,9 +649,7 @@ impl Output {
                 functor_device_link::voice::SAMPLE_RATE as i32,
             );
             ffi::AAudioStreamBuilder_setSharingMode(builder, ffi::AAUDIO_SHARING_MODE_SHARED as _);
-            // Half a second at 16 kHz (AAudio clamps it): a frame that
-            // stalls leaves no gap, and under `SPEAKER_IDLE` at any rate.
-            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(builder, 8_000);
+            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(builder, SPEAKER_BUFFER as i32);
             let mut stream = std::ptr::null_mut();
             let opened = ffi::AAudioStreamBuilder_openStream(builder, &mut stream);
             ffi::AAudioStreamBuilder_delete(builder);

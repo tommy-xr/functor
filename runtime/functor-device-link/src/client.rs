@@ -52,8 +52,9 @@ const FORWARDED: [&str; 3] = ["content-type", "accept", "origin"];
 /// [`Client::send_channel`] refuses more: about 8 s of voice audio.
 pub const OUTBOX_LIMIT: usize = 256 * 1024;
 /// Channel messages from the desktop kept until the shell takes them (it
-/// takes them every frame; more wait while it renders nothing).
-const INBOX_LIMIT: usize = 32;
+/// takes them every frame; more wait while it renders nothing). Room for
+/// the longest spoken reply, which is sent whole (62 messages).
+const INBOX_LIMIT: usize = 96;
 
 /// Keeps `data` for the shell. Full, the oldest message of the busiest
 /// channel goes: a burst on one (panel snapshots while the headset sleeps)
