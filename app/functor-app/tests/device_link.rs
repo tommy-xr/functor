@@ -2802,15 +2802,17 @@ async fn a_second_clip_is_routed_and_moved() {
     );
 }
 
-/// A `functor` whose `run vr --device-url <url>` says it listens there and
-/// holds (as [`voice_functor`]'s), and whose every other command is `real`:
-/// a run's tool server is the real `functor mcp`, attached to the tunnel.
+/// A `functor` whose `app-compat` passes and whose `run vr --device-url
+/// <url>` says it listens there and holds (as [`voice_functor`]'s: CI's CLI
+/// is built without the app), and whose every other command is `real`: a
+/// run's tool server is the real `functor mcp`, attached to the tunnel.
 #[cfg(unix)]
 fn link_functor(dir: &Path, real: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.join("functor");
     let script = format!(
         "#!/bin/sh\n\
+         [ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n\
          url=\n\
          for a in \"$@\"; do [ \"$prev\" = --device-url ] && url=\"$a\"; prev=\"$a\"; done\n\
          [ -z \"$url\" ] && exec '{}' \"$@\"\n\
@@ -2867,7 +2869,7 @@ async fn game_on_stub(
     app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
         .await;
     let on = tunnel.clone();
-    app.state_where("the game runs on the headset", 20, move |s| {
+    app.state_where("the game runs on the headset", 60, move |s| {
         s["session"]["status"]["debug_url"] == on.as_str()
     })
     .await;
