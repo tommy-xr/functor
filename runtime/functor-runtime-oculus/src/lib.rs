@@ -2000,6 +2000,9 @@ pub fn android_main(app: AndroidApp) {
                             session_running = false;
                             session_focused = false;
                             last_frame_at = None;
+                            // Taken off: an open panel stands in front again
+                            // when it is back on (the room may recentre).
+                            debug.panel.anchor = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
                             quit = true;
