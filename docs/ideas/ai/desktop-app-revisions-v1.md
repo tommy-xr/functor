@@ -691,10 +691,10 @@ levels shown and deeper ones folded into a count. The tasks panel shows the
 same tree.
 
 **Forks that converge.** Parallel subagents each work in their own copy of
-the code, so their changes stay apart. The room shows it: the code shelf
-splits into a lane per subagent, each showing only what that fork changed and
-ending in its own miniature running that version. When a subagent finishes,
-its lane swings back and its blocks drop into the base. Where two forks
+the code, so their changes stay apart. The room shows it: each fork is a layer
+over the city in its agent's colour, showing only what that fork changed,
+with its own miniature running that version. When a subagent finishes, its
+layer settles into the base. Where two forks
 changed the same block, a clean merge interleaves and a conflict holds the
 two versions apart for the orchestrator, or the user, to settle. The user can
 keep one fork, several, or send one back, and sees the combined result as one
@@ -719,9 +719,27 @@ Everything waiting on the user is also one list, in order — who, what they
 need, how long they have waited — at the top of the tasks panel and on the
 palm-up glance; choosing a row brings that agent and its thing forward.
 
-**The code map.** A shelf of blocks, one per file, floors for its
-definitions; changed blocks glow; pointing at one opens its change. It grows
-into a city (D33) only when the project is large.
+**The code map is a code city** (D33;
+[code-city](https://github.com/bryan-uipath/code-city)): folders are
+districts, files are blocks, and every definition is a building, on the desk
+beside the miniature. It is the place the agents are seen working, several at
+once in the same codebase:
+
+- **Agents stand in the city.** A worker is at the building it is reading or
+  editing, with its link going into it; where two agents touch the same file
+  the block shows it, as that project shows two pull requests meeting.
+- **What is changing shows as construction.** Uncommitted work paints the
+  city as its working-tree layer does: changed buildings by how much was
+  added and removed, new ones rising, deleted ones as empty lots. Each fork
+  is such a layer, so forks are seen diverging and converging on one city
+  rather than as copies of it.
+- **It is where a change is explained.** A tour of the city — a few stops
+  with the reason for each — is the walkthrough of a finished change (D25,
+  D31), and pointing at a building opens its change.
+- **It scales both ways.** A small game is one district of a few blocks and
+  is drawn simply; a large project is a real city, and zooming in is going
+  down a level.
+- **The same model draws flat** as a skyline in the desktop pane.
 
 **Seated and standing, hands busy or free.** The workshop must work at a
 desk and while walking about — the aim is to keep working on a game while
@@ -735,8 +753,16 @@ doing chores, headset on.
   doing.
 - **Hands, not controllers.** Hand tracking drives it: a pinch-and-hold to
   talk, a pinch to pick, a grab to move the miniature, a palm-up glance for
-  status (the wrist light's successor), a clear gesture to go in and out.
-  Controllers stay supported for playing the game itself.
+  status (the wrist light's successor). Going in is a pinch on a spot pulled
+  back while a ring fills; coming out is both palms pushed away; "later" is a
+  brush aside; reset is both fists together. Controllers stay supported for
+  playing the game itself.
+- **Or a wake phrase.** When hands are wet or full, a phrase of the user's
+  choosing ("Computer, …") starts a request. It is off until turned on,
+  because it means the microphone listens all the time: a mark in view shows
+  when it does, one gesture or word mutes it, and what it hears goes nowhere
+  but the paired desktop, which keeps nothing that did not begin with the
+  phrase.
 - **Voice first, and sound back.** With eyes and hands elsewhere, a request
   is spoken and its progress is heard as well as shown: a short sound per
   step, the outcome spoken briefly ("Changed. Ready to look at."), a question
@@ -747,7 +773,7 @@ a `.fun` program like any game: its model is the workspace (where things
 stand, what is open), and it draws the miniature by containing the running
 game's frame, as the mirror does (4.5). So:
 
-- **The user can change their workspace by asking.** "Put the code shelf on
+- **The user can change their workspace by asking.** "Put the code city on
   my left", "make the conversation bigger", "give the agents hats" is a task
   like any other: an agent edits the workshop's own `.fun`, it hot-reloads
   with its state kept, and the change is kept or reverted the usual way.
@@ -778,7 +804,7 @@ bounds), text and panels drawn in the world, hands as input, and the time to
 run two programs in one headset frame.
 
 **Order to try it in:** the miniature with teleport in and out; the tasks and
-the conversation beside it; the agents; the code shelf; two miniatures for a
+the conversation beside it; the agents; the code city; two miniatures for a
 decision.
 
 ### D45 — a project manager is the point of contact
