@@ -849,7 +849,7 @@ async fn pair_client(app: &mut App, quest: &headset::Client) {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
-    use functor_device_link::panel::{Action, Stance, Update, ACTION_CHANNEL};
+    use functor_device_link::panel::{Action, Role, Stance, Update, ACTION_CHANNEL};
     let review = Review::new();
     let mut app = review
         .app(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", NO_ADB])
@@ -876,6 +876,18 @@ async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
     );
     let decision = task.decision.as_ref().unwrap();
     assert_eq!(decision.size, "+1 -1, 1 file, game logic");
+    // The task's conversation, as text: the request, the step, the outcome.
+    let c = panel.conversation.as_ref().unwrap();
+    let said: Vec<(Role, &str)> = c.items.iter().map(|i| (i.role, i.text.as_str())).collect();
+    assert_eq!(c.task, id);
+    assert_eq!(
+        said,
+        [
+            (Role::You, "Rename x"),
+            (Role::App, "editing game.fun"),
+            (Role::App, "Done")
+        ]
+    );
     let link = quest.link().unwrap();
     let send = |action: &Action| quest.send_channel(link, ACTION_CHANNEL, action.encode(), false);
 
@@ -1224,7 +1236,11 @@ fn capture_to(url: &str, name: &str) {
     };
     let addr = url.strip_prefix("http://").unwrap();
     let mut stream = TcpStream::connect(addr).unwrap();
-    write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        stream,
+        "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).unwrap();
     let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
@@ -2732,7 +2748,8 @@ async fn a_second_clip_is_routed_and_moved() {
         ),
     ];
     let mut app = app_env(&project, &args, &envs).await;
-    app.send(json!({"type": "set_model_route", "on": true})).await;
+    app.send(json!({"type": "set_model_route", "on": true}))
+        .await;
     app.state_where("the model routes speech", 10, |s| {
         s["router"] == true && s["model_routes"] == json!(["."])
     })
@@ -2795,9 +2812,11 @@ async fn a_second_clip_is_routed_and_moved() {
             s["tasks"].as_array().is_some_and(|t| t.len() == 1)
         })
         .await;
-    let moved = state["routes"].as_array().unwrap().iter().find(|r| r["by"] == "you").cloned();
-    assert_eq!(
-        moved.unwrap()["line"],
-        "Moved: steered “make the ball red”"
-    );
+    let moved = state["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["by"] == "you")
+        .cloned();
+    assert_eq!(moved.unwrap()["line"], "Moved: steered “make the ball red”");
 }
