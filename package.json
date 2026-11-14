@@ -11,7 +11,7 @@
   "scripts": {
     "clean": "git clean -fdX",
     "build": "npm run build:cli && npm run build:lang-wasm && npm run site:build",
-    "build:cli": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --release --bin functor",
+    "build:cli": "node scripts/build-cli.mjs",
     "build:cli:debug": "wasm-pack build runtime/functor-runtime-web --target=web && cargo build --bin functor",
     "build:app-ui": "node app/ui/build.mjs",
     "build:app": "npm run build:app-ui && cargo build --release -p functor-app --features whisper",

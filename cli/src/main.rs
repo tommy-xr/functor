@@ -355,9 +355,10 @@ enum Command {
         #[arg(long, value_name = "BRIEF", requires = "app_url", conflicts_with = "attach")]
         review: Option<std::path::PathBuf>,
     },
-    /// Open the desktop app (preview) on the project: runs the `functor-app`
-    /// next to this `functor`, else `FUNCTOR_APP_BIN`, else on PATH, with this
-    /// `functor` for its game sessions. Arguments after `--` go to the app
+    /// Open the desktop app (preview) on the project, with this `functor` for
+    /// its game sessions: in this process when built with the app (`npm run
+    /// build:cli` on macOS), else the `functor-app` next to this `functor`,
+    /// `FUNCTOR_APP_BIN`, or on PATH. Arguments after `--` go to the app
     /// (e.g. `functor app -- --headless`).
     App {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

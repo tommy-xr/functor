@@ -1,5 +1,6 @@
 //! A command line with no subcommand opens the desktop app when one is
-//! installed, and prints the usual help when none is.
+//! installed, and prints the usual help when none is. Built with the `app`
+//! feature, the app runs in-process and its children are this `functor`.
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -27,6 +28,8 @@ fn functor() -> Command {
     c
 }
 
+// In-process (`app` on macOS) bare `functor` opens the window instead.
+#[cfg(not(all(feature = "app", target_os = "macos")))]
 #[test]
 fn no_subcommand_runs_the_app_with_the_project() {
     // `echo` stands in for the app: it prints the arguments it was given.
@@ -41,6 +44,8 @@ fn no_subcommand_runs_the_app_with_the_project() {
     assert!(said.trim_end().ends_with("-d some/game"), "{said}");
 }
 
+// In-process (`app` on macOS) bare `functor` opens the window instead.
+#[cfg(not(all(feature = "app", target_os = "macos")))]
 #[test]
 fn no_subcommand_without_the_app_prints_help() {
     let out = functor().env_remove("FUNCTOR_APP_BIN").output().unwrap();
@@ -71,6 +76,8 @@ fn a_command_missing_its_own_subcommand_keeps_its_help() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("Usage: functor inspect"));
 }
 
+// In-process (`app` on macOS) bare `functor` opens the window instead.
+#[cfg(not(all(feature = "app", target_os = "macos")))]
 #[test]
 fn bare_functor_runs_the_app_and_help_is_still_help() {
     let app = |args: &[&str]| {
@@ -103,4 +110,25 @@ fn app_compat_answers_the_apps_check_on_stdout_alone() {
     // Hidden from the help.
     let help = functor().arg("--help").output().unwrap();
     assert!(!String::from_utf8_lossy(&help.stdout).contains("app-compat"));
+}
+
+/// In-process, the app's children are this executable: with nothing else
+/// on PATH, a game session starts and answers, and no CLI problem is said.
+#[cfg(feature = "app")]
+#[test]
+fn the_app_in_process_runs_its_games_with_this_functor() {
+    let home = tempfile::tempdir().unwrap();
+    let counter = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/counter");
+    let out = functor()
+        .args(["-d", counter, "app", "--headless", "--print", "--start-session"])
+        .args(["--no-gpu", "--no-device-link"])
+        .env("FUNCTOR_APP_HOME", home.path())
+        .env("FUNCTOR_BIN", "/nonexistent/functor")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}{err}");
+    assert!(text.contains("\nsession: running pid "), "{text}");
+    assert!(!text.contains("\ncli: "), "{text}");
 }

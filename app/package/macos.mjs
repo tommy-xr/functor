@@ -2,12 +2,14 @@
 // macOS bundle for the machine that built it (no Developer ID, no
 // notarization).
 //
-//   node app/package/macos.mjs                  builds both release binaries first
-//   node app/package/macos.mjs --app A --functor F [--out DIR]   bundles these
+//   node app/package/macos.mjs                  builds the release `functor` first
+//   node app/package/macos.mjs --functor F [--out DIR]   bundles this one
 //
-// Layout: Contents/MacOS/functor-app (the main executable; its UI is built
-// in), Contents/Helpers/functor (the app looks there; outside MacOS, its game
-// children do not take the app's bundle id), Contents/Resources/Functor.icns.
+// Layout: Contents/MacOS/functor, the one executable (D40): built with the
+// app in (`npm run build:cli` on macOS), so opened with no arguments it is
+// the app, and its game sessions and tool servers are itself again (a
+// hidden game declares itself a background process, so it takes no Dock
+// tile and Quit stays the app's). Contents/Resources/Functor.icns.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,22 +21,14 @@ import { Resvg } from "@resvg/resvg-js";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const run = (cmd, args, opts) => execFileSync(cmd, args, { stdio: "inherit", ...opts });
 
-const { values: opts } = parseArgs({
-  options: { app: { type: "string" }, functor: { type: "string" }, out: { type: "string" } },
-});
-if (!opts.app !== !opts.functor) throw new Error("pass both --app and --functor, or neither");
-if (!opts.app) {
-  run("npm", ["run", "build:app"], { cwd: root });
-  run("npm", ["run", "build:cli"], { cwd: root });
-}
-const app = resolve(opts.app ?? join(root, "target/release/functor-app"));
+const { values: opts } = parseArgs({ options: { functor: { type: "string" }, out: { type: "string" } } });
+if (!opts.functor) run("npm", ["run", "build:cli"], { cwd: root });
 const functor = resolve(opts.functor ?? join(root, "target/release/functor"));
 const bundle = join(resolve(opts.out ?? join(root, "target/package")), "Functor.app");
 
 rmSync(bundle, { recursive: true, force: true });
-for (const dir of ["MacOS", "Helpers", "Resources"]) mkdirSync(join(bundle, "Contents", dir), { recursive: true });
-cpSync(app, join(bundle, "Contents/MacOS/functor-app"));
-cpSync(functor, join(bundle, "Contents/Helpers/functor"));
+for (const dir of ["MacOS", "Resources"]) mkdirSync(join(bundle, "Contents", dir), { recursive: true });
+cpSync(functor, join(bundle, "Contents/MacOS/functor"));
 
 // One wording for the mic prompt: the plist the bare binary embeds.
 const embedded = join(root, "app/functor-app/Info.plist");
@@ -49,7 +43,7 @@ writeFileSync(
   JSON.stringify({
     CFBundleDevelopmentRegion: "en",
     CFBundleDisplayName: "Functor",
-    CFBundleExecutable: "functor-app",
+    CFBundleExecutable: "functor",
     CFBundleIconFile: "Functor",
     CFBundleIdentifier: read("CFBundleIdentifier"),
     CFBundleInfoDictionaryVersion: "6.0",
@@ -84,7 +78,7 @@ run("iconutil", ["-c", "icns", iconset, "-o", join(bundle, "Contents/Resources/F
 rmSync(dirname(iconset), { recursive: true, force: true });
 
 // Ad hoc: Apple silicon runs only signed code, and the mic and local-network
-// permissions attach to the signature. `--deep` signs `functor` too.
+// permissions attach to the signature.
 run("codesign", ["--force", "--deep", "--sign", "-", bundle]);
 run("codesign", ["--verify", "--deep", "--strict", bundle]);
 console.log(`\n${bundle}`);

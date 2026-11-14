@@ -199,6 +199,12 @@ npm run build:cli           # the wasm bundle, then the functor CLI (RELEASE) â†
 npm run build:cli:debug     # same, but a debug build â†’ target/debug/functor
 ```
 
+On macOS `build:cli` also builds the desktop app into that binary (`scripts/build-cli.mjs`: the
+app UI bundle, then `--features whisper`, which turns on the CLI's `app` feature; D40): bare
+`functor` opens the app in-process and its children are the same executable. `build:cli:debug`
+and plain `cargo build` leave the app out; the standalone `functor-app` (`npm run build:app`)
+remains for the app's tests.
+
 (The human-facing docs mirror this split: `README.md` covers installing and using
 Functor; `DEVELOPMENT.md` covers building the CLI from source.)
 

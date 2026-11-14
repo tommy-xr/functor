@@ -111,8 +111,8 @@ Or use the bundled convenience script, which runs both in order:
 
 ```sh
 npm run build              # everything: CLI, both wasm bundles, and the site
-npm run build:cli          # release build → target/release/functor
-npm run build:cli:debug    # debug build   → target/debug/functor
+npm run build:cli          # release build → target/release/functor (on macOS with the desktop app)
+npm run build:cli:debug    # debug build   → target/debug/functor (the CLI alone)
 ```
 
 `npm run build` is the one to reach for when you are unsure which pieces a
@@ -131,28 +131,41 @@ in as a library and run in-process — there is no separate `functor-runner`), u
 
 ## Desktop app (preview)
 
-`functor-app` (under `app/`) is a chat-and-game-view app around a project; using
-it is covered in [the manual](https://functor.games/manual/app/). It is
-not part of the default workspace build. Build it with its UI embedded, plus the
-release CLI it runs game sessions with:
+The desktop app (under `app/`) is a chat-and-game-view app around a project;
+using it is covered in [the manual](https://functor.games/manual/app/). It is a
+library the `functor` CLI links behind its `app` feature: `functor` with no
+subcommand opens it in-process, and every game session and agent tool server it
+starts is that same executable again, so they never differ. On macOS
+`npm run build:cli` builds it in:
 
 ```sh
-npm run build:app          # the UI bundle, then target/release/functor-app
-npm run build:cli          # target/release/functor, built separately
+npm run build:cli          # macOS: the UI bundle, then target/release/functor with the app
 ```
 
-`build:app` turns on local speech-to-text (`--features whisper`), which compiles
-whisper.cpp. Its model (about 148 MB) is fetched on first use into
-`~/.functor/models` (`FUNCTOR_MODELS` overrides), not at build time. To skip the
-C++ build, leave the feature off: the composer shows no mic, and a headset's
-voice clip is answered with "speech-to-text is not in this build".
+That is `npm run build:app-ui`, then
+`cargo build --release -p functor-cli --bin functor --features whisper`
+(`whisper` turns on `app`). Elsewhere `build:cli` builds the CLI alone, as the
+window is macOS-only; `--features app` adds the app there too, for
+`functor app -- --headless`. A plain `cargo build` leaves the app out.
+
+`whisper` is local speech-to-text: it compiles whisper.cpp. Its model (about
+148 MB) is fetched on first use into `~/.functor/models` (`FUNCTOR_MODELS`
+overrides), not at build time. To skip the C++ build, use `--features app`
+alone: the composer shows no mic, and a headset's voice clip is answered with
+"speech-to-text is not in this build".
 
 ```sh
-npm run build:app-ui && cargo build --release -p functor-app   # no speech-to-text
+npm run build:app-ui && cargo build --release -p functor-cli --bin functor --features app   # no speech-to-text
 ```
 
-Run it from the release `functor` (it finds the `functor-app` next to itself,
-else `FUNCTOR_APP_BIN`, else on PATH):
+The app's own binary, `functor-app`, is still built for the tests and scripts
+that start it by name (`npm run build:app`, `cargo build -p functor-app`). It
+runs the `functor` it finds (`--functor`, `FUNCTOR_BIN`, next to itself, then
+PATH) and checks it first: one too old for the app is named in a banner with
+the fix, and nothing is started with it. A `functor` built without the app
+runs that `functor-app` instead (next to itself, `FUNCTOR_APP_BIN`, PATH).
+
+Run it:
 
 ```sh
 ./target/release/functor -d examples/primitives                     # the window (macOS only for now); `functor app` is the same
@@ -177,6 +190,7 @@ off; `--device-link <addr>` chooses where it listens.
 | `cargo test -p functor-app-core -p functor-app -p functor-stt` | The core's state machine, and the app end to end over its socket under a fake agent (`FUNCTOR_APP_FAKE_AGENT=<fixture>`). | `FUNCTOR_BIN=<a built functor>` for the tests that start a real game or tool server; they print `skipped` without it. |
 | `npm run test:app-ui-unit` | The UI's pure models (`app/ui/src/*.test.ts`) under `node --test`. | Nothing built. |
 | `npm run check:app-ui` | `tsc` over the UI. | — |
+| `cargo test -p functor-cli --features app --test default_app` | The app in-process in `functor`: a game session started with that same executable. | — |
 | `npm run test:app-ui` | Builds the UI and a debug `functor-app`, then drives the page in Playwright's Chromium (`app/ui/e2e/*.mjs`) against `--headless --no-gpu`, with the fake agent and `device-stub` headsets. | `FUNCTOR_BIN` for the scripts that need a real `functor` (new project, agent views, the Headset placement); `APP_UI_SHOTS=<dir>` saves screenshots. |
 | `npm run metrics:app` | Each scenario in `app/metrics/scenarios.json` through `functor-app task --review` on a fresh git copy of its example, judged mechanically; writes `app/metrics/results/<stamp>-<mode>.jsonl` and a `.md` table. Replays recorded runs by default. | Debug `functor-app` and `functor` (`FUNCTOR_APP_BIN` / `FUNCTOR_BIN` override). `FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live` runs the real agent and **spends tokens**; `-- --compare a.jsonl b.jsonl` prints deltas. |
 | `npm run test:metrics-app` | The metrics runner's own tests. | — |
@@ -214,14 +228,16 @@ Each puts the headset's own pairing back afterwards;
 ### Functor.app (macOS)
 
 ```sh
-npm run package:app        # builds both release binaries → target/package/Functor.app
+npm run package:app        # builds the release functor (with the app) → target/package/Functor.app
 open target/package/Functor.app
 open target/package/Functor.app --args -d ~/code/my-game
 cp -R target/package/Functor.app /Applications/
 ```
 
-The bundle holds `functor-app` (UI built in), the `functor` it runs games with
-(`Contents/Helpers`), and the icon (`app/package/icon.svg`). It is ad-hoc
+The bundle holds one executable, `functor` with the app and its UI built in
+(`Contents/MacOS`), and the icon (`app/package/icon.svg`). Its hidden game
+sessions are that executable too: each declares itself a background process,
+so it takes no Dock tile of its own and Quit quits the app. It is ad-hoc
 signed: it runs on the Mac that built it, but Gatekeeper rejects it elsewhere
 (a downloaded copy is quarantined and blocked as from an unidentified
 developer). Opened from Finder or the Dock, it opens the last project and takes

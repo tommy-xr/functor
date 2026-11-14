@@ -134,6 +134,17 @@ jobs:
       - name: Test MCP over HTTP
         run: cargo test -p functor-cli --test mcp_http --test default_app
 
+      # The one binary (D40, macOS): `functor` with the app built in runs it
+      # in-process, its game sessions this same executable; then the real
+      # window through it. Rebuilds only the CLI crate with the feature.
+      - name: One binary (functor with the app)
+        if: matrix.os == 'macos-latest'
+        run: |
+          cargo test -p functor-cli --features app --test default_app
+          target/debug/functor -d examples/primitives app --window-smoke --no-device-link --ui-dir app/ui/dist
+        env:
+          FUNCTOR_APP_HOME: ${{ runner.temp }}/functor-app-home
+
       # `functor init`'s templates: each one builds and passes its expects, the
       # table matches the template directories (examples included), `--list`
       # matches its snapshots, and MCP `init_game` takes every name.
