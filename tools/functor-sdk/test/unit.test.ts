@@ -188,6 +188,17 @@ test("isKeyDown maps bare digit input to serialized Num key names", async () => 
   assert.equal(await client.isKeyDown("2"), false);
 });
 
+test("isKeyDown matches two-word key names in any case", async () => {
+  const client = new FunctorClient({
+    getJson: async () => ({ input: { held_keys: ["LeftBracket", "Tab"] } }),
+  } as unknown as HttpClient);
+
+  assert.equal(await client.isKeyDown("leftbracket"), true);
+  assert.equal(await client.isKeyDown("LeftBracket"), true);
+  assert.equal(await client.isKeyDown("tab"), true);
+  assert.equal(await client.isKeyDown("RightBracket"), false);
+});
+
 test("waitFor returns once the predicate holds", async () => {
   let n = 0;
   const value = await waitFor(

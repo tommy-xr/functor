@@ -29,7 +29,7 @@ use crate::review::{
     brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
     ReviewState,
 };
-use crate::session::{Display, Mirror, Session, SessionEvent, SessionMode, SessionStatus};
+use crate::session::{Display, Mirror, Pointer, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
@@ -673,12 +673,21 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (switch, true)
         }
         // Input arrives at pointer rate, so it is never answered with the state.
+        // Only to a hidden session the game view shows: never to a game in
+        // its own window or on a headset (whose mirror is view-only).
         Event::Client(ClientMsg::Input { input }) => {
-            if let Some(Session {
-                id,
-                status: SessionStatus::Running { debug_url, .. },
-                ..
-            }) = &state.session
+            let shown = state
+                .active
+                .as_deref()
+                .is_some_and(|p| placement(&state, p).session_mode() == SessionMode::Hidden);
+            if let (
+                true,
+                Some(Session {
+                    id,
+                    status: SessionStatus::Running { debug_url, .. },
+                    ..
+                }),
+            ) = (shown, &state.session)
             {
                 commands.push(Command::Call {
                     id: *id,
@@ -3313,6 +3322,7 @@ fn on_session(
             session.status = SessionStatus::Running {
                 debug_url,
                 surface: None,
+                pointer: Pointer::Visible,
                 timeline: Box::default(),
             };
         }
@@ -3336,10 +3346,13 @@ fn on_session(
             };
             timeline.polled(after, polled.frame, polled.clock);
             read_marks(state, commands);
-            // The clock goes as `ServerMsg::Transport`; only a new surface is state.
+            // The clock goes as `ServerMsg::Transport`; only a new surface or
+            // pointer is state.
             return match &mut state.session.as_mut().map(|s| &mut s.status) {
-                Some(SessionStatus::Running { surface, .. }) if *surface != polled.surface => {
-                    *surface = polled.surface;
+                Some(SessionStatus::Running {
+                    surface, pointer, ..
+                }) if (*surface, *pointer) != (polled.surface, polled.pointer) => {
+                    (*surface, *pointer) = (polled.surface, polled.pointer);
                     true
                 }
                 _ => false,
@@ -3431,6 +3444,7 @@ mod tests {
         SessionStatus::Running {
             debug_url: URL.to_string(),
             surface: frame.map(|_| SURFACE),
+            pointer: Pointer::Visible,
             timeline: Box::new(timeline),
         }
     }
@@ -3447,6 +3461,7 @@ mod tests {
             result: Ok(Polled {
                 frame,
                 surface: Some(SURFACE),
+                pointer: Pointer::Visible,
                 clock: Some(clock),
             }),
         }
@@ -3904,15 +3919,19 @@ mod tests {
             result: Ok(Polled {
                 frame: 12,
                 surface: Some([1024, 768]),
+                pointer: Pointer::Captured,
                 clock: Some(PolledClock::default()),
             }),
         };
         let (next, commands) = update(before, session(1, resized));
-        let Some(SessionStatus::Running { surface, .. }) = next.session.as_ref().map(|s| &s.status)
+        let Some(SessionStatus::Running {
+            surface, pointer, ..
+        }) = next.session.as_ref().map(|s| &s.status)
         else {
             panic!("{next:?}");
         };
         assert_eq!(*surface, Some([1024, 768]));
+        assert_eq!(*pointer, Pointer::Captured);
         assert_eq!(commands, vec![poll(1), broadcast(&next)]);
     }
 
@@ -4011,6 +4030,7 @@ mod tests {
             result: Ok(Polled {
                 frame: 41,
                 surface: Some(SURFACE),
+                pointer: Pointer::Visible,
                 clock: Some(paused),
             }),
         };
@@ -4027,6 +4047,7 @@ mod tests {
                 result: Ok(Polled {
                     frame: 7,
                     surface: Some(SURFACE),
+                    pointer: Pointer::Visible,
                     clock: None,
                 }),
             };
@@ -4326,15 +4347,27 @@ mod tests {
         let failed = SessionStatus::Failed {
             reason: "x".to_string(),
         };
+        // A game in its own window or on a headset takes its input there.
+        let elsewhere = |placement| {
+            let mut s = before.clone();
+            let project = s.active.clone().unwrap();
+            s.layouts.entry(project).or_default().game.placement = placement;
+            s
+        };
         for before in [
             state(),
             with_session(3, Some(9), SessionStatus::Starting),
             with_session(3, None, SessionStatus::Stopped),
             with_session(3, None, failed),
+            elsewhere(Placement::Headset),
+            elsewhere(Placement::Window),
         ] {
             let (next, commands) = update(before.clone(), input());
             assert_eq!((next, commands), (before, vec![]));
         }
+        // Mini is the same hidden session.
+        let (_, commands) = update(elsewhere(Placement::Mini), input());
+        assert_eq!(commands.len(), 1);
     }
 
     #[test]

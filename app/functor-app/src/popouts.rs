@@ -15,7 +15,7 @@ use tao::window::{Theme, Window, WindowBuilder, WindowId};
 use wry::WebView;
 
 use crate::server::Token;
-use crate::window::{content_rect, page_webview, place_sized, Rect};
+use crate::window::{content_rect, own, page_webview, place_sized, Rect};
 
 /// A pop-out's size when it has none of its own yet, and the least (points).
 const DEFAULT: (f64, f64) = (900.0, 640.0);
@@ -33,7 +33,7 @@ struct Open {
     project: String,
     pane: u64,
     // Dropped before its window, as the main window's webview is.
-    _webview: WebView,
+    webview: WebView,
     window: Window,
 }
 
@@ -51,7 +51,10 @@ pub(crate) struct PopOuts {
 
 impl PopOuts {
     /// Opens each of `wanted` not open (taking focus when `focus`), closes
-    /// each open one not in it. `title` gets a page's document title, by pane.
+    /// each open one not in it. `title` gets a page's document title, and
+    /// `pointer` its game view asking for the pointer lock or letting it
+    /// go, by pane.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconcile<T: 'static>(
         &mut self,
         target: &EventLoopWindowTarget<T>,
@@ -60,13 +63,14 @@ impl PopOuts {
         screens: &[Rect],
         focus: bool,
         title: impl Fn(u64, String) + Clone + 'static,
+        pointer: impl Fn(u64, bool) + Clone + 'static,
     ) {
         self.open.retain(|_, o| wanted.iter().any(|w| o.is(w)));
         for w in wanted {
             if self.open.values().any(|o| o.is(w)) {
                 continue;
             }
-            match open(target, w, page, screens, focus, title.clone()) {
+            match open(target, w, page, screens, focus, title.clone(), pointer.clone()) {
                 Ok(o) => {
                     self.open.insert(o.window.id(), o);
                 }
@@ -101,6 +105,19 @@ impl PopOuts {
         self.open.len() != before
     }
 
+    /// Pane `pane`'s window.
+    pub(crate) fn window(&self, pane: u64) -> Option<&Window> {
+        self.open.values().find(|o| o.pane == pane).map(|o| &o.window)
+    }
+
+    /// Runs `script` in pane `pane`'s page.
+    pub(crate) fn evaluate(&self, pane: u64, script: &str) -> wry::Result<()> {
+        match self.open.values().find(|o| o.pane == pane) {
+            Some(o) => o.webview.evaluate_script(script),
+            None => Ok(()),
+        }
+    }
+
     /// Window `id`'s pane and where it is now, if it is a pop-out.
     pub(crate) fn frame(&self, id: WindowId) -> Option<(u64, Rect)> {
         let o = self.open.get(&id)?;
@@ -121,6 +138,7 @@ fn open<T: 'static>(
     screens: &[Rect],
     focus: bool,
     title: impl Fn(u64, String) + 'static,
+    pointer: impl Fn(u64, bool) + Clone + 'static,
 ) -> Result<Open, String> {
     let saved = wanted.frame.map(|f| Rect {
         x: f.x.into(),
@@ -141,14 +159,24 @@ fn open<T: 'static>(
         .map_err(|e| e.to_string())?;
     let pane = wanted.pane;
     let url = format!("{}/?pane={pane}", page.origin);
-    let webview = page_webview(&url, &page.origin, &page.token)
+    let loaded = pointer.clone();
+    let origin = page.origin.clone();
+    let webview = page_webview(&url, &page.origin, &page.token, move || loaded(pane, false))
         .with_document_title_changed_handler(move |t| title(pane, t))
+        // Its game view's pointer lock, as the main window's (`pointer.rs`).
+        .with_ipc_handler(move |req| {
+            if own(&req.uri().to_string(), &origin) {
+                if let Some(lock) = crate::pointer::request(req.body()) {
+                    pointer(pane, lock);
+                }
+            }
+        })
         .build(&window)
         .map_err(|e| e.to_string())?;
     Ok(Open {
         project: wanted.project.clone(),
         pane,
-        _webview: webview,
+        webview,
         window,
     })
 }

@@ -683,6 +683,11 @@ git_init: boolean,
 steps: Array<string>, };
 
 /**
+ * How a game takes the mouse (debug protocol v45's `/state.pointer`).
+ */
+export type Pointer = "captured" | "visible";
+
+/**
  * A pane the user popped out into its own window (D20): one pane of tabs,
  * named by its pane's id. Only the user opens and closes one; the agent
  * shows a view already in it there, and opens new ones in the main window.
@@ -880,7 +885,11 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * The game's pointer surface (`/state.input.mouse.surface_width`,
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
-surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+surface: [number, number] | null, 
+/**
+ * How the game takes the mouse (`/state.pointer`), from the same poll.
+ */
+pointer: Pointer, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
 
 /**
  * Which app needs the update.

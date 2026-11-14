@@ -1218,10 +1218,12 @@ export function mountScrubber({ hidden = false } = {}) {
   // field or the webview overlay that swallows keys first, modifier chords, and
   // shell-owned debug-camera navigation. Keys landing on the canvas remain.
   // The host page's `keyCode(e.code)` surface: every letter, every digit
-  // (top row and numpad), the arrows, Space and Enter. Escape is left out on
-  // purpose — the browser and the shell own it (pointer-lock exit, field
-  // blur), so it is not a key the visitor aimed at the game.
-  const GAME_KEY = /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|Arrow(Up|Down|Left|Right)|Space|Enter)$/;
+  // (top row and numpad), the arrows, Space, Enter, Tab, the modifiers, the
+  // function keys and punctuation. Escape is left out on purpose — the
+  // browser and the shell own it (pointer-lock exit, field blur), so it is
+  // not a key the visitor aimed at the game.
+  const GAME_KEY =
+    /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|Arrow(Up|Down|Left|Right)|Space|Enter|Tab|(Shift|Control|Alt)(Left|Right)|F([1-9]|1[0-2])|Minus|Equal|Bracket(Left|Right)|Backslash|Semicolon|Quote|Comma|Period|Slash)$/;
   // The host page's shell-owned debug-camera movement keys.
   const DEBUG_KEYS = /^Key[WASDQE]$/;
   const CHROME = "input, textarea, select, button, [contenteditable], #webview";

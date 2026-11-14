@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, APP_ARGS, chooseProject, FUNCTOR, openStreams, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, APP_ARGS, chooseProject, FUNCTOR, openStreams, RELEASE_HINT, ROOT, requireBuilt, sessionInput, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -142,11 +142,6 @@ async function run(browser, width, height) {
   }
 }
 
-/** The session's `/state.input`, read by the test (the page never talks to it). */
-async function sessionInput(debugUrl) {
-  return (await (await fetch(`${debugUrl}/state`)).json()).input;
-}
-
 /** Game view without a GPU (CI): states, input capture and release, the placement control. */
 async function gameViewNoGpu(browser) {
   const server = await startServer(0, { dir: `${ROOT}examples/counter` });
@@ -181,13 +176,13 @@ async function gameViewNoGpu(browser) {
     await page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" }).click();
     await expect(page.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Pause" })).toBeVisible();
 
-    // A click captures input; a held key reaches the session and Esc lets it go.
+    // A click captures input; a held key reaches the session and ⌘Esc lets it go.
     await expect(banner).toHaveText("Click to play");
     await view.click();
-    await expect(banner).toHaveText("Esc to release");
+    await expect(banner).toHaveText(RELEASE_HINT);
     await page.keyboard.down("KeyW");
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["W"]);
-    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+Escape");
     await expect(banner).toHaveText("Click to play");
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
     await page.keyboard.up("KeyW");
@@ -371,7 +366,7 @@ async function gameViewGpu(browser) {
     // A key reaches the session.
     await page.keyboard.down("KeyW");
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["W"]);
-    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+Escape");
     await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
     await page.keyboard.up("KeyW");
     if (SHOTS) {
@@ -459,10 +454,10 @@ async function gameViewGpu(browser) {
       await page.waitForTimeout(500);
       expect(inMini.equals(await img.screenshot()), "the frame changed in Mini").toBe(false);
       await view.click();
-      await expect(view.getByRole("status")).toHaveText("Esc to release");
+      await expect(view.getByRole("status")).toHaveText(RELEASE_HINT);
       await page.keyboard.down("KeyW");
       await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual(["W"]);
-      await page.keyboard.press("Escape");
+      await page.keyboard.press("Meta+Escape");
       await expect.poll(async () => (await sessionInput(debugUrl)).held_keys).toEqual([]);
       await page.keyboard.up("KeyW");
       if (SHOTS) await page.screenshot({ path: `${SHOTS}/game-mini-1440.png` });

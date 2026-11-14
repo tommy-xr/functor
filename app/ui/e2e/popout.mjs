@@ -5,7 +5,7 @@
 // session, FUNCTOR_APP_GPU=1). Runs at 1440×900 and 700×900.
 // APP_UI_SHOTS=<dir> saves stills of both windows.
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, openStreams, ROOT, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
+import { FUNCTOR, openStreams, RELEASE_HINT, ROOT, reopen, requireBuilt, sessionInput, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
 
 requireBuilt();
 const GPU = process.env.FUNCTOR_APP_GPU === "1" && FUNCTOR;
@@ -89,14 +89,34 @@ async function run(browser, width, height) {
     await again.close();
     await expect.poll(() => tabs(main)).toEqual([["Game", "game.fun", "functor.json"]]);
 
+    // Keys held in the game are let go when its pane pops out.
+    const held = async () => (await sessionInput(app.state.session.status.debug_url)).held_keys;
+    if (FUNCTOR) {
+      await main.getByRole("tab", { name: "Game", exact: true }).click();
+      await main.getByRole("group", { name: "Transport" }).getByRole("button", { name: "Play" }).click();
+      await main.getByTestId("game-view").click();
+      await main.keyboard.down("KeyW");
+      await expect.poll(held).toEqual(["W"]);
+    }
     // The Game tab in a window: the game view is there and only there. The
     // main window, its only pane gone, is an empty canvas.
     win = await popOut("Game");
+    if (FUNCTOR) {
+      await expect.poll(held).toEqual([]);
+      await main.keyboard.up("KeyW");
+    }
     await expect.poll(() => tabs(main)).toEqual([]);
     await expect(win).toHaveTitle(/ — Functor$/);
     await win.getByRole("tab", { name: "Game", exact: true }).click();
     await expect(win.getByTestId("game-view")).toHaveCount(1);
     await expect(main.getByTestId("game-view")).toHaveCount(0);
+    // It takes keys there too, and docking lets go of them.
+    if (FUNCTOR) {
+      await win.getByTestId("game-view").click();
+      await expect(win.getByTestId("game-view").getByRole("status")).toHaveText(RELEASE_HINT);
+      await win.keyboard.down("KeyD");
+      await expect.poll(held).toEqual(["D"]);
+    }
     if (GPU) {
       const port = Number(new URL(app.state.session.status.debug_url).port);
       await expect(win.getByTestId("game-view").locator("img")).toBeVisible({ timeout: 30_000 });
@@ -113,6 +133,7 @@ async function run(browser, width, height) {
       await win.waitForEvent("close");
     }
     await expect.poll(() => layout().windows).toEqual([]);
+    if (FUNCTOR) await expect.poll(held).toEqual([]);
     expect(errors, tag).toEqual([]);
     console.log(`ok: pop-out ${tag}`);
   } finally {

@@ -14578,6 +14578,7 @@ size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0
             model_debug: String::new(),
             input: crate::InputSnapshot::default(),
             sim_thread: None,
+            pointer: None,
             display_refresh_rate: None,
             instance_uploads: Default::default(),
             config: None,

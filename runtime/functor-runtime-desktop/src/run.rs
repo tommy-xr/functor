@@ -110,6 +110,32 @@ fn map_key(key: Key) -> InputKey {
         Key::Num7 | Key::Kp7 => InputKey::Num7,
         Key::Num8 | Key::Kp8 => InputKey::Num8,
         Key::Num9 | Key::Kp9 => InputKey::Num9,
+        Key::Tab => InputKey::Tab,
+        Key::LeftShift | Key::RightShift => InputKey::Shift,
+        Key::LeftControl | Key::RightControl => InputKey::Control,
+        Key::LeftAlt | Key::RightAlt => InputKey::Alt,
+        Key::F1 => InputKey::F1,
+        Key::F2 => InputKey::F2,
+        Key::F3 => InputKey::F3,
+        Key::F4 => InputKey::F4,
+        Key::F5 => InputKey::F5,
+        Key::F6 => InputKey::F6,
+        Key::F7 => InputKey::F7,
+        Key::F8 => InputKey::F8,
+        Key::F9 => InputKey::F9,
+        Key::F10 => InputKey::F10,
+        Key::F11 => InputKey::F11,
+        Key::F12 => InputKey::F12,
+        Key::Minus => InputKey::Minus,
+        Key::Equal => InputKey::Equal,
+        Key::LeftBracket => InputKey::LeftBracket,
+        Key::RightBracket => InputKey::RightBracket,
+        Key::Backslash => InputKey::Backslash,
+        Key::Semicolon => InputKey::Semicolon,
+        Key::Apostrophe => InputKey::Quote,
+        Key::Comma => InputKey::Comma,
+        Key::Period => InputKey::Period,
+        Key::Slash => InputKey::Slash,
         _ => InputKey::Unknown,
     }
 }
@@ -1341,6 +1367,9 @@ fn service_debug_request(
     net_transport: NetTransportArg,
     // `/state.sim_thread`: where the game logic runs, and its QoS.
     sim_thread: &str,
+    // `/state.pointer`: the game's mouse is captured by its policy (captured
+    // only if the game also has a mouse hook).
+    mouse_capture: bool,
     // `/state.stages`; `None` in the headless loop, which renders nothing.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
     // `/frames`, `/spikes`, `/state.frame_stats`.
@@ -1415,6 +1444,11 @@ fn service_debug_request(
                     },
                     input: state_input,
                     sim_thread: Some(sim_thread),
+                    pointer: Some(if mouse_capture && g.uses_captured_mouse_input() {
+                        debug_server::PointerMode::Captured
+                    } else {
+                        debug_server::PointerMode::Visible
+                    }),
                     display_refresh_rate: None,
                     instance_uploads,
                     config: g.config(),
@@ -1788,6 +1822,8 @@ fn run_headless(
     display_hz: Option<f32>,
     net_transport: NetTransportArg,
     sim_thread: String,
+    // `/state.pointer`: the game's mouse is captured by its policy.
+    mouse_capture: bool,
 ) {
     // Stderr, not stdout: keep the CLI's `--json` ndjson stream (stdout) clean
     // even under `--headless`. This is an out-of-band notice, not an event.
@@ -1980,6 +2016,7 @@ fn run_headless(
                     None, // no webview overlay in headless
                     net_transport,
                     &sim_thread,
+                    mouse_capture,
                     None,
                     &telemetry,
                     &mut reload,
@@ -2189,6 +2226,7 @@ sockets)."
             args.display_hz,
             args.net_transport,
             sim_thread,
+            args.mouse_capture && args.cursor == CursorPolicyArg::Captured,
         );
         return;
     }
@@ -4474,6 +4512,7 @@ Escape again to quit"
                             },
                             args.net_transport,
                             &sim_thread,
+                            game_mouse_capture,
                             stage_timings,
                             &telemetry,
                             &mut reload,
