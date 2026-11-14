@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn the_runtimes_clock_and_marks_parse() {
         use functor_runtime_common::debug_protocol::{
-            ClockState, InputLog, InputLogStep, RecordedFrames, TimelineMark,
+            ClockState, InputLog, InputLogStep, PointerMode, RecordedFrames, TimelineMark,
         };
         let clock = ClockState {
             paused: true,
@@ -1199,7 +1199,7 @@ mod tests {
         assert_eq!(parse_state(&old.to_string()).unwrap().clock, None);
         // Nor its pointer (v44): a visible cursor, as before.
         assert_eq!(parse_state(&old.to_string()).unwrap().pointer, Pointer::Visible);
-        let captured = serde_json::json!({"frame": 1, "pointer": "captured", "input": {}});
+        let captured = serde_json::json!({"frame": 1, "pointer": PointerMode::Captured, "input": {}});
         assert_eq!(parse_state(&captured.to_string()).unwrap().pointer, Pointer::Captured);
         let bare = serde_json::json!({"frame": 0, "clock": ClockState::default(), "input": {}});
         assert_eq!(

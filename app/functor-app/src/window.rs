@@ -192,7 +192,8 @@ pub fn run(
                 window.set_maximized(!window.is_maximized())
             }
             Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
-            Event::UserEvent(UserEvent::Pointer(lock)) => {
+            // Never held for a window another app is in front of.
+            Event::UserEvent(UserEvent::Pointer(lock)) if !lock || window.is_focused() => {
                 if let Some(grab) = pointer.set(lock) {
                     grab_cursor(&window, grab);
                 }

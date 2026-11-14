@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, chooseProject, FUNCTOR, RELEASE_HINT, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, chooseProject, FUNCTOR, RELEASE_HINT, ROOT, requireBuilt, sessionInput, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -140,11 +140,6 @@ async function run(browser, width, height) {
     await page.close();
     await stopServer(server);
   }
-}
-
-/** The session's `/state.input`, read by the test (the page never talks to it). */
-async function sessionInput(debugUrl) {
-  return (await (await fetch(`${debugUrl}/state`)).json()).input;
 }
 
 /** Game view without a GPU (CI): states, input capture and release, the placement control. */

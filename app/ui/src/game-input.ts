@@ -100,7 +100,8 @@ export class Held {
 
   /**
    * Releases of every held key. ⌘ going down calls this: macOS sends no
-   * key-up for a key let go while ⌘ is held, so it would stick.
+   * key-up for a key let go while ⌘ is held, so it would stick. A key still
+   * down after ⌘ goes up stays released until pressed again.
    */
   releaseKeys(): GameInput[] {
     const ups: GameInput[] = [...this.keys].map((key) => ({ type: "key", key, down: false }));

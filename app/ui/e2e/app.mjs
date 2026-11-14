@@ -23,6 +23,11 @@ export async function clock(debugUrl) {
   return { frame: state.frame, ...state.clock };
 }
 
+/** The session's `/state.input`, read by the test (the page never talks to it). */
+export async function sessionInput(debugUrl) {
+  return (await (await fetch(`${debugUrl}/state?model=0`)).json()).input;
+}
+
 /** Exits unless functor-app and the built UI exist. */
 export function requireBuilt() {
   for (const [path, what] of [

@@ -8,7 +8,7 @@
 // beside the game must not take the user's input (D25).
 // Needs FUNCTOR_BIN (npm run build:cli:debug).
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, RELEASE_HINT, ROOT, requireBuilt, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
+import { FUNCTOR, RELEASE_HINT, ROOT, requireBuilt, sessionInput, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
 
 requireBuilt();
 if (!FUNCTOR) {
@@ -47,11 +47,6 @@ function watchInputs(page) {
 }
 
 const key = (k, down) => ({ type: "key", key: k, down });
-
-/** The session's `/state.input` (the page never talks to it). */
-async function sessionInput(app) {
-  return (await (await fetch(`${app.state.session.status.debug_url}/state?model=0`)).json()).input;
-}
 
 /** Opens `project`, plays it, and returns what the scenarios need. */
 async function open(browser, project, width, height, { before, ...extra } = {}) {
@@ -159,7 +154,7 @@ async function captured(browser, width, height, where) {
       { type: "mouse_move", x: from.x - 1990, y: from.y - 10 },
     ]);
     await expect.poll(async () => {
-      const { mouse } = await sessionInput(app);
+      const { mouse } = await sessionInput(app.state.session.status.debug_url);
       return [mouse.x, mouse.y];
     }).toEqual([from.x - 1990, from.y - 10]);
     // Buttons and the wheel, at the locked cursor.
@@ -182,7 +177,7 @@ async function captured(browser, width, height, where) {
       ["tab", "f1", "shift", "control", "alt", "w", "minus", "escape"].map((k) => key(k, true)),
     );
     await expect
-      .poll(async () => (await sessionInput(app)).held_keys)
+      .poll(async () => (await sessionInput(app.state.session.status.debug_url)).held_keys)
       .toEqual(["W", "Escape", "Tab", "Shift", "Control", "Alt", "F1", "Minus"]);
     // The page keeps them: Tab did not move focus, Escape did not release.
     expect(await view.evaluate((el) => document.activeElement === el)).toBe(true);
@@ -202,7 +197,7 @@ async function captured(browser, width, height, where) {
     expect(await shell.asked(), `${tag}: unlock`).toEqual(["unlock"]);
     for (const code of ["Tab", "ShiftLeft", "ShiftRight", "ControlLeft", "AltLeft", "KeyW", "Minus"]) await page.keyboard.up(code);
     expect(await inputs.take(), `${tag}: after release`).toEqual([]);
-    await expect.poll(async () => (await sessionInput(app)).held_keys).toEqual([]);
+    await expect.poll(async () => (await sessionInput(app.state.session.status.debug_url)).held_keys).toEqual([]);
     // Unlocked, deltas move nothing.
     await shell.move([5, 5]);
     await inputs.settle();
@@ -231,7 +226,7 @@ async function captured(browser, width, height, where) {
     await page.keyboard.down("KeyS");
     await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     await expect(banner).toHaveText("Click to play");
-    await expect.poll(async () => (await sessionInput(app)).held_keys).toEqual([]);
+    await expect.poll(async () => (await sessionInput(app.state.session.status.debug_url)).held_keys).toEqual([]);
     await page.keyboard.up("KeyS");
     await inputs.settle();
     expect(await inputs.take(), `${tag}: blur`).toEqual([key("s", true), key("s", false)]);
@@ -293,12 +288,14 @@ async function visible(browser, width, height, where) {
       expect(await inputs.take(), `${tag}: move to ${fx},${fy}`).toEqual([{ type: "mouse_move", ...at }]);
       await page.mouse.down();
       await page.mouse.up();
+      // A press sends its own position first.
       expect(await inputs.take(), `${tag}: click at ${fx},${fy}`).toEqual([
+        { type: "mouse_move", ...at },
         { type: "mouse_button", button: "left", down: true },
         { type: "mouse_button", button: "left", down: false },
       ]);
       await expect.poll(async () => {
-        const { mouse } = await sessionInput(app);
+        const { mouse } = await sessionInput(app.state.session.status.debug_url);
         return [mouse.x, mouse.y];
       }).toEqual([at.x, at.y]);
     }
@@ -337,7 +334,7 @@ async function agentBeside(browser) {
     await expect(banner).toHaveText(/to release/);
     expect(await view.evaluate((el) => document.activeElement === el), `${tag}: focus`).toBe(true);
     await page.keyboard.down("KeyD");
-    await expect.poll(async () => (await sessionInput(app)).held_keys).toEqual(["D", "W"]);
+    await expect.poll(async () => (await sessionInput(app.state.session.status.debug_url)).held_keys).toEqual(["D", "W"]);
     await page.keyboard.up("KeyD");
     await page.keyboard.up("KeyW");
     await inputs.settle();

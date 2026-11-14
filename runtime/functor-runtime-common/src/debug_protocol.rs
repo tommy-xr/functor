@@ -437,8 +437,8 @@ pub fn discovery_json() -> String {
 }
 
 /// `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
-/// (`"mouseCapture"` on, the cursor policy not `visible`, and the game reads
-/// mouse motion) or with a visible cursor.
+/// (`"mouseCapture"` on, the cursor policy not `visible`, and the game has a
+/// mouse hook) or with a visible cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]

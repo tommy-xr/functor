@@ -188,13 +188,7 @@ function LiveGame({
         }}
       />
       <span className="game-banner" role="status">
-        {paused
-          ? "Paused"
-          : !capture.captured
-            ? "Click to play"
-            : capture.locked && !NATIVE_POINTER
-              ? "Esc to release"
-              : `${RELEASE_KEYS} to release`}
+        {paused ? "Paused" : capture.captured ? `${RELEASE_KEYS} to release` : "Click to play"}
       </span>
     </div>
     {transport?.clock && visible && (
@@ -241,15 +235,15 @@ function useCapture(
   // Stable across renders, reading the latest props through `live`.
   const [ops] = useState(() => {
     const input = (input: GameInput) => live.current.send({ type: "input", input });
-    // A position went since the capture: a press lands there rather than
-    // at its own whole-pixel position, which can differ by one.
-    let placed = false;
+    // The game's last pointer position: the next lock moves on from it, so
+    // a free-look game does not turn by the jump to the new click.
+    let last: Point | null = null;
     const flush = () => {
       const p = pending.current;
       cancelAnimationFrame(p.raf);
       p.raf = 0;
       if (p.move) {
-        placed = true;
+        last = p.move;
         input({ type: "mouse_move", ...p.move });
       }
       if (p.wheel) input({ type: "mouse_wheel", delta: p.wheel });
@@ -271,8 +265,7 @@ function useCapture(
       return toSurface(x, y, rect, { w: surface[0], h: surface[1] });
     };
     // Unlocked, the pointer's position; locked, the pointer does not move.
-    const queueMove = (e: { clientX: number; clientY: number }, press = false) => {
-      if (press && (placed || pending.current.move)) return;
+    const queueMove = (e: { clientX: number; clientY: number }) => {
       const point = cursor.current ? null : at(e);
       if (!point) return;
       pending.current.move = point;
@@ -292,22 +285,23 @@ function useCapture(
     const lock = (e: { clientX: number; clientY: number }) => {
       const { pointer, surface } = live.current;
       if (pointer !== "captured") return;
-      cursor.current = new LockedCursor(at(e) ?? { x: (surface?.[0] ?? 0) / 2, y: (surface?.[1] ?? 0) / 2 });
+      cursor.current = new LockedCursor(last ?? at(e) ?? { x: (surface?.[0] ?? 0) / 2, y: (surface?.[1] ?? 0) / 2 });
       if (NATIVE_POINTER) {
         nativePointer(true);
         setLocked(true);
         return;
       }
-      // Refused, moves stay absolute.
-      const refused = () => {
-        cursor.current = null;
-        setLocked(false);
-      };
+      // Refused (a rejected promise here, `pointerlockerror` in other
+      // browsers), moves stay absolute.
       try {
-        (area.current?.requestPointerLock() as Promise<void> | undefined)?.catch?.(refused);
+        (area.current?.requestPointerLock() as Promise<void> | undefined)?.catch?.(fallBack);
       } catch {
-        refused();
+        fallBack();
       }
+    };
+    const fallBack = () => {
+      cursor.current = null;
+      setLocked(false);
     };
     const unlock = () => {
       if (!cursor.current) return;
@@ -321,11 +315,10 @@ function useCapture(
       flush();
       edges(held.current.releaseAll());
       unlock();
-      placed = false;
       live.current.captured = false;
       setCaptured(false);
     };
-    return { flush, schedule, queueMove, queueDelta, edges, lock, release };
+    return { flush, schedule, queueMove, queueDelta, edges, lock, fallBack, release };
   });
 
   // Let go when the view goes away (tab switch, session stop).
@@ -346,11 +339,18 @@ function useCapture(
       const button = BUTTONS[e.button];
       if (button) ops.edges([held.current.button(button, false)]);
     };
-    // The browser's lock taken (moves become relative), or ended by the
-    // browser itself (its Esc), which ends the capture too.
+    // The browser's lock: taken (moves become relative; dropped if the
+    // capture ended while it was asked for), or ended by the browser (its
+    // Esc, the view moving to another slot): the capture goes on, absolute,
+    // while the view keeps focus.
     const onLockChange = () => {
-      if (document.pointerLockElement === el) setLocked(true);
-      else if (cursor.current) ops.release();
+      if (document.pointerLockElement === el) {
+        if (cursor.current) setLocked(true);
+        else document.exitPointerLock();
+      } else if (cursor.current) {
+        ops.fallBack();
+        setTimeout(() => document.activeElement !== el && ops.release());
+      }
     };
     // The native window's lock: deltas, or the window letting go on its own.
     const onNative = (msg: { dx?: number; dy?: number; lost?: boolean }) => {
@@ -366,6 +366,7 @@ function useCapture(
     window.addEventListener("blur", ops.release);
     window.addEventListener("pagehide", ops.release);
     document.addEventListener("pointerlockchange", onLockChange);
+    document.addEventListener("pointerlockerror", ops.fallBack);
     return () => {
       if (win.functorPointer === onNative) delete win.functorPointer;
       el.removeEventListener("wheel", onWheel);
@@ -373,6 +374,7 @@ function useCapture(
       window.removeEventListener("blur", ops.release);
       window.removeEventListener("pagehide", ops.release);
       document.removeEventListener("pointerlockchange", onLockChange);
+      document.removeEventListener("pointerlockerror", ops.fallBack);
     };
   }, [area, ops]);
 
@@ -393,10 +395,9 @@ function useCapture(
       const button = BUTTONS[e.button];
       const press = button ? held.current.button(button, true) : null;
       if (!press) return;
-      ops.queueMove(e, true);
+      ops.queueMove(e);
       ops.edges([press]);
     },
-    // Pointer events, for their fractional positions.
     onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
       if (!captured) return;
       if (document.pointerLockElement === e.currentTarget) ops.queueDelta(e.movementX, e.movementY);

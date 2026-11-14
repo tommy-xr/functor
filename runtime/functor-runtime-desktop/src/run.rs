@@ -1353,7 +1353,7 @@ fn service_debug_request(
     // `/state.sim_thread`: where the game logic runs, and its QoS.
     sim_thread: &str,
     // `/state.pointer`: the game's mouse is captured by its policy (captured
-    // only if the game also reads mouse motion).
+    // only if the game also has a mouse hook).
     mouse_capture: bool,
     // `/state.stages`; `None` in the headless loop, which renders nothing.
     stages: Option<functor_runtime_common::debug_protocol::StageTimings>,
