@@ -2,8 +2,8 @@
 // with what it is doing, and its stance. Claude is round and clay, Codex
 // angular and violet; the face shows the stance.
 
-import type { Activity, AppState, Harness, Stance, Task } from "./generated/protocol";
-import { bubble, cardLabel, cardTasks, ENGINE_WORDS, STANCE_WORDS } from "./agent-model";
+import type { Activity, AppState, Harness, Stance, Subagent, Task } from "./generated/protocol";
+import { bubble, cardLabel, cardTasks, ENGINE_WORDS, room, STANCE_WORDS, subBubble } from "./agent-model";
 import { Icon } from "./Icon";
 import { untitled } from "./tasks-model";
 
@@ -60,11 +60,12 @@ export function Avatar({ harness, stance }: { harness: Harness; stance: Stance }
 /** One task's card; `onOpen` opens the task. */
 export function AgentCard({ task, activity, onOpen }: { task: Task; activity: Activity; onOpen: (task: number) => void }) {
   const b = bubble(task, activity);
+  const r = room(activity.context);
   const engine = ENGINE_WORDS[task.harness];
   return (
     <button
       type="button"
-      className={`agent-card agent-${activity.stance}`}
+      className={`agent-card agent-${activity.stance} agent-engine-${task.harness}`}
       data-testid="agent-card"
       data-stance={activity.stance}
       aria-label={cardLabel(task, activity)}
@@ -88,8 +89,33 @@ export function AgentCard({ task, activity, onOpen }: { task: Task; activity: Ac
             </span>
           )}
         </span>
+        {activity.subagents.map((sub, i) => (
+          <SubagentFigure key={i} harness={task.harness} sub={sub} />
+        ))}
+        {r && (
+          <span className={`agent-room agent-room-${r.level}`} data-testid="agent-room" data-level={r.level} title={r.title}>
+            <span className="agent-room-track">
+              <span className="agent-room-fill" style={{ width: `${r.percent}%` }} />
+            </span>
+            <span className="agent-room-pct">{r.percent}%</span>
+          </span>
+        )}
       </span>
     </button>
+  );
+}
+
+/** A subagent: a smaller figure on a tether from the agent that started it, with its own bubble. */
+function SubagentFigure({ harness, sub }: { harness: Harness; sub: Subagent }) {
+  const b = subBubble(sub);
+  return (
+    <span className={`agent-sub agent-${b.stance}`} data-testid="agent-sub" title={`Subagent: ${sub.label}`}>
+      <Avatar harness={harness} stance={b.stance} />
+      <span className="agent-bubble agent-sub-bubble">
+        <Icon name={`kind-${b.kind}`} />
+        <span className="agent-line">{b.text}</span>
+      </span>
+    </span>
   );
 }
 
