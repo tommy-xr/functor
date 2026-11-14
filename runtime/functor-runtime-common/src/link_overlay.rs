@@ -1081,6 +1081,16 @@ mod tests {
         assert!(toast.look(done + OUTCOME + FADE).is_none());
         assert!(toast.stage().is_none(), "hidden holds nothing");
 
+        // Done says what, and goes as an outcome does.
+        let text = "Switched to examples/hello".to_string();
+        toast.show(VoiceStage::Done { text }, done);
+        let lines = toast_lines(toast.look(done).unwrap().0);
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            ["DONE", "Switched to examples/hello"]
+        );
+        assert!(toast.look(done + OUTCOME + FADE).is_none());
+
         // Idle from the desktop fades it now.
         toast.show(VoiceStage::Working, t);
         toast.hide(t);
