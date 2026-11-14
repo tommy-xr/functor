@@ -815,8 +815,6 @@ pub enum VoiceStage {
     Heard,
     Working,
     Reloaded,
-    /// The agent answered without changing the game: the answer's start.
-    Answered { text: String },
     /// The desktop could not act on it.
     Failed { reason: String },
     /// It never reached the desktop whole: cancelled, or the link failed.

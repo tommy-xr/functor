@@ -35,6 +35,7 @@ use crate::tasks::{
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
+use crate::progress;
 use crate::voice::{self, HearingStage, Route, Stage, Utterance};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,8 +88,8 @@ pub struct AppState {
     /// Decisions on where speech went that can still be moved (D29), with
     /// their lines and moves, refreshed after every event.
     pub routes: Vec<Routed>,
-    /// Headsets' requests not yet messages in a task.
-    pub hearing: Vec<voice::Hearing>,
+    /// Where each recent request is (D43), oldest first.
+    pub requests: Vec<progress::Request>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -210,6 +211,10 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub route_seq: u64,
+    /// The last `progress::Request::id` given out.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub request_seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,7 +255,8 @@ impl AppState {
             decisions: BTreeMap::new(),
             queues: BTreeMap::new(),
             routes: Vec::new(),
-            hearing: Vec::new(),
+            requests: Vec::new(),
+            request_seq: 0,
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -807,7 +813,17 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }) => match state.devices.list.iter().find(|d| d.conn == Some(conn)) {
             Some(device) => {
                 let device = device.id.clone();
-                voice::hear(&mut state, &device, utterance, stage);
+                use progress::Step;
+                match stage {
+                    HearingStage::Arriving => progress::heard(&mut state, &device, utterance, Step::Received),
+                    HearingStage::Transcribing => {
+                        progress::heard(&mut state, &device, utterance, Step::Transcribing)
+                    }
+                    HearingStage::Cancelled => progress::stopped(&mut state, &device, utterance, None),
+                    HearingStage::Failed { reason } => {
+                        progress::stopped(&mut state, &device, utterance, Some(&reason))
+                    }
+                }
                 (true, false)
             }
             None => (false, false),
@@ -1014,19 +1030,25 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             scope,
             voice: None,
         } => match id {
-            Ok(id) => (
-                new_task(&mut state, id, message, harness, scope, None, &mut commands),
-                false,
-            ),
+            Ok(id) => {
+                let made = new_task(&mut state, id, message, harness, scope, None, &mut commands);
+                if made {
+                    progress::typed(&mut state, id);
+                }
+                (made, false)
+            }
             Err(e) => (
                 reject(&mut commands, format!("cannot reserve a task id: {e}")),
                 false,
             ),
         },
-        Event::Client(ClientMsg::SendMessage { task, message }) => (
-            send_message(&mut state, task, message, &mut commands),
-            false,
-        ),
+        Event::Client(ClientMsg::SendMessage { task, message }) => {
+            let sent = send_message(&mut state, task, message, &mut commands);
+            if sent {
+                progress::typed(&mut state, task);
+            }
+            (sent, false)
+        }
         Event::Client(ClientMsg::StopTask { task }) => {
             (stop_task(&mut state, task, &mut commands), false)
         }
@@ -1164,7 +1186,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
-    let aged = voice::age_hearing(&mut state);
+    let aged = progress::refresh(&mut state);
     prune_highlight(&mut state);
     let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
@@ -1392,7 +1414,8 @@ fn opened(
         decisions: _,
         queues: _,
         routes: _,
-        hearing: _,
+        requests: _,
+        request_seq: _,
         routing: _,
         routed: _,
         route_seq: _,
@@ -2505,12 +2528,11 @@ fn heard(
         title: None,
         project: state.active.clone().unwrap_or_default(),
     };
-    let placing = HearingStage::Placing { text: u.text.clone() };
-    voice::hear(state, &u.device, utterance, placing);
+    progress::transcribed(state, &u.device, utterance, &u.text);
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
-            voice::not_heard(state, &u.device, utterance, &reason);
+            progress::stopped(state, &u.device, utterance, Some(&reason));
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
             return true;
         }
@@ -2629,8 +2651,6 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
 /// Records where `u` landed in task `task` (its last message): the line
 /// on the message, and the decision while it can be moved.
 fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, commands: &mut Vec<Command>) {
-    // A message now: the chat shows it where it landed.
-    state.hearing.retain(|h| h.device != u.device);
     let line = route::line(state, task, landed, u.by);
     let root = PathBuf::from(&state.repo_root);
     let t = state.tasks.iter_mut().find(|t| t.id == task).expect("landed");
@@ -2640,10 +2660,11 @@ fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, comman
         ..
     } = &mut t.transcript[item]
     {
-        spoken.route = Some(line);
+        spoken.route = Some(line.clone());
     }
     commands.push(save(&root, t));
     broadcast_items(commands, t, vec![item]);
+    progress::placed(state, &u.device, u.utterance, task, item, &line);
     state.route_seq += 1;
     state.routed.push(Open {
         id: state.route_seq,
@@ -2813,7 +2834,7 @@ fn voice_task(
             true
         }
         Err(reason) => {
-            voice::not_heard(state, &u.device, u.utterance, &reason);
+            progress::stopped(state, &u.device, u.utterance, Some(&reason));
             voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
             true
         }
@@ -7917,23 +7938,28 @@ mod tests {
         })
     }
 
-    fn heard_stage(s: &AppState) -> Option<HearingStage> {
-        s.hearing.iter().find(|h| h.device == "aa").map(|h| h.stage.clone())
+    /// `s` stepped with `event` at wall time `now`.
+    fn stepped(s: AppState, now: u64, event: Event) -> (AppState, Vec<Command>) {
+        update(AppState { now, ..s }, event)
     }
 
-    /// A request shows from its first part: arriving, transcribing, its
-    /// text on the way, then gone as it becomes a message (whose decision
-    /// names what was said); one that ends without one stays a moment.
+    fn steps(s: &AppState) -> Vec<(progress::Step, u64)> {
+        let r = s.requests.last().expect("a request");
+        r.steps.iter().map(|x| (x.step, x.at)).collect()
+    }
+
+    /// A spoken request's one record (D43) moves through every step with
+    /// when each began: received, transcribing, transcribed (its text),
+    /// processing (where it went), the agent; then its outcome from the
+    /// headset's reload. The page decides whether to show its task.
     #[test]
-    fn a_request_is_shown_until_it_is_a_message() {
-        let (s, _) = update(voice_ready(), hearing(0, 1, HearingStage::Arriving));
-        assert_eq!(s.hearing[0].headset, "Quest aa");
-        assert_eq!(heard_stage(&s), Some(HearingStage::Arriving));
-        let (s, _) = update(s, hearing(0, 1, HearingStage::Transcribing));
-        assert_eq!(heard_stage(&s), Some(HearingStage::Transcribing));
-        let (s, commands) = update(s, said("go", 1));
-        let placing = HearingStage::Placing { text: "go".into() };
-        assert_eq!(heard_stage(&s), Some(placing), "the task is being made");
+    fn a_spoken_request_moves_through_every_step() {
+        use progress::{Outcome, Reload, Step};
+        let (s, _) = stepped(voice_ready(), 100, hearing(0, 1, HearingStage::Arriving));
+        assert_eq!(s.requests[0].headset.as_deref(), Some("Quest aa"));
+        let (s, _) = stepped(s, 900, hearing(0, 1, HearingStage::Transcribing));
+        let (s, commands) = stepped(s, 2_000, said("go", 1));
+        assert_eq!(s.requests[0].text.as_deref(), Some("go"));
         let Some(Command::ReserveTask { voice, .. }) = commands
             .into_iter()
             .find(|c| matches!(c, Command::ReserveTask { .. }))
@@ -7947,30 +7973,84 @@ mod tests {
             voice,
             scope: Default::default(),
         };
-        let (s, _) = update(s, reserved);
-        assert_eq!(heard_stage(&s), None);
+        let (s, _) = stepped(s, 2_100, reserved);
+        let r = &s.requests[0];
+        assert_eq!((r.task, r.line.as_deref()), (Some(4), Some("Started a new task")));
         assert_eq!((s.routes[0].said.as_str(), s.routes[0].headset.as_str()), ("go", "Quest aa"));
-        // Each page decides whether to show it.
-        assert_eq!(s.current_task.get("examples/a"), None);
-
-        let (s, _) = update(s, hearing(0, 2, HearingStage::Cancelled));
-        assert_eq!(heard_stage(&s), Some(HearingStage::Cancelled));
+        assert_eq!(s.current_task.get("examples/a"), None, "each page decides");
+        let (s, _) = stepped(s, 3_000, agent(4, 0, started("a1")));
+        assert_eq!(
+            steps(&s),
+            [
+                (Step::Received, 100),
+                (Step::Transcribing, 900),
+                (Step::Transcribed, 2_000),
+                (Step::Processing, 2_100),
+                (Step::Agent, 3_000),
+            ]
+        );
+        let (s, _) = stepped(s, 5_000, agent(4, 0, finished()));
+        let (s, _) = stepped(s, 5_000, ended(4, 0));
+        let waiting = Outcome::Changed {
+            reload: Reload::Waiting,
+        };
+        assert_eq!(s.requests[0].outcome, Some(waiting));
+        let s = reloaded_to(s, 5);
+        let reloaded = Outcome::Changed {
+            reload: Reload::Reloaded,
+        };
+        assert_eq!(s.requests[0].outcome, Some(reloaded));
+        // Kept a while after its outcome, then gone.
         let later = AppState {
-            clock: s.clock + voice::HEARD_MS,
+            clock: s.clock + progress::KEPT_MS,
             ..s
         };
         let (s, _) = update(later, Event::Link(LinkEvent::Tick));
-        assert_eq!(heard_stage(&s), None);
+        assert!(s.requests.is_empty());
+    }
 
-        // Nowhere to go: failed, with why.
+    /// One that ends before it is a message: cancelled, or failed naming
+    /// the step it reached; a typed one enters at processing.
+    #[test]
+    fn a_request_that_ends_early_says_where() {
+        use progress::{Outcome, Step};
+        let (s, _) = update(voice_ready(), hearing(0, 2, HearingStage::Arriving));
+        let (s, _) = update(s, hearing(0, 2, HearingStage::Cancelled));
+        assert_eq!(s.requests[0].outcome, Some(Outcome::Cancelled));
+        let (s, _) = update(s, hearing(0, 3, HearingStage::Arriving));
+        let (s, _) = update(s, hearing(0, 3, HearingStage::Transcribing));
+        let failed = HearingStage::Failed {
+            reason: "heard no words".into(),
+        };
+        let (s, _) = update(s, hearing(0, 3, failed));
+        assert_eq!(
+            s.requests[1].outcome,
+            Some(Outcome::Failed {
+                at: Step::Transcribing,
+                reason: "heard no words".into()
+            })
+        );
+
+        // Nowhere to go.
         let mut stopped = voice_ready();
         stopped.session.as_mut().unwrap().status = SessionStatus::Stopped;
-        let (s, _) = update(stopped, hearing(0, 3, HearingStage::Transcribing));
-        let (s, _) = update(s, said("go", 3));
-        assert!(matches!(heard_stage(&s), Some(HearingStage::Failed { reason }) if reason.contains("not running a game")));
-        // A headset that leaves takes its line.
-        let (s, _) = update(s, link(0, false));
-        assert_eq!(heard_stage(&s), None);
+        let (s, _) = update(stopped, hearing(0, 4, HearingStage::Arriving));
+        let (s, _) = update(s, said("go", 4));
+        assert!(matches!(
+            &s.requests[0].outcome,
+            Some(Outcome::Failed { at: Step::Transcribed, reason }) if reason.contains("not running a game")
+        ));
+
+        // Typed: processing, the agent, then its outcome.
+        let (s, _) = stepped(voice_ready(), 10, nth_task(1, "what is the count?"));
+        assert_eq!(steps(&s), [(Step::Processing, 10)]);
+        assert_eq!(s.requests[0].line.as_deref(), Some("Starting the agent"));
+        let (s, _) = stepped(s, 20, agent(1, 0, started("a1")));
+        let (s, _) = stepped(s, 30, agent(1, 0, finished()));
+        let (s, _) = stepped(s, 30, ended(1, 0));
+        assert_eq!(steps(&s), [(Step::Processing, 10), (Step::Agent, 20)]);
+        assert_eq!(s.requests[0].outcome, Some(Outcome::Done), "changes untracked");
+        assert_eq!(s.requests[0].ended, Some(30));
     }
 
     fn link(conn: u64, linked: bool) -> Event {

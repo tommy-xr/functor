@@ -168,12 +168,6 @@ pub enum Stage {
     },
     /// Nothing in progress: clear the toast.
     Idle,
-    /// The run answered without changing the game: the answer's start.
-    /// A headset older than this stage cannot read it, so the desktop sends
-    /// `Idle` first.
-    Answered {
-        text: String,
-    },
 }
 
 /// The desktop's progress, desktop → headset.
@@ -211,10 +205,6 @@ impl Status {
                 w.str16(&tidy(reason, MAX_REASON));
             }
             Stage::Idle => w.u8(6),
-            Stage::Answered { text } => {
-                w.u8(7);
-                w.str16(&tidy(text, MAX_TEXT));
-            }
         }
         w.0
     }
@@ -245,9 +235,6 @@ impl Status {
                 reason: r.text16(MAX_REASON)?,
             },
             6 => Stage::Idle,
-            7 => Stage::Answered {
-                text: r.text16(MAX_TEXT)?,
-            },
             _ => return Err(Error::Malformed("voice stage")),
         };
         r.end()?;
@@ -365,9 +352,6 @@ mod tests {
                 reason: "no project".into(),
             },
             Stage::Idle,
-            Stage::Answered {
-                text: "The ball is red already.".into(),
-            },
         ];
         for (i, stage) in stages.into_iter().enumerate() {
             let status = Status {

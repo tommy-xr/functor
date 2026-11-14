@@ -569,7 +569,6 @@ fn status_line(status: &voice::Status) -> String {
         voice::Stage::Reloaded => "reloaded".to_string(),
         voice::Stage::Failed { reason } => format!("failed {reason}"),
         voice::Stage::Idle => "idle".to_string(),
-        voice::Stage::Answered { text } => format!("answered {text}"),
     };
     format!("voice {u} {stage}")
 }
