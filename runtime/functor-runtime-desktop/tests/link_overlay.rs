@@ -28,8 +28,9 @@ use functor_runtime_common::TrackingPose;
 use glow::HasContext;
 
 const SIZE: (u32, u32) = (1200, 800);
-/// Pixels per degree at the view's centre: about a Quest 3 eye buffer's.
-const PPD: f32 = 20.0;
+/// Pixels per degree at the view's centre: what a Quest 3 eye buffer gives the
+/// panel (its 0.76 m spans about 680 px of a raw eye capture at 0.9 m).
+const PPD: f32 = 15.0;
 /// The panel's background, for the GL check.
 const PANEL_BG: [u8; 3] = [21, 26, 33];
 
