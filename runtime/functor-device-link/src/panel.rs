@@ -44,6 +44,8 @@ pub const MAX_LINE: usize = 192;
 pub const MAX_LABEL: usize = 96;
 /// Most moves offered for a route.
 pub const MAX_MOVES: usize = 3;
+/// Most bytes of a progress line's detail.
+pub const MAX_DETAIL: usize = 192;
 /// The conversation's most items, and most bytes of each one's text.
 pub const MAX_SAID: usize = 12;
 pub const MAX_SAID_TEXT: usize = 600;
@@ -81,6 +83,26 @@ pub struct Panel {
     pub route: Option<Route>,
     /// The current task's recent conversation (D41).
     pub conversation: Option<Conversation>,
+    /// Where this headset's request in flight is (D43).
+    pub progress: Option<Progress>,
+}
+
+/// One request's step (D43).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub step: Step,
+    /// The words heard, where it went, what the agent does, the outcome.
+    pub detail: String,
+    pub failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Received,
+    Transcribed,
+    Processing,
+    Agent,
+    Outcome,
 }
 
 /// A task's recent conversation, as text.
@@ -318,6 +340,21 @@ impl Update {
                     }
                     None => w.u8(0),
                 }
+                match &p.progress {
+                    Some(g) => {
+                        w.u8(1);
+                        w.u8(match g.step {
+                            Step::Received => 1,
+                            Step::Transcribed => 2,
+                            Step::Processing => 3,
+                            Step::Agent => 4,
+                            Step::Outcome => 5,
+                        });
+                        w.str16(&tidy(&g.detail, MAX_DETAIL));
+                        w.u8(g.failed.into());
+                    }
+                    None => w.u8(0),
+                }
             }
             Update::Refused { reason } => {
                 w.u8(2);
@@ -414,6 +451,21 @@ impl Update {
                     }),
                     false => None,
                 };
+                let progress = match r.flag()? {
+                    true => Some(Progress {
+                        step: match r.u8()? {
+                            1 => Step::Received,
+                            2 => Step::Transcribed,
+                            3 => Step::Processing,
+                            4 => Step::Agent,
+                            5 => Step::Outcome,
+                            _ => return Err(Error::Malformed("panel step")),
+                        },
+                        detail: r.text16(MAX_DETAIL)?,
+                        failed: r.flag()?,
+                    }),
+                    false => None,
+                };
                 Update::Panel(Panel {
                     project,
                     placed,
@@ -422,6 +474,7 @@ impl Update {
                     waiting,
                     route,
                     conversation,
+                    progress,
                 })
             }
             2 => Update::Refused {
@@ -607,6 +660,11 @@ mod tests {
                         },
                     ],
                 }),
+                progress: Some(Progress {
+                    step: Step::Agent,
+                    detail: "working: editing game.fun".into(),
+                    failed: false,
+                }),
             }),
             Update::Refused {
                 reason: "task 7 is still running".into(),
@@ -685,6 +743,11 @@ mod tests {
                     })
                     .collect(),
             }),
+            progress: Some(Progress {
+                step: Step::Outcome,
+                detail: long(1000),
+                failed: true,
+            }),
         };
         let bytes = Update::Panel(panel).encode();
         // Noise adds a 16-byte tag; leave room for it and the frame.
@@ -698,6 +761,7 @@ mod tests {
         assert_eq!(c.items.len(), MAX_SAID);
         assert!(c.items[0].text.starts_with("28 ") && c.items[11].text.starts_with("39 "));
         assert!(c.items.iter().all(|i| i.text.len() <= MAX_SAID_TEXT));
+        assert!(back.progress.unwrap().detail.len() <= MAX_DETAIL);
         let d = back.tasks[0].decision.as_ref().unwrap();
         assert_eq!(d.notes.len(), MAX_NOTES);
         assert!(d.summary.len() <= MAX_SUMMARY && back.tasks[0].title.len() <= MAX_TITLE);
@@ -732,7 +796,7 @@ mod tests {
         );
         // A forged task count over the limit.
         let mut many = Update::Panel(Panel::default()).encode();
-        let at = many.len() - 5;
+        let at = many.len() - 6;
         many[at] = MAX_TASKS as u8 + 1;
         assert_eq!(Update::decode(&many), Err(Error::TooLarge));
         // A forged stance.
@@ -741,7 +805,7 @@ mod tests {
             ..Panel::default()
         })
         .encode();
-        let stance = bytes.len() - 4 - 1 - 2 - "reading game.fun".len() - 1;
+        let stance = bytes.len() - 5 - 1 - 2 - "reading game.fun".len() - 1;
         bytes[stance] = 9;
         assert_eq!(
             Update::decode(&bytes),

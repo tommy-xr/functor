@@ -8462,6 +8462,10 @@ mod tests {
         assert_eq!(route.line, s.routes[0].line);
         assert_eq!(route.moves, s.routes[0].moves);
         assert!(panel(&s, "bb").route.is_none(), "another headset's speech");
+        // The request in flight (D43): steered, its agent at work.
+        let progress = panel(&s, "aa").progress.unwrap();
+        assert_eq!(progress.step, crate::panel::Step::Agent);
+        assert!(panel(&s, "bb").progress.is_none());
 
         let to = route.moves[0].to.clone();
         let (by_panel, commands) = update(s.clone(), from_panel(0, PanelAction::Move { id: route.id, to: to.clone() }));

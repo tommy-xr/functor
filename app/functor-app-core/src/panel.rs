@@ -44,6 +44,28 @@ pub struct Panel {
     /// The current task's conversation (D41): the desktop chat's current
     /// task, else `now`.
     pub conversation: Option<Conversation>,
+    /// Where this headset's request in flight is (D43).
+    pub progress: Option<Progress>,
+}
+
+/// One request's step (D43), as one line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub step: Step,
+    /// The words heard, where it went, what the agent is doing, or the
+    /// outcome; may be empty.
+    pub detail: String,
+    /// The step failed: `detail` says why.
+    pub failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Received,
+    Transcribed,
+    Processing,
+    Agent,
+    Outcome,
 }
 
 /// A task's recent conversation as text: no file contents, diffs or tool
@@ -228,7 +250,47 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
         waiting,
         route,
         conversation,
+        progress: progress(state, device),
     }
+}
+
+/// This headset's latest spoken request still followed by the app: queued
+/// (processing, where it went), then the agent's stance and doing.
+// Until the app keeps one progress record per request (D43), the voice jobs
+// are what the core knows; the steps before (received, transcribed) and the
+// outcome are the voice status's.
+fn progress(state: &AppState, device: &str) -> Option<Progress> {
+    let job = state.voice.iter().rev().find(|j| j.device == device)?;
+    let task = state.tasks.iter().find(|t| t.id == job.task)?;
+    let routed = |t: &Task| {
+        let spoken = t.transcript.iter().rev().find_map(|i| match i {
+            Item::User {
+                spoken: Some(s), ..
+            } => Some(s),
+            _ => None,
+        });
+        spoken.and_then(|s| s.route.clone()).unwrap_or_default()
+    };
+    Some(match job.run {
+        None => Progress {
+            step: Step::Processing,
+            detail: routed(task),
+            failed: false,
+        },
+        Some(_) => {
+            let activity = state.activity.get(&task.id);
+            let stance = activity.map_or(Stance::Thinking, |a| a.stance);
+            let doing = activity_line(activity);
+            Progress {
+                step: Step::Agent,
+                detail: match (stance, doing.is_empty()) {
+                    (Stance::Thinking, _) | (_, true) => "thinking".to_string(),
+                    (_, false) => format!("working: {doing}"),
+                },
+                failed: false,
+            }
+        }
+    })
 }
 
 /// `task`'s latest [`SAID`] items. Each run of tool calls is one step line
