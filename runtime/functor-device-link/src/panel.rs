@@ -171,6 +171,8 @@ pub struct Decision {
 
 /// Desktop → headset.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// One at a time, at most twice a second: not worth a box.
+#[allow(clippy::large_enum_variant)]
 pub enum Update {
     Panel(Panel),
     /// The desktop refused the headset's last action.
