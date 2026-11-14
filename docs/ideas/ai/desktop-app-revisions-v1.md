@@ -643,6 +643,30 @@ panel shows the current task's conversation as a page of its own.
 - **With the panel closed,** the status toast also shows the agent's first
   reply and the final result, so the loop is visible without opening anything.
 
+### D48 — a paused game says so, and who paused it
+
+*2026-11-14. Extends D28, D34, D37.*
+
+An agent's `step` pins the game clock, and the animation stopped with nothing
+saying why. The cause is recorded where the pause is asked for, never guessed
+by a view.
+
+- **The request says who asks.** The agent's game tools, the transport bar,
+  and a game that opens paused each name themselves; the runtime keeps the
+  last one while the clock holds and forgets it when the clock runs. A pause
+  nobody names (the game window's own timeline, a seek) shows no cause.
+- **In the headset,** a small "PAUSED" marker stays for as long as the clock
+  holds, with "Agent is checking its change" when the agent holds it. It gives
+  its place to the pairing card, the open panel and the voice toast.
+- **The agent's status** says "checking the change, game paused" while its run
+  is in flight and it holds the game: on its card, in the chat, and in the
+  headset panel.
+- **The transport bar** says "Paused by the agent", "Paused at start" or
+  "Paused" beside its buttons.
+- **The run's end resumes what the agent paused.** A pause the runtime puts
+  down to the user or to the start stays; with no cause reported (an older
+  runtime) it goes by what the app asked for, as before.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.

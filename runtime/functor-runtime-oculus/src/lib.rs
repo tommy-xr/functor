@@ -2535,9 +2535,12 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
-        // The pairing card, else the open panel, else the voice toast:
-        // shapes, opacity and placement, worked out once for both eyes.
-        use functor_runtime_common::link_overlay::{card, toast_lines};
+        // The pairing card, else the open panel, else the voice toast, else
+        // the paused marker: shapes, opacity and placement, worked out once
+        // for both eyes.
+        use functor_runtime_common::link_overlay::{
+            card, paused_lines, paused_marker_transform, toast_lines,
+        };
         use functor_runtime_common::link_panel::{placement, pose_matrix, wrist_shapes};
         let panel = match (&pairing, &debug.link) {
             (Some(pairing), _) => {
@@ -2553,12 +2556,19 @@ images cannot be posed"
                     debug.panel.shapes(panel::connection(&client.view()), toast, Instant::now());
                 (shapes, 1.0, Place::Head(world * anchor))
             }),
-            _ => tracked_center.and_then(|head| {
-                let (toast, alpha) = debug.voice.toast(Instant::now())?;
-                let shapes = card(&toast_lines(toast));
-                let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
-            }),
+            _ => tracked_center
+                .and_then(|head| {
+                    let (toast, alpha) = debug.voice.toast(Instant::now())?;
+                    let shapes = card(&toast_lines(toast));
+                    let place = debug.voice.follow.transform(head.orientation, real_delta);
+                    Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+                })
+                .or_else(|| {
+                    let head = tracked_center?;
+                    let shapes = card(&paused_lines(clock.is_paused(), clock.paused_by())?);
+                    let place = paused_marker_transform(head.orientation);
+                    Some((std::rc::Rc::new(shapes), 1.0, Place::Head(place)))
+                }),
         };
         // The wrist light, while the panel is closed.
         let wrist = debug
