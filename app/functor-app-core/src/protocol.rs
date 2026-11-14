@@ -37,18 +37,33 @@ pub enum ClientMsg {
     WatchTransport {
         on: bool,
     },
-    /// Start a task in the active project with its first message.
+    /// Start a task in the active project with its first message; queued
+    /// while the project is busy (D30).
     NewTask {
         message: String,
         harness: Harness,
     },
-    /// A follow-up on `task`, continuing its agent session.
+    /// A message to `task`: a follow-up continuing its agent session; while
+    /// it runs, a steer (its run stops and resumes with it, D29); while it
+    /// is queued, added to what it starts with (D30).
     SendMessage {
         task: u64,
         message: String,
     },
     /// Stop `task`'s run.
     StopTask {
+        task: u64,
+    },
+    /// Move queued `task` to place `to` (0: next) in its project's queue
+    /// (D30); past the end is last.
+    MoveQueued {
+        task: u64,
+        to: usize,
+    },
+    /// Start queued `task` now, beside a change waiting for a decision
+    /// (which holds only the queue's own starts); refused while a run or a
+    /// revert holds its project.
+    StartQueued {
         task: u64,
     },
     /// Answered with [`ServerMsg::Transcript`].

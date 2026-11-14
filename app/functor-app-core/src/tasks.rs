@@ -54,6 +54,10 @@ pub struct Task {
     pub session_id: Option<String>,
     /// The run in flight.
     pub run: Option<Run>,
+    /// Waiting its turn in its project's queue (D30): lower goes first. A
+    /// queued task has never run; its transcript is the user's messages.
+    #[serde(default)]
+    pub queued: Option<u64>,
     /// The snapshot (a git tree in the app's store) the task's change is
     /// measured from: taken as its first run, or the first after a keep or
     /// revert, started. `None` outside git.
@@ -96,6 +100,8 @@ pub struct Task {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Waiting its turn in its project's queue (D30).
+    Queued,
     InProgress,
     /// The last run ended and the next move is the user's.
     WaitingOnYou,
@@ -369,6 +375,9 @@ pub fn derive_status(task: &Task) -> TaskStatus {
     if task.run.is_some() {
         return TaskStatus::InProgress;
     }
+    if task.queued.is_some() {
+        return TaskStatus::Queued;
+    }
     match task.transcript.last() {
         Some(Item::Kept) => return TaskStatus::Kept,
         Some(Item::Reverted) => return TaskStatus::Reverted,
@@ -552,6 +561,7 @@ mod tests {
                 usage: None,
                 views: 0,
             }),
+            queued: None,
             baseline: None,
             change: None,
             reverting: false,

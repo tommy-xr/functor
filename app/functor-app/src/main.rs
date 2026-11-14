@@ -295,6 +295,7 @@ async fn app(
     // on whatever was open last.
     let interactive = !args.print && args.command.is_none();
     state.start_on_open = interactive;
+    state.auto_start = interactive;
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;

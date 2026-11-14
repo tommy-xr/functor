@@ -64,9 +64,13 @@ pub struct Call {
     pub label: String,
 }
 
-/// Every task's activity, by id.
+/// Every task's activity, by id, but a queued one's: it has no agent yet.
 pub fn activities(tasks: &[Task]) -> BTreeMap<u64, Activity> {
-    tasks.iter().map(|t| (t.id, activity(t))).collect()
+    tasks
+        .iter()
+        .filter(|t| t.queued.is_none())
+        .map(|t| (t.id, activity(t)))
+        .collect()
 }
 
 /// `task`'s activity, from its run, status and last run's items.
@@ -102,7 +106,9 @@ pub fn activity(task: &Task) -> Activity {
             }
         }
         TaskStatus::WaitingOnYou | TaskStatus::ReadyForReview => Stance::Waiting,
-        TaskStatus::Done | TaskStatus::Kept | TaskStatus::Reverted => Stance::Done,
+        TaskStatus::Done | TaskStatus::Kept | TaskStatus::Reverted | TaskStatus::Queued => {
+            Stance::Done
+        }
         TaskStatus::Failed { .. } => Stance::Failed,
         TaskStatus::InProgress => Stance::Thinking,
     };
