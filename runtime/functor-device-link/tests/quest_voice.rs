@@ -257,15 +257,17 @@ fn received_utterance(stub: &stub::Stub) -> (u64, Vec<i16>) {
     (utterance, pcm)
 }
 
-/// Holds to talk, captured as `name` while listening, then 2.5 s more (a
-/// capture stalls the headset's frames for seconds); how long it was held.
-fn talk(quest: &Quest, name: &str) -> Duration {
+/// Holds to talk, captured as `name` while listening (`loud`: once the
+/// meter moves), then 2.5 s more (a capture stalls the headset's frames for
+/// seconds); how long it was held.
+fn talk(quest: &Quest, name: &str, loud: bool) -> Duration {
     let held = Instant::now();
     quest.hold(json!({"thumbstick_pressed": true}));
     let listening = until("listening", || {
         let voice = quest.voice();
         assert_ne!(voice["stage"], "not_sent", "{voice}");
-        (voice["stage"] == "listening").then_some(voice)
+        let level = voice["level"].as_u64().unwrap_or(0);
+        (voice["stage"] == "listening" && (level > 0 || !loud)).then_some(voice)
     });
     assert!(listening["seconds_left"].is_null());
     quest.capture(name);
@@ -338,7 +340,7 @@ fn quest_talks_to_a_desktop() {
     assert!(stub.received.try_recv().is_err());
 
     // Held: listening, then sending; the stub gets the tone.
-    let held = talk(&quest, "voice-listening.png");
+    let held = talk(&quest, "voice-listening.png", true);
     quest.capture("voice-sending.png");
     let (utterance, pcm) = received_utterance(&stub);
     assert_length(&pcm, held);
@@ -400,7 +402,7 @@ fn quest_talks_to_a_desktop() {
     if !quest.microphone_granted() {
         quest.microphone(true);
     }
-    let held = talk(&quest, "voice-microphone.png");
+    let held = talk(&quest, "voice-microphone.png", false);
     let (_, pcm) = received_utterance(&stub);
     assert_length(&pcm, held);
     let (lo, hi) = (pcm.iter().min().unwrap(), pcm.iter().max().unwrap());
@@ -424,7 +426,7 @@ fn quest_talks_to_a_desktop() {
         (quest.voice()["stage"] == "microphone_allowed").then_some(())
     });
     quest.capture("voice-microphone-allowed.png");
-    let held = talk(&quest, "voice-microphone-2.png");
+    let held = talk(&quest, "voice-microphone-2.png", false);
     let (_, pcm) = received_utterance(&stub);
     assert_length(&pcm, held);
 

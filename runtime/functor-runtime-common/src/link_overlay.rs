@@ -374,7 +374,8 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         ],
         VoiceStage::AllowMicrophone => vec![
             line("MICROPHONE", HEADING, PINK),
-            line("Allow it in the prompt, then hold again", BODY, WHITE),
+            line("Allow it in the prompt or in Settings,", BODY, WHITE),
+            line("then hold again", BODY, WHITE),
         ],
         VoiceStage::MicrophoneAllowed => vec![
             line("MICROPHONE ALLOWED", HEADING, CYAN),

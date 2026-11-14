@@ -192,26 +192,27 @@ impl Voice {
         }
     }
 
-    /// The microphone, or the stage that says why not: asking for it the
-    /// first time, how to allow it after.
+    /// The microphone, or the stage that says why not: the system's prompt
+    /// the first time, how to allow it in Settings after (Android shows the
+    /// prompt only so often).
     fn microphone(&mut self, now: Instant) -> Result<Mic, VoiceStage> {
         let failed = |reason: String| VoiceStage::NotSent { reason };
         match permission_granted() {
-            Ok(true) => Mic::open().map_err(|e| {
-                log::warn!("voice: {e}");
-                failed(e)
-            }),
+            Ok(true) => {
+                self.prompted = None;
+                Mic::open().map_err(|e| {
+                    log::warn!("voice: {e}");
+                    failed(e)
+                })
+            }
+            Ok(false) if self.asked => Err(VoiceStage::MicrophoneDenied),
             Ok(false) => {
                 if let Err(e) = request_permission() {
                     log::warn!("voice: asking for the microphone: {e}");
                 }
+                self.asked = true;
                 self.prompted = Some((now, now + PERMISSION_POLL));
-                let stage = if std::mem::replace(&mut self.asked, true) {
-                    VoiceStage::MicrophoneDenied
-                } else {
-                    VoiceStage::AllowMicrophone
-                };
-                Err(stage)
+                Err(VoiceStage::AllowMicrophone)
             }
             Err(e) => Err(failed(format!("Microphone permission: {e}"))),
         }
@@ -466,12 +467,10 @@ impl Input {
                 ffi::AAUDIO_INPUT_PRESET_VOICE_RECOGNITION as _,
             );
             ffi::AAudioStreamBuilder_setSharingMode(builder, ffi::AAUDIO_SHARING_MODE_SHARED as _);
-            // A second of room: a frame that stalls loses no audio (the
-            // default holds about 0.3 s).
-            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(
-                builder,
-                functor_device_link::voice::SAMPLE_RATE as i32,
-            );
+            // About a second of room at any rate the device picks (AAudio
+            // clamps it): a frame that stalls loses no audio (the default
+            // holds about 0.3 s).
+            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(builder, 48_000);
             let mut stream = std::ptr::null_mut();
             let opened = ffi::AAudioStreamBuilder_openStream(builder, &mut stream);
             ffi::AAudioStreamBuilder_delete(builder);
