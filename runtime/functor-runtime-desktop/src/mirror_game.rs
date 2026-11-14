@@ -14,12 +14,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cgmath::{Matrix4, SquareMatrix};
 use functor_runtime_common::debug_protocol::{MirrorSnapshot, MirrorState};
 use functor_runtime_common::ui::View;
-use functor_runtime_common::{Camera, Frame, FrameTime, Scene3D, SceneObject};
+use functor_runtime_common::{Frame, FrameTime};
 
 use crate::game::Game;
+#[cfg(test)]
+use functor_runtime_common::{Camera, Scene3D};
 
 /// A request's limit: the tunnel answers within its own 30 s, but a mirror
 /// that waits that long shows nothing useful.
@@ -167,13 +168,7 @@ impl Game for MirrorGame {
                 frame
             }
             // Nothing yet: an empty world, until the first snapshot lands.
-            None => Frame::new(
-                Camera::default(),
-                Scene3D {
-                    obj: SceneObject::Group(vec![]),
-                    xform: Matrix4::identity(),
-                },
-            ),
+            None => crate::functor_lang_game::empty_frame(),
         }
     }
 

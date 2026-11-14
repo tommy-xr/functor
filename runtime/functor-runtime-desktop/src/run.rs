@@ -774,7 +774,7 @@ pub struct Args {
     /// session's `/stream`, and draw each frame from the view it was drawn
     /// from (the head, on a headset). Input is ignored; `POST /camera` moves
     /// only this session's view. The project's files still load its assets.
-    #[arg(long, value_name = "URL", conflicts_with = "replay")]
+    #[arg(long, value_name = "URL", conflicts_with_all = ["replay", "headless"])]
     mirror: Option<String>,
 
     /// With --mirror: at most this many polls per second.
@@ -4368,7 +4368,8 @@ Escape again to quit"
             loop {
                 if let Some(rx) = &debug_requests {
                     while let Some(req) = woken.take().or_else(|| rx.try_recv().ok()) {
-                        debug_active = true;
+                        // A mirror's snapshot is self-contained: no lockstep for it.
+                        debug_active |= !matches!(req, debug_server::DebugRequest::Mirror(_));
                         picture_request |= !leaves_picture(&req);
                         // `POST /camera`: shell state, like the timeline's Debug
                         // camera, but it never captures the cursor. Requests after
