@@ -268,7 +268,7 @@ fn line(text: Option<&str>) -> String {
     cut(first.unwrap_or("the run failed"))
 }
 
-fn cut(text: &str) -> String {
+pub(crate) fn cut(text: &str) -> String {
     if text.chars().count() <= LABEL_CHARS {
         return text.to_string();
     }

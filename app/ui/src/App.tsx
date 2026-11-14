@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
-import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
+import type { AppState, ClientMsg, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
 import { DevicesPane, PairPrompt } from "./Devices";
@@ -9,6 +9,7 @@ import { NoProject, ProjectPicker, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
 import { focusedPane, isTyping, panesOf, placementOf, tabbed, tabTitles, viewKey, wantedWindows } from "./layout-model";
+import { sessionPill } from "./game-view";
 import { useWindows } from "./windows";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
@@ -55,7 +56,12 @@ export function App() {
     // Only where the core still has none: another window's or a new task's choice wins.
     if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected, if_unset: true });
   }, [online, state?.active, chosen === undefined]);
-  const setSelected = (task: number | null) => send({ type: "select_task", task, if_unset: false });
+  // When the user last chose a task: a spoken request does not switch away from it moments later.
+  const choseAt = useRef(0);
+  const setSelected = (task: number | null) => {
+    choseAt.current = Date.now();
+    send({ type: "select_task", task, if_unset: false });
+  };
   const [target, setTarget] = useState<CanvasProps["target"]>(null);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
@@ -149,6 +155,7 @@ export function App() {
             onSelect={setSelected}
             onViewDiff={viewDiff}
             onOpenTask={(task) => openTask(task, false)}
+            choseAt={choseAt}
           />
         </div>
       </div>
@@ -285,11 +292,6 @@ function activeProject(state: AppState | null) {
   return state?.projects.find((p) => p.path === state.active) ?? null;
 }
 
-/** One word for the session, as the title bar shows it. */
-function sessionWord(session: Session | null | undefined): string {
-  return session?.status.kind ?? "stopped";
-}
-
 /** The focused tab, as the composer's context chip names it. */
 function canvasWord(state: AppState | null): string {
   const layout = state?.active ? state.layouts[state.active] : undefined;
@@ -315,10 +317,10 @@ function TitleBar({
   const headset = state?.devices.headset ?? "not_paired";
   // The project, else the open folder.
   const name = activeProject(state)?.name ?? (state?.folder ? basename(state.folder) : null);
-  const word = sessionWord(state?.session);
-  // Where the session runs: here, or on a headset (D5).
+  // Where the session runs: here, or on a headset (D5), and how it is.
   const layout = state?.active ? state.layouts[state.active] : null;
-  const where = placementOf(layout) === "headset" ? "Headset session" : "Local session";
+  const device = state?.devices.list.find((d) => d.id === layout?.game.headset);
+  const pill = sessionPill(device, placementOf(layout) === "headset", state?.session);
   // The app window shows it as its title.
   useEffect(() => {
     document.title = name ? `Functor — ${name}` : "Functor";
@@ -348,7 +350,7 @@ function TitleBar({
         )}
       </span>
       {/* Dimmed while disconnected: the last state may no longer be true. */}
-      <span className={`pill pill-session-${word}${conn === "open" ? "" : " pill-stale"}`}>{where} · {word}</span>
+      <span className={`pill pill-session-${pill.word}${conn === "open" ? "" : " pill-stale"}`}>{pill.text}</span>
       <button
         type="button"
         className={`pill pill-button pill-hs-${headset}${deferred ? " pill-attention" : ""}${conn === "open" ? "" : " pill-stale"}`}

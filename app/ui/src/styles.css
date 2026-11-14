@@ -272,6 +272,8 @@ blockquote {
 }
 
 .pill-session-starting,
+.pill-session-away,
+.pill-session-needs_update,
 .pill-warn,
 .pill-hs-asking_to_pair,
 .pill-hs-needs_update {
@@ -281,6 +283,7 @@ blockquote {
 
 .pill-session-failed,
 .pill-session-exited,
+.pill-session-cannot_reach,
 .pill-hs-cannot_reach {
   background: var(--danger-bg);
   color: var(--danger);
@@ -2776,6 +2779,43 @@ blockquote {
   background: var(--warn-bg);
   color: var(--warn);
   font-size: 12px;
+}
+
+/* Where the latest request is (D43): one quiet line above the composer. */
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--chip);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.request-done,
+.request-slow {
+  color: var(--muted);
+}
+
+.request-failed .request-now {
+  color: var(--danger);
+}
+
+.request-elsewhere {
+  cursor: pointer;
+}
+
+.request-elsewhere:hover {
+  background: var(--selected);
+}
+
+.request-go {
+  color: var(--accent-soft);
 }
 
 .composer {

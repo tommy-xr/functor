@@ -44,8 +44,11 @@ a launched runtime's own output is captured rather than inherited.
 
 `--attach <url>` (repeatable) registers an already-running debug runtime at
 startup, exactly as `connect_game` would, so the game tools work immediately:
-`functor mcp --attach http://127.0.0.1:8077`. A URL that does not answer as a
-Functor debug runtime is a startup error naming it. Attached sessions are never
+`functor mcp --attach http://127.0.0.1:8077`. A URL that answers as something
+other than a Functor debug runtime is a startup error naming it. One that does
+not answer at all (refused, no answer within 5 s, or a device tunnel's 502–504:
+a stopped game, a headset that is away) still gets its session: each tool call
+on it fails with why until it answers, then it works. Attached sessions are never
 killed on shutdown.
 
 `--no-unsafe-code` leaves out [`run_game_code_unsafe`](#unsafe-sdk-code-in-a-node-child):

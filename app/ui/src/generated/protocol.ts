@@ -120,6 +120,10 @@ queues: { [key in string]: Queue },
  */
 routes: Array<Routed>, 
 /**
+ * Where each recent request is (D43), oldest first.
+ */
+requests: Array<Request>, 
+/**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
  * chooses one for the project; not kept across restarts.
@@ -777,6 +781,41 @@ evidence: Array<Check>,
  * Written by a separate review, not the agent that made the change.
  */
 reviewed: boolean, };
+
+export type Request = { id: number, project: string, 
+/**
+ * The headset it was said in, by name; `None` when typed.
+ */
+headset: string | null, 
+/**
+ * What was said (once transcribed) or typed.
+ */
+text: string | null, 
+/**
+ * The task it went to, once placed.
+ */
+task: number | null, 
+/**
+ * Where it went: "Started a new task", "Steered “…”".
+ */
+line: string | null, 
+/**
+ * The steps reached so far, each with when (`AppState::now`, wall ms):
+ * a done step took until the next one began.
+ */
+steps: Array<RequestReached>, outcome: RequestOutcome | null, 
+/**
+ * When (wall ms) its outcome was last set.
+ */
+ended: number | null, };
+
+export type RequestOutcome = { "kind": "answered", text: string, } | { "kind": "changed", reload: RequestReload, } | { "kind": "needs_you" } | { "kind": "done" } | { "kind": "cancelled" } | { "kind": "failed", at: RequestStep, reason: string, };
+
+export type RequestReached = { step: RequestStep, at: number, };
+
+export type RequestReload = "waiting" | "when_back" | "reloaded";
+
+export type RequestStep = "received" | "transcribing" | "transcribed" | "processing" | "agent";
 
 /**
  * A task's review of its waiting change, kept until the change is decided,
