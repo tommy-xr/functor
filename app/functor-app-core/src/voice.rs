@@ -226,11 +226,6 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
                 job.ended = None;
                 true
             }
-            // The change is ready; it loads when the headset is back.
-            Some(Item::Finished { ok: true, .. }) if !linked => {
-                job.ended = None;
-                true
-            }
             Some(Item::Finished { ok: true, .. }) => {
                 let ended = *job.ended.get_or_insert(state.clock);
                 match state.clock.saturating_sub(ended) >= RELOAD_GRACE_MS {
