@@ -697,6 +697,14 @@ whole effort, talking to a subagent only its piece; stop is on the figure,
 and stopping an orchestrator stops what is under it. And delight: the
 figures have some character, never at the cost of reading them.
 
+**When an agent needs the user.** It comes to the user and brings the thing:
+it walks to the desk's edge with a hand up, and a sound comes from where it
+stands. A question is a card it holds out; a change to decide is the two
+miniatures set down in front of the user; an approval shows what it would
+run. The user answers in place, by voice to that figure or with a pinch.
+Several that need the user wait in order at the desk's edge, and the tasks
+panel shows the same order. Sent away, it waits visibly and does not nag.
+
 **The code map.** A shelf of blocks, one per file, floors for its
 definitions; changed blocks glow; pointing at one opens its change. It grows
 into a city (D33) only when the project is large.
