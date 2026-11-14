@@ -104,8 +104,6 @@ pub enum Outcome {
 #[cfg_attr(feature = "ts", ts(rename = "RequestReload"))]
 #[serde(rename_all = "snake_case")]
 pub enum Reload {
-    /// The game on this computer reloads by itself.
-    Local,
     /// Waiting for the headset's game to reload.
     Waiting,
     /// The headset is away: it loads when it is back.

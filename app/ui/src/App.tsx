@@ -56,7 +56,12 @@ export function App() {
     // Only where the core still has none: another window's or a new task's choice wins.
     if (online && state.active && chosen === undefined) send({ type: "select_task", task: selected, if_unset: true });
   }, [online, state?.active, chosen === undefined]);
-  const setSelected = (task: number | null) => send({ type: "select_task", task, if_unset: false });
+  // When the user last chose a task: a spoken request does not switch away from it moments later.
+  const choseAt = useRef(0);
+  const setSelected = (task: number | null) => {
+    choseAt.current = Date.now();
+    send({ type: "select_task", task, if_unset: false });
+  };
   const [target, setTarget] = useState<CanvasProps["target"]>(null);
   // The chat's actions open or focus a view beside what the user is looking at.
   const openBeside = (view: TabView) => send({ type: "layout", op: { type: "open", view, target: { kind: "side" } } });
@@ -150,6 +155,7 @@ export function App() {
             onSelect={setSelected}
             onViewDiff={viewDiff}
             onOpenTask={(task) => openTask(task, false)}
+            choseAt={choseAt}
           />
         </div>
       </div>

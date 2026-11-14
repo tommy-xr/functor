@@ -803,7 +803,7 @@ export type RequestOutcome = { "kind": "answered", text: string, } | { "kind": "
 
 export type RequestReached = { step: RequestStep, at: number, };
 
-export type RequestReload = "local" | "waiting" | "when_back" | "reloaded";
+export type RequestReload = "waiting" | "when_back" | "reloaded";
 
 export type RequestStep = "received" | "transcribing" | "transcribed" | "processing" | "agent";
 
