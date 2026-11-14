@@ -171,7 +171,7 @@ enum Item {
 /// How long a refusal from the desktop shows.
 const NOTICE: Duration = Duration::from_secs(5);
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Panel {
     open: bool,
     section: Section,
@@ -262,6 +262,11 @@ impl Panel {
             self.focus = None;
             self.confirm = None;
         }
+    }
+
+    /// A refusal shows at `now`.
+    pub fn notice_shown(&self, now: Instant) -> bool {
+        self.notice.as_ref().is_some_and(|(_, until)| now < *until)
     }
 
     /// The desktop refused the last action.

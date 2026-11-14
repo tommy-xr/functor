@@ -41,6 +41,8 @@ pub struct Voice {
     toast: Toast,
     pub follow: Follow,
     samples: Vec<i16>,
+    /// The desktop's transcript of the last utterance, until taken.
+    heard: Option<String>,
 }
 
 impl Default for Voice {
@@ -59,6 +61,7 @@ impl Default for Voice {
             toast: Toast::default(),
             follow: Follow::default(),
             samples: Vec::new(),
+            heard: None,
         }
     }
 }
@@ -124,6 +127,19 @@ impl Voice {
     pub fn pause(&mut self, client: &Client, now: Instant) {
         if self.talk.utterance().is_some() {
             self.cancel(client, "The headset paused", now);
+        }
+    }
+
+    /// What the desktop heard last, once.
+    pub fn take_heard(&mut self) -> Option<String> {
+        self.heard.take()
+    }
+
+    /// Shows `stage` (the agent's reply, the result) unless the user is
+    /// talking.
+    pub fn notice(&mut self, stage: VoiceStage, now: Instant) {
+        if self.talk.utterance().is_none() {
+            self.toast.show(stage, now);
         }
     }
 
@@ -247,6 +263,7 @@ impl Voice {
                 if self.toast.stage().is_none() {
                     self.toast.show(VoiceStage::Heard, now);
                 }
+                self.heard = Some(text.clone());
                 return self.toast.transcript(text, now);
             }
             Stage::Working => VoiceStage::Working,
