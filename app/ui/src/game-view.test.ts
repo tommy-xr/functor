@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fitRect, headsetChoices, headsetNote, streamUrl, toSurface, wireKey } from "./game-view.ts";
+import { fitRect, headsetChoices, headsetNote, mirrorCamera, mirrorProblem, mirrorRate, streamUrl, toSurface, wireKey } from "./game-view.ts";
+import type { MirrorStats } from "./game-view.ts";
 import type { Device, Session, Transport } from "./generated/protocol";
 
 test("keys map to the wire's names", () => {
@@ -103,7 +104,7 @@ test("headsets are a placement only while connected, or while the game is on one
 });
 
 test("the headset note says where the game runs, its clock, and the fix while away", () => {
-  const session = (status: Session["status"]): Session => ({ id: 1, pid: 7, status });
+  const session = (status: Session["status"]): Session => ({ id: 1, pid: 7, status, mirror: null });
   const running = session({ kind: "running", debug_url: "http://127.0.0.1:6000", surface: null });
   const clock: Transport = {
     clock: true,
@@ -127,4 +128,29 @@ test("the headset note says where the game runs, its clock, and the fix while aw
   const failed = headsetNote(quest("a", "Quest 3", linked), session({ kind: "exited", reason: "boom" }), null);
   assert.deepEqual([failed.title, failed.detail], ["The game stopped on Quest 3", "boom"]);
   assert.match(headsetNote(null, running, null).fix!, /Choose Pane/);
+});
+
+test("the mirror's cameras park near the head, looking the way it looks along the floor", () => {
+  // At the origin, 1.6 m up, looking down +X and a little down.
+  const view = { eye: [0, 1.6, 0], target: [1, 1.2, 0] };
+  assert.deepEqual(mirrorCamera("head", view), { type: "attach" });
+  assert.deepEqual(mirrorCamera("behind", view), { type: "set", eye: [-2.5, 2.8, 0], target: [1, 1.6, 0], fov: 70 });
+  assert.deepEqual(mirrorCamera("above", view), { type: "set", eye: [-1, 5.6, 0], target: [0.5, 1.6, 0], fov: 70 });
+  // Straight down: the floor direction falls back to +Z.
+  assert.deepEqual((mirrorCamera("behind", { eye: [0, 2, 0], target: [0, 0, 0] }) as { eye: number[] }).eye, [0, 3.2, -2.5]);
+  assert.equal(mirrorCamera("behind", null), null, "nothing to park from yet");
+});
+
+test("the mirror says its rate while frames come, and why when they do not", () => {
+  const stats = (s: Partial<MirrorStats>): MirrorStats => ({ frames: 30, fps: 19.6, latency_ms: 41.2, view: null, error: null, ...s });
+  const running = { kind: "running", debug_url: "http://127.0.0.1:7000" } as const;
+  assert.equal(mirrorRate(stats({})), "20 fps · 41 ms");
+  assert.equal(mirrorProblem(running, stats({})), null);
+  assert.equal(mirrorProblem(null, null), null, "no mirror without a GPU");
+  assert.equal(mirrorProblem({ kind: "starting" }, null), "Starting the mirror…");
+  assert.equal(mirrorProblem(running, stats({ frames: 0 })), "Waiting for the headset's first frame…");
+  const tooBig = stats({ error: "413 Payload Too Large: the frame is 9 MiB as JSON, over the mirror's 8 MiB" });
+  assert.equal(mirrorRate(tooBig), null);
+  assert.match(mirrorProblem(running, tooBig)!, /^No frames from the headset: 413/);
+  assert.equal(mirrorProblem({ kind: "failed", reason: "exit status: 1" }, null), "The mirror stopped: exit status: 1");
 });

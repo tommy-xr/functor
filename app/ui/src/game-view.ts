@@ -2,7 +2,7 @@
 // in the view, where a pointer lands in the game, and the headset placement's
 // choices and note.
 
-import type { Device, Session, Transport } from "./generated/protocol";
+import type { Device, Mirror, Session, Transport } from "./generated/protocol";
 import { fixFor, WORDS } from "./devices-model.ts";
 
 export type Size = { w: number; h: number };
@@ -111,4 +111,61 @@ export function headsetNote(device: Device | null, session: Session | null, tran
   if (status.kind === "starting") return { title: `Starting on ${name}…`, detail: null, fix: null };
   const clock = transport?.clock ? `Frame ${transport.frame} · ${transport.paused ? "Paused" : "Playing"}` : null;
   return { title: `Running on ${name}`, detail: clock, fix: null };
+}
+
+/** `/state.mirror` from a headset session's mirror (debug protocol v44): what the page reads. */
+export type MirrorStats = {
+  frames: number;
+  /** Frames from the headset in the last second. */
+  fps: number;
+  /** The last poll's round trip through the link. */
+  latency_ms: number | null;
+  view: { eye: number[]; target: number[] } | null;
+  error: string | null;
+};
+
+/** The mirror's cameras (D18): the headset's own view, or one parked near it. */
+export const MIRROR_CAMERAS = [
+  { id: "head", label: "Head" },
+  { id: "behind", label: "Behind" },
+  { id: "above", label: "Above" },
+] as const;
+export type MirrorCamera = (typeof MIRROR_CAMERAS)[number]["id"];
+
+/**
+ * The `POST /camera` body that shows `camera` from `view` (the head's eye and
+ * where it looks): the head itself, a camera parked 2.5 m behind and above
+ * it, or one above it looking down past it. Null without a view to park from.
+ */
+export function mirrorCamera(camera: MirrorCamera, view: MirrorStats["view"]): object | null {
+  if (camera === "head") return { type: "attach" };
+  if (!view) return null;
+  const [x, y, z] = view.eye as [number, number, number];
+  // The look direction along the floor; straight down falls back to +Z.
+  let [fx, fz] = [view.target[0]! - x, view.target[2]! - z];
+  const len = Math.hypot(fx, fz);
+  [fx, fz] = len > 1e-4 ? [fx / len, fz / len] : [0, 1];
+  const at = (back: number, up: number, ahead: number) => ({
+    eye: [x - fx * back, y + up, z - fz * back],
+    target: [x + fx * ahead, y, z + fz * ahead],
+  });
+  const parked = camera === "behind" ? at(2.5, 1.2, 1) : at(1, 4, 0.5);
+  return { type: "set", ...parked, fov: 70 };
+}
+
+/** The mirror's rate, honestly: frames a second from the headset, and one's round trip. */
+export function mirrorRate(stats: MirrorStats | null): string | null {
+  if (!stats || stats.error || stats.frames === 0) return null;
+  const ms = stats.latency_ms === null ? "" : ` · ${Math.round(stats.latency_ms)} ms`;
+  return `${Math.round(stats.fps)} fps${ms}`;
+}
+
+/** Why the mirror shows no live picture; null while it does. */
+export function mirrorProblem(mirror: Mirror | null, stats: MirrorStats | null): string | null {
+  if (!mirror) return null;
+  if (mirror.kind === "failed") return `The mirror stopped: ${mirror.reason}`;
+  if (mirror.kind === "starting" || !stats) return "Starting the mirror…";
+  if (stats.error) return `No frames from the headset: ${stats.error}`;
+  if (stats.frames === 0) return "Waiting for the headset's first frame…";
+  return null;
 }
