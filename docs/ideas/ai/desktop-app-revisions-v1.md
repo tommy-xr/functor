@@ -753,13 +753,18 @@ game's frame, as the mirror does (4.5). So:
   with its state kept, and the change is kept or reverted the usual way.
 - **It ships as a default the user's copy is forked from,** so updates to the
   default converge with the user's changes rather than replacing them.
-- **The app's data comes in as plain messages** — tasks, agents and their
-  activity, request progress, what waits on the user, the forks — through one
-  small typed module, and the user's actions go out as effects (talk to this
-  agent, keep, revert, stop, go in). The rules stay in the app, not the
-  scene: confirmation for Keep, Revert and Stop, who may be steered, and what
-  an agent may run are enforced where the action lands, so no edit to the
-  workspace can remove them.
+- **The data model is an external contract.** What a workspace may read
+  (the state: tasks and their tree, agents with stance, activity, context and
+  parent, request progress, what waits on the user, forks, the code map,
+  devices, the running games) and what it may ask for (the actions: talk to
+  this agent, keep, revert, stop, move a request, go in) is one versioned
+  schema that belongs to the app, not to any one interface. The desktop page,
+  the headset panel and the workshop scene are three clients of it; types for
+  each are generated from it (TypeScript, and a typed Functor Lang module).
+  The rules live behind the contract: confirmation for Keep, Revert and Stop,
+  who may be steered, and what an agent may run are enforced where an action
+  lands, so no workspace, however edited, can remove them. A workspace can be
+  developed and tested against recorded state with no app running.
 - **It cannot lock the user out.** A workshop that fails to load, or loads
   and misbehaves, falls back to the built-in default, with "reset my
   workspace" always reachable by voice and by a gesture the scene does not

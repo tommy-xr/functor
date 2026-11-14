@@ -151,6 +151,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | S6 | Spike for D44: draw a running game's frame as a miniature on a desk under passthrough, grabbed and scaled; what breaks (sky, fog, post-effects, first-person attachments, unknown bounds) and what it costs on device. | Findings appended here. |
 | S7 | Spike for D44: go in at a pointed spot and come back out with the game's state unchanged, for a VR example and a flat one. | Findings appended here. |
 | S8 | Spike for D44: an orchestrator run with two or three subagents each in its own worktree of the project, a game session per fork, merging back with conflicts surfaced; on the desktop first (a tasks tree and per-fork Keep), before any of it is drawn in the room. | Findings appended here. |
+| S9 | The workspace contract (D44): write down, from what the desktop page, the headset panel channel and the agent's app tools already exchange, one versioned schema of state and actions; say what each client uses, what is missing for the workshop (agent tree, forks, code map, request progress) and what must never be in it (secrets, file contents beyond what the chat shows). | A document under `docs/`, reviewed before anything is built on it. |
 
 ## M5 and later
 
