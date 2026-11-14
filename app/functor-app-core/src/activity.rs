@@ -134,6 +134,8 @@ pub fn activity(task: &Task, windows: &BTreeMap<String, u64>) -> Activity {
         }
     };
     let calls = running(None);
+    // Running while its call is out, or (one started in the background,
+    // whose call returns at once) while a call of its own is.
     let subagents = match task.run {
         Some(_) => last
             .iter()
@@ -141,13 +143,16 @@ pub fn activity(task: &Task, windows: &BTreeMap<String, u64>) -> Activity {
                 Item::Tool {
                     name,
                     input,
-                    result: None,
+                    result,
                     id: Some(id),
                     ..
-                } if is_subagent(name) => Some(Subagent {
-                    label: cut(input["description"].as_str().unwrap_or("subagent")),
-                    calls: running(Some(id)),
-                }),
+                } if is_subagent(name) => {
+                    let calls = running(Some(id));
+                    (result.is_none() || !calls.is_empty()).then(|| Subagent {
+                        label: cut(input["description"].as_str().unwrap_or("subagent")),
+                        calls,
+                    })
+                }
                 _ => None,
             })
             .collect(),
@@ -885,6 +890,34 @@ mod tests {
                 "Done",
             ]
         );
+    }
+
+    /// A subagent started in the background: its call returns at once, and
+    /// it shows while a call of its own runs.
+    #[test]
+    fn a_background_subagent_shows_while_its_calls_run() {
+        let call = |name: &str, input, result: Option<&str>, id: &str, parent: Option<&str>| Item::Tool {
+            name: name.into(),
+            input,
+            result: result.map(Into::into),
+            id: Some(id.into()),
+            parent_id: parent.map(Into::into),
+            is_error: None,
+        };
+        let mut task = running();
+        let started = Some("Async agent launched");
+        task.transcript.push(call("Agent", json!({"description": "Scan"}), started, "a", None));
+        task.transcript.push(call("Grep", json!({"pattern": "x"}), None, "b", Some("a")));
+        let a = activity(&task, &BTreeMap::new());
+        assert_eq!(a.calls, []);
+        assert_eq!(a.subagents.len(), 1);
+        assert_eq!((a.subagents[0].label.as_str(), a.subagents[0].calls.len()), ("Scan", 1));
+        // Its call answered: gone.
+        let Item::Tool { result, .. } = task.transcript.last_mut().unwrap() else {
+            unreachable!()
+        };
+        *result = Some("hit".into());
+        assert_eq!(activity(&task, &BTreeMap::new()).subagents, []);
     }
 
     /// Claude flags a refusal and a failing command alike (`is_error`), so
