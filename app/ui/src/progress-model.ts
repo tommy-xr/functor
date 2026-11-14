@@ -4,6 +4,7 @@
 
 import type { Activity, AppState, Request, RequestStep } from "./generated/protocol";
 import { STANCE_WORDS } from "./agent-model.ts";
+import { firstLine } from "./chat-model.ts";
 
 /** A step running longer than this says it is still going. */
 export const SLOW_MS = 2000;
@@ -62,7 +63,7 @@ export function requestLine(r: Request, activity: Activity | null, now: number):
       : o.kind === "needs_you" ? "Changed: keep or revert it"
       : o.kind === "done" ? "Done"
       : o.kind === "cancelled" ? "Cancelled in the headset"
-      : `${FAILED_AT[o.at]}: ${o.reason}`;
+      : `${FAILED_AT[o.at]}: ${firstLine(o.reason, Infinity)}`;
     return { done, now: text, slow: null, failed: o.kind === "failed" };
   }
   const step = last?.step ?? "received";

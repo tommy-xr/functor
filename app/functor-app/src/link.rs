@@ -417,8 +417,9 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
-                    // No stage of its own on the wire: the toast clears, and
-                    // the panel shows the answer from the request's record.
+                    // No stage of its own on the wire (an older headset could
+                    // not read one): the toast clears. The answer is in the
+                    // request's record (`AppState::requests`) for the panel.
                     Core::Answered(_) => voice::Stage::Idle,
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };

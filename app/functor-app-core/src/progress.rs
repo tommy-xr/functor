@@ -134,14 +134,17 @@ fn spoken<'a>(state: &'a mut AppState, device: &str, utterance: u64) -> Option<&
     let found = |r: &&mut Request| {
         r.device.as_deref() == Some(device) && r.utterance == Some(utterance)
     };
-    state.requests.iter_mut().find(found)
+    state.requests.iter_mut().rev().find(found)
 }
 
 /// Spoken request `utterance` from `device` reached `step` (its clip, from
 /// the shell): a new record at its first sign.
 pub(crate) fn heard(state: &mut AppState, device: &str, utterance: u64, step: Step) {
     let now = state.now;
-    if let Some(r) = spoken(state, device, utterance) {
+    // A clip starting under a number that already ended (the headset app
+    // restarted) is a new request.
+    let fresh = step == Step::Received;
+    if let Some(r) = spoken(state, device, utterance).filter(|r| !(fresh && r.outcome.is_some())) {
         return reach(r, step, now);
     }
     let headset = state.devices.list.iter().find(|d| d.id == device);
@@ -152,12 +155,11 @@ pub(crate) fn heard(state: &mut AppState, device: &str, utterance: u64, step: St
     let mut r = new(state, project, Some(headset));
     r.device = Some(device.to_string());
     r.utterance = Some(utterance);
-    r.steps = [Step::Received, step]
-        .iter()
-        .filter(|s| **s <= step)
-        .map(|&step| Reached { step, at: now })
-        .collect();
-    r.steps.dedup_by_key(|s| s.step);
+    r.steps.push(Reached {
+        step: Step::Received,
+        at: now,
+    });
+    reach(&mut r, step, now);
     state.requests.push(r);
 }
 
@@ -191,8 +193,11 @@ pub(crate) fn placed(state: &mut AppState, device: &str, utterance: u64, task: u
         r.task = Some(task);
         r.item = Some(item);
         r.line = Some(line.to_string());
-        // Moved by the user: placed again, its outcome not known yet.
+        // Moved by the user: placed again, its run and outcome not known yet.
+        r.run = None;
         r.outcome = None;
+        r.ended = None;
+        r.steps.retain(|s| s.step <= Step::Transcribed);
         reach(r, Step::Processing, now);
     }
 }
@@ -244,6 +249,20 @@ fn new(state: &mut AppState, project: String, headset: Option<String>) -> Reques
     }
 }
 
+/// `device` unlinked: its requests not yet in a task cannot go on.
+pub(crate) fn unlinked(state: &mut AppState, device: &str) {
+    let (now, clock) = (state.now, state.clock);
+    for r in state.requests.iter_mut() {
+        if r.device.as_deref() == Some(device) && r.task.is_none() && r.outcome.is_none() {
+            let outcome = Outcome::Failed {
+                at: at(r),
+                reason: "the headset disconnected".to_string(),
+            };
+            end(r, outcome, now, clock);
+        }
+    }
+}
+
 /// A followed spoken run ended with `stage` on its headset.
 pub(crate) fn voice_ended(state: &mut AppState, device: &str, utterance: u64, stage: &Stage) {
     let (now, clock) = (state.now, state.clock);
@@ -264,10 +283,9 @@ pub(crate) fn voice_ended(state: &mut AppState, device: &str, utterance: u64, st
 }
 
 /// After every event: each placed request's agent step and outcome from
-/// its task, and old ones dropped; whether any changed.
-pub(crate) fn refresh(state: &mut AppState) -> bool {
+/// its task, and old ones dropped.
+pub(crate) fn refresh(state: &mut AppState) {
     let mut requests = std::mem::take(&mut state.requests);
-    let before = requests.clone();
     let (now, clock) = (state.now, state.clock);
     for r in requests.iter_mut() {
         // Settled, unless it waits for the headset's reload.
@@ -309,20 +327,18 @@ pub(crate) fn refresh(state: &mut AppState) -> bool {
         }
     }
     requests.retain(|r| r.outcome.is_none() || clock.saturating_sub(r.ended_clock) < KEPT_MS);
-    let over = requests.len().saturating_sub(MAX);
-    requests.drain(..over);
-    let changed = requests != before;
+    // Over the cap, the oldest ended go first.
+    while requests.len() > MAX {
+        let oldest = requests.iter().position(|r| r.outcome.is_some()).unwrap_or(0);
+        requests.remove(oldest);
+    }
     state.requests = requests;
-    changed
 }
 
 /// Run `run`'s outcome for `r` once it ended, unless a followed spoken run
 /// (`job`) still waits for its reload: then where that stands.
 fn outcome(state: &AppState, task: &Task, run: u64, r: &Request, job: bool) -> Option<Outcome> {
-    let failed = |reason: String| Outcome::Failed {
-        at: Step::Agent,
-        reason,
-    };
+    let failed = |reason: String| Outcome::Failed { at: at(r), reason };
     match voice::outcome(&task.transcript, run)? {
         Item::Finished { ok: true, .. } if job => {
             let device = r.device.as_deref().unwrap_or_default();
@@ -345,7 +361,7 @@ fn outcome(state: &AppState, task: &Task, run: u64, r: &Request, job: bool) -> O
         Item::Finished { ok: false, summary } => Some(failed(
             summary.clone().unwrap_or_else(|| "the agent failed".to_string()),
         )),
-        Item::Stopped => Some(failed("stopped".to_string())),
+        Item::Stopped => Some(failed("you stopped it".to_string())),
         _ => None,
     }
 }

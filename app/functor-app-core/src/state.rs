@@ -662,6 +662,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let shown = transport_shown(&state);
     // A handler may move only the highlight (a step click on a shown tab).
     let highlighted = state.highlight.clone();
+    let requested = state.requests.clone();
     let (changed, from_client) = match event {
         Event::Client(ClientMsg::GetState) => (false, true),
         Event::Client(ClientMsg::SetActiveProject { path }) => {
@@ -841,6 +842,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 commands.push(Command::Broadcast(ServerMsg::Rejected {
                     reason: reason.clone(),
                 }));
+            }
+            // Its requests not yet in a task cannot go on.
+            if let LinkEvent::Disconnected { conn, .. } = &event {
+                let gone = state.devices.list.iter().find(|d| d.conn == Some(*conn));
+                if let Some(device) = gone.map(|d| d.id.clone()) {
+                    progress::unlinked(&mut state, &device);
+                }
             }
             let (changed, link) = on_link(&mut state.devices, event, state.now);
             commands.extend(link.into_iter().map(Command::Link));
@@ -1186,7 +1194,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
-    let aged = progress::refresh(&mut state);
+    progress::refresh(&mut state);
     prune_highlight(&mut state);
     let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
@@ -1197,7 +1205,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let routes = route::routes(&state);
     let changed = changed
         || started
-        || aged
+        || state.requests != requested
         || state.highlight != highlighted
         || state.activity != activity
         || state.decisions != decided
@@ -2581,8 +2589,9 @@ fn routed(
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
+            progress::stopped(state, &u.device, utterance, Some(&reason));
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
-            return false;
+            return true;
         }
     };
     let now = route::request(state, &u.project, &u.text);
@@ -2640,6 +2649,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 }),
                 None => {
                     let reason = "no agent is installed on the computer".to_string();
+                    progress::stopped(state, &u.device, u.utterance, Some(&reason));
                     voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
                 }
             }
@@ -7976,7 +7986,6 @@ mod tests {
         let (s, _) = stepped(s, 2_100, reserved);
         let r = &s.requests[0];
         assert_eq!((r.task, r.line.as_deref()), (Some(4), Some("Started a new task")));
-        assert_eq!((s.routes[0].said.as_str(), s.routes[0].headset.as_str()), ("go", "Quest aa"));
         assert_eq!(s.current_task.get("examples/a"), None, "each page decides");
         let (s, _) = stepped(s, 3_000, agent(4, 0, started("a1")));
         assert_eq!(
@@ -8017,6 +8026,17 @@ mod tests {
         let (s, _) = update(voice_ready(), hearing(0, 2, HearingStage::Arriving));
         let (s, _) = update(s, hearing(0, 2, HearingStage::Cancelled));
         assert_eq!(s.requests[0].outcome, Some(Outcome::Cancelled));
+        // The same number again (its app restarted): a new request.
+        let (s, _) = update(s, hearing(0, 2, HearingStage::Arriving));
+        assert_eq!((s.requests.len(), s.requests[1].outcome.clone()), (2, None));
+        // Its headset leaves: it cannot go on.
+        let (s, _) = update(s, link(0, false));
+        assert!(matches!(
+            &s.requests[1].outcome,
+            Some(Outcome::Failed { at: Step::Received, reason }) if reason == "the headset disconnected"
+        ));
+        let (s, _) = update(s, link(0, true));
+        let s = AppState { requests: vec![], ..s };
         let (s, _) = update(s, hearing(0, 3, HearingStage::Arriving));
         let (s, _) = update(s, hearing(0, 3, HearingStage::Transcribing));
         let failed = HearingStage::Failed {
@@ -8024,7 +8044,7 @@ mod tests {
         };
         let (s, _) = update(s, hearing(0, 3, failed));
         assert_eq!(
-            s.requests[1].outcome,
+            s.requests[0].outcome,
             Some(Outcome::Failed {
                 at: Step::Transcribing,
                 reason: "heard no words".into()

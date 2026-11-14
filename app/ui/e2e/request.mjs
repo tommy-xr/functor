@@ -72,7 +72,7 @@ async function progress(browser, width, height) {
     const again = stub(server.link, store, "Quest 3", ["--say", CLIP]);
     quests.push(again);
     await again.line("voice 1 t");
-    const offer = line.filter({ hasText: `Said in Quest 3: “${SAID}”` });
+    const offer = line.filter({ hasText: `Said in Quest 3: “${SAID}”. Started a new task.` });
     await expect(offer).toBeVisible();
     await expect(heading).toHaveText("What is the count?");
     await shot(page, `request-offered-${width}`);

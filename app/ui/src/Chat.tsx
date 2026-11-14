@@ -175,13 +175,19 @@ function RequestLine({
   onShow: () => void;
 }) {
   const line = requestLine(request, activity, now);
-  const said = elsewhere ? `Said in ${request.headset}: “${request.text}”, ${request.line?.toLowerCase()}. ` : "";
+  const said = elsewhere ? `Said in ${request.headset}: “${request.text}”. ${request.line}. ` : "";
   const body = (
     <>
       <span className="request-now">
         {said}
         {line.now}
-        {line.slow && <span className="request-slow"> still going, {line.slow}</span>}
+        {line.slow && (
+          // Not announced each tick.
+          <span className="request-slow" aria-hidden>
+            {" "}
+            still going, {line.slow}
+          </span>
+        )}
       </span>
       {line.done.length > 0 && <span className="request-done">{line.done.join(" · ")}</span>}
     </>

@@ -866,11 +866,7 @@ export type Routed = { id: number, task: number, item: number,
 /**
  * As shown on the message: "Steered “…”".
  */
-line: string, by: By, moves: Array<Move>, 
-/**
- * What was said, and the headset it was said in.
- */
-said: string, headset: string, };
+line: string, by: By, moves: Array<Move>, };
 
 export type Run = { 
 /**

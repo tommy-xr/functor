@@ -262,7 +262,7 @@ pub(crate) fn answer(items: &[Item], run: u64) -> String {
             _ => None,
         })
         .last();
-    reply.map_or("Answered: see the conversation".to_string(), |l| l.trim().to_string())
+    reply.map_or("Answered: see the conversation".to_string(), |l| crate::activity::cut(l.trim()))
 }
 
 /// How run `run` (its user message's index) of a transcript ended.

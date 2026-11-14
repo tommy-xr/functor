@@ -97,9 +97,6 @@ pub struct Routed {
     pub line: String,
     pub by: By,
     pub moves: Vec<Move>,
-    /// What was said, and the headset it was said in.
-    pub said: String,
-    pub headset: String,
 }
 
 /// Where an utterance landed, while that can be undone.
@@ -241,11 +238,10 @@ pub fn routes(state: &AppState) -> Vec<Routed> {
             if state.active.as_ref() != Some(&task.project) {
                 return None;
             }
-            let (line, said, headset) = match task.transcript.get(open.item)? {
+            let line = match task.transcript.get(open.item)? {
                 Item::User {
-                    text,
-                    spoken: Some(s),
-                } => (s.route.clone().unwrap_or_default(), text.clone(), s.headset.clone()),
+                    spoken: Some(s), ..
+                } => s.route.clone().unwrap_or_default(),
                 _ => return None,
             };
             Some(Routed {
@@ -255,8 +251,6 @@ pub fn routes(state: &AppState) -> Vec<Routed> {
                 line,
                 by: open.by,
                 moves: moves(state, open),
-                said,
-                headset,
             })
         })
         .collect()
