@@ -232,7 +232,9 @@ npm run build:cli          # target/release/functor, built separately</pre>
             </li>
             <li>
               <strong>Chips.</strong> Above the text: the project, whether a game is running, and
-              the tab you are looking at. The agent is told the same.
+              the tab you have focused. They show what the agent can see: it starts in your
+              project, is told whether the game is running, and can look up which tab you have
+              focused.
             </li>
             <li>
               <strong>Mic.</strong> <span class="tag tag-new">New</span> Shown when the app was
@@ -408,9 +410,10 @@ npm run build:cli          # target/release/functor, built separately</pre>
           <h3 id="predicted-path">The predicted path</h3>
           <p>
             When a task starts, the app keeps the game's moment: its frame and recorded inputs.
-            When the change is ready it replays that moment twice in hidden sessions, once under
-            the old code and once under the new, and shows both with the path drawn. Your own
-            game and files are only read.
+            When the change is ready, the old and the new version of the project are copied to a
+            temporary folder and each replays that moment in its own hidden game session; the
+            page shows both with the path drawn. Your running game is only read, and your
+            working files are not changed by it.
           </p>
           <p>
             A change that touches none of the project's top-level <code>.fun</code>,
