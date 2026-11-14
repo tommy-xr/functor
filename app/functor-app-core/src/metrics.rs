@@ -68,7 +68,7 @@ pub struct Split {
     pub cache_creation: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_output: Option<u64>,
-    /// API round trips.
+    /// Claude Code's `num_turns`: not exactly its API requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

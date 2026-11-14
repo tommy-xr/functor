@@ -223,7 +223,7 @@ const SPLIT_COLUMNS = [
 
 /** The share of the prompt read from the cache, in percent. */
 function cachedShare(r) {
-  if (r.cache_read == null) return null;
+  if ([r.uncached_input, r.cache_read, r.cache_creation].some((n) => typeof n !== "number")) return null;
   const prompt = r.uncached_input + r.cache_read + r.cache_creation;
   return prompt ? Math.round((r.cache_read / prompt) * 100) : null;
 }

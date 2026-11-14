@@ -976,7 +976,7 @@ total: TokenUsage,
  */
 last: TokenUsage | null, 
 /**
- * API round trips.
+ * Claude Code's `num_turns`: not exactly its API requests.
  */
 turns: number | null, cost_usd: Usd | null, 
 /**

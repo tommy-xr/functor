@@ -273,7 +273,7 @@ The columns:
   - **cache write**: prompt tokens written to the cache (Claude; Codex
     reports none).
   - **cached %**: cache read of the whole prompt (uncached + read + write).
-  - **turns**: API round trips (Claude).
+  - **turns**: Claude Code's `num_turns`, not exactly its API requests.
   - **cost $**: the run's cost as Claude Code reports it.
   - **API s**: time spent waiting on the API (Claude).
 
@@ -468,20 +468,26 @@ each turn is measured rather than guessed:
 | spawn-in-chasm | prepared | 9.2 | 107,446 | 8 | 92,335 | 15,103 | 86 | 4 | 0.078 |
 | two-step | prepared | 11.9 | 106,288 | 8 | 91,588 | 14,692 | 86 | 4 | 0.079 |
 
-- **A first turn is 40% cached.** `no-tools` is one turn of 35.8k: 14.4k
-  read from the cache, 21.5k written to it, 2 tokens uncached. Nothing is
-  sent uncached; the part not read is written, at 1.25 times the price.
-- **Later turns are almost all cache reads:** 83–88% of an edit run's prompt
-  is read, and its writes (30–36k) are about one first turn's worth plus the
-  tool results. So of a run's cost, the first turn's write is the largest
-  single part: `no-tools` costs $0.35, a whole edit run $0.61–0.68.
-- **Why the first turn misses (likely, not checked):** every scenario runs in a fresh folder,
-  and the run's first request carries its folder and the user's setup, so
-  little past Claude Code's own prefix matches an earlier run's cache. Two
-  runs back to back in one project should read more; not measured here.
-- **Turns** are Claude Code's `num_turns`, which counts more than API
-  requests when calls run in parallel (weak-jump: 13 turns averaging 16k,
-  less than the 36k one request starts with).
-- The reviews (`sonnet`, isolated) cost $0.08–0.12, an eighth to a fifth of
-  their run.
+- **The one first turn measured was 40% cached.** `no-tools` is one turn of
+  35.8k: 14.4k read from the cache, 21.5k written to it, 2 tokens uncached.
+  Almost nothing is sent uncached: what is not read from the cache is
+  written to it. One sample: `state-question` (two turns) read 35.8k and
+  wrote 38.8k, so a first turn's split varies from run to run.
+- **Over a whole edit run, 83–88% of the prompt is cache reads.** Its later
+  turns alone are about 93%, if its first turn is like `no-tools`' (an
+  estimate: weak-jump's first turn was not measured apart).
+- **Writes are a large part of the cost.** Every run wrote 21–39k tokens
+  to the cache; `no-tools` (one turn, 4 output tokens) cost $0.35, an edit
+  run $0.61–0.68. The price of a write is not in these tables.
+- **Why a first turn misses (likely, not checked):** every scenario runs in
+  a fresh folder, and the run's first request carries its folder and the
+  user's setup, so little past Claude Code's own prefix matches an earlier
+  run's cache. Two runs back to back in one project should read more; not
+  measured here.
+- **Turns** are Claude Code's `num_turns`, not its API requests: weak-jump's
+  13 turns average 16k, less than the 36k one request starts with. Why
+  (parallel calls counted apart, or a total that counts less) is not
+  checked.
+- The reviews (on `sonnet`, isolated) cost $0.08–0.12, a ninth to a fifth
+  of their run.
 - One run each.
