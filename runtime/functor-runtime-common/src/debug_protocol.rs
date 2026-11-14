@@ -405,7 +405,7 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
     DebugRoute {
         method: "POST",
         path: "/push-manifest",
-        description: "begin a push: {\"files\": [{path, size, hash}]} (hash: lowercase hex sha256). A device with a pushed-file cache installs the files it holds and answers {\"missing\": [hash]}: upload only the files with those hashes (each is checked against its hash, 400 otherwise); a runtime without one asks for all",
+        description: "begin a push: {\"files\": [{path, size, hash}]} (hash: lowercase hex sha256). A device with a pushed-file cache installs the files it holds and answers {\"missing\": [hash]}: upload only the files with those hashes (each is kept only if it hashes to the one named); a runtime without one asks for all",
     },
     DebugRoute {
         method: "POST",

@@ -3305,7 +3305,7 @@ mod tests {
     /// A headset with a pushed-file cache is sent only what it lacks: all of
     /// a first push, none of a repeat (it installs its own copies), one file
     /// after an edit; a runtime without manifests gets everything; and an
-    /// upload that is not the bytes its manifest named is refused.
+    /// upload that is not the bytes its manifest named is not kept.
     #[test]
     fn a_push_sends_only_what_the_headset_lacks() {
         use functor_runtime_common::debug_protocol::{encode_project_asset, DebugRequest};
@@ -3361,6 +3361,7 @@ mod tests {
         assert_eq!(first.synced(), "synced 2 project file(s) (0.0 MB) to the headset");
         assert_eq!(installs(), ["fish.glb", "game.fun"]);
 
+        push_cache::installed().unwrap().settle();
         // The same project again: nothing crosses, and the headset still
         // installs both from what it holds.
         let again = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
@@ -3385,9 +3386,10 @@ mod tests {
         // The device counted what that push will send; the sender's own count does not replace it.
         assert_eq!(announced(), Some((1, 4096, 0, true)));
         let envelope = encode_project_asset("fish.glb", &[7u8; 4096]).unwrap();
-        let (status, message) = super::post_asset(&addr, &envelope, true, "").unwrap();
-        assert_eq!(status, 400, "{message}");
-        assert!(message.contains("fish.glb") && message.contains("hashes to"), "{message}");
+        assert_eq!(super::post_asset(&addr, &envelope, true, "").unwrap().0, 200);
+        let cache = push_cache::installed().unwrap();
+        cache.settle();
+        assert!(cache.get(&wrong[0], 4096).is_none(), "not kept under a hash it does not have");
 
         // Hashes are remembered by path, size and modified time.
         let mut known = super::PushHashes::load(super::push_hashes_path());

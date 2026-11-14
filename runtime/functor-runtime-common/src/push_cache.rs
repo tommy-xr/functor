@@ -3,7 +3,8 @@
 //! pushes, launches and projects. A push names its files and their hashes
 //! first (`POST /push-manifest`); the device installs those it holds and
 //! answers with the hashes it lacks; only those are uploaded, and each is
-//! checked against its hash before it is kept.
+//! checked against its hash before it is kept (on a writer thread: the
+//! upload does not wait for it).
 //!
 //! One file per entry, named by its sha256, written to a temporary name and
 //! renamed: an interrupted write leaves no entry. The least recently used
@@ -56,11 +57,12 @@ pub struct PushCache {
     cap: u64,
     /// Path → hash for the push in flight: what an upload must hash to.
     expected: Mutex<HashMap<String, String>>,
+    writer: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>>,
 }
 
 impl PushCache {
     pub fn new(dir: PathBuf, cap: u64) -> PushCache {
-        PushCache { dir, cap, expected: Mutex::new(HashMap::new()) }
+        PushCache { dir, cap, expected: Mutex::new(HashMap::new()), writer: Mutex::new(None) }
     }
 
     fn entry(&self, hash: &str) -> Option<PathBuf> {
@@ -184,6 +186,48 @@ impl PushCache {
         }
     }
 
+    /// [`Self::accept`], off the caller's thread: hashing and writing a
+    /// large file takes seconds on a device, which the upload need not wait
+    /// for. A file that is not the one named is logged and not kept.
+    pub fn accept_later(self: &Arc<Self>, path: String, bytes: Vec<u8>) {
+        let hash = self.expected.lock().unwrap_or_else(|e| e.into_inner()).get(&path).cloned();
+        let Some(hash) = hash else { return };
+        let cache = self.clone();
+        self.later(Box::new(move || {
+            if let Err(error) = cache.put(&hash, &bytes) {
+                log::warn!("push cache: {path}: {error}");
+            }
+        }));
+    }
+
+    /// Wait for every [`Self::accept_later`] so far.
+    pub fn settle(&self) {
+        let (done, settled) = std::sync::mpsc::channel();
+        self.later(Box::new(move || {
+            let _ = done.send(());
+        }));
+        let _ = settled.recv();
+    }
+
+    /// Run `work` on the cache's writer thread (started on first use), in order.
+    fn later(&self, work: Box<dyn FnOnce() + Send>) {
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if writer.is_none() {
+            let (queue, work) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+            let spawned = std::thread::Builder::new().name("functor-push-cache".to_string()).spawn(move || {
+                crate::jobs::lower_priority();
+                for work in work {
+                    work();
+                }
+            });
+            *writer = spawned.is_ok().then_some(queue);
+        }
+        // Without a writer the file is not cached: it is sent again next time.
+        if let Some(queue) = writer.as_ref() {
+            let _ = queue.send(work);
+        }
+    }
+
     /// The push ended (`/sync-assets`).
     pub fn end(&self) {
         self.expected.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -263,6 +307,21 @@ mod tests {
         let (held, answer) = cache.begin(&manifest);
         assert!(held.is_empty() && answer.missing.len() == 1);
         assert!(cache.put("../escape", b"x").is_err());
+    }
+
+    #[test]
+    fn an_upload_is_kept_off_the_callers_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(PushCache::new(dir.path().to_path_buf(), 1 << 20));
+        let manifest = Manifest { files: vec![file("a.bin", b"aaaa"), file("b.bin", b"bbbb")] };
+        cache.begin(&manifest);
+        cache.accept_later("a.bin".into(), b"aaaa".to_vec());
+        // Not the bytes named: logged, not kept.
+        cache.accept_later("b.bin".into(), b"other".to_vec());
+        cache.accept_later("unnamed.bin".into(), b"cccc".to_vec());
+        cache.settle();
+        assert_eq!(cache.begin(&manifest).1.missing, [sha256_hex(b"bbbb")]);
+        assert_eq!(cache.size(), 4);
     }
 
     #[test]

@@ -742,11 +742,10 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     return Some(());
                 }
             };
-            // Kept by content when the push named it; refused when its bytes
-            // are not the ones named (cut short, or changed since).
-            if let Some(Err(error)) = crate::push_cache::installed().map(|cache| cache.accept(&asset.path, &asset.bytes)) {
-                respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
-                return Some(());
+            // Kept by content when the push named it and its bytes are the
+            // ones named.
+            if let Some(cache) = crate::push_cache::installed() {
+                cache.accept_later(asset.path.clone(), asset.bytes.clone());
             }
             ASSET_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (resp_tx, resp_rx) = mpsc::channel();
