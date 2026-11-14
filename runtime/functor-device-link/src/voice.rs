@@ -1,5 +1,6 @@
 //! Voice feedback: a spoken clip, headset → desktop, and the desktop's
-//! progress on it, desktop → headset. Both ride [`Frame::Channel`].
+//! progress on it and spoken reply, desktop → headset. All ride
+//! [`Frame::Channel`].
 //!
 //! - [`CLIP_CHANNEL`] carries [`Clip`] messages for one utterance at a
 //!   time: `Start` (with the `Capsule` JSON), `Chunk`s of audio numbered
@@ -8,6 +9,11 @@
 //! - [`STATUS_CHANNEL`] carries [`Status`]: `Heard` → `Transcribed` →
 //!   `Working` → `Reloaded` or `Answered`, or `Failed` at any point; `Idle`
 //!   clears.
+//! - [`SPEECH_CHANNEL`] carries [`Speech`] messages for one spoken reply at
+//!   a time, for the headset to play ([`crate::play`]): `Start` (with the
+//!   sample rate), `Chunk`s of 16-bit little-endian mono PCM numbered from
+//!   0, then `End`; `Stop` silences it. A headset from before this channel
+//!   drops it.
 //!
 //! Every message starts with [`VERSION`]. `decode` refuses another version
 //! and anything over the per-message limits below; the receiver enforces
@@ -25,6 +31,8 @@ pub const VERSION: u8 = 1;
 pub const CLIP_CHANNEL: u16 = 1;
 /// Desktop → headset: [`Status`] messages.
 pub const STATUS_CHANNEL: u16 = 2;
+/// Desktop → headset: [`Speech`] messages. (3 and 4 are the panel's.)
+pub const SPEECH_CHANNEL: u16 = 5;
 
 /// The audio's sample rate: what speech-to-text takes without resampling.
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -35,6 +43,8 @@ pub const MAX_CLIP: usize = MAX_SECONDS as usize * SAMPLE_RATE as usize * 2;
 /// Most audio bytes in one `Chunk` (about a second), so each fits one
 /// [`crate::MAX_MESSAGE`] with room to spare.
 pub const MAX_CHUNK: usize = 32 * 1024;
+/// The sample rates a spoken reply may have.
+pub const SPEECH_RATES: std::ops::RangeInclusive<u32> = 8_000..=48_000;
 /// Most bytes of capsule JSON.
 pub const MAX_CAPSULE: usize = 16 * 1024;
 /// Most bytes of `Capsule::pointing_at`; longer is cut, so a capsule
@@ -256,6 +266,116 @@ impl Status {
     }
 }
 
+/// One message of a spoken reply, desktop → headset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Speech {
+    /// A new reply, in place of any other; `reply` is the desktop's number
+    /// for it, `rate` its samples per second.
+    Start { reply: u64, rate: u32 },
+    /// Audio, `seq` counting from 0 with no gaps.
+    Chunk { reply: u64, seq: u32, data: Vec<u8> },
+    /// The reply is complete.
+    End { reply: u64 },
+    /// Replaced, or the user started talking: stop playing it.
+    Stop { reply: u64 },
+}
+
+impl Speech {
+    pub fn reply(&self) -> u64 {
+        match self {
+            Speech::Start { reply, .. }
+            | Speech::Chunk { reply, .. }
+            | Speech::End { reply }
+            | Speech::Stop { reply } => *reply,
+        }
+    }
+
+    /// The bytes, or `TooLarge` for a chunk over [`MAX_CHUNK`].
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut w = Writer::default();
+        w.u8(VERSION);
+        match self {
+            Speech::Start { reply, rate } => {
+                w.u8(1);
+                w.u64(*reply);
+                w.u32(*rate);
+            }
+            Speech::Chunk { reply, seq, data } => {
+                if data.len() > MAX_CHUNK {
+                    return Err(Error::TooLarge);
+                }
+                w.u8(2);
+                w.u64(*reply);
+                w.u32(*seq);
+                w.blob(data);
+            }
+            Speech::End { reply } => {
+                w.u8(3);
+                w.u64(*reply);
+            }
+            Speech::Stop { reply } => {
+                w.u8(4);
+                w.u64(*reply);
+            }
+        }
+        Ok(w.0)
+    }
+
+    /// As a frame on [`SPEECH_CHANNEL`].
+    pub fn frame(&self) -> Result<Frame, Error> {
+        Ok(Frame::Channel {
+            channel: SPEECH_CHANNEL,
+            data: self.encode()?,
+        })
+    }
+
+    /// Refuses other versions, a rate outside [`SPEECH_RATES`] and a chunk
+    /// over [`MAX_CHUNK`].
+    pub fn decode(bytes: &[u8]) -> Result<Speech, Error> {
+        let mut r = Reader::new(bytes);
+        version(&mut r)?;
+        let speech = match r.u8()? {
+            1 => Speech::Start {
+                reply: r.u64()?,
+                rate: Some(r.u32()?)
+                    .filter(|rate| SPEECH_RATES.contains(rate))
+                    .ok_or(Error::Malformed("speech rate"))?,
+            },
+            2 => Speech::Chunk {
+                reply: r.u64()?,
+                seq: r.u32()?,
+                data: r.blob(MAX_CHUNK)?,
+            },
+            3 => Speech::End { reply: r.u64()? },
+            4 => Speech::Stop { reply: r.u64()? },
+            _ => return Err(Error::Malformed("voice message kind")),
+        };
+        r.end()?;
+        Ok(speech)
+    }
+
+    /// Reply `reply` whole, as its frames: `Start`, `pcm` (at
+    /// [`SAMPLE_RATE`], cut to [`MAX_SECONDS`]) in chunks, `End`.
+    pub fn frames(reply: u64, pcm: &[i16]) -> Vec<Frame> {
+        let pcm = &pcm[..pcm.len().min(MAX_CLIP / 2)];
+        let chunks = pcm
+            .chunks(MAX_CHUNK / 2)
+            .enumerate()
+            .map(|(seq, chunk)| Speech::Chunk {
+                reply,
+                seq: seq as u32,
+                data: chunk.iter().flat_map(|s| s.to_le_bytes()).collect(),
+            });
+        let rate = SAMPLE_RATE;
+        [Speech::Start { reply, rate }]
+            .into_iter()
+            .chain(chunks)
+            .chain([Speech::End { reply }])
+            .map(|speech| speech.frame().expect("a chunk within the limit"))
+            .collect()
+    }
+}
+
 /// Another version is `Malformed("voice version")`: this channel's format,
 /// not the link's.
 fn version(r: &mut Reader) -> Result<(), Error> {
@@ -355,6 +475,22 @@ mod tests {
         for clip in clips {
             assert_eq!(Clip::decode(&clip.encode().unwrap()).unwrap(), clip);
         }
+        let speech = [
+            Speech::Start {
+                reply: 3,
+                rate: SAMPLE_RATE,
+            },
+            Speech::Chunk {
+                reply: 3,
+                seq: 0,
+                data: vec![1; MAX_CHUNK],
+            },
+            Speech::End { reply: 3 },
+            Speech::Stop { reply: u64::MAX },
+        ];
+        for speech in speech {
+            assert_eq!(Speech::decode(&speech.encode().unwrap()).unwrap(), speech);
+        }
         let stages = [
             Stage::Heard,
             Stage::Transcribed {
@@ -432,6 +568,65 @@ mod tests {
         long.extend_from_slice(&(MAX_TEXT as u16 + 1).to_be_bytes());
         long.extend(std::iter::repeat_n(b'a', MAX_TEXT + 1));
         assert_eq!(Status::decode(&long), Err(Error::TooLarge));
+    }
+
+    #[test]
+    fn speech_is_bounded_and_a_whole_reply_is_start_chunks_end() {
+        let big = Speech::Chunk {
+            reply: 1,
+            seq: 0,
+            data: vec![0; MAX_CHUNK + 1],
+        };
+        assert_eq!(big.encode(), Err(Error::TooLarge));
+        for rate in [0, 7_999, 48_001] {
+            let start = Speech::Start { reply: 1, rate }.encode().unwrap();
+            assert_eq!(Speech::decode(&start), Err(Error::Malformed("speech rate")));
+        }
+        assert!(Speech::decode(&[VERSION, 9]).is_err());
+        let mut trailing = Speech::Stop { reply: 1 }.encode().unwrap();
+        trailing.push(0);
+        assert!(Speech::decode(&trailing).is_err());
+        let mut other = Speech::End { reply: 1 }.encode().unwrap();
+        other[0] = 2;
+        assert_eq!(
+            Speech::decode(&other),
+            Err(Error::Malformed("voice version"))
+        );
+
+        // A chunk and a bit: two chunks, each one link message.
+        let pcm: Vec<i16> = (0..MAX_CHUNK / 2 + 3).map(|i| i as i16).collect();
+        let frames = Speech::frames(9, &pcm);
+        let speech: Vec<Speech> = frames
+            .iter()
+            .map(|frame| match frame {
+                Frame::Channel { channel, data } => {
+                    assert_eq!(*channel, SPEECH_CHANNEL);
+                    assert!(frame.encode().len() + 16 < crate::MAX_MESSAGE);
+                    Speech::decode(data).unwrap()
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert!(speech.iter().all(|s| s.reply() == 9));
+        let rate = SAMPLE_RATE;
+        assert_eq!(speech[0], Speech::Start { reply: 9, rate });
+        assert_eq!(speech[3], Speech::End { reply: 9 });
+        let (
+            Speech::Chunk {
+                seq: 0, data: a, ..
+            },
+            Speech::Chunk {
+                seq: 1, data: b, ..
+            },
+        ) = (&speech[1], &speech[2])
+        else {
+            panic!("{speech:?}");
+        };
+        assert_eq!((a.len(), b.len()), (MAX_CHUNK, 6));
+        assert_eq!(b[..2], pcm[MAX_CHUNK / 2].to_le_bytes());
+        // Longer than the limit is cut to it.
+        let long = Speech::frames(1, &vec![0; MAX_CLIP / 2 + 1]);
+        assert_eq!(long.len(), MAX_CLIP / MAX_CHUNK + 1 + 2);
     }
 
     #[test]
