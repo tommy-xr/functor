@@ -623,6 +623,26 @@ Until then the app checks the `functor` it found before using it and, when it
 is too old, says which one it is and how to fix it, in one place — not as
 launch errors in the game view and the chat.
 
+### D41 — the conversation is readable in the headset
+
+*2026-11-14. Extends D28.*
+
+A spoken request is followed and answered without taking the headset off. The
+panel shows the current task's conversation as a page of its own.
+
+- **What it shows:** what the user said, with spoken messages marked as
+  spoken; the router's decision line; the agent's replies and what it is
+  doing now; the result; and any question the agent asked, shown first.
+- **Text only, newest at the bottom, scrollable.** It follows new text unless
+  the user scrolled up. Long agent messages are cut to their first lines with
+  "more".
+- **It carries no code:** no file contents, diffs or tool inputs, only the
+  short step labels the desktop chat already shows.
+- **The user answers by voice** (push-to-talk) from the same page; its stages
+  show inline, above the conversation.
+- **With the panel closed,** the status toast also shows the agent's first
+  reply and the final result, so the loop is visible without opening anything.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.

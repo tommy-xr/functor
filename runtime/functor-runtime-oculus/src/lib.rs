@@ -2000,6 +2000,9 @@ pub fn android_main(app: AndroidApp) {
                             session_running = false;
                             session_focused = false;
                             last_frame_at = None;
+                            // Taken off: an open panel stands in front again
+                            // when it is back on (the room may recentre).
+                            debug.panel.anchor = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
                             quit = true;
@@ -2538,26 +2541,22 @@ images cannot be posed"
         let panel = match (&pairing, &debug.link) {
             (Some(pairing), _) => {
                 let shapes = card(&functor_runtime_common::link_overlay::lines(pairing));
-                Some((shapes, 1.0, Place::HeadLocked))
+                Some((std::rc::Rc::new(shapes), 1.0, Place::HeadLocked))
             }
             (None, Some(client)) if debug.panel.nav.is_open() => tracked_center.map(|head| {
                 // Where it opened, in the world: back into head space.
                 let anchor = *debug.panel.anchor.get_or_insert_with(|| placement(head));
                 let world = pose_matrix(head).invert().unwrap_or(Matrix4::identity());
                 let toast = debug.voice.toast(Instant::now()).map(|(t, _)| t.clone());
-                let shapes = debug.panel.nav.shapes(
-                    debug.panel.data.as_ref(),
-                    &panel::connection(&client.view()),
-                    toast.as_ref(),
-                    Instant::now(),
-                );
+                let shapes =
+                    debug.panel.shapes(panel::connection(&client.view()), toast, Instant::now());
                 (shapes, 1.0, Place::Head(world * anchor))
             }),
             _ => tracked_center.and_then(|head| {
                 let (toast, alpha) = debug.voice.toast(Instant::now())?;
                 let shapes = card(&toast_lines(toast));
                 let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((shapes, alpha, Place::Head(place)))
+                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
             }),
         };
         // The wrist light, while the panel is closed.

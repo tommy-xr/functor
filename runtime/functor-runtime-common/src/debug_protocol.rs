@@ -255,7 +255,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 45 adds `pointer` on `GET /state` ([`PointerMode`]) and the keys Tab,
 /// Shift, Control, Alt, F1–F12 and punctuation (`crate::Key`) to `POST
 /// /input` and the reported key sets.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 45;
+///
+/// 46 adds the conversation to `link.panel` ([`PanelState`]: `conversation`,
+/// `following`, `said`, `question`).
+///
+/// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
+/// and the toast's `waiting` seconds.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -763,6 +769,18 @@ pub struct PanelState {
     pub tasks: usize,
     /// While closed and linked with a task.
     pub wrist: Option<WristLight>,
+    /// The task whose conversation page shows (v46).
+    #[serde(default)]
+    pub conversation: Option<u64>,
+    /// That page shows the newest text (not scrolled up).
+    #[serde(default)]
+    pub following: bool,
+    /// Items in the conversation the desktop sent, and whether the agent
+    /// waits on a question.
+    #[serde(default)]
+    pub said: usize,
+    #[serde(default)]
+    pub question: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,6 +813,11 @@ pub struct VoiceToast {
     #[serde(flatten)]
     pub stage: VoiceStage,
     pub transcript: Option<String>,
+    /// Seconds the current step has been going, once it is long enough to
+    /// say so (v46).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -805,6 +828,10 @@ pub enum VoiceStage {
     NotConnected,
     /// The microphone permission was asked for.
     AllowMicrophone,
+    /// Allowed after asking: the next hold talks.
+    MicrophoneAllowed,
+    /// Asked before and still not allowed.
+    MicrophoneDenied,
     /// Recording: `level` 0–[`crate::link_overlay::METER`];
     /// `seconds_left` in the last few seconds before it sends by itself.
     Listening {

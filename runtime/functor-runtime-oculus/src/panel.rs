@@ -4,15 +4,17 @@
 //! it is closed the wrist light shows the stance of the task in front of
 //! the user.
 
+use std::rc::Rc;
 use std::time::Instant;
 
 use cgmath::Matrix4;
 use functor_device_link::client::{Client, View};
 use functor_device_link::panel::{self as wire, Action, Update, ACTION_CHANNEL};
-use functor_runtime_common::debug_protocol::{PanelState, TaskStance, WristLight};
+use functor_runtime_common::debug_protocol::{PanelState, TaskStance, VoiceToast, WristLight};
+use functor_runtime_common::link_overlay::Shape;
 use functor_runtime_common::link_panel::{
-    self, Connection, Destination, Out, Panel, PanelAction, PanelData, PanelDecision, PanelRoute,
-    PanelTask,
+    self, Connection, ConversationData, Destination, Out, Panel, PanelAction, PanelData,
+    PanelDecision, PanelRoute, PanelTask, ProgressLine, ProgressStep, Role, SaidLine,
 };
 use functor_runtime_common::XrInputSnapshot;
 
@@ -25,13 +27,30 @@ pub struct HeadsetPanel {
     pub anchor: Option<Matrix4<f32>>,
     /// Game menu chosen: one menu press for the game's next step.
     menu_tap: bool,
+    /// Counts the desktop's updates, so the drawing knows its data changed.
+    generation: u64,
+    /// The open panel's shapes and what they were laid out from: laid out
+    /// again only when that changes.
+    drawn: Option<(Drawn, Rc<Vec<Shape>>)>,
+}
+
+#[derive(PartialEq)]
+struct Drawn {
+    nav: Panel,
+    generation: u64,
+    connection: Connection,
+    toast: Option<VoiceToast>,
+    notice: bool,
 }
 
 impl HeadsetPanel {
     /// A message on the panel's update channel.
     pub fn received(&mut self, bytes: &[u8], now: Instant) {
         match Update::decode(bytes) {
-            Ok(Update::Panel(panel)) => self.data = Some(data(panel)),
+            Ok(Update::Panel(panel)) => {
+                self.data = Some(data(panel));
+                self.generation += 1;
+            }
             Ok(Update::Refused { reason }) => self.nav.refused(reason, now),
             Err(e) => log::warn!("panel: an update we cannot read: {e}"),
         }
@@ -44,8 +63,8 @@ impl HeadsetPanel {
 
     /// One frame's sample, while the link client runs.
     pub fn frame(&mut self, client: &Client, sample: Option<&XrInputSnapshot>, busy: bool) {
-        if !client.linked() {
-            self.data = None;
+        if !client.linked() && self.data.take().is_some() {
+            self.generation += 1;
         }
         match self.nav.step(sample, self.data.as_ref(), busy) {
             Some(Out::Action(action)) => {
@@ -81,6 +100,36 @@ impl HeadsetPanel {
         self.menu_tap &= !stepping;
     }
 
+    /// The open panel's shapes, laid out again only when what they show
+    /// changed.
+    pub fn shapes(
+        &mut self,
+        connection: Connection,
+        toast: Option<VoiceToast>,
+        now: Instant,
+    ) -> Rc<Vec<Shape>> {
+        let key = Drawn {
+            nav: self.nav.clone(),
+            generation: self.generation,
+            connection,
+            toast,
+            notice: self.nav.notice_shown(now),
+        };
+        match &self.drawn {
+            Some((drawn, shapes)) if *drawn == key => shapes.clone(),
+            _ => {
+                let shapes = Rc::new(self.nav.shapes(
+                    self.data.as_ref(),
+                    &key.connection,
+                    key.toast.as_ref(),
+                    now,
+                ));
+                self.drawn = Some((key, shapes.clone()));
+                shapes
+            }
+        }
+    }
+
     pub fn wrist(&self, linked: bool) -> Option<WristLight> {
         link_panel::wrist(self.data.as_ref(), linked && !self.nav.is_open())
     }
@@ -112,14 +161,7 @@ fn data(p: wire::Panel) -> PanelData {
             .map(|t| PanelTask {
                 id: t.id,
                 title: t.title,
-                stance: match t.stance {
-                    wire::Stance::Thinking => TaskStance::Thinking,
-                    wire::Stance::Working => TaskStance::Working,
-                    wire::Stance::Waiting => TaskStance::Waiting,
-                    wire::Stance::Done => TaskStance::Done,
-                    wire::Stance::Failed => TaskStance::Failed,
-                    wire::Stance::Queued => TaskStance::Queued,
-                },
+                stance: stance(t.stance),
                 activity: t.activity,
                 decision: t.decision.map(|d| PanelDecision {
                     tree: d.tree,
@@ -146,6 +188,48 @@ fn data(p: wire::Panel) -> PanelData {
                 })
                 .collect(),
         }),
+        conversation: p.conversation.map(|c| ConversationData {
+            task: c.task,
+            title: c.title,
+            stance: stance(c.stance),
+            activity: c.activity,
+            question: c.question,
+            first: c.first,
+            items: (c.items.into_iter())
+                .map(|i| SaidLine {
+                    role: match i.role {
+                        wire::Role::You => Role::You,
+                        wire::Role::Agent => Role::Agent,
+                        wire::Role::App => Role::App,
+                    },
+                    spoken: i.spoken,
+                    cut: i.cut,
+                    text: i.text,
+                })
+                .collect(),
+        }),
+        progress: p.progress.map(|g| ProgressLine {
+            step: match g.step {
+                wire::Step::Received => ProgressStep::Received,
+                wire::Step::Transcribed => ProgressStep::Transcribed,
+                wire::Step::Processing => ProgressStep::Processing,
+                wire::Step::Agent => ProgressStep::Agent,
+                wire::Step::Outcome => ProgressStep::Outcome,
+            },
+            detail: g.detail,
+            failed: g.failed,
+        }),
+    }
+}
+
+fn stance(s: wire::Stance) -> TaskStance {
+    match s {
+        wire::Stance::Thinking => TaskStance::Thinking,
+        wire::Stance::Working => TaskStance::Working,
+        wire::Stance::Waiting => TaskStance::Waiting,
+        wire::Stance::Done => TaskStance::Done,
+        wire::Stance::Failed => TaskStance::Failed,
+        wire::Stance::Queued => TaskStance::Queued,
     }
 }
 

@@ -2,11 +2,13 @@
 //! with `FUNCTOR_QUEST_E2E=1` and a debuggable `dev.functor.runner`
 //! installed, on the same Wi-Fi as this machine. A stub desktop pairs with
 //! it by its file and is found by mDNS; held thumbstick presses are injected
-//! (`debug.functor.pair_input`) and the microphone is a test tone
-//! (`debug.functor.voice_tone`), since nobody wears the headset. The stub
-//! checks the utterance and sends statuses the toast must show. The
-//! headset's pairing file and properties are put back afterwards; stills
-//! land in `FUNCTOR_QUEST_CAPTURES` when set.
+//! (`debug.functor.pair_input`), since nobody wears the headset. A first
+//! pass records a test tone (`debug.functor.voice_tone`), so the stub can
+//! check the audio; a second records the real microphone (room sound),
+//! checked for shape only; a third revokes `RECORD_AUDIO` and walks the
+//! permission prompt. The stub sends statuses the toast must show. The
+//! headset's pairing file, properties and permission are put back
+//! afterwards; stills land in `FUNCTOR_QUEST_CAPTURES` when set.
 #![cfg(feature = "client")]
 
 mod stub;
@@ -38,7 +40,11 @@ struct Quest {
     debug: String,
     pairing: Vec<u8>,
     props: Vec<(&'static str, String)>,
+    /// `RECORD_AUDIO` as found.
+    microphone: bool,
 }
+
+const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
 
 impl Quest {
     fn attach() -> Quest {
@@ -58,7 +64,9 @@ impl Quest {
             debug: format!("127.0.0.1:{port}"),
             pairing: Vec::new(),
             props: Vec::new(),
+            microphone: false,
         };
+        quest.microphone = quest.microphone_granted();
         let saved = quest.adb(&["shell", adb::READ_PAIRING]);
         assert!(
             saved.status.success(),
@@ -105,6 +113,18 @@ impl Quest {
         let rendered = || self.state().ok()?["rendered_frames"].as_u64();
         let first = until("the app answers", rendered);
         until("it renders", || rendered().filter(|n| *n > first));
+    }
+
+    fn microphone_granted(&self) -> bool {
+        self.shell(&format!("dumpsys package {PACKAGE}"))
+            .contains(&format!("{RECORD_AUDIO}: granted=true"))
+    }
+
+    /// Grants or revokes `RECORD_AUDIO`; revoking stops the app.
+    fn microphone(&self, granted: bool) {
+        let verb = if granted { "grant" } else { "revoke" };
+        self.shell(&format!("pm {verb} {PACKAGE} {RECORD_AUDIO}"));
+        assert_eq!(self.microphone_granted(), granted);
     }
 
     fn state(&self) -> Result<Value, String> {
@@ -155,6 +175,9 @@ impl Drop for Quest {
         }
         // Asleep again, so it does not keep rendering while nobody wears it.
         self.shell(&format!("am force-stop {PACKAGE}"));
+        if self.microphone_granted() != self.microphone {
+            self.microphone(self.microphone);
+        }
         self.shell("am broadcast -a com.oculus.vrpowermanager.automation_disable");
         let port = self.debug.rsplit(':').next().unwrap().to_string();
         let _ = self.adb(&["forward", "--remove", &format!("tcp:{port}")]);
@@ -207,6 +230,68 @@ fn receive(stub: &stub::Stub) -> Vec<Clip> {
     }
 }
 
+/// One utterance as the stub received it: its id and its audio. Checks it
+/// is well formed: `Start` with a capsule, gapless chunks, `End`.
+fn received_utterance(stub: &stub::Stub) -> (u64, Vec<i16>) {
+    let clips = receive(stub);
+    let Clip::Start { utterance, capsule } = &clips[0] else {
+        panic!("starts with Start: {:?}", clips[0]);
+    };
+    let utterance = *utterance;
+    let parsed = Capsule::from_json(capsule).expect("a capsule");
+    assert!(parsed.frame.is_some() && parsed.tts.is_some(), "{capsule}");
+    assert_eq!(clips.last(), Some(&Clip::End { utterance }));
+    let mut pcm = Vec::new();
+    for (seq, clip) in clips[1..clips.len() - 1].iter().enumerate() {
+        let Clip::Chunk {
+            utterance: u,
+            seq: s,
+            data,
+        } = clip
+        else {
+            panic!("chunks between: {clip:?}");
+        };
+        assert_eq!((*u, *s as usize), (utterance, seq));
+        pcm.extend(data.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+    }
+    (utterance, pcm)
+}
+
+/// Holds to talk, captured as `name` while listening (`loud`: once the
+/// meter moves), then 2.5 s more (a capture stalls the headset's frames for
+/// seconds); how long it was held.
+fn talk(quest: &Quest, name: &str, loud: bool) -> Duration {
+    let held = Instant::now();
+    quest.hold(json!({"thumbstick_pressed": true}));
+    let listening = until("listening", || {
+        let voice = quest.voice();
+        assert_ne!(voice["stage"], "not_sent", "{voice}");
+        let level = voice["level"].as_u64().unwrap_or(0);
+        (voice["stage"] == "listening" && (level > 0 || !loud)).then_some(voice)
+    });
+    assert!(listening["seconds_left"].is_null());
+    quest.capture(name);
+    std::thread::sleep(Duration::from_millis(2500));
+    quest.hold(json!({}));
+    let released = held.elapsed();
+    until("sending", || {
+        let voice = quest.voice();
+        assert_ne!(voice["stage"], "not_sent", "{voice}");
+        (voice["stage"] == "sending").then_some(())
+    });
+    released
+}
+
+/// `pcm` covers the hold, less the gesture's first quarter second.
+fn assert_length(pcm: &[i16], held: Duration) {
+    let seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
+    let most = held.as_secs_f64();
+    assert!(
+        seconds > 1.0 && seconds <= most,
+        "{seconds} s of {most} s held"
+    );
+}
+
 /// Advertises the stub as desktop `id` on `port`, under a host name of its
 /// own (never the machine's).
 fn advertise(id: &[u8; 16], port: u16) -> mdns_sd::ServiceDaemon {
@@ -254,59 +339,13 @@ fn quest_talks_to_a_desktop() {
     assert!(quest.voice().is_null(), "{}", quest.voice());
     assert!(stub.received.try_recv().is_err());
 
-    // Held: listening, with the tone on the meter.
-    let held = Instant::now();
-    quest.hold(json!({"thumbstick_pressed": true}));
-    let listening = until("listening", || {
-        let voice = quest.voice();
-        (voice["stage"] == "listening" && voice["level"].as_u64()? > 0).then_some(voice)
-    });
-    assert!(listening["seconds_left"].is_null());
-    quest.capture("voice-listening.png");
-    std::thread::sleep(Duration::from_secs(2).saturating_sub(held.elapsed()));
-    quest.hold(json!({}));
-    let released = held.elapsed();
-    until("sending", || {
-        (quest.voice()["stage"] == "sending").then_some(())
-    });
+    // Held: listening, then sending; the stub gets the tone.
+    let held = talk(&quest, "voice-listening.png", true);
     quest.capture("voice-sending.png");
-
-    let clips = receive(&stub);
-    let Clip::Start {
-        utterance, capsule, ..
-    } = &clips[0]
-    else {
-        panic!("starts with Start: {:?}", clips[0]);
-    };
-    let utterance = *utterance;
-    let capsule_json = capsule.clone();
-    let capsule = Capsule::from_json(capsule).expect("a capsule");
-    assert!(
-        capsule.frame.is_some() && capsule.tts.is_some(),
-        "{capsule_json}"
-    );
-    assert_eq!(clips.last(), Some(&Clip::End { utterance }));
-    let mut pcm = Vec::new();
-    for (seq, clip) in clips[1..clips.len() - 1].iter().enumerate() {
-        let Clip::Chunk {
-            utterance: u,
-            seq: s,
-            data,
-        } = clip
-        else {
-            panic!("chunks between: {clip:?}");
-        };
-        assert_eq!((*u, *s as usize), (utterance, seq));
-        pcm.extend(data.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
-    }
-    // Held about 2 s, the first quarter second the gesture's.
-    let seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
-    let most = released.as_secs_f64();
-    assert!(
-        seconds > 1.0 && seconds <= most,
-        "{seconds} s of {most} s held"
-    );
+    let (utterance, pcm) = received_utterance(&stub);
+    assert_length(&pcm, held);
     // The test tone: 440 Hz, so 880 zero crossings a second.
+    let seconds = pcm.len() as f64 / SAMPLE_RATE as f64;
     let crossings = pcm.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
     let rate = crossings as f64 / seconds;
     assert!((800.0..960.0).contains(&rate), "{rate} crossings/s");
@@ -356,6 +395,40 @@ fn quest_talks_to_a_desktop() {
         matches!(clips.last(), Some(Clip::Cancel { .. })),
         "{clips:?}"
     );
+
+    // The real microphone: the AAudio stream, its reads and the resampler.
+    // Room sound, so only its shape is checked.
+    quest.shell("setprop debug.functor.voice_tone 0");
+    if !quest.microphone_granted() {
+        quest.microphone(true);
+    }
+    let held = talk(&quest, "voice-microphone.png", false);
+    let (_, pcm) = received_utterance(&stub);
+    assert_length(&pcm, held);
+    let (lo, hi) = (pcm.iter().min().unwrap(), pcm.iter().max().unwrap());
+    assert!(lo < hi, "not constant: {lo}..{hi}");
+
+    // First use: the prompt. Revoking stops the app, so it starts again.
+    quest.microphone(false);
+    quest.launch();
+    until("linked again", || {
+        (quest.state().ok()?["link"]["linked"] == true).then_some(())
+    });
+    quest.hold(json!({"thumbstick_pressed": true}));
+    until("asks for the microphone", || {
+        (quest.voice()["stage"] == "allow_microphone").then_some(())
+    });
+    quest.capture("voice-allow-microphone.png");
+    quest.hold(json!({}));
+    // Allowed while it runs: it says so, and the next hold talks.
+    quest.microphone(true);
+    until("says it is allowed", || {
+        (quest.voice()["stage"] == "microphone_allowed").then_some(())
+    });
+    quest.capture("voice-microphone-allowed.png");
+    let held = talk(&quest, "voice-microphone-2.png", false);
+    let (_, pcm) = received_utterance(&stub);
+    assert_length(&pcm, held);
 
     // Paired with a desktop that is not there: holding says so.
     let mut away = stored.clone();

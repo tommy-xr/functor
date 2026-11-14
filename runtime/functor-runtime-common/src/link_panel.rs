@@ -1,7 +1,8 @@
 //! The headset panel (D28): the shell draws it over any game, opened and
 //! closed by a short press of the left menu button
 //! ([`crate::link_overlay::Gesture::Panel`]). Sections Now, Talk, Tasks and
-//! Game menu, and a task's page with its decision (D35).
+//! Game menu, a task's page with its decision (D35), and a task's
+//! conversation (D41): what was said, read without taking the headset off.
 //!
 //! The right controller drives it: the thumbstick moves a focus ring, A
 //! chooses, B goes back (closes, from the section list). Keep, Revert and
@@ -9,6 +10,7 @@
 //! it is open the game gets poses but not those controls ([`game_view`]).
 //! Pure: the shell owns the link, the clock and GL.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use cgmath::{vec3, Matrix4, One, Quaternion, Vector3};
@@ -31,6 +33,76 @@ pub struct PanelData {
     pub waiting: String,
     /// Where this headset's latest utterance went, while it can be moved.
     pub route: Option<PanelRoute>,
+    /// The current task's recent conversation.
+    pub conversation: Option<ConversationData>,
+    /// Where this headset's request in flight is (D43).
+    pub progress: Option<ProgressLine>,
+}
+
+/// One request's step (D43): one line that moves through the steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgressLine {
+    pub step: ProgressStep,
+    pub detail: String,
+    pub failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressStep {
+    Received,
+    Transcribed,
+    Processing,
+    Agent,
+    Outcome,
+}
+
+impl ProgressLine {
+    /// "PROCESSING  Steered ..."; a failure names its step.
+    fn text(&self) -> String {
+        let step = match self.step {
+            ProgressStep::Received => "RECEIVED",
+            ProgressStep::Transcribed => "HEARD",
+            ProgressStep::Processing => "PROCESSING",
+            ProgressStep::Agent => "AGENT",
+            ProgressStep::Outcome => "DONE",
+        };
+        match (self.failed, self.detail.is_empty()) {
+            (true, _) => format!("FAILED AT {step}  {}", self.detail),
+            (false, true) => step.to_string(),
+            (false, false) => format!("{step}  {}", self.detail),
+        }
+    }
+}
+
+/// A task's recent conversation, as the desktop sends it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversationData {
+    pub task: u64,
+    pub title: String,
+    pub stance: TaskStance,
+    pub activity: String,
+    /// The agent waits on a question: its last line.
+    pub question: bool,
+    /// The index of `items[0]` among all the task's items; older ones stay
+    /// on the desktop.
+    pub first: u32,
+    pub items: Vec<SaidLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaidLine {
+    pub role: Role,
+    pub spoken: bool,
+    /// The desktop cut it.
+    pub cut: bool,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    You,
+    Agent,
+    App,
 }
 
 /// The router's decision on an utterance (D29) and its moves.
@@ -125,6 +197,8 @@ pub enum Out {
 enum Item {
     /// Open the task's page.
     Page(u64),
+    /// Open the task's conversation.
+    Conversation(u64),
     /// The change's tree: a different change cancels a waiting confirm.
     Keep(u64, String),
     Revert(u64, String),
@@ -136,7 +210,7 @@ enum Item {
 /// How long a refusal from the desktop shows.
 const NOTICE: Duration = Duration::from_secs(5);
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Panel {
     open: bool,
     section: Section,
@@ -153,7 +227,22 @@ pub struct Panel {
     /// Closed with the right hand still on its controls: they stay the
     /// panel's until let go.
     latched: bool,
+    /// The task whose conversation shows, over the section or page.
+    conversation: Option<u64>,
+    /// Its first line in view, as the item it belongs to (an index among
+    /// all the task's items, so new items do not move it) and a line within
+    /// it; `None` follows the newest.
+    scroll: Option<(u32, usize)>,
+    /// Long agent messages shown whole.
+    expanded: bool,
+    /// How many of its lines fit, as last drawn.
+    shown: Cell<usize>,
 }
+
+/// Lines a stick push scrolls the conversation.
+const SCROLL: usize = 3;
+/// An agent message's lines before "more".
+const AGENT_LINES: usize = 6;
 
 /// A stick axis as one press per push: past 0.6 fires once, back under 0.3
 /// re-arms.
@@ -205,14 +294,20 @@ impl Panel {
         self.open || self.latched
     }
 
-    /// The user started talking: show the Talk section.
+    /// The user started talking: show the Talk section, unless the
+    /// conversation shows (its stages show inline there).
     pub fn talk(&mut self) {
-        if self.open {
+        if self.open && self.conversation.is_none() {
             self.section = Section::Talk;
             self.page = None;
             self.focus = None;
             self.confirm = None;
         }
+    }
+
+    /// A refusal shows at `now`.
+    pub fn notice_shown(&self, now: Instant) -> bool {
+        self.notice.as_ref().is_some_and(|(_, until)| now < *until)
     }
 
     /// The desktop refused the last action.
@@ -248,8 +343,9 @@ impl Panel {
             self.latched &= held;
             return None;
         }
+        let confirming = self.confirm.is_some();
         self.settle(data);
-        if busy {
+        if busy || (confirming && self.confirm.is_none()) {
             return None;
         }
         if let Some(item) = &self.confirm {
@@ -261,12 +357,18 @@ impl Panel {
                 },
                 Item::Stop(task) => PanelAction::Stop { task: *task },
                 Item::Move(id, to) => PanelAction::Move { id: *id, to: *to },
-                Item::Page(_) => unreachable!("pages open without a confirm"),
+                Item::Page(_) | Item::Conversation(_) => {
+                    unreachable!("pages open without a confirm")
+                }
             };
             if a || b {
                 self.confirm = None;
             }
             return a.then_some(Out::Action(action));
+        }
+        if let Some(id) = self.conversation {
+            self.scroll_step(data, id, a, b, y);
+            return None;
         }
         // Back from a page to the list, on the task it opened.
         if b {
@@ -307,10 +409,59 @@ impl Panel {
                     self.focus = (!self.items(data).is_empty()).then_some(0);
                     return Some(Out::Action(PanelAction::Select { task: id }));
                 }
+                // The desktop sends the selected task's conversation.
+                Item::Conversation(id) => {
+                    self.conversation = Some(id);
+                    self.scroll = None;
+                    self.expanded = false;
+                    return Some(Out::Action(PanelAction::Select { task: id }));
+                }
                 item => self.confirm = Some(item),
             }
         }
         None
+    }
+
+    /// On the conversation page: B goes back, A shows long messages whole
+    /// or cut, the stick scrolls; scrolled to the end it follows again.
+    fn scroll_step(&mut self, data: Option<&PanelData>, id: u64, a: bool, b: bool, y: i8) {
+        if b {
+            self.conversation = None;
+            self.scroll = None;
+            return;
+        }
+        self.expanded ^= a;
+        let conv = data.and_then(|d| d.conversation.as_ref());
+        let Some(c) = conv.filter(|c| c.task == id).filter(|_| y != 0) else {
+            return;
+        };
+        let lines = conversation_lines(c, self.expanded);
+        let shown = self.shown.get().max(1);
+        let top = self.top(&lines, shown);
+        let top = match y > 0 {
+            true => top.saturating_sub(SCROLL),
+            false => top + SCROLL,
+        };
+        self.scroll = (top + shown < lines.len()).then(|| {
+            let item = lines[top].3;
+            (
+                item,
+                top - lines.iter().position(|l| l.3 == item).unwrap_or(top),
+            )
+        });
+    }
+
+    /// The conversation's first line in view: the scroll's place, or the
+    /// newest `shown` when following.
+    fn top(&self, lines: &[Laid], shown: usize) -> usize {
+        match self.scroll {
+            None => lines.len().saturating_sub(shown),
+            Some((item, offset)) => {
+                // Its item scrolled out of the window: from the oldest left.
+                let at = lines.iter().position(|l| l.3 >= item).unwrap_or(0);
+                (at + offset).min(lines.len().saturating_sub(1))
+            }
+        }
     }
 
     /// Follows the desktop's latest: a page whose task is gone closes, the
@@ -337,8 +488,9 @@ impl Panel {
     fn items(&self, data: Option<&PanelData>) -> Vec<Item> {
         let Some(data) = data else { return vec![] };
         let find = |id: u64| data.tasks.iter().find(|t| t.id == id);
+        // A task's page and Now open its conversation first.
         if let Some(t) = self.page.and_then(find) {
-            return match (&t.decision, running(t.stance)) {
+            let rest = match (&t.decision, running(t.stance)) {
                 (Some(d), _) => vec![
                     Item::Keep(t.id, d.tree.clone()),
                     Item::Revert(t.id, d.tree.clone()),
@@ -346,12 +498,16 @@ impl Panel {
                 (None, true) => vec![Item::Stop(t.id)],
                 (None, false) => vec![],
             };
+            return [vec![Item::Conversation(t.id)], rest].concat();
         }
         match self.section {
             Section::Now => match data.now.and_then(find) {
-                Some(t) if t.decision.is_some() => vec![Item::Page(t.id)],
-                Some(t) if running(t.stance) => vec![Item::Stop(t.id)],
-                _ => vec![],
+                Some(t) if t.decision.is_some() => {
+                    vec![Item::Conversation(t.id), Item::Page(t.id)]
+                }
+                Some(t) if running(t.stance) => vec![Item::Conversation(t.id), Item::Stop(t.id)],
+                Some(t) => vec![Item::Conversation(t.id)],
+                None => vec![],
             },
             Section::Tasks => data.tasks.iter().map(|t| Item::Page(t.id)).collect(),
             Section::Talk => data
@@ -365,6 +521,7 @@ impl Panel {
 
     /// `/state.link.panel`.
     pub fn debug(&self, data: Option<&PanelData>, wrist: Option<WristLight>) -> PanelState {
+        let conversation = data.and_then(|d| d.conversation.as_ref());
         PanelState {
             open: self.open,
             section: match self.section {
@@ -383,12 +540,17 @@ impl Panel {
                     Item::Stop(_) => "stop",
                     Item::Move(..) => "move",
                     Item::Page(_) => "page",
+                    Item::Conversation(_) => "conversation",
                 }
                 .to_string()
             }),
             now: data.and_then(|d| d.now),
             tasks: data.map_or(0, |d| d.tasks.len()),
             wrist,
+            conversation: self.conversation,
+            following: self.conversation.is_some() && self.scroll.is_none(),
+            said: conversation.map_or(0, |c| c.items.len()),
+            question: conversation.is_some_and(|c| c.question),
         }
     }
 }
@@ -590,7 +752,7 @@ impl Col<'_> {
     fn line(&mut self, s: &str, size: f32, color: [f32; 3]) {
         let n = (self.w / size) as usize;
         text(self.out, [self.x, self.y], size, color, &fit(&ascii(s), n));
-        self.y -= size * 1.5 + 0.002;
+        self.y -= advance(size);
     }
 
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
@@ -650,7 +812,7 @@ impl Panel {
             let rect = [left + PAD / 2.0, y - ROW, NAV, ROW];
             if section == self.section {
                 fill(&mut out, rect, SELECTED);
-                if self.focus.is_none() && self.confirm.is_none() {
+                if self.focus.is_none() && self.confirm.is_none() && self.conversation.is_none() {
                     outline(&mut out, rect, ACCENT);
                 }
             }
@@ -680,11 +842,9 @@ impl Panel {
             w: cw,
             y: top - HEADER - PAD,
         };
-        let items = self.items(data);
-        let focused = self.focus.and_then(|i| items.get(i));
         let hint = match (connection, data) {
             (Connection::Connected { .. }, Some(data)) => {
-                self.content(&mut col, data, toast, focused, bottom)
+                self.content(&mut col, data, toast, bottom)
             }
             (Connection::Connected { .. }, None) => {
                 col.line("WAITING FOR THE DESKTOP", SMALL, FAINT);
@@ -738,12 +898,15 @@ impl Panel {
         col: &mut Col,
         data: &PanelData,
         toast: Option<&VoiceToast>,
-        focused: Option<&Item>,
         bottom: f32,
     ) -> Option<&'static str> {
+        if let Some(id) = self.conversation {
+            return self.conversation_of(col, data, id, toast, bottom);
+        }
         let find = |id: u64| data.tasks.iter().find(|t| t.id == id);
         if let Some(t) = self.page.and_then(find) {
-            return self.page_of(col, t, focused, bottom);
+            self.conversation_row(col, data, t.id);
+            return self.page_of(col, t, bottom);
         }
         match self.section {
             Section::Now => {
@@ -766,6 +929,7 @@ impl Panel {
                     );
                     return None;
                 };
+                self.conversation_row(col, data, t.id);
                 col.para(&t.title, TITLE, TEXT, 2);
                 col.line(stance_word(t.stance), SMALL, stance_color(t.stance));
                 if !t.activity.is_empty() {
@@ -788,7 +952,7 @@ impl Panel {
                     (None, true) => "Stop",
                     (None, false) => return None,
                 };
-                self.buttons(col, &[label], focused.is_some(), bottom)
+                self.buttons(col, &[label], 1, bottom)
             }
             Section::Talk => {
                 col.line("TALK", LABEL, FAINT);
@@ -804,6 +968,12 @@ impl Panel {
                     for l in toast_lines(toast) {
                         col.line(&l.text, l.size * 0.8, l.color);
                     }
+                }
+                // Where the request in flight is (D43).
+                if let Some(p) = &data.progress {
+                    col.gap(0.008);
+                    col.line("WHERE IT IS", LABEL, FAINT);
+                    col.para(&p.text(), BODY, if p.failed { DANGER } else { SOFT }, 2);
                 }
                 let Some(route) = &data.route else {
                     return None;
@@ -871,13 +1041,7 @@ impl Panel {
 
     /// A task's page: its decision (D35) with Keep and Revert, or its run
     /// with Stop.
-    fn page_of(
-        &self,
-        col: &mut Col,
-        t: &PanelTask,
-        focused: Option<&Item>,
-        bottom: f32,
-    ) -> Option<&'static str> {
+    fn page_of(&self, col: &mut Col, t: &PanelTask, bottom: f32) -> Option<&'static str> {
         col.para(&t.title, TITLE, TEXT, 2);
         let stance = match t.decision {
             Some(_) => "READY FOR YOUR DECISION",
@@ -895,7 +1059,7 @@ impl Panel {
             if let Some(Item::Stop(_)) = &self.confirm {
                 return confirm(col, "Stop this task?", bottom);
             }
-            return self.buttons(col, &["Stop"], focused.is_some(), bottom);
+            return self.buttons(col, &["Stop"], 1, bottom);
         };
         col.line("SIZE OF THE CHANGE", LABEL, FAINT);
         col.line(&d.size, BODY, TEXT);
@@ -918,11 +1082,9 @@ impl Panel {
             Some(Item::Revert(..)) => {
                 confirm(col, "Revert it? The files go back as they were.", bottom)
             }
-            _ => {
-                let focus = focused.is_some();
-                self.buttons(col, &["Keep", "Revert"], focus, bottom)
-                    .or(Some("A choose   B back   Click & hold R stick: talk"))
-            }
+            _ => self
+                .buttons(col, &["Keep", "Revert"], 1, bottom)
+                .or(Some("A choose   B back   Click & hold R stick: talk")),
         }
     }
 
@@ -957,12 +1119,101 @@ impl Panel {
         col.gap(ROW + 0.006);
     }
 
-    /// A row of buttons above the footer, the focused one ringed.
+    /// The row that opens task `id`'s conversation (content item 0), with
+    /// its newest line, or that the agent asks.
+    fn conversation_row(&self, col: &mut Col, data: &PanelData, id: u64) {
+        let conv = data.conversation.as_ref().filter(|c| c.task == id);
+        let (word, newest) = match conv {
+            Some(c) if c.question => ("ASKS YOU", c.items.last()),
+            Some(c) => ("", c.items.last()),
+            None => ("", None),
+        };
+        let sub = newest.map_or(String::new(), |l| l.text.clone());
+        let focus = self.focus == Some(0);
+        self.row(col, focus, "Conversation", word, WARN, &sub);
+    }
+
+    /// Task `id`'s conversation: what the agent asks first, then the
+    /// messages (newest at the bottom, scrolled), then inline push-to-talk
+    /// and what the agent is doing.
+    fn conversation_of(
+        &self,
+        col: &mut Col,
+        data: &PanelData,
+        id: u64,
+        toast: Option<&VoiceToast>,
+        bottom: f32,
+    ) -> Option<&'static str> {
+        let hint = Some("Stick scroll  A more  B back  Hold stick: talk");
+        let Some(c) = data.conversation.as_ref().filter(|c| c.task == id) else {
+            col.line("CONVERSATION", LABEL, FAINT);
+            col.para("Waiting for the desktop to send it...", BODY, MUTED, 2);
+            return hint;
+        };
+        col.line(&c.title, TITLE, TEXT);
+        col.line(stance_word(c.stance), SMALL, stance_color(c.stance));
+        let asked = c.items.iter().rev().find(|i| i.role == Role::Agent);
+        if let Some(q) = asked.filter(|_| c.question) {
+            col.gap(0.004);
+            col.line("THE AGENT ASKS", SMALL, WARN);
+            col.para(&q.text, BODY, WARN, 3);
+            col.line("Hold the right stick to answer", SMALL, TEXT);
+        }
+        col.gap(0.006);
+        // Under the messages: push-to-talk's stages, then the work.
+        let mut tail: Vec<(String, f32, [f32; 3])> = toast
+            .map(|t| {
+                (toast_lines(t).into_iter())
+                    .map(|l| (l.text, l.size * 0.8, l.color))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The request in flight's step (D43), else what the agent does.
+        match &data.progress {
+            Some(p) => tail.push((p.text(), SMALL, if p.failed { DANGER } else { SOFT })),
+            None if running(c.stance) => {
+                let doing = match c.activity.is_empty() {
+                    true => "Working...".to_string(),
+                    false => format!("Working... {}", c.activity),
+                };
+                tail.push((doing, SMALL, SOFT));
+            }
+            None => {}
+        }
+        let floor = bottom + SMALL * 1.6 + tail.iter().map(|l| advance(l.1)).sum::<f32>();
+        let lines = conversation_lines(c, self.expanded);
+        let room = col.y - floor;
+        // How many lines fit from `from`, walking `lines` in `order`.
+        let fit = |order: &mut dyn Iterator<Item = &Laid>| {
+            let mut used = 0.0;
+            order
+                .take_while(|l| {
+                    used += advance(l.1);
+                    used <= room
+                })
+                .count()
+        };
+        let newest = fit(&mut lines.iter().rev());
+        let start = self.top(&lines, newest);
+        let shown = fit(&mut lines[start..].iter());
+        self.shown.set(newest);
+        for (text, size, color, _) in &lines[start..start + shown] {
+            col.line(text, *size, *color);
+        }
+        col.y = floor;
+        for (text, size, color) in &tail {
+            col.line(text, *size, *color);
+        }
+        hint
+    }
+
+    /// A row of buttons above the footer, the one focused (content item
+    /// `first + i`) ringed.
     fn buttons(
         &self,
         col: &mut Col,
         labels: &[&str],
-        focus: bool,
+        first: usize,
         bottom: f32,
     ) -> Option<&'static str> {
         let gap = 0.012;
@@ -972,7 +1223,7 @@ impl Panel {
             let rect = [col.x + i as f32 * (bw + gap), y, bw, BUTTON];
             let primary = i == 0;
             fill(col.out, rect, if primary { ACCENT } else { SELECTED });
-            if focus && self.focus == Some(i) {
+            if self.focus == Some(first + i) {
                 // White, so it reads against the accent fill.
                 outline(
                     col.out,
@@ -997,6 +1248,82 @@ impl Panel {
         }
         None
     }
+}
+
+/// The width of the content column.
+const CONTENT_W: f32 = WIDTH - 3.0 * PAD - NAV;
+
+/// How far one line of `size` moves the column down.
+fn advance(size: f32) -> f32 {
+    size * 1.5 + 0.002
+}
+
+/// A laid-out conversation line: text, size, color, and the index (among
+/// all the task's items) of the item it belongs to.
+type Laid = (String, f32, [f32; 3], u32);
+/// A blank line's size between messages.
+const SPACE: f32 = 0.005;
+
+/// `c` laid out for the conversation page, oldest first: each message under
+/// who said it (spoken lines in the accent), app lines small; an agent
+/// message past [`AGENT_LINES`] is cut unless `expanded`. A question the
+/// agent waits on shows above them instead.
+fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
+    let chars = |size: f32| (CONTENT_W / size) as usize;
+    let mut out: Vec<Laid> = Vec::new();
+    if c.first > 0 {
+        let earlier = "Earlier messages are on the desktop.".into();
+        out.push((earlier, SMALL, FAINT, c.first));
+    }
+    let asked = c
+        .question
+        .then(|| c.items.iter().rposition(|i| i.role == Role::Agent))
+        .flatten();
+    for (i, item) in c.items.iter().enumerate() {
+        if Some(i) == asked {
+            continue;
+        }
+        let at = c.first + i as u32;
+        let text = ascii(&item.text);
+        let mut push = |text: String, size: f32, color: [f32; 3]| out.push((text, size, color, at));
+        // A little air above each message's header.
+        if item.role != Role::App && (i > 0 || c.first > 0) {
+            push(String::new(), SPACE, FAINT);
+        }
+        match item.role {
+            Role::You => {
+                let (head, color) = match item.spoken {
+                    true => ("YOU, SPOKEN", SOFT),
+                    false => ("YOU", MUTED),
+                };
+                push(head.into(), LABEL, color);
+                let body = if item.spoken { SOFT } else { TEXT };
+                for l in wrap(&text, chars(BODY), 40) {
+                    push(l, BODY, body);
+                }
+            }
+            Role::Agent => {
+                push("AGENT".into(), LABEL, FAINT);
+                let lines = wrap(&text, chars(BODY), 40);
+                let shown = if expanded { lines.len() } else { AGENT_LINES };
+                let more = lines.len() > shown;
+                for l in lines.into_iter().take(shown) {
+                    push(l, BODY, TEXT);
+                }
+                if more {
+                    push("... more (A)".into(), SMALL, FAINT);
+                } else if item.cut {
+                    push("... the rest is on the desktop".into(), SMALL, FAINT);
+                }
+            }
+            Role::App => {
+                for l in wrap(&format!("- {text}"), chars(SMALL), 2) {
+                    push(l, SMALL, FAINT);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// "Approve at a glance" or "look into this", and why.
@@ -1059,6 +1386,37 @@ mod tests {
                     ("Make it a new task".into(), Destination::New),
                 ],
             }),
+            conversation: Some(conversation(1, 4)),
+            progress: Some(ProgressLine {
+                step: ProgressStep::Agent,
+                detail: "working: editing game.fun".into(),
+                failed: false,
+            }),
+        }
+    }
+
+    /// Task `task`'s conversation: the spoken request, the route, and `n`
+    /// agent messages, `msg 0`..
+    fn conversation(task: u64, n: usize) -> ConversationData {
+        let said = |role, spoken, text: &str| SaidLine {
+            role,
+            spoken,
+            cut: false,
+            text: text.into(),
+        };
+        let mut items = vec![
+            said(Role::You, true, "make the ball red"),
+            said(Role::App, false, "Steered \"Task 1\""),
+        ];
+        items.extend((0..n).map(|i| said(Role::Agent, false, &format!("msg {i}"))));
+        ConversationData {
+            task,
+            title: format!("Task {task}"),
+            stance: TaskStance::Working,
+            activity: "editing game.fun".into(),
+            question: false,
+            first: 0,
+            items,
         }
     }
 
@@ -1112,7 +1470,8 @@ mod tests {
             press(&mut p, &d, P::A),
             Some(Out::Action(PanelAction::Select { task: 1 }))
         );
-        assert_eq!((p.page, p.focus), (Some(1), Some(0)));
+        assert_eq!((p.page, p.focus), (Some(1), Some(0)), "on its conversation");
+        press(&mut p, &d, P::Down);
         // Keep waits for its confirm; B says no.
         assert_eq!(press(&mut p, &d, P::A), None);
         assert_eq!(p.debug(Some(&d), None).confirm.as_deref(), Some("keep"));
@@ -1148,19 +1507,24 @@ mod tests {
         let mut p = Panel::default();
         p.toggle();
         press(&mut p, &d, P::A);
+        press(&mut p, &d, P::Down);
         assert_eq!(
             press(&mut p, &d, P::A),
             Some(Out::Action(PanelAction::Select { task: 1 }))
         );
         assert_eq!(p.page, Some(1));
         // The desktop kept it meanwhile: the page has no decision, nor the
-        // confirm that was waiting.
+        // confirm that was waiting, and that press does nothing else.
+        press(&mut p, &d, P::Down);
         press(&mut p, &d, P::A);
         assert!(p.confirm.is_some());
         d.tasks[0].decision = None;
         d.tasks[0].stance = TaskStance::Done;
         assert_eq!(press(&mut p, &d, P::A), None);
-        assert_eq!((p.confirm.clone(), p.focus), (None, None));
+        assert_eq!(
+            (p.confirm.clone(), p.focus, p.conversation),
+            (None, Some(0), None)
+        );
         // B from that page, focus or not: back to where it opened.
         assert_eq!(press(&mut p, &d, P::B), None);
         assert_eq!((p.page, p.is_open()), (None, true));
@@ -1169,6 +1533,7 @@ mod tests {
         p.toggle();
         d.now = Some(2);
         press(&mut p, &d, P::A);
+        press(&mut p, &d, P::Down);
         press(&mut p, &d, P::A);
         assert_eq!(
             press(&mut p, &d, P::A),
@@ -1188,13 +1553,15 @@ mod tests {
         let mut p = Panel::default();
         p.toggle();
         press(&mut p, &d, P::A);
+        press(&mut p, &d, P::Down);
         press(&mut p, &d, P::A);
+        press(&mut p, &d, P::Down);
         press(&mut p, &d, P::A);
         assert_eq!(p.debug(Some(&d), None).confirm.as_deref(), Some("keep"));
         d.tasks[0].decision.as_mut().unwrap().tree = "tree-9".into();
-        // That press keeps nothing; it asks again, for the new change.
+        // That press keeps nothing; the new change needs its own Keep.
         assert_eq!(press(&mut p, &d, P::A), None);
-        assert_eq!(p.confirm, Some(Item::Keep(1, "tree-9".into())));
+        assert_eq!(p.confirm, None);
 
         // Closed by B: B stays the panel's while held, then the game's.
         let mut b = XrInputSnapshot::default();
@@ -1208,6 +1575,135 @@ mod tests {
         assert!(p.hides_controls(), "still held");
         p.step(Some(&XrInputSnapshot::default()), Some(&d), false);
         assert!(!p.hides_controls());
+    }
+
+    #[test]
+    fn the_conversation_opens_from_now_follows_new_text_and_scrolls() {
+        let mut d = data();
+        d.conversation = Some(conversation(1, 30));
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        assert_eq!(
+            press(&mut p, &d, P::A),
+            Some(Out::Action(PanelAction::Select { task: 1 })),
+            "the desktop sends the selected task's"
+        );
+        let state = |p: &Panel, d: &PanelData| p.debug(Some(d), None);
+        assert_eq!(state(&p, &d).conversation, Some(1));
+        assert!(state(&p, &d).following);
+        // Talking keeps the page: its stages show inline.
+        p.talk();
+        assert_eq!(p.conversation, Some(1));
+        // What the page shows first, as drawn.
+        let first_line = |p: &Panel, d: &PanelData| {
+            let lines = conversation_lines(d.conversation.as_ref().unwrap(), p.expanded);
+            let connected = Connection::Connected {
+                desktop: "Mac".into(),
+            };
+            p.shapes(Some(d), &connected, None, Instant::now());
+            let shown = p.shown.get();
+            assert!(
+                shown > 0 && shown < lines.len(),
+                "{shown} of {}",
+                lines.len()
+            );
+            lines[p.top(&lines, shown)].0.clone()
+        };
+        // Up: older text, which new text no longer moves, also as the
+        // window drops its oldest item.
+        let _ = first_line(&p, &d);
+        press(&mut p, &d, P::Up);
+        assert!(!state(&p, &d).following);
+        let held = first_line(&p, &d);
+        let c = d.conversation.as_mut().unwrap();
+        c.items.remove(0);
+        c.first += 1;
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: false,
+            text: "new".into(),
+        });
+        assert_eq!(first_line(&p, &d), held);
+        press(&mut p, &d, P::A);
+        assert!(p.expanded, "A shows long messages whole");
+        // Down to the end: it follows again.
+        for _ in 0..20 {
+            press(&mut p, &d, P::Down);
+        }
+        assert!(state(&p, &d).following);
+        // B: back to Now, on the conversation's row.
+        assert_eq!(press(&mut p, &d, P::B), None);
+        assert_eq!(
+            (p.conversation, p.focus, p.is_open()),
+            (None, Some(0), true)
+        );
+    }
+
+    #[test]
+    fn a_question_is_shown_first_and_long_messages_are_cut_with_more() {
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        c.question = true;
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: true,
+            text: "A long answer. ".repeat(30),
+        });
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: false,
+            text: "Left or right hip?".into(),
+        });
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        assert!(p.debug(Some(&d), None).question);
+        let shapes = p.shapes(
+            Some(&d),
+            &Connection::Connected {
+                desktop: "Mac".into(),
+            },
+            None,
+            Instant::now(),
+        );
+        let texts: Vec<&str> = shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let at = |t: &str| {
+            texts
+                .iter()
+                .position(|x| *x == t)
+                .unwrap_or_else(|| panic!("{t}: {texts:?}"))
+        };
+        assert!(at("THE AGENT ASKS") < at("AGENT"), "asked first");
+        assert!(texts.contains(&"... more (A)"));
+        // The request's step (D43) at the bottom; without one, the work.
+        assert!(texts.contains(&"AGENT  working: editing game.fun"));
+        d.progress = None;
+        let shapes = p.shapes(
+            Some(&d),
+            &Connection::Connected {
+                desktop: "Mac".into(),
+            },
+            None,
+            Instant::now(),
+        );
+        assert!(shapes.iter().any(
+            |s| matches!(s, Shape::Text { text, .. } if text == "Working... editing game.fun")
+        ));
+        let lines = conversation_lines(d.conversation.as_ref().unwrap(), true);
+        assert!(lines
+            .iter()
+            .any(|l| l.0 == "... the rest is on the desktop"));
     }
 
     #[test]
@@ -1313,9 +1809,17 @@ mod tests {
         let mut long = d.clone();
         long.tasks[0].title = "é".repeat(300);
         long.tasks[0].activity = "\u{201c}x\u{201d} ".repeat(100);
+        let c = long.conversation.as_mut().unwrap();
+        c.question = true;
+        c.title = "\u{e9}".repeat(300);
+        c.activity = "y".repeat(300);
+        for item in &mut c.items {
+            item.text = "word ".repeat(120);
+        }
         let toast = VoiceToast {
             stage: crate::debug_protocol::VoiceStage::Heard,
             transcript: Some("word ".repeat(80)),
+            waiting: None,
         };
         let now = Instant::now();
         let conns = [
@@ -1345,6 +1849,8 @@ mod tests {
                         focus: Some(0),
                         confirm,
                         notice: Some(("x".repeat(400), now + NOTICE)),
+                        conversation: (section == Section::Talk).then_some(1),
+                        scroll: (page == Some(2)).then_some((2, 1)),
                         ..Panel::default()
                     };
                     for data in [&d, &long] {
@@ -1458,6 +1964,7 @@ mod tests {
                 seconds_left: None,
             },
             transcript: None,
+            waiting: None,
         };
         let at = |section, page, focus, confirm| Panel {
             open: true,
@@ -1483,6 +1990,26 @@ mod tests {
         ];
         for (name, panel, connection) in views {
             let shapes = panel.shapes(Some(&d), connection, Some(&toast), Instant::now());
+            let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+            std::fs::write(path, paint(&shapes)).unwrap();
+        }
+        // The conversation: following, and with a question waiting.
+        let mut asks = d.clone();
+        let c = asks.conversation.as_mut().unwrap();
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: false,
+            text: "Should the ball stay red after it bounces, or flash back to white?".into(),
+        });
+        c.question = true;
+        let page = Panel {
+            open: true,
+            conversation: Some(1),
+            ..Panel::default()
+        };
+        for (name, data) in [("conversation", &d), ("question", &asks)] {
+            let shapes = page.shapes(Some(data), &mac, Some(&toast), Instant::now());
             let path = std::path::Path::new(&dir).join(format!("{name}.png"));
             std::fs::write(path, paint(&shapes)).unwrap();
         }
