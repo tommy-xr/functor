@@ -2298,6 +2298,8 @@ async fn quest_mirrors_the_game_in_the_headset_placement() {
         (mirrored("watched") == false).then_some(())
     })
     .await;
+    // A poll already on the link still lands.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let stopped = mirrored("frames");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(mirrored("frames"), stopped, "polls after the client left");
@@ -2457,8 +2459,12 @@ async fn pair_quest_by_cable(quest: &Quest, mut app: App) -> (App, String, Value
     let devices = app
         .devices_where("the Quest is on the cable, ready", |d| {
             d["attached"].as_array().is_some_and(|a| {
-                a.iter()
-                    .any(|a| a["serial"] == serial.as_str() && a["pairable"] == true)
+                // Its pairing as cleared above, not a scan from before.
+                a.iter().any(|a| {
+                    a["serial"] == serial.as_str()
+                        && a["pairable"] == true
+                        && a["state"]["paired"]["with"] == "nobody"
+                })
             })
         })
         .await;
