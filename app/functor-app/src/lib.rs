@@ -12,6 +12,8 @@ mod folders;
 mod link;
 #[cfg(target_os = "macos")]
 mod pointer;
+#[cfg(target_os = "macos")]
+mod popouts;
 mod router;
 mod server;
 mod session;

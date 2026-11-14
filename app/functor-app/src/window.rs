@@ -24,6 +24,7 @@ use functor_app_core::folders::MAX_RECENTS;
 use functor_app_core::Recent;
 
 use crate::pointer::PointerLock;
+use crate::popouts::{self, Page, PopOuts, Wanted};
 use crate::server::Token;
 use crate::WindowLink;
 
@@ -50,6 +51,11 @@ const SMOKE_PROBE: &str = r#"(() => {
   bar.querySelector(".spacer").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 1 }));
 })();"#;
 
+/// `--window-smoke`'s second probe: the first pane's pop-out button, which
+/// opens a window whose page then names its tab, then closes and docks.
+const SMOKE_POP_OUT: &str =
+    r#"document.querySelector('[aria-label="Pop out into its own window"]').click();"#;
+
 /// How long quitting waits for the runtime thread to stop everything.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -66,8 +72,15 @@ enum UserEvent {
     Zoom,
     /// The title bar's left padding, which `--window-smoke` asks for.
     Inset(f64),
-    /// The game view locking or unlocking the pointer (`pointer.rs`).
-    Pointer(bool),
+    /// The windows the layout lists (`popouts.rs`).
+    Windows(Vec<Wanted>),
+    /// Bring pane N's window to the front.
+    ShowWindow(u64),
+    /// Pane N's window's page named its tab.
+    WindowTitle(u64, String),
+    /// A game view locking or unlocking the pointer (`pointer.rs`), in the
+    /// main window (`None`) or pane N's.
+    Pointer(Option<u64>, bool),
     /// The runtime thread has finished.
     Done,
 }
@@ -121,7 +134,7 @@ pub fn run(
     }));
     let mut recents = Vec::new();
 
-    let smoke_by = Instant::now() + SMOKE_TIMEOUT;
+    let mut smoke_by = Instant::now() + SMOKE_TIMEOUT;
     // Set once stopping starts; past it the window gives up waiting.
     let mut stop_by = None;
     let mut close = Some(close);
@@ -132,15 +145,28 @@ pub fn run(
     let (mut inset, mut dragged) = (None, false);
     let mut fullscreen = false;
     let mut probed = false;
+    // `--window-smoke`'s pop-out: asked for, then the pane its window shows
+    // once that page has named its tab, then docked.
+    let (mut popping, mut popped, mut docked) = (false, None, false);
+    let mut popouts = PopOuts::default();
+    let page = Page {
+        origin: origin.clone(),
+        token: token.clone(),
+    };
+    let titled = event_loop.create_proxy();
+    let pointed = event_loop.create_proxy();
+    // The lock, and the window whose game view holds it (`None`: the main).
     let mut pointer = PointerLock::default();
-    event_loop.run_return(|event, _, flow| {
+    let mut pointer_in: Option<u64> = None;
+    event_loop.run_return(|event, target, flow| {
         match event {
             Event::NewEvents(StartCause::Init) => menu.init_for_nsapp(),
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 if close.is_some() {
-                    let what = match probed {
-                        true => "the title bar did not answer its probe",
-                        false => "the page did not connect",
+                    let what = match (probed, popping) {
+                        (_, true) => "a pane did not pop out and dock",
+                        (true, _) => "the title bar did not answer its probe",
+                        (false, _) => "the page did not connect",
                     };
                     eprintln!(
                         "functor-app: window smoke: {what} within {}s",
@@ -154,8 +180,32 @@ pub fn run(
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
+                window_id,
                 ..
-            } => stop(&mut close, geometry.as_deref(), &window),
+            } if window_id == window.id() => {
+                // The panes' windows go with it (the layout keeps them).
+                popouts = PopOuts::default();
+                stop(&mut close, geometry.as_deref(), &window)
+            }
+            // A pop-out closed by the user (its button, ⌘W): its tabs dock.
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                window_id,
+                ..
+            } => {
+                if let Some(pane) = popouts.close(window_id) {
+                    let _ = webview.evaluate_script(&popouts::closed_script(pane));
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::Moved(_) | WindowEvent::Resized(_),
+                window_id,
+                ..
+            } if window_id != window.id() => {
+                if let Some((pane, at)) = popouts.frame(window_id) {
+                    let _ = webview.evaluate_script(&popouts::frame_script(pane, at));
+                }
+            }
             // Native fullscreen hides the traffic lights, so the page
             // drops its inset for them.
             Event::WindowEvent {
@@ -192,10 +242,55 @@ pub fn run(
                 window.set_maximized(!window.is_maximized())
             }
             Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
-            // Never held for a window another app is in front of.
-            Event::UserEvent(UserEvent::Pointer(lock)) if !lock || window.is_focused() => {
-                if let Some(grab) = pointer.set(lock) {
-                    grab_cursor(&window, grab);
+            Event::UserEvent(UserEvent::Windows(list)) => {
+                let titled = titled.clone();
+                let pointed = pointed.clone();
+                popouts.reconcile(
+                    target,
+                    &list,
+                    &page,
+                    &screens(target),
+                    !smoke,
+                    move |pane, t| {
+                        let _ = titled.send_event(UserEvent::WindowTitle(pane, t));
+                    },
+                    move |pane, lock| {
+                        let _ = pointed.send_event(UserEvent::Pointer(Some(pane), lock));
+                    },
+                );
+                if smoke && popped.is_some_and(|p| !list.iter().any(|w| w.pane == p)) {
+                    docked = true;
+                }
+            }
+            Event::UserEvent(UserEvent::ShowWindow(pane)) => popouts.show(pane),
+            Event::UserEvent(UserEvent::WindowTitle(pane, t)) => {
+                popouts.set_title(pane, &t);
+                // The smoke closes the window once its page is up, as a person would.
+                if smoke && popping && popped.is_none() && t.ends_with(" — Functor") {
+                    eprintln!("[functor-app] window smoke: pane {pane} opened in its own window ({t})");
+                    popped = Some(pane);
+                    if popouts.close_pane(pane) {
+                        let _ = webview.evaluate_script(&popouts::closed_script(pane));
+                    }
+                }
+            }
+            // One lock at a time, held for the window the request came from
+            // and never for one another app is in front of; a game view in
+            // another window that held it loses it.
+            Event::UserEvent(UserEvent::Pointer(from, lock)) => {
+                let focused = holder(&window, &popouts, from).is_some_and(|w| w.is_focused());
+                if lock && focused {
+                    if pointer_in != from {
+                        if let Some(script) = pointer.lose() {
+                            page_script(&webview, &popouts, pointer_in, script);
+                        }
+                    }
+                    pointer_in = from;
+                    if let Some(grab) = pointer.set(true) {
+                        grab_cursor(&window, grab);
+                    }
+                } else if !lock && pointer_in == from && pointer.set(false).is_some() {
+                    grab_cursor(&window, false);
                 }
             }
             Event::DeviceEvent {
@@ -204,17 +299,19 @@ pub fn run(
             } => pointer.motion(delta),
             Event::MainEventsCleared => {
                 if let Some(script) = pointer.flush() {
-                    let _ = webview.evaluate_script(&script);
+                    page_script(&webview, &popouts, pointer_in, &script);
                 }
             }
-            // Another app in front: the cursor is the user's again.
+            // Another window or app in front of the one holding the lock: the
+            // cursor is the user's again.
             Event::WindowEvent {
                 event: WindowEvent::Focused(false),
+                window_id,
                 ..
-            } => {
+            } if holder(&window, &popouts, pointer_in).map(|w| w.id()) == Some(window_id) => {
                 if let Some(script) = pointer.lose() {
                     grab_cursor(&window, false);
-                    let _ = webview.evaluate_script(script);
+                    page_script(&webview, &popouts, pointer_in, script);
                 }
             }
             // The page acts on its own menu commands, as on its buttons.
@@ -245,6 +342,10 @@ pub fn run(
             }
             _ => {}
         }
+        // A pane's window that held the lock is gone (closed, docked).
+        if pointer.locked() && holder(&window, &popouts, pointer_in).is_none() && pointer.set(false).is_some() {
+            grab_cursor(&window, false);
+        }
         // The smoke passes once the bar clears the traffic lights and a
         // press on it has arrived here.
         match inset {
@@ -253,11 +354,19 @@ pub fn run(
                 smoke_failed = true;
                 stop(&mut close, geometry.as_deref(), &window);
             }
-            Some(px) if smoke && close.is_some() && dragged => {
+            Some(px) if smoke && close.is_some() && dragged && !popping => {
                 eprintln!("[functor-app] window smoke: title bar inset {px}px; a press on it arrived");
-                stop(&mut close, geometry.as_deref(), &window);
+                popping = true;
+                smoke_by = Instant::now() + SMOKE_TIMEOUT;
+                if let Err(e) = webview.evaluate_script(SMOKE_POP_OUT) {
+                    eprintln!("functor-app: window smoke: cannot pop a pane out: {e}");
+                }
             }
             _ => {}
+        }
+        if smoke && close.is_some() && docked {
+            eprintln!("[functor-app] window smoke: its window closed and its tabs docked");
+            stop(&mut close, geometry.as_deref(), &window);
         }
         if *flow != ControlFlow::Exit {
             *flow = match (&close, smoke) {
@@ -288,22 +397,7 @@ fn open(
     geometry: Option<&Path>,
     smoke: bool,
 ) -> io::Result<(Window, WebView, (Menu, Submenu))> {
-    let screens: Vec<Rect> = event_loop
-        .primary_monitor()
-        .into_iter()
-        .chain(event_loop.available_monitors())
-        .map(|m| {
-            let at = m.position().to_logical::<f64>(m.scale_factor());
-            let size = m.size().to_logical::<f64>(m.scale_factor());
-            Rect {
-                x: at.x,
-                y: at.y,
-                w: size.width,
-                h: size.height,
-            }
-        })
-        .collect();
-    let at = place(geometry.and_then(load), &screens);
+    let at = place(geometry.and_then(load), &screens(event_loop));
     // The page's own bar is the title bar: the native one is transparent,
     // under the page, with only its traffic lights showing.
     let window = WindowBuilder::new()
@@ -325,33 +419,10 @@ fn open(
     let title = event_loop.create_proxy();
     let ipc = event_loop.create_proxy();
     let loaded = event_loop.create_proxy();
-    let nav_origin = origin.to_string();
     let ipc_origin = origin.to_string();
-    let webview = WebViewBuilder::new()
-        .with_url(format!("{origin}/"))
-        .with_background_color(BACKGROUND)
-        // A press on a window behind others acts at once, so its title bar
-        // drags on the first press, as a native one does.
-        .with_accept_first_mouse(true)
-        // Only on our own page; `server` describes the token's model.
-        .with_initialization_script(format!(
-            "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; window.functorNativePointer = true; }}",
-            serde_json::to_string(origin).expect("a string"),
-            serde_json::to_string(token.reveal()).expect("a string"),
-        ))
-        .with_navigation_handler(move |url| navigate(&url, &nav_origin))
-        // A new page has no game view holding the pointer.
-        .with_on_page_load_handler(move |event, _| {
-            if matches!(event, PageLoadEvent::Started) {
-                let _ = loaded.send_event(UserEvent::Pointer(false));
-            }
-        })
-        .with_new_window_req_handler(|url, _| {
-            if outside(&url) {
-                open_outside(&url);
-            }
-            NewWindowResponse::Deny
-        })
+    let webview = page_webview(&format!("{origin}/"), origin, token, move || {
+        let _ = loaded.send_event(UserEvent::Pointer(None, false));
+    })
         .with_document_title_changed_handler(move |t| {
             let _ = title.send_event(UserEvent::Title(t));
         })
@@ -367,6 +438,63 @@ fn open(
         .map_err(io::Error::other)?;
     let menu = menu().map_err(io::Error::other)?;
     Ok((window, webview, menu))
+}
+
+/// A webview on the app's page at `url`: the session token for our own
+/// origin only, web links to the browser, and nothing else loads. Every
+/// window's page, the main one and each pane's.
+/// `loaded` runs as a page starts loading: it has no game view holding the
+/// pointer.
+pub(crate) fn page_webview<'a>(
+    url: &str,
+    origin: &str,
+    token: &Token,
+    loaded: impl Fn() + 'static,
+) -> WebViewBuilder<'a> {
+    let nav_origin = origin.to_string();
+    WebViewBuilder::new()
+        .with_url(url)
+        .with_background_color(BACKGROUND)
+        // A press on a window behind others acts at once, so its title bar
+        // drags on the first press, as a native one does.
+        .with_accept_first_mouse(true)
+        // Only on our own page; `server` describes the token's model.
+        .with_initialization_script(format!(
+            "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; window.functorNativePointer = true; }}",
+            serde_json::to_string(origin).expect("a string"),
+            serde_json::to_string(token.reveal()).expect("a string"),
+        ))
+        .with_navigation_handler(move |url| navigate(&url, &nav_origin))
+        .with_on_page_load_handler(move |event, _| {
+            if matches!(event, PageLoadEvent::Started) {
+                loaded();
+            }
+        })
+        .with_new_window_req_handler(|url, _| {
+            if outside(&url) {
+                open_outside(&url);
+            }
+            NewWindowResponse::Deny
+        })
+}
+
+/// Every screen, the main one first, in points.
+fn screens<T>(target: &tao::event_loop::EventLoopWindowTarget<T>) -> Vec<Rect> {
+    target
+        .primary_monitor()
+        .into_iter()
+        .chain(target.available_monitors())
+        .map(|m| {
+            let at = m.position().to_logical::<f64>(m.scale_factor());
+            let size = m.size().to_logical::<f64>(m.scale_factor());
+            Rect {
+                x: at.x,
+                y: at.y,
+                w: size.width,
+                h: size.height,
+            }
+        })
+        .collect()
 }
 
 /// Saves where `window` is, hides it and asks the runtime thread to stop
@@ -470,8 +598,9 @@ fn fill_recent(menu: &Submenu, recents: &[Recent]) {
 }
 
 /// The page's messages: `{"recents": [{"name", "path"}, …]}` (at most
-/// [`MAX_RECENTS`]), `{"titlebar": "drag" | "zoom"}`, `{"inset": px}`, or
-/// `{"pointer": "lock" | "unlock"}`.
+/// [`MAX_RECENTS`]), `{"titlebar": "drag" | "zoom"}`, `{"inset": px}`,
+/// `{"windows": [{"pane", "frame", "title"}, …]}`, `{"window": {"show": pane}}`
+/// or `{"pointer": "lock" | "unlock"}`.
 fn parse_ipc(body: &str) -> Option<UserEvent> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -479,7 +608,14 @@ fn parse_ipc(body: &str) -> Option<UserEvent> {
         Recents(Vec<Recent>),
         Titlebar(Press),
         Inset(f64),
+        Windows(Vec<Wanted>),
+        Window(WindowMsg),
         Pointer(Lock),
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum WindowMsg {
+        Show(u64),
     }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -501,8 +637,26 @@ fn parse_ipc(body: &str) -> Option<UserEvent> {
         Msg::Titlebar(Press::Drag) => UserEvent::Drag,
         Msg::Titlebar(Press::Zoom) => UserEvent::Zoom,
         Msg::Inset(px) => UserEvent::Inset(px),
-        Msg::Pointer(lock) => UserEvent::Pointer(matches!(lock, Lock::Lock)),
+        Msg::Windows(list) => UserEvent::Windows(list),
+        Msg::Window(WindowMsg::Show(pane)) => UserEvent::ShowWindow(pane),
+        Msg::Pointer(lock) => UserEvent::Pointer(None, matches!(lock, Lock::Lock)),
     })
+}
+
+/// The window whose game view `pane` names (`None`: the main window's).
+fn holder<'a>(main: &'a Window, popouts: &'a PopOuts, pane: Option<u64>) -> Option<&'a Window> {
+    match pane {
+        None => Some(main),
+        Some(pane) => popouts.window(pane),
+    }
+}
+
+/// Runs `script` in the main window's page (`None`) or pane `to`'s.
+fn page_script(main: &WebView, popouts: &PopOuts, to: Option<u64>, script: &str) {
+    let _ = match to {
+        None => main.evaluate_script(script),
+        Some(pane) => popouts.evaluate(pane, script),
+    };
 }
 
 /// Holds the cursor still (its moves then arrive only as motion deltas), or
@@ -547,7 +701,7 @@ fn navigate(url: &str, origin: &str) -> bool {
 }
 
 /// `url` is on `origin` (scheme, host and port all equal).
-fn own(url: &str, origin: &str) -> bool {
+pub(crate) fn own(url: &str, origin: &str) -> bool {
     url.strip_prefix(origin)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?', '#']))
 }
@@ -570,20 +724,30 @@ fn open_outside(url: &str) {
 /// A window's content or a screen, in points, with y down from the top of the
 /// main screen.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Rect {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+pub(crate) struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 /// Where the window opens: where it was, if its title bar can still be
 /// grabbed on one of `screens`; else that size (or the default), fitted to
 /// the first screen and centred on it.
 fn place(saved: Option<Rect>, screens: &[Rect]) -> Rect {
+    place_sized(saved, screens, DEFAULT, MIN)
+}
+
+/// [`place`] for a window with its own default and least size.
+pub(crate) fn place_sized(
+    saved: Option<Rect>,
+    screens: &[Rect],
+    default: (f64, f64),
+    min: (f64, f64),
+) -> Rect {
     let size = |r: Rect| Rect {
-        w: r.w.max(MIN.0),
-        h: r.h.max(MIN.1),
+        w: r.w.max(min.0),
+        h: r.h.max(min.1),
         ..r
     };
     if let Some(saved) = saved.map(size) {
@@ -591,7 +755,7 @@ fn place(saved: Option<Rect>, screens: &[Rect]) -> Rect {
             return saved;
         }
     }
-    let (w, h) = saved.map_or(DEFAULT, |s| (s.w, s.h));
+    let (w, h) = saved.map_or(default, |s| (s.w, s.h));
     let Some(screen) = screens.first() else {
         return size(Rect {
             x: 0.0,
@@ -600,7 +764,7 @@ fn place(saved: Option<Rect>, screens: &[Rect]) -> Rect {
             h,
         });
     };
-    let (w, h) = (w.min(screen.w).max(MIN.0), h.min(screen.h).max(MIN.1));
+    let (w, h) = (w.min(screen.w).max(min.0), h.min(screen.h).max(min.1));
     Rect {
         x: screen.x + (screen.w - w).max(0.0) / 2.0,
         y: screen.y + (screen.h - h).max(0.0) / 2.0,
@@ -637,25 +801,32 @@ fn load(path: &Path) -> Option<Rect> {
 /// Saves where `window` is, unless it is full screen or minimised (then the
 /// last saved place stays).
 fn save(window: &Window, path: &Path) {
-    if window.fullscreen().is_some() || window.is_minimized() {
+    if window.fullscreen().is_some() {
         return;
     }
-    let scale = window.scale_factor();
-    // The content's corner: what `with_position` places on macOS.
-    let Ok(at) = window.inner_position() else {
+    let Some(rect) = content_rect(window) else {
         return;
-    };
-    let at = at.to_logical::<f64>(scale);
-    let size = window.inner_size().to_logical::<f64>(scale);
-    let rect = Rect {
-        x: at.x,
-        y: at.y,
-        w: size.width,
-        h: size.height,
     };
     if let Err(e) = crate::store::write_whole(path, &format(rect)) {
         eprintln!("functor-app: cannot save {}: {e}", path.display());
     }
+}
+
+/// Where `window`'s content is, in points (its corner is what
+/// `with_position` places on macOS); `None` while minimised.
+pub(crate) fn content_rect(window: &Window) -> Option<Rect> {
+    if window.is_minimized() {
+        return None;
+    }
+    let scale = window.scale_factor();
+    let at = window.inner_position().ok()?.to_logical::<f64>(scale);
+    let size = window.inner_size().to_logical::<f64>(scale);
+    Some(Rect {
+        x: at.x,
+        y: at.y,
+        w: size.width,
+        h: size.height,
+    })
 }
 
 #[cfg(test)]
@@ -721,8 +892,8 @@ mod tests {
         assert!(matches!(press(r#"{"titlebar":"drag"}"#), Some(UserEvent::Drag)));
         assert!(matches!(press(r#"{"titlebar":"zoom"}"#), Some(UserEvent::Zoom)));
         assert!(matches!(press(r#"{"inset":84}"#), Some(UserEvent::Inset(px)) if px == 84.0));
-        assert!(matches!(press(r#"{"pointer":"lock"}"#), Some(UserEvent::Pointer(true))));
-        assert!(matches!(press(r#"{"pointer":"unlock"}"#), Some(UserEvent::Pointer(false))));
+        assert!(matches!(press(r#"{"pointer":"lock"}"#), Some(UserEvent::Pointer(None, true))));
+        assert!(matches!(press(r#"{"pointer":"unlock"}"#), Some(UserEvent::Pointer(None, false))));
         for bad in [
             r#"{"titlebar":"close"}"#,
             r#"{"titlebar":1}"#,

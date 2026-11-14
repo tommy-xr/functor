@@ -36,6 +36,11 @@ export function evidenceUrl(name: string): string {
   return `/evidence/${encodeURIComponent(name)}?token=${encodeURIComponent(TOKEN)}`;
 }
 
+/** The page for pane `pane` in a window of its own; a browser window gets the token as the launch URL does. */
+export function popOutUrl(pane: number): string {
+  return `/?pane=${pane}#token=${encodeURIComponent(TOKEN)}`;
+}
+
 /** The text spoken in `pcm` (16 kHz mono), transcribed by the app on this machine. */
 export async function transcribe(pcm: Int16Array): Promise<string> {
   const res = await fetch(`/transcribe?token=${encodeURIComponent(TOKEN)}`, {
