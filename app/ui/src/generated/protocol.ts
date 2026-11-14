@@ -558,6 +558,12 @@ kind: string, label: string, };
 export type Mini = { corner: Corner, width: number, };
 
 /**
+ * A hidden `functor run native --mirror <tunnel>` drawing the headset's
+ * frames, streamed to the Game tab while it shows.
+ */
+export type Mirror = { "kind": "starting" } | { "kind": "running", debug_url: string, } | { "kind": "failed", reason: string, };
+
+/**
  * The game as the task's baseline was taken: where both paths start.
  */
 export type Moment = { "kind": "taken", frame: number, steps: number, } | { "kind": "missing", reason: string, };
@@ -862,7 +868,12 @@ id: number,
 /**
  * The child's process id once spawned.
  */
-pid: number | null, status: SessionStatus, };
+pid: number | null, status: SessionStatus, 
+/**
+ * A headset session's mirror on this computer (D5); `None` for a
+ * local session, or without a GPU.
+ */
+mirror: Mirror | null, };
 
 export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, 
 /**

@@ -63,9 +63,15 @@ async fn app_in(project: &Path, args: &[&str]) -> App {
 
 /// `app_in` with `envs` set too.
 async fn app_env(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> App {
+    spawn_app(project, &[&["--no-gpu"], args].concat(), envs).await
+}
+
+/// `functor-app --headless` on `project` with `args`: sessions get a GPU
+/// unless `args` says `--no-gpu`.
+async fn spawn_app(project: &Path, args: &[&str], envs: &[(&str, &str)]) -> App {
     let home = tempfile::tempdir().unwrap();
     let mut child = Command::new(BIN)
-        .args(["--headless", "--no-gpu", "--port", "0"])
+        .args(["--headless", "--port", "0"])
         .args(args)
         .arg("-d")
         .arg(project)
@@ -1206,17 +1212,23 @@ impl Quest {
     }
 
     fn capture(&self, name: &str) {
-        let Some(dir) = std::env::var_os("FUNCTOR_QUEST_CAPTURES") else {
-            return;
-        };
-        let addr = self.debug.strip_prefix("http://").unwrap();
-        let mut stream = TcpStream::connect(addr).unwrap();
-        write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes).unwrap();
-        let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        std::fs::write(Path::new(&dir).join(name), &bytes[split + 4..]).unwrap();
+        capture_to(&self.debug, name);
     }
+}
+
+/// `POST /capture` on the debug server at `url`, saved as `name` in
+/// `FUNCTOR_QUEST_CAPTURES` when set.
+fn capture_to(url: &str, name: &str) {
+    let Some(dir) = std::env::var_os("FUNCTOR_QUEST_CAPTURES") else {
+        return;
+    };
+    let addr = url.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(addr).unwrap();
+    write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).unwrap();
+    let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    std::fs::write(Path::new(&dir).join(name), &bytes[split + 4..]).unwrap();
 }
 
 impl Drop for Quest {
@@ -2123,6 +2135,191 @@ async fn quest_runs_the_game_in_the_headset_placement() {
     .await;
 }
 
+/// The headset's frames rendered since `from` (`/state.rendered_frames`), as
+/// `/frames` reports them: (count, frame_us p50, p99, frames that missed a
+/// display refresh).
+fn headset_frames(tunnel: &str, from: u64) -> (usize, u64, u64, usize) {
+    let (_, body) = get(tunnel, "/frames").unwrap();
+    let report: Value = serde_json::from_str(&body).unwrap();
+    let frames: Vec<&Value> = report["frames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rendered_frame"].as_u64().unwrap_or(0) > from)
+        .collect();
+    let mut us: Vec<u64> = frames
+        .iter()
+        .filter_map(|f| f["frame_us"].as_u64())
+        .collect();
+    us.sort_unstable();
+    let at = |q: f64| {
+        us.get(((us.len() as f64 * q) as usize).min(us.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0)
+    };
+    let missed = frames
+        .iter()
+        .filter(|f| f["display_periods"].as_u64().unwrap_or(0) >= 2)
+        .count();
+    (frames.len(), at(0.5), at(0.99), missed)
+}
+
+/// `npm run test:quest-mirror`: the mirror (D5) of a game on the attached
+/// Quest. Paired over the cable to an app with a GPU; Headset runs
+/// hello-cubes there and starts the mirror here, which polls nothing while
+/// no page shows it. A `/stream` client opens it: frames arrive at the
+/// stated rate; the headset's clock pinned and advanced, the mirror shows
+/// the headset's new frame; the client leaves and the headset is no longer
+/// polled. Headset frame time is printed with the mirror closed and open.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_mirrors_the_game_in_the_headset_placement() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let Some(functor) = functor_bin() else { return };
+    let quest = Quest::attach(&["debug.oculus.guardian_pause"]);
+    let projects = tempfile::tempdir().unwrap();
+    let project = cubes_project(projects.path(), &[]);
+    let functor_arg = functor.to_string_lossy().to_string();
+    let app = spawn_app(
+        &project,
+        &["--device-link", "0.0.0.0:0", "--functor", &functor_arg],
+        &[],
+    )
+    .await;
+    let (mut app, id, _) = pair_quest_by_cable(&quest, app).await;
+    let session = |s: &Value| s["session"].clone();
+    app.state_where("the game runs here", 60, |s| {
+        session(s)["status"]["kind"] == "running"
+    })
+    .await;
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    let there = app
+        .state_where("it runs on the headset, mirrored here", 90, |s| {
+            let tunnel = &card_by_id(&s["devices"], &id).unwrap()["tunnel"];
+            session(s)["status"]["debug_url"] == *tunnel
+                && session(s)["mirror"]["kind"] == "running"
+        })
+        .await;
+    let tunnel = session(&there)["status"]["debug_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mirror = session(&there)["mirror"]["debug_url"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let json_at = |url: &str, path: &str| -> Value {
+        let (status, body) = get(url, path).unwrap();
+        assert_eq!(status, 200, "{url}{path}: {body}");
+        serde_json::from_str(&body).unwrap()
+    };
+    let mirrored = |field: &str| json_at(&mirror, "/state?model=0")["mirror"][field].clone();
+    until("the game is on the headset", || {
+        get(&tunnel, "/project")
+            .ok()
+            .filter(|(status, body)| *status == 200 && body.contains("hello-cubes"))
+    })
+    .await;
+
+    // Closed: the headset is not polled.
+    let rendered = |url: &str| {
+        json_at(url, "/state?model=0")["rendered_frames"]
+            .as_u64()
+            .unwrap()
+    };
+    let start = rendered(&tunnel);
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(
+        (mirrored("watched"), mirrored("frames")),
+        (json!(false), json!(0))
+    );
+    let off = headset_frames(&tunnel, start);
+
+    // Open: a client streams the mirror.
+    let addr = mirror.strip_prefix("http://").unwrap().to_string();
+    let viewer = TcpStream::connect(&addr).unwrap();
+    write!(
+        &viewer,
+        "GET /stream?octet=1&w=640 HTTP/1.1\r\nHost: {addr}\r\n\r\n"
+    )
+    .unwrap();
+    let reading = viewer.try_clone().unwrap();
+    std::thread::spawn(move || std::io::copy(&mut &reading, &mut std::io::sink()));
+    until("frames arrive", || {
+        (mirrored("frames").as_u64()? >= 3).then_some(())
+    })
+    .await;
+    let (frames, start) = (mirrored("frames").as_u64().unwrap(), rendered(&tunnel));
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let rate = (mirrored("frames").as_u64().unwrap() - frames) as f64 / 4.0;
+    let on = headset_frames(&tunnel, start);
+    eprintln!(
+        "mirror: {rate:.1} fps, round trip {} ms",
+        mirrored("latency_ms")
+    );
+    for (name, (n, p50, p99, missed)) in [("closed", off), ("open", on)] {
+        eprintln!("headset, mirror {name}: {n} frames in 4 s, frame p50 {p50} us, p99 {p99} us, {missed} missed a refresh");
+    }
+    assert!(rate >= 5.0, "the mirror runs at {rate} fps");
+    assert_eq!(mirrored("error"), Value::Null);
+
+    // The headset's clock pinned, then stepped (the cubes turn half a
+    // radian a second): the mirror shows each new frame.
+    let time = |command: Value| {
+        let (status, body) = post(&tunnel, "/time", &command.to_string()).unwrap();
+        assert_eq!(status, 200, "{body}");
+    };
+    time(json!({"type": "set", "tts": 10.0}));
+    for (step, tts) in [(0, 10.0), (1, 12.0)] {
+        if step > 0 {
+            time(json!({"type": "advance", "dts": 0.5, "frames": 4}));
+        }
+        until("the mirror follows the clock", || {
+            ((mirrored("source_tts").as_f64()? - tts).abs() < 1e-3).then_some(())
+        })
+        .await;
+        let scene = |url: &str| json_at(url, "/scene")["scene"].clone();
+        until("the mirror shows the headset's frame", || {
+            (scene(&mirror) == scene(&tunnel)).then_some(())
+        })
+        .await;
+        capture_to(&mirror, &format!("mirror-{step}.png"));
+        capture_to(&tunnel, &format!("headset-{step}.png"));
+    }
+    let (_, body) = post(&tunnel, "/time", r#"{"type":"resume"}"#).unwrap();
+    eprintln!("resumed: {body}");
+
+    // The client leaves: the headset is no longer polled.
+    viewer.shutdown(std::net::Shutdown::Both).unwrap();
+    until("the mirror stops", || {
+        (mirrored("watched") == false).then_some(())
+    })
+    .await;
+    // A poll already on the link still lands.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let stopped = mirrored("frames");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(mirrored("frames"), stopped, "polls after the client left");
+
+    app.send(json!({"type": "layout", "op": {"type": "place", "placement": "pane"}}))
+        .await;
+    app.state_where("the mirror ends with the headset session", 60, |s| {
+        session(s)["mirror"].is_null() && session(s)["status"]["kind"] == "running"
+    })
+    .await;
+    assert!(
+        get(&mirror, "/state?model=0").is_err(),
+        "the mirror process is gone"
+    );
+    app.send(json!({"type": "forget_device", "device": id}))
+        .await;
+    app.devices_where("it is forgotten", |d| card_by_id(d, &id).is_none())
+        .await;
+}
+
 /// `npm run test:quest-panel`: the headset panel on the attached Quest,
 /// driven by injected presses (`debug.functor.pair_input`). Paired over the
 /// cable to an app whose fake agent leaves a change to review: the wrist
@@ -2262,8 +2459,12 @@ async fn pair_quest_by_cable(quest: &Quest, mut app: App) -> (App, String, Value
     let devices = app
         .devices_where("the Quest is on the cable, ready", |d| {
             d["attached"].as_array().is_some_and(|a| {
-                a.iter()
-                    .any(|a| a["serial"] == serial.as_str() && a["pairable"] == true)
+                // Its pairing as cleared above, not a scan from before.
+                a.iter().any(|a| {
+                    a["serial"] == serial.as_str()
+                        && a["pairable"] == true
+                        && a["state"]["paired"]["with"] == "nobody"
+                })
             })
         })
         .await;

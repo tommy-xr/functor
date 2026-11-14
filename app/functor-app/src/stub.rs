@@ -11,7 +11,8 @@
 //! once a game runs on it, printing each voice status it gets back: `voice 1 heard`,
 //! `voice 1 transcribed <text>`, `voice 1 working`, `voice 1 reloaded`,
 //! `voice 1 failed <why>`, `voice 1 idle`; with `--say-again`, the clip
-//! again as utterance 2 once the first is working.
+//! again as utterance 2 once the first is working. With `--mirror <json>` it answers
+//! `GET /mirror` with that recorded snapshot, for a desktop mirror to draw.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -77,6 +78,11 @@ pub struct StubArgs {
     /// clip again as utterance 2.
     #[arg(long, requires = "say")]
     say_again: bool,
+
+    /// Answer `GET /mirror` with this recorded snapshot (its JSON), so a
+    /// desktop mirror draws it; without, `GET /mirror` is a 404.
+    #[arg(long, value_name = "JSON")]
+    mirror: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,7 +132,17 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
         paused: false,
         rendered: 0,
         revision: 0,
+        mirror: None,
     };
+    if let Some(path) = &args.mirror {
+        match std::fs::read_to_string(path) {
+            Ok(json) => runtime.mirror = Some(json),
+            Err(e) => {
+                say(&format!("ended cannot read {}: {e}", path.display()));
+                return std::process::ExitCode::FAILURE;
+            }
+        }
+    }
     let clip = match &args.say {
         Some(wav) => match std::fs::read(wav)
             .map_err(|e| e.to_string())
@@ -196,6 +212,8 @@ struct Runtime {
     rendered: u64,
     /// `/state.clock.program_revision`: one more per `/reload-project`.
     revision: u64,
+    /// `GET /mirror`'s answer (`--mirror`).
+    mirror: Option<String>,
 }
 
 /// One connection; `Ok(true)` when it paired.
@@ -492,6 +510,9 @@ fn canned(
             (200, "text/plain", "ok".to_string())
         }
         ("POST", "/reload-asset" | "/sync-assets") => (200, "text/plain", "ok".to_string()),
+        ("GET", "/mirror") if runtime.mirror.is_some() => {
+            (200, "application/json", runtime.mirror.clone().unwrap())
+        }
         _ => (404, "text/plain", "not found\n".to_string()),
     };
     Response {

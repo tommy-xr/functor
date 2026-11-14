@@ -29,7 +29,7 @@ use tokio::sync::mpsc::{self, Sender, UnboundedSender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::agent::{Agents, Runner, ViewRoute};
+use crate::agent::{AbortOnDrop, Agents, Runner, ViewRoute};
 use crate::changes::Git;
 
 /// Between `/state` polls (`?model=0`, so the model is never serialized);
@@ -128,6 +128,8 @@ struct Live {
     poster: Option<UnboundedSender<SessionCall>>,
     /// The headset's tunnel when the game runs there.
     tunnel: Option<String>,
+    /// Its mirror child (`functor run native --mirror`), killed with this.
+    mirror: Option<AbortOnDrop>,
 }
 
 impl Live {
@@ -213,13 +215,21 @@ impl Driver {
                 args.extend(["--debug-port", "0"]);
                 self.start(id, &dir, &args, None)
             }
-            Command::StartHeadset { id, dir, tunnel } => {
+            Command::StartHeadset {
+                id,
+                dir,
+                tunnel,
+                mirror,
+            } => {
                 // This load supersedes a stop still waiting for the headset.
                 if let Some(unload) = self.unloads.remove(&tunnel) {
                     unload.abort();
                 }
                 let args = ["run", "vr", "--device-url", tunnel.as_str()];
-                self.start(id, &dir, &args, Some(tunnel.clone()))
+                self.start(id, &dir, &args, Some(tunnel.clone()));
+                if mirror {
+                    self.start_mirror(id, &dir, &tunnel);
+                }
             }
             Command::CheckCli => {
                 let (cli, events) = (self.cli.clone(), self.events.clone());
@@ -665,7 +675,43 @@ impl Driver {
             tail,
             poster: None,
             tunnel,
+            mirror: None,
         });
+    }
+
+    /// Spawns the headset session's mirror: a hidden, paused `functor run
+    /// native` drawing the frames it polls from `tunnel` while the Game tab
+    /// streams it. It dies with the session's `Live`.
+    fn start_mirror(&mut self, id: u64, dir: &Path, tunnel: &str) {
+        let send = |event| {
+            let _ = self.events.send(Event::Session { id, event });
+        };
+        let Some(live) = self.live.as_mut().filter(|l| l.id == id) else {
+            return;
+        };
+        let functor = match self.cli.path() {
+            Ok(functor) => functor,
+            Err(reason) => return send(SessionEvent::MirrorFailed { reason }),
+        };
+        let spawned = tokio::process::Command::new(&functor)
+            .arg("-d")
+            .arg(dir)
+            .args(["run", "native", "--hidden", "--paused", "--debug-port", "0"])
+            .args(["--mirror", tunnel])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
+        match spawned {
+            Ok(child) => {
+                let task = tokio::spawn(supervise_mirror(id, child, self.events.clone()));
+                live.mirror = Some(AbortOnDrop(task));
+            }
+            Err(e) => send(SessionEvent::MirrorFailed {
+                reason: format!("cannot run {}: {e}", functor.display()),
+            }),
+        }
     }
 
     /// Kills the current child and waits until it is gone. A headset is
@@ -794,6 +840,49 @@ async fn supervise(
             },
         }
     }
+}
+
+/// Reports the mirror's listening line and its exit. Aborting the task
+/// drops the child, which kills it.
+async fn supervise_mirror(id: u64, mut child: Child, events: UnboundedSender<Event>) {
+    let send = |event| {
+        let _ = events.send(Event::Session { id, event });
+    };
+    let (line_tx, mut lines) = mpsc::unbounded_channel();
+    forward(child.stdout.take().unwrap(), line_tx.clone());
+    forward(child.stderr.take().unwrap(), line_tx);
+    let mut tail = VecDeque::new();
+    let mut open = true;
+    let status = loop {
+        tokio::select! {
+            status = child.wait() => break status,
+            line = lines.recv(), if open => match line {
+                Some(line) => {
+                    if let Some(debug_url) = listening_url(&line) {
+                        send(SessionEvent::MirrorListening { debug_url });
+                    }
+                    if tail.len() == TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+                None => open = false,
+            },
+        }
+    };
+    // As in `supervise`: the error line may still be in the pipes.
+    let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
+    while let Ok(Some(line)) = tokio::time::timeout_at(deadline, lines.recv()).await {
+        tail.push_back(line);
+    }
+    let reason = match status {
+        Ok(status) => match cause(&tail) {
+            Some(line) => format!("the mirror stopped ({status}): {line}"),
+            None => format!("the mirror stopped ({status})"),
+        },
+        Err(e) => format!("the mirror stopped: {e}"),
+    };
+    send(SessionEvent::MirrorFailed { reason });
 }
 
 /// `dir`'s project files and their modification times: any edit, addition

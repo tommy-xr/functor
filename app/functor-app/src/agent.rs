@@ -768,7 +768,7 @@ async fn put_context(base: &str, token: &str, context: &str) {
 }
 
 /// Aborts its task when dropped (a cancelled run drops it mid-await).
-struct AbortOnDrop(JoinHandle<()>);
+pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {

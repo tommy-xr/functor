@@ -1455,6 +1455,7 @@ mod tests {
                 surface: None,
                 timeline: Default::default(),
             },
+            mirror: None,
         });
         s
     }
