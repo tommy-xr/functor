@@ -36,7 +36,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
-use functor_app_core::panel::{Panel as CorePanel, PanelAction, Role};
+use functor_app_core::panel::{Panel as CorePanel, PanelAction, Role, Step};
 use functor_app_core::route::Destination;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
@@ -1163,7 +1163,7 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
             stance: wire_stance(c.stance),
             activity: c.activity.clone(),
             question: c.question,
-            earlier: c.earlier,
+            first: c.first,
             items: (c.items.iter())
                 .map(|i| panel::Said {
                     role: match i.role {
@@ -1176,6 +1176,17 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                     text: i.text.clone(),
                 })
                 .collect(),
+        }),
+        progress: p.progress.as_ref().map(|g| panel::Progress {
+            step: match g.step {
+                Step::Received => panel::Step::Received,
+                Step::Transcribed => panel::Step::Transcribed,
+                Step::Processing => panel::Step::Processing,
+                Step::Agent => panel::Step::Agent,
+                Step::Outcome => panel::Step::Outcome,
+            },
+            detail: g.detail.clone(),
+            failed: g.failed,
         }),
     }
 }

@@ -3,7 +3,7 @@
 //! which become the client messages the desktop UI sends for the same
 //! choices.
 
-use crate::activity::{classify, CallKind, Stance};
+use crate::activity::{classify, question, Activity, CallKind, Stance};
 use crate::decision::{count, Depth, Kind};
 use crate::devices::{DeviceState, LinkCommand};
 use crate::layout::Placement;
@@ -44,6 +44,28 @@ pub struct Panel {
     /// The current task's conversation (D41): the desktop chat's current
     /// task, else `now`.
     pub conversation: Option<Conversation>,
+    /// Where this headset's request in flight is (D43).
+    pub progress: Option<Progress>,
+}
+
+/// One request's step (D43), as one line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub step: Step,
+    /// The words heard, where it went, what the agent is doing, or the
+    /// outcome; may be empty.
+    pub detail: String,
+    /// The step failed: `detail` says why.
+    pub failed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Received,
+    Transcribed,
+    Processing,
+    Agent,
+    Outcome,
 }
 
 /// A task's recent conversation as text: no file contents, diffs or tool
@@ -57,8 +79,9 @@ pub struct Conversation {
     pub activity: String,
     /// The agent asked a question it waits on.
     pub question: bool,
-    /// Older items than these exist.
-    pub earlier: bool,
+    /// The index of `items[0]` among all the task's items: older ones stay
+    /// on the desktop, and a headset can hold its place as the window moves.
+    pub first: u32,
     /// Oldest first, at most [`SAID`].
     pub items: Vec<Said>,
 }
@@ -170,10 +193,7 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
                 title: t.title.clone(),
                 stance: stance(t),
                 queued: t.status == TaskStatus::Queued,
-                activity: activity
-                    .and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
-                    .cloned()
-                    .unwrap_or_default(),
+                activity: activity_line(activity),
                 decision: decision(state, t),
             }
         })
@@ -213,8 +233,15 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
             line: r.line.clone(),
             moves: r.moves.clone(),
         });
-    let current = state.current_task.get(&project).copied().flatten();
-    let conversation = current
+    // The task this headset last opened, else the one in front.
+    let opened = state.panel_tasks.get(device).copied();
+    let conversation = opened
+        .filter(|id| {
+            state
+                .tasks
+                .iter()
+                .any(|t| t.id == *id && t.project == project)
+        })
         .or(now)
         .and_then(|id| {
             state
@@ -231,7 +258,47 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
         waiting,
         route,
         conversation,
+        progress: progress(state, device),
     }
+}
+
+/// This headset's latest spoken request still followed by the app: queued
+/// (processing, where it went), then the agent's stance and doing.
+// Until the app keeps one progress record per request (D43), the voice jobs
+// are what the core knows; the steps before (received, transcribed) and the
+// outcome are the voice status's.
+fn progress(state: &AppState, device: &str) -> Option<Progress> {
+    let job = state.voice.iter().rev().find(|j| j.device == device)?;
+    let task = state.tasks.iter().find(|t| t.id == job.task)?;
+    let routed = |t: &Task| {
+        let spoken = t.transcript.iter().rev().find_map(|i| match i {
+            Item::User {
+                spoken: Some(s), ..
+            } => Some(s),
+            _ => None,
+        });
+        spoken.and_then(|s| s.route.clone()).unwrap_or_default()
+    };
+    Some(match job.run {
+        None => Progress {
+            step: Step::Processing,
+            detail: routed(task),
+            failed: false,
+        },
+        Some(_) => {
+            let activity = state.activity.get(&task.id);
+            let stance = activity.map_or(Stance::Thinking, |a| a.stance);
+            let doing = activity_line(activity);
+            Progress {
+                step: Step::Agent,
+                detail: match (stance, doing.is_empty()) {
+                    (Stance::Thinking, _) | (_, true) => "thinking".to_string(),
+                    (_, false) => format!("working: {doing}"),
+                },
+                failed: false,
+            }
+        }
+    })
 }
 
 /// `task`'s latest [`SAID`] items. Each run of tool calls is one step line
@@ -264,8 +331,12 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
         });
     };
     for item in &task.transcript {
-        let step = matches!(item, Item::Tool { name, .. } if name != "AskUserQuestion");
-        if !step {
+        let call = match item {
+            Item::Tool { name, input, .. } => Some(classify(name, input)),
+            _ => None,
+        };
+        let ask = call.as_ref().is_some_and(|c| c.kind == CallKind::Ask);
+        if call.is_none() || ask {
             steps = 0;
         }
         match item {
@@ -275,13 +346,17 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
                     push(&mut items, Role::App, false, line);
                 }
             }
-            Item::Agent { text, .. } => push(&mut items, Role::Agent, false, text),
-            Item::Tool { name, input, .. } if name == "AskUserQuestion" => {
-                let question = input["questions"][0]["question"].as_str().unwrap_or("");
-                push(&mut items, Role::Agent, false, question);
+            Item::Agent { text, .. } => push(&mut items, Role::Agent, false, &without_code(text)),
+            Item::Tool { input, .. } if ask => {
+                push(
+                    &mut items,
+                    Role::Agent,
+                    false,
+                    &without_code(question(input)),
+                );
             }
-            Item::Tool { name, input, .. } => {
-                let label = classify(name, input).label;
+            Item::Tool { .. } => {
+                let label = call.map(|c| c.label).unwrap_or_default();
                 steps += 1;
                 if steps > 1 {
                     items.pop();
@@ -292,11 +367,14 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
                 };
                 push(&mut items, Role::App, false, &text);
             }
-            Item::Finished { ok, summary } => {
-                let head = if *ok { "Done" } else { "Failed" };
-                let text = match summary.as_deref().map(str::trim) {
-                    Some(s) if !s.is_empty() => format!("{head}: {s}"),
-                    _ => head.to_string(),
+            // As the chat says it: a success's summary is the agent's last
+            // message, already above; a failure, its first line.
+            Item::Finished { ok: true, .. } => push(&mut items, Role::App, false, "Done"),
+            Item::Finished { ok: false, summary } => {
+                let first = summary.as_deref().and_then(|s| s.lines().next());
+                let text = match first.map(str::trim) {
+                    Some(s) if !s.is_empty() => format!("Failed: {}", crate::print::cut(s, 120)),
+                    _ => "Failed".to_string(),
                 };
                 push(&mut items, Role::App, false, &text);
             }
@@ -306,18 +384,15 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
             Item::Usage { .. } | Item::Walkthrough { .. } => {}
         }
     }
-    let earlier = items.len() > SAID;
-    items.drain(..items.len().saturating_sub(SAID));
+    let first = items.len().saturating_sub(SAID);
+    items.drain(..first);
     Conversation {
         task: task.id,
         title: task.title.clone(),
         stance: activity.map_or(Stance::Done, |a| a.stance),
-        activity: activity
-            .and_then(|a| a.calls.first())
-            .map(|c| c.label.clone())
-            .unwrap_or_default(),
+        activity: activity_line(activity),
         question: activity.is_some_and(|a| a.calls.iter().any(|c| c.kind == CallKind::Ask)),
-        earlier,
+        first: first as u32,
         items,
     }
 }
@@ -349,6 +424,33 @@ fn decision(state: &AppState, task: &Task) -> Option<PanelDecision> {
     })
 }
 
+/// `text` without code: a fenced block becomes one "[code on the desktop]"
+/// line, and diff headers go. Paths the agent writes in prose stay, as the
+/// chat shows them.
+fn without_code(text: &str) -> String {
+    let mut out = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if !fenced {
+                out.push("[code on the desktop]");
+            }
+            fenced = !fenced;
+        } else if !fenced && !line.starts_with("diff --git") && !line.starts_with("@@ ") {
+            out.push(line);
+        }
+    }
+    out.join("\n")
+}
+
+/// What a task is doing: its running call's label, else its error, else
+/// nothing.
+fn activity_line(a: Option<&Activity>) -> String {
+    a.and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// For each connected headset whose link is new (a relink may come before
 /// the old one drops), or whose panel changed and was last sent at least
 /// [`RESEND_MS`] ago, a `LinkCommand::Panel`; forgets the rest.
@@ -364,11 +466,15 @@ pub(crate) fn refresh_panels(state: &mut AppState, commands: &mut Vec<Command>) 
         .panels
         .retain(|id, _| connected.iter().any(|(c, _)| c == id));
     for (device, conn) in connected {
-        let panel = panel(state, &device);
         let sent = state.panels.get(&device);
         let relinked = sent.is_none_or(|(c, ..)| *c != conn);
-        let due = sent.is_none_or(|(_, p, at)| *p != panel && state.clock >= at + RESEND_MS);
-        if relinked || due {
+        // Built only when it could be sent.
+        if !relinked && sent.is_some_and(|(_, _, at)| state.clock < at + RESEND_MS) {
+            continue;
+        }
+        let panel = panel(state, &device);
+        let changed = sent.is_none_or(|(_, p, _)| *p != panel);
+        if relinked || changed {
             let at = state.clock;
             state
                 .panels

@@ -894,7 +894,7 @@ async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
     );
     let decision = task.decision.as_ref().unwrap();
     assert_eq!(decision.size, "+1 -1, 1 file, game logic");
-    // The task's conversation, as text: the request, the step, the result.
+    // The task's conversation, as text: the request, the step, the outcome.
     let c = panel.conversation.as_ref().unwrap();
     let said: Vec<(Role, &str)> = c.items.iter().map(|i| (i.role, i.text.as_str())).collect();
     assert_eq!(c.task, id);
@@ -903,7 +903,7 @@ async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
         [
             (Role::You, "Rename x"),
             (Role::App, "editing game.fun"),
-            (Role::App, "Done: Renamed x.")
+            (Role::App, "Done")
         ]
     );
     let link = quest.link().unwrap();
