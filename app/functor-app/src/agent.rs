@@ -1015,7 +1015,7 @@ impl Agent for FakeAgent {
         tx: mpsc::Sender<mis_types::AgentEvent>,
     ) -> BoxFut<'a> {
         Box::pin(async move {
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = crate::this_app()?;
             // What a test checks reached the runner.
             eprintln!("[fake agent] setup: {:?}", opts.setup);
             command.arg("--replay-events").arg(&self.fixture);

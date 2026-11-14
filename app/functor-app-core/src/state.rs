@@ -3645,6 +3645,7 @@ mod tests {
             version: Some("0.1.2".to_string()),
             cause: crate::cli::CliCause::TooOld,
             bundled: false,
+            build: None,
         }
     }
 
