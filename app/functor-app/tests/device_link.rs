@@ -1892,16 +1892,51 @@ async fn quest_runs_a_project_over_the_link() {
     };
     assert_eq!(forwards(), "", "no adb forward");
 
+    // Its status card: connected, on the boot scene.
+    let heading = {
+        let tunnel = tunnel.clone();
+        move || -> Option<String> {
+            let (_, body) = get(&tunnel, "/state?model=0").ok()?;
+            let state: Value = serde_json::from_str(&body).ok()?;
+            state["load_status"][0].as_str().map(str::to_string)
+        }
+    };
+    until("the card says connected", || {
+        (heading().as_deref() == Some("CONNECTED")).then_some(())
+    })
+    .await;
+
     let projects = tempfile::tempdir().unwrap();
     let big: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
     let project = cubes_project(projects.path(), &[("big.bin", &big)]);
     let path = tempfile::tempdir().unwrap();
+    // The card's headings while the push runs, in order.
+    let pushing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let headings = std::thread::spawn({
+        let (pushing, heading) = (pushing.clone(), heading.clone());
+        move || {
+            let mut seen: Vec<String> = Vec::new();
+            while pushing.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(now) = heading().filter(|now| seen.last() != Some(now)) {
+                    seen.push(now);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            seen
+        }
+    });
     let started = Instant::now();
     let run = run_vr(&functor, &project, &["--device-url", &tunnel], path.path());
     run.line("synced ");
     run.line("[debug-server] listening on");
     eprintln!("pushed and loaded over the link in {:?}", started.elapsed());
     assert_eq!(forwards(), "", "the push used no adb forward");
+    until("the card hides once the game runs", || heading().is_none().then_some(())).await;
+    pushing.store(false, std::sync::atomic::Ordering::Relaxed);
+    let headings = headings.join().unwrap();
+    eprintln!("the card showed {headings:?}");
+    assert_eq!(headings.first().map(String::as_str), Some("CONNECTED"), "{headings:?}");
+    assert!(headings.iter().any(|h| h == "RECEIVING PROJECT"), "{headings:?}");
 
     // Running there: its source, frames rendered and the clock stepping.
     let state = |path: &str| -> Value {
@@ -1949,6 +1984,10 @@ async fn quest_runs_a_project_over_the_link() {
     assert!(project_text().contains("boot scene"), "{}", project_text());
     app.devices_where("the card names nothing", |d| {
         card_by_id(d, &id).is_some_and(|c| c["state"]["project"].is_null())
+    })
+    .await;
+    until("the card says connected again", || {
+        (heading().as_deref() == Some("CONNECTED")).then_some(())
     })
     .await;
     app.send(json!({"type": "forget_device", "device": id}))
