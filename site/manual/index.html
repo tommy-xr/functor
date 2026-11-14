@@ -26,7 +26,8 @@
 
     <div class="docs-layout">
       <!-- Four labelled groups, in the order a reader meets them: run something,
-           understand it, drive it from a tool, then look things up. -->
+           understand it, drive it from a tool, then look things up. The desktop
+           app is its own page (app/), linked from Tooling. -->
       <nav class="docs-nav docs-nav-grouped" aria-label="Manual sections">
         <div class="docs-nav-group" role="group" aria-labelledby="nav-start">
           <div class="docs-nav-group-label" id="nav-start">Start</div>
@@ -43,6 +44,7 @@
         <div class="docs-nav-group" role="group" aria-labelledby="nav-tooling">
           <div class="docs-nav-group-label" id="nav-tooling">Tooling</div>
           <a href="#agents">Driving with agents</a>
+          <a class="docs-nav-out" href="app/">The desktop app <span aria-hidden="true">↗</span></a>
         </div>
         <div class="docs-nav-group" role="group" aria-labelledby="nav-reference">
           <div class="docs-nav-group-label" id="nav-reference">Reference</div>
@@ -809,6 +811,10 @@ let changed = (a: float, b: float): bool =&gt; a != b</pre>
             <a href="https://modelcontextprotocol.io">MCP</a> server over stdio, so any
             MCP-speaking coding agent can build, run, inspect, and rewind your game — with no
             bespoke script and no screen.
+          </p>
+          <p class="docs-callout">
+            Rather have a window? <a href="app/">The desktop app</a> puts your game beside an
+            agent that already has these tools, with a timeline and Keep / Revert.
           </p>
           <p>Register it with Claude Code:</p>
           <pre class="shell">claude mcp add functor -- functor mcp</pre>

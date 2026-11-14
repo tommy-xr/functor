@@ -161,6 +161,7 @@
         The app is a preview, on macOS first, and is not in the prebuilt download yet. To try it
         today, build it from source: <code>npm run build:app &amp;&amp; npm run build:cli</code>,
         then <code>./target/release/functor -d &lt;project&gt;</code>.
+        <a href="manual/app/">Read the manual page.</a>
       </p>
     </section>
 
@@ -232,18 +233,23 @@
           <p>
             Some changes have to be judged from inside the game. Functor reloads a running game
             on a Meta Quest the same way it does on the desktop.
+            <a href="manual/app/#headset">How to set it up.</a>
           </p>
         </div>
         <ul class="state-list">
           <li>
             <span class="tag tag-now">Works today</span>
-            <code>functor run vr</code> runs your project on the headset and reloads it every
-            time you save, with an indicator in view.
+            Pair by matching a six-digit code, or with one click over the cable. Then the app
+            runs your project on the headset over Wi-Fi and reloads it every time you save.
           </li>
           <li>
-            <span class="tag tag-soon">In progress</span>
-            Pairing with the desktop app over Wi-Fi: match a six-digit code, nothing to type in
-            the headset. Planned after that: describing a change while you play.
+            <span class="tag tag-new">New</span>
+            Hold the right thumbstick and say what should change; a toast in the headset follows
+            the agent to the reload. Not yet used by a person in the headset.
+          </li>
+          <li>
+            <span class="tag tag-soon">Planned</span>
+            A panel inside the headset.
           </li>
         </ul>
       </div>

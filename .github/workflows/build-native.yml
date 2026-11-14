@@ -79,7 +79,9 @@ jobs:
       # macOS only, as the app's window is.
       - name: Test speech-to-text with whisper.cpp
         if: matrix.os == 'macos-latest'
-        run: cargo test -p functor-stt --features whisper
+        run: |
+          cargo test -p functor-stt --features whisper
+          cargo check -p functor-app --features whisper
 
       - name: Validate API documentation generation
         run: npm run check:docs
@@ -120,6 +122,12 @@ jobs:
           cargo run -q -p functor-app -- --window-smoke -d examples/primitives --ui-dir app/ui/dist
         env:
           FUNCTOR_APP_HOME: ${{ runner.temp }}/functor-app-home
+
+      # Functor.app's layout, Info.plist, icon and ad-hoc signature, bundled
+      # from stub binaries (no release build).
+      - name: Test the macOS app bundle
+        if: matrix.os == 'macos-latest'
+        run: npm run test:package-app
 
       # `functor mcp --http` against the real binary (cargo builds it for the
       # test; no GPU: its one launched game runs headless).
