@@ -202,7 +202,7 @@ function MirrorGame({
       <div className="mirror-bar">
         <div className="mirror-where">
           <p className="headset-title">{note.title}</p>
-          {note.detail && <p className="headset-detail">{note.detail}</p>}
+          {note.detail && <p className="headset-detail" title={note.detail}>{note.detail}</p>}
         </div>
         <button
           type="button"

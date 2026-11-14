@@ -33,6 +33,17 @@ async function mirror(browser, width, height) {
   const view = () => page.getByTestId("game-view");
   const camera = () => view().getByRole("group", { name: "Camera" });
   const picture = async () => view().locator("img").screenshot();
+  // The picture once it holds still: two reads 300 ms apart that match.
+  const settled = async () => {
+    let last = await picture();
+    for (let i = 0; i < 30; i++) {
+      await page.waitForTimeout(300);
+      const now = await picture();
+      if ((await difference(page, last, now)) < 0.5) return now;
+      last = now;
+    }
+    throw new Error("the mirrored picture never held still");
+  };
   const store = tempDir("functor-stub-");
   let quest;
   try {
@@ -51,11 +62,16 @@ async function mirror(browser, width, height) {
     await expect(view().getByRole("status")).toHaveText("Mirrored from headset");
     await expect(view()).toContainText("Running on Quest 3");
     await expect(view()).toContainText(/Frame \d+ · Playing/);
-    await expect(view()).toContainText(/\d+ fps · \d+ ms/, { timeout: 15_000 });
     await expect(view().locator("img")).toBeVisible();
+    // The rate arriving keeps the strip's height, so the picture is not
+    // resized (which restarts its stream and blanks it).
+    const strip = async () => (await view().locator(".mirror-bar").boundingBox()).height;
+    const before = await strip();
+    await expect(view()).toContainText(/\d+ fps · \d+ ms/, { timeout: 15_000 });
+    expect(await strip()).toBe(before);
     await expect(view().getByRole("button", { name: "Run it on this computer" })).toBeVisible();
     await expect(camera().getByRole("button", { name: "Head" })).toHaveAttribute("aria-pressed", "true");
-    const head = await picture();
+    const head = await settled();
     await shot(page, `mirror-head-${width}`);
 
     // A parked camera: the same frame from above; Head brings the head view back.
