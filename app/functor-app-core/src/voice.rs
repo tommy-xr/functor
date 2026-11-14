@@ -3,6 +3,8 @@
 //! progress goes back to the headset as stages. The shell sends `Heard` and
 //! `Transcribed` itself; these are the stages after.
 
+use serde::{Deserialize, Serialize};
+
 use crate::devices::LinkCommand;
 use crate::route::By;
 use crate::layout::Placement;
@@ -14,6 +16,77 @@ use crate::tasks::{Item, Spoken};
 /// counted only while the headset is linked, as `functor run vr` holds
 /// the push for a headset that is away until it is back.
 pub const RELOAD_GRACE_MS: u64 = 15_000;
+
+/// How long the line of a request that ended without a message stays.
+pub const HEARD_MS: u64 = 4_000;
+
+/// A headset's request before it is a message in a task: the chat shows it
+/// as it arrives and is transcribed, and a moment after it ends without
+/// one. At most one per headset.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Hearing {
+    pub device: String,
+    /// The headset's name.
+    pub headset: String,
+    pub utterance: u64,
+    pub stage: HearingStage,
+    /// When (`AppState::clock`) it reached `stage`.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub since: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HearingStage {
+    /// Its clip is arriving.
+    Arriving,
+    /// Its clip is whole and being turned into text.
+    Transcribing,
+    /// Its text, on its way into a task.
+    Placing { text: String },
+    /// Cancelled in the headset.
+    Cancelled,
+    Failed { reason: String },
+}
+
+/// Headset `device`'s request `utterance` is at `stage` now.
+pub(crate) fn hear(state: &mut AppState, device: &str, utterance: u64, stage: HearingStage) {
+    let Some(headset) = state.devices.list.iter().find(|d| d.id == device) else {
+        return;
+    };
+    let hearing = Hearing {
+        device: device.to_string(),
+        headset: headset.name.clone(),
+        utterance,
+        stage,
+        since: state.clock,
+    };
+    state.hearing.retain(|h| h.device != device);
+    state.hearing.push(hearing);
+}
+
+/// Request `utterance` of `device` failed, if it is still the one heard.
+pub(crate) fn not_heard(state: &mut AppState, device: &str, utterance: u64, reason: &str) {
+    if state.hearing.iter().any(|h| h.device == device && h.utterance == utterance) {
+        let reason = reason.to_string();
+        hear(state, device, utterance, HearingStage::Failed { reason });
+    }
+}
+
+/// Drops the lines of requests that ended a while ago or whose headset
+/// left; whether any went.
+pub(crate) fn age_hearing(state: &mut AppState) -> bool {
+    let before = state.hearing.len();
+    let (clock, devices) = (state.clock, &state.devices);
+    state.hearing.retain(|h| {
+        let ended = matches!(h.stage, HearingStage::Cancelled | HearingStage::Failed { .. });
+        connected(devices, &h.device) && !(ended && clock.saturating_sub(h.since) >= HEARD_MS)
+    });
+    state.hearing.len() != before
+}
 
 /// A transcribed utterance from a linked headset.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -35,7 +35,7 @@ use crate::tasks::{
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
-use crate::voice::{self, Route, Stage, Utterance};
+use crate::voice::{self, HearingStage, Route, Stage, Utterance};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -87,6 +87,8 @@ pub struct AppState {
     /// Decisions on where speech went that can still be moved (D29), with
     /// their lines and moves, refreshed after every event.
     pub routes: Vec<Routed>,
+    /// Headsets' requests not yet messages in a task.
+    pub hearing: Vec<voice::Hearing>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -248,6 +250,7 @@ impl AppState {
             decisions: BTreeMap::new(),
             queues: BTreeMap::new(),
             routes: Vec::new(),
+            hearing: Vec::new(),
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -797,6 +800,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             heard(&mut state, conn, utterance, text, context, &mut commands),
             false,
         ),
+        Event::Link(LinkEvent::Hearing {
+            conn,
+            utterance,
+            stage,
+        }) => match state.devices.list.iter().find(|d| d.conn == Some(conn)) {
+            Some(device) => {
+                let device = device.id.clone();
+                voice::hear(&mut state, &device, utterance, stage);
+                (true, false)
+            }
+            None => (false, false),
+        },
         Event::Review { task, run, event } => {
             (on_review(&mut state, task, run, event, &mut commands), false)
         }
@@ -1149,6 +1164,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
+    let aged = voice::age_hearing(&mut state);
     prune_highlight(&mut state);
     let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
@@ -1159,6 +1175,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let routes = route::routes(&state);
     let changed = changed
         || started
+        || aged
         || state.highlight != highlighted
         || state.activity != activity
         || state.decisions != decided
@@ -1375,6 +1392,7 @@ fn opened(
         decisions: _,
         queues: _,
         routes: _,
+        hearing: _,
         routing: _,
         routed: _,
         route_seq: _,
@@ -2174,7 +2192,11 @@ fn create_task(
     if let (Some(wait), false) = (&wait, state.auto_start) {
         return Err(wait.reason());
     }
-    state.current_task.insert(project.clone(), Some(id));
+    // A typed task is its page's; a spoken one is shown by each page unless
+    // that would switch under its user (`routes`).
+    if spoken.is_none() {
+        state.current_task.insert(project.clone(), Some(id));
+    }
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,
@@ -2483,11 +2505,14 @@ fn heard(
         title: None,
         project: state.active.clone().unwrap_or_default(),
     };
+    let placing = HearingStage::Placing { text: u.text.clone() };
+    voice::hear(state, &u.device, utterance, placing);
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
+            voice::not_heard(state, &u.device, utterance, &reason);
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
-            return false;
+            return true;
         }
     };
     // With a choice to make, the model router decides, the rule its fallback.
@@ -2604,6 +2629,8 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
 /// Records where `u` landed in task `task` (its last message): the line
 /// on the message, and the decision while it can be moved.
 fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, commands: &mut Vec<Command>) {
+    // A message now: the chat shows it where it landed.
+    state.hearing.retain(|h| h.device != u.device);
     let line = route::line(state, task, landed, u.by);
     let root = PathBuf::from(&state.repo_root);
     let t = state.tasks.iter_mut().find(|t| t.id == task).expect("landed");
@@ -2786,8 +2813,9 @@ fn voice_task(
             true
         }
         Err(reason) => {
+            voice::not_heard(state, &u.device, u.utterance, &reason);
             voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
-            false
+            true
         }
     }
 }
@@ -7879,6 +7907,70 @@ mod tests {
         };
         let (_, commands) = update(s, session(id, polled_clock(9, clock)));
         assert_eq!(stages(&commands), [(1, Stage::Reloaded)]);
+    }
+
+    fn hearing(conn: u64, utterance: u64, stage: HearingStage) -> Event {
+        Event::Link(LinkEvent::Hearing {
+            conn,
+            utterance,
+            stage,
+        })
+    }
+
+    fn heard_stage(s: &AppState) -> Option<HearingStage> {
+        s.hearing.iter().find(|h| h.device == "aa").map(|h| h.stage.clone())
+    }
+
+    /// A request shows from its first part: arriving, transcribing, its
+    /// text on the way, then gone as it becomes a message (whose decision
+    /// names what was said); one that ends without one stays a moment.
+    #[test]
+    fn a_request_is_shown_until_it_is_a_message() {
+        let (s, _) = update(voice_ready(), hearing(0, 1, HearingStage::Arriving));
+        assert_eq!(s.hearing[0].headset, "Quest aa");
+        assert_eq!(heard_stage(&s), Some(HearingStage::Arriving));
+        let (s, _) = update(s, hearing(0, 1, HearingStage::Transcribing));
+        assert_eq!(heard_stage(&s), Some(HearingStage::Transcribing));
+        let (s, commands) = update(s, said("go", 1));
+        let placing = HearingStage::Placing { text: "go".into() };
+        assert_eq!(heard_stage(&s), Some(placing), "the task is being made");
+        let Some(Command::ReserveTask { voice, .. }) = commands
+            .into_iter()
+            .find(|c| matches!(c, Command::ReserveTask { .. }))
+        else {
+            panic!("reserved");
+        };
+        let reserved = Event::NewTask {
+            id: Ok(4),
+            message: "go".to_string(),
+            harness: Harness::Claude,
+            voice,
+            scope: Default::default(),
+        };
+        let (s, _) = update(s, reserved);
+        assert_eq!(heard_stage(&s), None);
+        assert_eq!((s.routes[0].said.as_str(), s.routes[0].headset.as_str()), ("go", "Quest aa"));
+        // Each page decides whether to show it.
+        assert_eq!(s.current_task.get("examples/a"), None);
+
+        let (s, _) = update(s, hearing(0, 2, HearingStage::Cancelled));
+        assert_eq!(heard_stage(&s), Some(HearingStage::Cancelled));
+        let later = AppState {
+            clock: s.clock + voice::HEARD_MS,
+            ..s
+        };
+        let (s, _) = update(later, Event::Link(LinkEvent::Tick));
+        assert_eq!(heard_stage(&s), None);
+
+        // Nowhere to go: failed, with why.
+        let mut stopped = voice_ready();
+        stopped.session.as_mut().unwrap().status = SessionStatus::Stopped;
+        let (s, _) = update(stopped, hearing(0, 3, HearingStage::Transcribing));
+        let (s, _) = update(s, said("go", 3));
+        assert!(matches!(heard_stage(&s), Some(HearingStage::Failed { reason }) if reason.contains("not running a game")));
+        // A headset that leaves takes its line.
+        let (s, _) = update(s, link(0, false));
+        assert_eq!(heard_stage(&s), None);
     }
 
     fn link(conn: u64, linked: bool) -> Event {

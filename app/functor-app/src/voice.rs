@@ -65,6 +65,11 @@ fn failed(utterance: Option<u64>, reason: &str) -> Heard {
 }
 
 impl Assembler {
+    /// The utterance whose clip is arriving.
+    pub fn arriving(&self) -> Option<u64> {
+        self.clip.as_ref().map(|c| c.utterance)
+    }
+
     /// Takes one message from the voice channel at `now` (ms).
     pub fn receive(&mut self, data: &[u8], now: u64) -> Option<Heard> {
         let msg = match Clip::decode(data) {
