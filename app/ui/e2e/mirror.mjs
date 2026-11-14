@@ -29,6 +29,7 @@ async function mirror(browser, width, height) {
   let page = await browser.newPage({ viewport: { width, height } });
   const app = watchState(page);
   const errors = watchErrors(page);
+  page.on("requestfailed", (r) => console.log("FAILED", r.method(), r.url(), r.failure()?.errorText));
   const view = () => page.getByTestId("game-view");
   const camera = () => view().getByRole("group", { name: "Camera" });
   const picture = async () => view().locator("img").screenshot();

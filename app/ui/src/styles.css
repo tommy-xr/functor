@@ -1762,21 +1762,27 @@ blockquote {
   font-variant-numeric: tabular-nums;
 }
 
-/* The mirror (D5): the headset's frames under one strip that says where the
-   game runs, the way back, the rate and the camera. */
+/* The mirror (D5): one strip that says where the game runs, the way back,
+   the rate and the camera, over the headset's frames. */
+.mirror {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .mirror-bar {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  right: 8px;
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
   padding: 6px 6px 6px 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-l);
-  background: rgba(14, 18, 23, 0.85);
+  background: var(--surface);
 }
 
 .mirror-where {

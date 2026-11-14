@@ -157,7 +157,7 @@ function MirrorGame({
         const next = ((await res.json()) as { mirror?: MirrorStats }).mirror ?? null;
         if (!stop) setStats(next);
       } catch {
-        if (!stop) setStats(null);
+        if (!stop) setStats({ frames: 0, fps: 0, latency_ms: null, view: null, error: "the mirror does not answer" });
       }
     };
     void read();
@@ -167,6 +167,13 @@ function MirrorGame({
       clearInterval(timer);
     };
   }, [debugUrl, visible]);
+
+  // The mirror keeps its camera across pages; each starts on the head.
+  useEffect(() => {
+    if (!debugUrl) return;
+    setCamera("head");
+    void fetch(new URL("/camera", debugUrl), { method: "POST", body: JSON.stringify({ type: "attach" }) }).catch(() => {});
+  }, [debugUrl]);
 
   const choose = (next: MirrorCamera) => {
     const body = debugUrl && mirrorCamera(next, stats?.view ?? null);
@@ -179,19 +186,7 @@ function MirrorGame({
   const problem = mirrorProblem(mirror, stats);
   const rate = mirrorRate(stats);
   return (
-    <div ref={area} className="game game-mirror" data-testid="game-view" aria-label="Game, mirrored from the headset">
-      <img
-        ref={img}
-        alt=""
-        draggable={false}
-        hidden={!url || !rect}
-        className={problem ? "mirror-stale" : undefined}
-        style={rect ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h } : undefined}
-        onLoad={(e) => {
-          const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
-          setFrame((f) => (f?.w === w && f.h === h ? f : { w, h }));
-        }}
-      />
+    <div className="mirror" data-testid="game-view">
       <div className="mirror-bar">
         <div className="mirror-where">
           <p className="headset-title">{note.title}</p>
@@ -226,14 +221,28 @@ function MirrorGame({
           </div>
         </div>
       </div>
-      {problem && (
-        <div className="game-message">
-          <p className="reason">{problem}</p>
-        </div>
-      )}
-      <span className="game-banner" role="status">
-        Mirrored from headset
-      </span>
+      <div ref={area} className="game game-mirror" aria-label="Game, mirrored from the headset">
+        <img
+          ref={img}
+          alt=""
+          draggable={false}
+          hidden={!url || !rect}
+          className={problem ? "mirror-stale" : undefined}
+          style={rect ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h } : undefined}
+          onLoad={(e) => {
+            const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+            setFrame((f) => (f?.w === w && f.h === h ? f : { w, h }));
+          }}
+        />
+        {problem && (
+          <div className="game-message">
+            <p className="reason">{problem}</p>
+          </div>
+        )}
+        <span className="game-banner" role="status">
+          Mirrored from headset
+        </span>
+      </div>
     </div>
   );
 }

@@ -135,7 +135,7 @@ export type MirrorCamera = (typeof MIRROR_CAMERAS)[number]["id"];
 /**
  * The `POST /camera` body that shows `camera` from `view` (the head's eye and
  * where it looks): the head itself, a camera parked 2.5 m behind and above
- * it, or one above it looking down past it. Null without a view to park from.
+ * it, or one 4 m above it looking down at what is 2.5 m ahead of it. Null without a view to park from.
  */
 export function mirrorCamera(camera: MirrorCamera, view: MirrorStats["view"]): object | null {
   if (camera === "head") return { type: "attach" };
@@ -149,7 +149,7 @@ export function mirrorCamera(camera: MirrorCamera, view: MirrorStats["view"]): o
     eye: [x - fx * back, y + up, z - fz * back],
     target: [x + fx * ahead, y, z + fz * ahead],
   });
-  const parked = camera === "behind" ? at(2.5, 1.2, 1) : at(1, 4, 0.5);
+  const parked = camera === "behind" ? at(2.5, 1.2, 1) : at(0.5, 4, 2.5);
   return { type: "set", ...parked, fov: 70 };
 }
 

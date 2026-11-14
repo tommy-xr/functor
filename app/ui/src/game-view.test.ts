@@ -135,7 +135,7 @@ test("the mirror's cameras park near the head, looking the way it looks along th
   const view = { eye: [0, 1.6, 0], target: [1, 1.2, 0] };
   assert.deepEqual(mirrorCamera("head", view), { type: "attach" });
   assert.deepEqual(mirrorCamera("behind", view), { type: "set", eye: [-2.5, 2.8, 0], target: [1, 1.6, 0], fov: 70 });
-  assert.deepEqual(mirrorCamera("above", view), { type: "set", eye: [-1, 5.6, 0], target: [0.5, 1.6, 0], fov: 70 });
+  assert.deepEqual(mirrorCamera("above", view), { type: "set", eye: [-0.5, 5.6, 0], target: [2.5, 1.6, 0], fov: 70 });
   // Straight down: the floor direction falls back to +Z.
   assert.deepEqual((mirrorCamera("behind", { eye: [0, 2, 0], target: [0, 0, 0] }) as { eye: number[] }).eye, [0, 3.2, -2.5]);
   assert.equal(mirrorCamera("behind", null), null, "nothing to park from yet");
