@@ -17,7 +17,7 @@ use functor_app_core::creation::NewProjectRequest;
 
 use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
-use functor_app_core::transport::enqueue;
+use functor_app_core::transport::{enqueue, PausedBy};
 use functor_app_core::{
     listening_url, Command, Event, Harness, Layout, LogPage, Pointer, Polled, PolledClock,
     Scope, SessionCall, SessionEvent, TransportCall,
@@ -1034,6 +1034,13 @@ fn parse_state(body: &str) -> Result<Polled, String> {
         let recorded = &c["recorded"];
         PolledClock {
             paused: c["paused"].as_bool().unwrap_or(false),
+            // Absent before debug protocol v48, and when nobody is named.
+            paused_by: match c["paused_by"].as_str() {
+                Some("agent") => Some(PausedBy::Agent),
+                Some("user") => Some(PausedBy::User),
+                Some("start") => Some(PausedBy::Start),
+                _ => None,
+            },
             recorded: recorded["oldest"]
                 .as_u64()
                 .zip(recorded["newest"].as_u64())
@@ -1162,10 +1169,13 @@ fn transport_request(call: &TransportCall) -> (&'static str, String) {
     let time = |command: serde_json::Value| ("/time", command.to_string());
     match call {
         // `cancel` pauses at the current time; `set` would need it read first.
-        TransportCall::Pause => time(serde_json::json!({"type": "cancel"})),
+        // The bar's pauses are the user's (`clock.paused_by`).
+        TransportCall::Pause => time(serde_json::json!({"type": "cancel", "by": "user"})),
         TransportCall::Resume => time(serde_json::json!({"type": "resume"})),
         // One step of the web timeline's 60 Hz.
-        TransportCall::Step => time(serde_json::json!({"type": "advance", "dts": 1.0 / 60.0})),
+        TransportCall::Step => {
+            time(serde_json::json!({"type": "advance", "dts": 1.0 / 60.0, "by": "user"}))
+        }
         TransportCall::Seek { frame, .. } => {
             ("/seek", serde_json::json!({ "frame": frame }).to_string())
         }
@@ -1256,6 +1266,7 @@ mod tests {
         };
         let clock = ClockState {
             paused: true,
+            paused_by: Some(functor_runtime_common::debug_protocol::PausedBy::Agent),
             recorded: Some(RecordedFrames {
                 oldest: 3,
                 newest: 40,
@@ -1277,6 +1288,7 @@ mod tests {
                 pointer: Pointer::Visible,
                 clock: Some(PolledClock {
                     paused: true,
+                    paused_by: Some(PausedBy::Agent),
                     recorded: Some([3, 40]),
                     generation: 2,
                     program_revision: 5,
@@ -1442,11 +1454,11 @@ mod tests {
                 wire("POST", "/input", r#"{"type":"key","key":"w","down":true}"#),
                 // 3 waited behind the key and was replaced by 4.
                 wire("POST", "/seek", r#"{"frame":4}"#),
-                wire("POST", "/time", r#"{"type":"cancel"}"#),
+                wire("POST", "/time", r#"{"by":"user","type":"cancel"}"#),
                 wire(
                     "POST",
                     "/time",
-                    &format!(r#"{{"dts":{},"type":"advance"}}"#, 1.0f64 / 60.0)
+                    &format!(r#"{{"by":"user","dts":{},"type":"advance"}}"#, 1.0f64 / 60.0)
                 ),
                 wire("POST", "/time", r#"{"type":"resume"}"#),
                 wire("GET", "/state?model=0", ""),
