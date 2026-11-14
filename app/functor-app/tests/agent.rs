@@ -1360,10 +1360,7 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
     let edit = r#"{"ms":0,"edit":{"path":"game.fun","old":"xx","new":"xxx"}}"#;
     for (extra, ended) in [
         (&[][..], "prepared"),
-        (
-            &[edit][..],
-            "failed: the files changed while the review ran",
-        ),
+        (&[edit][..], "failed: the files changed while the review ran"),
     ] {
         let repo = git_tree();
         let home = tempfile::tempdir().unwrap();
@@ -1373,10 +1370,7 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
             .arg("--review")
             .arg("--metrics")
             .arg(&metrics)
-            .env(
-                "FUNCTOR_APP_FAKE_REVIEW",
-                review_fixture(home.path(), extra),
-            )
+            .env("FUNCTOR_APP_FAKE_REVIEW", review_fixture(home.path(), extra))
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
@@ -1391,10 +1385,7 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
         assert_eq!(m["input_tokens"], Value::Null);
         match ended {
             "prepared" => {
-                assert!(review["summary"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("The agent renamed"));
+                assert!(review["summary"].as_str().unwrap().starts_with("The agent renamed"));
                 assert_eq!(review["notes"][0], "Nobody ran the game after the change.");
                 assert_eq!(review["style"], serde_json::json!([]));
             }

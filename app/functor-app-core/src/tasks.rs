@@ -164,7 +164,7 @@ impl TokenUsage {
 }
 
 /// US dollars. Read from JSON, which has no NaN, so equality is total.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Usd(pub f64);
 
@@ -537,9 +537,9 @@ fn run_outcome(items: &[Item]) -> Option<&Item> {
         .find(|i| matches!(i, Item::Finished { .. } | Item::Stopped))
 }
 
-/// Pairs result `content` with the run's call `id` (its calls from
-/// `start`), or with no such call unanswered, its oldest unanswered one; a
-/// stray result is dropped.
+/// Pairs result `content` with the run's (from `start`) unanswered call
+/// `id`, or without an id its oldest unanswered call; a stray result (a
+/// repeat, an unknown id) is dropped.
 fn answer(
     items: &mut [Item],
     start: usize,
@@ -547,16 +547,14 @@ fn answer(
     flag: Option<bool>,
     content: String,
 ) -> Vec<usize> {
-    let unanswered = |item: &Item, by_id: bool| match item {
+    let call = (items.iter_mut().enumerate().skip(start)).find(|(_, item)| match item {
         Item::Tool {
             result: None,
             id: own,
             ..
-        } => !by_id || own.as_deref() == id,
+        } => id.is_none() || own.as_deref() == id,
         _ => false,
-    };
-    let by_id = id.is_some() && items.iter().skip(start).any(|i| unanswered(i, true));
-    let call = (items.iter_mut().enumerate().skip(start)).find(|(_, item)| unanswered(item, by_id));
+    });
     match call {
         Some((
             i,
@@ -1005,8 +1003,9 @@ mod tests {
         assert_eq!((detail.last, detail.context_window), (None, None));
     }
 
-    /// A held result whose id never comes pairs by order, and a run that
-    /// ends while one is held keeps it.
+    /// A held result whose id never comes pairs by order, one whose id names
+    /// no unanswered call is dropped, and a run that ends while one is held
+    /// keeps it.
     #[test]
     fn a_held_result_without_its_id_pairs_by_order() {
         let use_ = |name: &str, id: &str| {
@@ -1029,12 +1028,15 @@ mod tests {
         events.extend([result("first"), AgentEvent::Text { text: "t".into() }]);
         replay(&mut task, events);
         assert_eq!(calls(&task)[0].3, Some("first"));
-        // A meta naming no call of this run pairs its result by order too.
-        let meta = AgentEvent::ToolResultMeta {
-            id: "zz".into(),
+        // A result naming no unanswered call (unknown, or a repeat) is dropped.
+        let meta = |id: &str| AgentEvent::ToolResultMeta {
+            id: id.into(),
             is_error: Some(true),
         };
-        replay(&mut task, vec![result("second"), meta]);
+        let before = task.transcript.clone();
+        replay(&mut task, vec![result("x"), meta("zz"), result("again"), meta("a")]);
+        assert_eq!(task.transcript, before);
+        replay(&mut task, vec![result("second"), meta("b")]);
         assert_eq!(calls(&task)[1].3, Some("second"));
         assert_eq!(calls(&task)[1].4, Some(true));
         // Ended with a result held: it is paired, not lost.

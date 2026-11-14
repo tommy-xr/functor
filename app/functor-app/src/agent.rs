@@ -533,17 +533,9 @@ async fn run(
     };
     let agent = agents.get(spec.harness, false);
     let forward = |event: AgentEvent| send(RunEvent::Agent(event));
-    let outcome = drive(
-        &*agent,
-        &prompt,
-        opts,
-        &mcp.token,
-        None,
-        &forward,
-        &mut cancel,
-    )
-    .await
-    .map(Result::err);
+    let outcome = drive(&*agent, &prompt, opts, &mcp.token, None, &forward, &mut cancel)
+        .await
+        .map(Result::err);
     drop(pusher);
     server.stop().await;
     outcome
@@ -1291,24 +1283,13 @@ mod tests {
         let value = |flag: &str| at(flag).map(|i| argv[i + 1].as_str());
         assert_eq!(value("--permission-mode"), Some("dontAsk"), "{argv:?}");
         assert!(argv.contains(&"--setting-sources=".to_string()), "{argv:?}");
-        assert!(
-            argv.contains(&"--strict-mcp-config".to_string()),
-            "{argv:?}"
-        );
-        for writes in [
-            "acceptEdits",
-            "--dangerously-skip-permissions",
-            "Edit",
-            "Write",
-        ] {
+        assert!(argv.contains(&"--strict-mcp-config".to_string()), "{argv:?}");
+        for writes in ["acceptEdits", "--dangerously-skip-permissions", "Edit", "Write"] {
             assert!(!argv.iter().any(|a| a == writes), "{writes}: {argv:?}");
         }
         let allowed = at("--allowedTools").expect("an allow list");
         assert_eq!(argv[allowed + 1], "mcp__mis", "{argv:?}");
-        assert!(
-            argv[allowed + 2].starts_with("--"),
-            "only its server: {argv:?}"
-        );
+        assert!(argv[allowed + 2].starts_with("--"), "only its server: {argv:?}");
         assert!(argv.contains(&"--model=sonnet".to_string()), "{argv:?}");
     }
 
