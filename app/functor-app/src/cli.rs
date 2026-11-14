@@ -30,6 +30,8 @@ pub struct Cli {
     exe: Option<PathBuf>,
     /// The last check's binary, or its problem's message.
     found: Mutex<Result<PathBuf, String>>,
+    /// `found` is this executable, inside `functor`: never checked.
+    own: bool,
 }
 
 impl Cli {
@@ -39,6 +41,7 @@ impl Cli {
             env,
             exe,
             found: Mutex::new(Err("the functor CLI has not been checked yet".to_string())),
+            own: false,
         }
     }
 
@@ -51,6 +54,16 @@ impl Cli {
         }
     }
 
+    /// This executable, inside `functor`: the CLI cannot differ from the
+    /// app, so it is neither looked up nor checked.
+    pub fn own(exe: PathBuf) -> Self {
+        Self {
+            found: Mutex::new(Ok(exe)),
+            own: true,
+            ..Self::new(None, None, None)
+        }
+    }
+
     /// The `functor` to start, or why nothing may be started with it.
     pub fn path(&self) -> Result<PathBuf, String> {
         self.found.lock().unwrap().clone()
@@ -59,6 +72,9 @@ impl Cli {
     /// Finds the `functor` anew (one may have been built meanwhile), checks
     /// it, and keeps the verdict for [`Cli::path`].
     pub async fn check(&self) -> Option<CliProblem> {
+        if self.own {
+            return None;
+        }
         let path = self.find();
         let problem = match probe(&path, CHECK_TIMEOUT).await {
             Ok(()) => None,
@@ -309,6 +325,17 @@ esac"#;
         );
         assert_eq!(cli.check().await, None);
         assert_eq!(cli.path(), Ok(path));
+    }
+
+    #[tokio::test]
+    async fn inside_functor_the_cli_is_this_executable_unchecked() {
+        // It would fail the check: it is never run for one.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), OLD);
+        let cli = Cli::own(exe.clone());
+        assert_eq!(cli.path(), Ok(exe.clone()));
+        assert_eq!(cli.check().await, None);
+        assert_eq!(cli.path(), Ok(exe));
     }
 
     #[test]

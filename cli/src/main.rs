@@ -423,14 +423,7 @@ enum InspectTarget {
     },
 }
 
-// Must stay the default MULTI-THREAD runtime: `run native` drives the desktop
-// runtime's GLFW loop in-process by BLOCKING this (main-thread) `block_on`
-// future, while the debug server / HTTP / WebSocket work runs on `tokio::spawn`
-// worker threads. A `current_thread` flavor would starve those tasks while the
-// GL loop blocks (headless `--debug-port` would hang). See
-// `functor_runtime_desktop::run`.
-#[tokio::main]
-async fn main() -> tokio::io::Result<()> {
+fn main() -> process::ExitCode {
     let started = Instant::now();
     // No subcommand opens the desktop app when it is installed; else clap's help.
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -451,9 +444,45 @@ async fn main() -> tokio::io::Result<()> {
     // A handshake: its JSON line is all of stdout.
     if let Command::AppCompat = &args.command {
         println!("{}", commands::app::compat_json(VERSION));
-        return Ok(());
+        return process::ExitCode::SUCCESS;
     }
+    // The app in-process: before any runtime or thread exists, as it owns
+    // the main thread (its window) and starts its own runtime.
+    #[cfg(feature = "app")]
+    if let Command::App { app_args } = &args.command {
+        return match commands::app::run_in_process(args.dir.as_deref(), app_args) {
+            Ok(code) => code,
+            Err(error) => {
+                eprintln!("error: {error}");
+                process::ExitCode::FAILURE
+            }
+        };
+    }
+    // What `#[tokio::main]` on an `io::Result` main did, for everything else.
+    //
+    // Must stay the default MULTI-THREAD runtime: `run native` drives the desktop
+    // runtime's GLFW loop in-process by BLOCKING this (main-thread) `block_on`
+    // future, while the debug server / HTTP / WebSocket work runs on `tokio::spawn`
+    // worker threads. A `current_thread` flavor would starve those tasks while the
+    // GL loop blocks (headless `--debug-port` would hang). See
+    // `functor_runtime_desktop::run`.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed building the Runtime");
+    let result = runtime.block_on(run_command(args, started));
+    drop(runtime);
+    match result {
+        Ok(()) => process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            process::ExitCode::FAILURE
+        }
+    }
+}
 
+/// Every command but the handshake and the in-process app, on the runtime.
+async fn run_command(args: Args, started: Instant) -> tokio::io::Result<()> {
     // `mcp` owns stdout: it speaks JSON-RPC there. It therefore dispatches
     // BEFORE the output stream is initialized — a single event line (or a live
     // region's ANSI) written to that stdout would corrupt the protocol. It also
