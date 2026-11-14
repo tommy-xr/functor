@@ -52,9 +52,9 @@ const GAMMA: f32 = 1.6;
 pub fn msdf_glsl() -> String {
     format!(
         r#"
-    const float FUNCTOR_MSDF_RANGE = {range:.1};
-    const highp vec2 FUNCTOR_MSDF_ATLAS = vec2({w:.1}, {h:.1});
-    const float FUNCTOR_MSDF_GAMMA = {GAMMA:.2};
+    const float FUNCTOR_MSDF_RANGE = {range:?};
+    const highp vec2 FUNCTOR_MSDF_ATLAS = vec2({w:?}, {h:?});
+    const float FUNCTOR_MSDF_GAMMA = {GAMMA:?};
     highp vec2 functorMsdfTexels(highp vec2 uv) {{
         return fwidth(uv) * FUNCTOR_MSDF_ATLAS;
     }}
@@ -135,10 +135,11 @@ impl Style {
         tabular: true,
     };
 
-    /// The overlay's default, from the copy: an all-caps line is a label;
-    /// only digits and spaces ("482 913", not "0.85") are figures.
+    /// The overlay's default, from the copy: an all-caps line is a label
+    /// (scripts without case are not); only digits and spaces ("482 913",
+    /// not "0.85") are figures.
     pub fn of(text: &str) -> Style {
-        let letters = text.chars().any(char::is_alphabetic);
+        let letters = text.chars().any(|c| c.is_uppercase() || c.is_lowercase());
         let lower = text.chars().any(char::is_lowercase);
         let figures = text.chars().any(|c| c.is_ascii_digit())
             && text.chars().all(|c| c.is_ascii_digit() || c == ' ');
@@ -266,7 +267,7 @@ pub fn fit(text: &str, size: f32, max: f32) -> String {
 }
 
 /// [`fit`] in `style`.
-pub fn fit_in(text: &str, size: f32, max: f32, style: Style) -> String {
+pub fn fit_in(text: &str, size: f32, style: Style, max: f32) -> String {
     fit_with(text, size, max, Some(style))
 }
 
@@ -314,7 +315,7 @@ pub fn wrap(text: &str, size: f32, max: f32, lines: usize) -> Vec<String> {
 }
 
 /// [`wrap`], every line in `style`: draw them in it too.
-pub fn wrap_in(text: &str, size: f32, max: f32, lines: usize, style: Style) -> Vec<String> {
+pub fn wrap_in(text: &str, size: f32, style: Style, max: f32, lines: usize) -> Vec<String> {
     wrap_with(text, size, max, lines, Some(style))
 }
 
@@ -464,11 +465,12 @@ mod tests {
         // that is all caps keeps the paragraph's regular weight.
         let text = "Press the button marked OK OK OK OK OK OK OK OK OK OK OK OK OK";
         let max = width_in("Press the button marked", SIZE, Style::REGULAR);
-        let lines = wrap_in(text, SIZE, max, 10, Style::REGULAR);
+        let lines = wrap_in(text, SIZE, Style::REGULAR, max, 10);
         assert!(lines.len() > 1 && lines.iter().any(|l| Style::of(l) == Style::LABEL));
         assert!(lines.iter().all(|l| width_in(l, SIZE, Style::REGULAR) <= max));
-        assert_ne!(wrap(text, SIZE, max, 10), Vec::<String>::new());
-        let cut = fit_in("HP 100 of 250", SIZE, width_in("HP 100", SIZE, Style::REGULAR), Style::REGULAR);
+        // Inferred, those lines would draw wider: semibold and tracked.
+        assert!(lines.iter().any(|l| width(l, SIZE) > width_in(l, SIZE, Style::REGULAR)));
+        let cut = fit_in("HP 100 of 250", SIZE, Style::REGULAR, width_in("HP 100", SIZE, Style::REGULAR));
         assert!(cut.ends_with(ELLIPSIS) && width_in(&cut, SIZE, Style::REGULAR) <= width_in("HP 100", SIZE, Style::REGULAR));
     }
 
@@ -476,7 +478,9 @@ mod tests {
     fn the_shared_shader_source_names_its_functions() {
         let glsl = msdf_glsl();
         assert!(glsl.contains("functorMsdfTexels") && glsl.contains("functorMsdfCoverage"));
-        assert!(glsl.contains(&format!("{:.1}", ATLAS_WIDTH as f32)));
+        assert!(glsl.contains(&format!("{:?}", ATLAS_WIDTH as f32)));
+        // A script without case is not a label.
+        assert_eq!(Style::of("\u{4E2D}\u{6587}"), Style::REGULAR);
     }
 
     #[test]

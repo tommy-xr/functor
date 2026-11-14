@@ -769,7 +769,7 @@ impl Col<'_> {
     /// be all caps is not set as a label.
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
         let style = overlay_font::Style::of(s);
-        for l in overlay_font::wrap_in(s, size, self.w, lines, style) {
+        for l in overlay_font::wrap_in(s, size, style, self.w, lines) {
             self.out.push(Shape::Text {
                 at: [self.x, self.y],
                 size,
