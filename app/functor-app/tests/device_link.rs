@@ -681,6 +681,225 @@ async fn the_headset_client_pairs_tunnels_and_relinks() {
     assert!(stored_pairing(store.path()));
 }
 
+/// What a task with a change to review needs: a git repo with project `a`
+/// (`let x = 1`), a fake agent that edits it (`x` → `xx`), and a stub
+/// `functor` whose tool server answers every request 204.
+#[cfg(unix)]
+struct Review {
+    repo: tempfile::TempDir,
+    tools: tempfile::TempDir,
+}
+
+#[cfg(unix)]
+impl Review {
+    fn new() -> Review {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = tempfile::tempdir().unwrap();
+        let a = repo.path().join("a");
+        std::fs::create_dir(&a).unwrap();
+        std::fs::write(a.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+        std::fs::write(a.join("game.fun"), "let x = 1\n").unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["add", "-A"],
+            &["commit", "-q", "-m", "first"],
+        ] {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(repo.path())
+                .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+                .args(args)
+                .envs(Review::git_env(tools.path()))
+                .status()
+                .unwrap();
+            assert!(ok.success(), "git {args:?}");
+        }
+        let fixture = [
+            r#"{"ms":0,"event":{"type":"started","session":"fake-session-1","model":"claude-model"}}"#,
+            r#"{"ms":0,"event":{"type":"tool_use","name":"Edit","input":{"file_path":"game.fun"}}}"#,
+            r#"{"ms":0,"edit":{"path":"game.fun","old":"x","new":"xx"}}"#,
+            r#"{"ms":0,"event":{"type":"tool_result","content":"The file has been updated."}}"#,
+            r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Renamed x."}}"#,
+        ];
+        std::fs::write(tools.path().join("edit.jsonl"), fixture.join("\n")).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let _ = write!(reader.into_inner(), "HTTP/1.0 204 No Content\r\n\r\n");
+            }
+        });
+        let functor = tools.path().join("functor");
+        let script = format!(
+            "#!/bin/sh\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\nexec cat >/dev/null\n"
+        );
+        std::fs::write(&functor, script).unwrap();
+        std::fs::set_permissions(&functor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Review { repo, tools }
+    }
+
+    /// Git reads none of the user's configuration.
+    fn git_env(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
+        vec![
+            ("HOME", home.into()),
+            ("XDG_CONFIG_HOME", home.into()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+            ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        ]
+    }
+
+    /// `functor-app` on the repo with its link `link` (`--device-link …`).
+    async fn app(&self, link: &[&str]) -> App {
+        let functor = self.tools.path().join("functor");
+        let mut args = link.to_vec();
+        args.extend(["--functor", functor.to_str().unwrap()]);
+        let mut env = Review::git_env(self.tools.path());
+        env.push((
+            "FUNCTOR_APP_FAKE_AGENT",
+            self.tools.path().join("edit.jsonl").into(),
+        ));
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
+        app_env(self.repo.path(), &args, &env).await
+    }
+}
+
+/// Starts a task under the fake agent and waits until its change waits
+/// for review: its id.
+#[cfg(unix)]
+async fn task_to_review(app: &mut App) -> u64 {
+    app.send(json!({"type": "new_task", "message": "Rename x", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the change waits for review", 30, |s| {
+            s["tasks"][0]["status"]["kind"] == "ready_for_review"
+        })
+        .await;
+    state["tasks"][0]["id"].as_u64().unwrap()
+}
+
+/// The panel updates the headset's client received since the last call.
+fn updates(quest: &headset::Client) -> Vec<functor_device_link::panel::Update> {
+    use functor_device_link::panel::{Update, UPDATE_CHANNEL};
+    quest
+        .received()
+        .into_iter()
+        .filter(|(channel, _)| *channel == UPDATE_CHANNEL)
+        .map(|(_, data)| Update::decode(&data).unwrap())
+        .collect()
+}
+
+/// The first panel the client receives for which `f` holds, within 20s.
+async fn panel_where(
+    quest: &headset::Client,
+    what: &str,
+    f: impl Fn(&functor_device_link::panel::Panel) -> bool,
+) -> functor_device_link::panel::Panel {
+    use functor_device_link::panel::Update;
+    until(what, || {
+        updates(quest).into_iter().find_map(|u| match u {
+            Update::Panel(p) if f(&p) => Some(p),
+            _ => None,
+        })
+    })
+    .await
+}
+
+/// The headset's client paired into `app` (both sides agree) and linked.
+async fn pair_client(app: &mut App, quest: &headset::Client) {
+    quest.send(headset::Command::Pair);
+    until("a code shows", || {
+        matches!(quest.pairing(), Some(headset::Pairing::Code { .. })).then_some(())
+    })
+    .await;
+    let devices = app
+        .devices_where("it asks to pair", |d| asking(d, "Client Quest").is_some())
+        .await;
+    let request = asking(&devices, "Client Quest").unwrap()["request"].clone();
+    app.send(json!({"type": "allow_pairing", "request": request}))
+        .await;
+    quest.send(headset::Command::Confirm);
+    until("it links", || quest.view().linked.then_some(())).await;
+}
+
+/// The headset panel over the link: the desktop sends the open project's
+/// tasks on link-up and on every change, a waiting change with its decision
+/// page; the headset's Keep is the desktop's Keep, a Revert naming another
+/// change is refused back to it, and an action it cannot read is dropped,
+/// not the link.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
+    use functor_device_link::panel::{Action, Stance, Update, ACTION_CHANNEL};
+    let review = Review::new();
+    let mut app = review
+        .app(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", NO_ADB])
+        .await;
+    app.devices_where("the link starts", |d| !d["listening"].is_null())
+        .await;
+    let store = tempfile::tempdir().unwrap();
+    let quest = headset_client(&app, store.path(), fake_runtime());
+    pair_client(&mut app, &quest).await;
+    let panel = panel_where(&quest, "a panel on link-up", |_| true).await;
+    assert_eq!(panel.project.as_deref(), Some("a"));
+    assert!(panel.tasks.is_empty() && !panel.placed);
+
+    let id = task_to_review(&mut app).await;
+    let panel = panel_where(&quest, "the task waits in the panel", |p| {
+        p.tasks.first().is_some_and(|t| t.decision.is_some())
+    })
+    .await;
+    assert_eq!(panel.now, Some(id));
+    let task = &panel.tasks[0];
+    assert_eq!(
+        (task.title.as_str(), task.stance),
+        ("Rename x", Stance::Waiting)
+    );
+    let decision = task.decision.as_ref().unwrap();
+    assert_eq!(decision.size, "+1 -1, 1 file, game logic");
+    let link = quest.link().unwrap();
+    let send = |action: &Action| quest.send_channel(link, ACTION_CHANNEL, action.encode(), false);
+
+    // Garbage, then a revert of a change the user never saw.
+    assert!(quest.send_channel(link, ACTION_CHANNEL, vec![9, 9], false));
+    assert!(send(&Action::Revert {
+        task: id,
+        tree: "not-this-one".into()
+    }));
+    let refused = until("the revert is refused", || {
+        updates(&quest).into_iter().find_map(|u| match u {
+            Update::Refused { reason } => Some(reason),
+            Update::Panel(_) => None,
+        })
+    })
+    .await;
+    assert!(refused.contains("review it again"), "{refused}");
+    assert_eq!(quest.link(), Some(link), "the link stays up");
+
+    assert!(send(&Action::Keep { task: id }));
+    app.state_where("the change is kept", 20, |s| {
+        s["tasks"][0]["status"]["kind"] == "kept"
+    })
+    .await;
+    panel_where(&quest, "the panel follows", |p| {
+        p.tasks[0].stance == Stance::Done && p.tasks[0].decision.is_none()
+    })
+    .await;
+}
+
 /// `FUNCTOR_BIN`, a built `functor`, or why the test skips.
 fn functor_bin() -> Option<std::path::PathBuf> {
     let found = std::env::var_os("FUNCTOR_BIN")

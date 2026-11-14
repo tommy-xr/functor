@@ -316,7 +316,7 @@ pub fn verdict(
     (Depth::Glance, reason)
 }
 
-fn count(n: u32, one: &str, many: &str) -> String {
+pub(crate) fn count(n: u32, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 

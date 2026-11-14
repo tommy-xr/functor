@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod folders;
 pub mod layout;
 pub mod metrics;
+pub mod panel;
 pub mod print;
 pub mod projects;
 pub mod protocol;

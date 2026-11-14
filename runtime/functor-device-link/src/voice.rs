@@ -252,7 +252,7 @@ fn version(r: &mut Reader) -> Result<(), Error> {
 }
 
 /// `text` with refused characters as spaces, cut to `max` bytes.
-fn tidy(text: &str, max: usize) -> String {
+pub(crate) fn tidy(text: &str, max: usize) -> String {
     let text: String = text
         .chars()
         .map(|c| if refused(c) { ' ' } else { c })
