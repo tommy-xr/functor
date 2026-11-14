@@ -70,16 +70,20 @@ export function useWindows(wanted: WantedWindow[], online: boolean, send: Send) 
     };
   }, []);
 
-  // A browser: a window the user closed docks; one docked from here closes.
+  // A browser: a window the user closed docks; one the layout no longer
+  // lists (docked, another project) closes. Only one it listed before: a
+  // window just opened from a click is not listed until its op lands.
+  const listed = useRef(new Set<number>());
   useEffect(() => {
     if (NATIVE) return;
     const panes = new Set((JSON.parse(list) as WantedWindow[]).map((w) => w.pane));
     for (const [pane, w] of opened) {
-      if (!panes.has(pane)) {
+      if (listed.current.has(pane) && !panes.has(pane)) {
         opened.delete(pane);
         w.close();
       }
     }
+    listed.current = panes;
     const poll = setInterval(() => {
       for (const [pane, w] of opened) {
         if (!w.closed) continue;

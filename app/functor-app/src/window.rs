@@ -35,7 +35,7 @@ const MIN: (f64, f64) = (800.0, 560.0);
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The page's base colour (`--bg`), behind it before it paints.
-pub(crate) const BACKGROUND: (u8, u8, u8, u8) = (0x0e, 0x12, 0x17, 0xff);
+const BACKGROUND: (u8, u8, u8, u8) = (0x0e, 0x12, 0x17, 0xff);
 
 /// Where the traffic lights sit in the page's title bar (points from the
 /// window's top left), and the least left padding that clears them.
@@ -174,7 +174,11 @@ pub fn run(
                 event: WindowEvent::CloseRequested,
                 window_id,
                 ..
-            } if window_id == window.id() => stop(&mut close, geometry.as_deref(), &window),
+            } if window_id == window.id() => {
+                // The panes' windows go with it (the layout keeps them).
+                popouts = PopOuts::default();
+                stop(&mut close, geometry.as_deref(), &window)
+            }
             // A pop-out closed by the user (its button, ⌘W): its tabs dock.
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
@@ -232,10 +236,10 @@ pub fn run(
             Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
             Event::UserEvent(UserEvent::Windows(list)) => {
                 let titled = titled.clone();
-                popouts.reconcile(target, &list, &page, &screens(target), move |pane, t| {
+                popouts.reconcile(target, &list, &page, &screens(target), !smoke, move |pane, t| {
                     let _ = titled.send_event(UserEvent::WindowTitle(pane, t));
                 });
-                if smoke && popped.is_some() && list.is_empty() {
+                if smoke && popped.is_some_and(|p| !list.iter().any(|w| w.pane == p)) {
                     docked = true;
                 }
             }
@@ -348,10 +352,32 @@ fn open(
 
     let title = event_loop.create_proxy();
     let ipc = event_loop.create_proxy();
-    let nav_origin = origin.to_string();
     let ipc_origin = origin.to_string();
-    let webview = WebViewBuilder::new()
-        .with_url(format!("{origin}/"))
+    let webview = page_webview(&format!("{origin}/"), origin, token)
+        .with_document_title_changed_handler(move |t| {
+            let _ = title.send_event(UserEvent::Title(t));
+        })
+        // Only our page's messages; they only label menu items.
+        .with_ipc_handler(move |req| {
+            if own(&req.uri().to_string(), &ipc_origin) {
+                if let Some(event) = parse_ipc(req.body()) {
+                    let _ = ipc.send_event(event);
+                }
+            }
+        })
+        .build(&window)
+        .map_err(io::Error::other)?;
+    let menu = menu().map_err(io::Error::other)?;
+    Ok((window, webview, menu))
+}
+
+/// A webview on the app's page at `url`: the session token for our own
+/// origin only, web links to the browser, and nothing else loads. Every
+/// window's page, the main one and each pane's.
+pub(crate) fn page_webview<'a>(url: &str, origin: &str, token: &Token) -> WebViewBuilder<'a> {
+    let nav_origin = origin.to_string();
+    WebViewBuilder::new()
+        .with_url(url)
         .with_background_color(BACKGROUND)
         // A press on a window behind others acts at once, so its title bar
         // drags on the first press, as a native one does.
@@ -369,21 +395,6 @@ fn open(
             }
             NewWindowResponse::Deny
         })
-        .with_document_title_changed_handler(move |t| {
-            let _ = title.send_event(UserEvent::Title(t));
-        })
-        // Only our page's messages; they only label menu items.
-        .with_ipc_handler(move |req| {
-            if own(&req.uri().to_string(), &ipc_origin) {
-                if let Some(event) = parse_ipc(req.body()) {
-                    let _ = ipc.send_event(event);
-                }
-            }
-        })
-        .build(&window)
-        .map_err(io::Error::other)?;
-    let menu = menu().map_err(io::Error::other)?;
-    Ok((window, webview, menu))
 }
 
 /// Every screen, the main one first, in points.
@@ -564,7 +575,7 @@ fn menu_script(id: &str, recents: &[Recent]) -> Option<String> {
 /// Whether the webview may load `url`: only the app's own page. A web link
 /// opens in the browser instead; anything else (files, `about:`, data) is
 /// dropped.
-pub(crate) fn navigate(url: &str, origin: &str) -> bool {
+fn navigate(url: &str, origin: &str) -> bool {
     if own(url, origin) {
         return true;
     }
@@ -581,12 +592,12 @@ fn own(url: &str, origin: &str) -> bool {
 }
 
 /// `url` is one the system browser (or mail app) should open.
-pub(crate) fn outside(url: &str) -> bool {
+fn outside(url: &str) -> bool {
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
     matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
 }
 
-pub(crate) fn open_outside(url: &str) {
+fn open_outside(url: &str) {
     eprintln!("[functor-app] opening in the browser: {url}");
     match std::process::Command::new("/usr/bin/open").arg(url).spawn() {
         // Reaped off the main thread.
@@ -675,25 +686,32 @@ fn load(path: &Path) -> Option<Rect> {
 /// Saves where `window` is, unless it is full screen or minimised (then the
 /// last saved place stays).
 fn save(window: &Window, path: &Path) {
-    if window.fullscreen().is_some() || window.is_minimized() {
+    if window.fullscreen().is_some() {
         return;
     }
-    let scale = window.scale_factor();
-    // The content's corner: what `with_position` places on macOS.
-    let Ok(at) = window.inner_position() else {
+    let Some(rect) = content_rect(window) else {
         return;
-    };
-    let at = at.to_logical::<f64>(scale);
-    let size = window.inner_size().to_logical::<f64>(scale);
-    let rect = Rect {
-        x: at.x,
-        y: at.y,
-        w: size.width,
-        h: size.height,
     };
     if let Err(e) = crate::store::write_whole(path, &format(rect)) {
         eprintln!("functor-app: cannot save {}: {e}", path.display());
     }
+}
+
+/// Where `window`'s content is, in points (its corner is what
+/// `with_position` places on macOS); `None` while minimised.
+pub(crate) fn content_rect(window: &Window) -> Option<Rect> {
+    if window.is_minimized() {
+        return None;
+    }
+    let scale = window.scale_factor();
+    let at = window.inner_position().ok()?.to_logical::<f64>(scale);
+    let size = window.inner_size().to_logical::<f64>(scale);
+    Some(Rect {
+        x: at.x,
+        y: at.y,
+        w: size.width,
+        h: size.height,
+    })
 }
 
 #[cfg(test)]

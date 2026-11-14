@@ -959,7 +959,7 @@ function PaneActions({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
         className="icon-button"
         aria-label="Pop out into its own window"
         title="Pop out into its own window"
-        disabled={!online}
+        disabled={!online || pane.tabs.length === 0}
         onClick={() => popOut(pane.id, ctx.send)}
       >
         <Icon name="pop-out" />

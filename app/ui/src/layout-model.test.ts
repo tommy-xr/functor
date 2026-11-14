@@ -115,11 +115,11 @@ test("windows: their panes, the pane a pop-out page shows, and what the shell ke
   } as unknown as Layout;
   assert.deepEqual(windowPanes(layout).map((p) => p.id), [4, 7]);
   assert.deepEqual(windowPanes(null), []);
-  const titles = tabTitles(windowPanes(layout).flatMap((p) => p.tabs), []);
-  assert.deepEqual(wantedWindows(layout, titles), [
-    { pane: 4, frame, title: "b.fun" },
-    { pane: 7, frame: null, title: "Game" },
+  assert.deepEqual(wantedWindows("/p", layout), [
+    { project: "/p", pane: 4, frame },
+    { project: "/p", pane: 7, frame: null },
   ]);
+  assert.deepEqual(wantedWindows(null, layout), []);
   assert.equal(poppedPane("?pane=7"), 7);
   for (const s of ["", "?pane=", "?pane=x", "?pane=-1", "?other=7"]) assert.equal(poppedPane(s), null, s);
 });

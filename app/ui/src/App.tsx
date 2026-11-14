@@ -8,7 +8,7 @@ import { basename, pickHarness } from "./chat-model";
 import { NoProject, ProjectPicker, type FolderProps } from "./Folders";
 import { NewProjectModal } from "./NewProject";
 import { Icon } from "./Icon";
-import { focusedPane, isTyping, panesOf, placementOf, tabbed, tabTitles, viewKey, wantedWindows, windowPanes } from "./layout-model";
+import { focusedPane, isTyping, panesOf, placementOf, tabbed, tabTitles, viewKey, wantedWindows } from "./layout-model";
 import { useWindows } from "./windows";
 import { HAS_TOKEN, useAppSocket, type Conn, type Send } from "./socket";
 import { TasksPane } from "./TasksPane";
@@ -84,8 +84,7 @@ export function App() {
   const task = state?.tasks.find((t) => t.id === selected && t.project === state.active) ?? null;
   const folder: FolderProps = { state, online, send, dirs, listDirs };
   useWindowMenu(state, send);
-  const layout = state?.active ? state.layouts[state.active] : null;
-  useWindows(wantedWindows(layout, tabTitles(windowPanes(layout).flatMap((p) => p.tabs), state?.tasks ?? [])), online, send);
+  useWindows(wantedWindows(state?.active ?? null, state?.active ? state.layouts[state.active] : null), online, send);
   const pairing = usePairPrompt(state);
   const showDevices = () => {
     setView("devices");

@@ -4,26 +4,11 @@
 // tab moves between windows with one game view (one stream on a GPU
 // session, FUNCTOR_APP_GPU=1). Runs at 1440×900 and 700×900.
 // APP_UI_SHOTS=<dir> saves stills of both windows.
-import { execFileSync } from "node:child_process";
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, ROOT, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
+import { FUNCTOR, openStreams, ROOT, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchState } from "./app.mjs";
 
 requireBuilt();
 const GPU = process.env.FUNCTOR_APP_GPU === "1" && FUNCTOR;
-
-/** Connections to the session's debug server from anything but the session (the page's stream). */
-function openStreams(port) {
-  let out = "";
-  try {
-    out = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED"], { encoding: "utf8" });
-  } catch {
-    // lsof exits 1 when nothing matches.
-  }
-  return out
-    .split("\n")
-    .slice(1)
-    .filter((l) => l && !l.startsWith("functor") && l.includes(`->127.0.0.1:${port} `)).length;
-}
 
 /** The tab titles of the pane a pop-out page shows. */
 const windowTabs = (page) => page.locator(".pane-tabs [role=tab]").allTextContents();

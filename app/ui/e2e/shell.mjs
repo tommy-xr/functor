@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, chooseProject, FUNCTOR, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, chooseProject, FUNCTOR, openStreams, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -282,19 +282,6 @@ async function brokenGame(browser) {
   }
 }
 
-/** Connections to `port` held by anything but functor and functor-app: the page's streams. */
-function openStreams(port) {
-  let out = "";
-  try {
-    out = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED"], { encoding: "utf8" });
-  } catch {
-    // lsof exits 1 when nothing matches.
-  }
-  return out
-    .split("\n")
-    .slice(1)
-    .filter((l) => l && !l.startsWith("functor") && l.includes(`->127.0.0.1:${port} `)).length;
-}
 
 /** The standard deviation of a PNG's luminance, decoded in the page: near 0 is blank. */
 function spread(page, png) {

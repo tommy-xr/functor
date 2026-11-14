@@ -20,6 +20,20 @@ export async function clock(debugUrl) {
   return { frame: state.frame, ...state.clock };
 }
 
+/** Connections to `port` held by anything but functor and functor-app: the page's streams. */
+export function openStreams(port) {
+  let out = "";
+  try {
+    out = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED"], { encoding: "utf8" });
+  } catch {
+    // lsof exits 1 when nothing matches.
+  }
+  return out
+    .split("\n")
+    .slice(1)
+    .filter((l) => l && !l.startsWith("functor") && l.includes(`->127.0.0.1:${port} `)).length;
+}
+
 /** Exits unless functor-app and the built UI exist. */
 export function requireBuilt() {
   for (const [path, what] of [

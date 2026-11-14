@@ -164,12 +164,10 @@ export function poppedPane(search: string): number | null {
   return pane && /^\d+$/.test(pane) ? Number(pane) : null;
 }
 
-/** A window the shell keeps open: its pane, last frame and title (its shown tab's). */
-export type WantedWindow = { pane: number; frame: Frame | null; title: string };
+/** A window the shell keeps open: its project and pane (pane ids are per project), and its last frame. */
+export type WantedWindow = { project: string; pane: number; frame: Frame | null };
 
-export function wantedWindows(layout: Layout | null | undefined, titles: Map<string, string>): WantedWindow[] {
-  return (layout?.windows ?? []).map(({ pane, frame }) => {
-    const shown = pane.tabs[pane.active];
-    return { pane: pane.id, frame, title: (shown && titles.get(viewKey(shown))) || "Functor" };
-  });
+export function wantedWindows(project: string | null, layout: Layout | null | undefined): WantedWindow[] {
+  if (!project) return [];
+  return (layout?.windows ?? []).map(({ pane, frame }) => ({ project, pane: pane.id, frame }));
 }

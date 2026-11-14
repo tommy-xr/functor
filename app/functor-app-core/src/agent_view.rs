@@ -123,6 +123,10 @@ pub struct AppContext {
 pub struct LayoutContext {
     /// In reading order; the user works in the `focused` one.
     pub panes: Vec<PaneContext>,
+    /// Panes the user popped out into windows of their own: a view there is
+    /// shown there; new views open in `panes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub windows: Vec<PaneContext>,
     pub game: Placement,
     /// Tabs the agent opened that are still open.
     pub agent_tabs: Vec<View>,
@@ -147,15 +151,13 @@ pub fn app_context(state: &AppState, project: &str) -> AppContext {
         _ => None,
     };
     let layout = state.layouts.get(project).cloned().unwrap_or_default();
-    let panes = layout
-        .panes()
-        .into_iter()
-        .map(|p| PaneContext {
-            tabs: p.tabs.clone(),
-            shown: p.tabs.get(p.active).cloned(),
-            focused: layout.focus == Some(p.id),
-        })
-        .collect();
+    let pane = |p: &crate::layout::Pane| PaneContext {
+        tabs: p.tabs.clone(),
+        shown: p.tabs.get(p.active).cloned(),
+        focused: layout.focus == Some(p.id),
+    };
+    let panes = layout.panes().into_iter().map(pane).collect();
+    let windows = layout.windows.iter().map(|w| pane(&w.pane)).collect();
     AppContext {
         project: project.to_string(),
         active_project: state.active.clone(),
@@ -163,6 +165,7 @@ pub fn app_context(state: &AppState, project: &str) -> AppContext {
         session_mode: placement(state, project).session_mode(),
         layout: LayoutContext {
             panes,
+            windows,
             game: layout.game.placement,
             agent_tabs: layout.agent.tabs.clone(),
             agent_arranges: layout.agent.arranges,

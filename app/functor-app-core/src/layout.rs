@@ -570,6 +570,17 @@ impl Layout {
         let mut views = HashSet::new();
         let mut ids = HashSet::new();
         let mut next = self.next_id();
+        // The user's windows first: a window's pane id names its window and
+        // its tabs are where the user put them, so a main-window node sharing
+        // either (after a Reset, say) gives way.
+        for w in &mut self.windows {
+            w.pane.retain_tabs(&mut |t| views.insert(t.clone()));
+            if !ids.insert(w.pane.id) {
+                w.pane.id = next;
+                ids.insert(next);
+                next += 1;
+            }
+        }
         fn walk(
             node: &mut Node,
             views: &mut HashSet<View>,
@@ -602,14 +613,6 @@ impl Layout {
         }
         if let Some(root) = &mut self.root {
             walk(root, &mut views, &mut ids, &mut next);
-        }
-        for w in &mut self.windows {
-            w.pane.retain_tabs(&mut |t| views.insert(t.clone()));
-            if !ids.insert(w.pane.id) {
-                w.pane.id = next;
-                ids.insert(next);
-                next += 1;
-            }
         }
         self.windows.retain(|w| !w.pane.tabs.is_empty());
         // The Game tab leaving for Mini or Own window remembers its place.
@@ -2312,15 +2315,35 @@ mod tests {
             frame: None,
         });
         l.normalize();
-        assert_eq!(l.windows[0].pane.tabs, vec![file("a.fun")]);
-        let ids: HashSet<u64> = l.windows.iter().map(|w| w.pane.id).chain([1]).collect();
-        assert_eq!(ids.len(), 3);
+        // The windows keep their tabs and ids; the main pane gives way.
+        assert_eq!(l.windows[0].pane.tabs, vec![file("a.fun"), file("b.fun")]);
+        assert_eq!(l.windows.iter().map(|w| w.pane.id).collect::<Vec<_>>(), vec![2, 1]);
+        let main = l.panes()[0].clone();
+        assert_eq!(main.tabs, vec![View::Game]);
+        assert!(![1, 2].contains(&main.id));
+        assert_eq!(l.focus, Some(main.id));
         // New panes never take a window's id.
-        assert!(apply(&mut l, LayoutOp::Split { pane: 1, direction: Direction::Down }));
+        assert!(apply(&mut l, LayoutOp::Split { pane: main.id, direction: Direction::Down }));
         assert!(!l.windows.iter().any(|w| Some(w.pane.id) == l.focus));
         // Reset keeps the windows.
         assert!(apply(&mut l, LayoutOp::Reset));
         assert_eq!(l.windows.len(), 2);
+    }
+
+    #[test]
+    fn a_window_keeps_its_id_when_a_reset_pane_would_take_it() {
+        let mut l = Layout::initial();
+        assert!(apply(&mut l, open(file("a.fun"), Target::Side)));
+        assert!(apply(&mut l, LayoutOp::PopOut { pane: 1 }));
+        assert!(apply(&mut l, LayoutOp::Reset));
+        // The window is still pane 1 (its page is `?pane=1`) with the game;
+        // the reset canvas is one empty pane of another id.
+        assert_eq!(l.windows[0].pane.id, 1);
+        assert_eq!(l.windows[0].pane.tabs, vec![View::Game]);
+        assert_eq!(l.panes().len(), 1);
+        assert!(l.panes()[0].tabs.is_empty());
+        assert_ne!(l.focus, Some(1));
+        assert!(l.focus.is_some_and(|f| l.in_main(f)));
     }
 
     #[test]
