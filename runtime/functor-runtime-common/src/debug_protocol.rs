@@ -261,7 +261,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
+///
+/// 48 adds `stalls` on `GET /spikes`
+/// ([`crate::frame_telemetry::StallRecord`]): frames over 250 ms since
+/// launch, each with the debug requests the shell served around it.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -1715,6 +1719,41 @@ pub enum DebugRequest {
         Vec<crate::net::DeliveredEvent>,
         Sender<Result<String, String>>,
     ),
+}
+
+impl DebugRequest {
+    /// The route that made this request, for a stall's record.
+    pub fn route(&self) -> &'static str {
+        match self {
+            DebugRequest::Capture(..) => "POST /capture",
+            DebugRequest::Stream(..) => "GET /stream",
+            DebugRequest::State(true, _) => "GET /state",
+            DebugRequest::State(false, _) => "GET /state?model=0",
+            DebugRequest::Scene(..) => "GET /scene",
+            DebugRequest::Mirror(..) => "GET /mirror",
+            DebugRequest::Trace(..) => "GET /trace",
+            DebugRequest::Frames(..) => "GET /frames",
+            DebugRequest::Spikes(..) => "GET /spikes",
+            DebugRequest::InputLog(..) => "GET /input-log",
+            DebugRequest::Input(..) => "POST /input",
+            DebugRequest::Time(..) => "POST /time",
+            DebugRequest::Project(..) => "GET /project",
+            DebugRequest::ReloadSource(..) => "POST /reload-source",
+            DebugRequest::ReloadProject(..) => "POST /reload-project",
+            DebugRequest::LoadProject(..) => "POST /load-project",
+            DebugRequest::ProjectFileRequests(..) => "GET /project-files",
+            DebugRequest::ProjectFileReply(..) => "POST /project-files",
+            DebugRequest::ReloadAsset(..) => "POST /reload-asset",
+            DebugRequest::SyncAssets(..) => "POST /sync-assets",
+            DebugRequest::Rewind(..) => "POST /rewind",
+            DebugRequest::Seek(..) => "POST /seek",
+            DebugRequest::Camera(..) => "POST /camera",
+            DebugRequest::Preview(..) => "POST /preview",
+            DebugRequest::DisplayRefreshRate(..) => "POST /display-refresh-rate",
+            DebugRequest::NetOutbound(..) => "GET /net/outbound",
+            DebugRequest::NetDeliver(..) => "POST /net/deliver",
+        }
+    }
 }
 
 #[cfg(test)]

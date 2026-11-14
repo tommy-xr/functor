@@ -2032,6 +2032,7 @@ pub fn android_main(app: AndroidApp) {
             while let Ok(request) = rx.try_recv() {
                 // A mirror's snapshot is self-contained: no lockstep for it.
                 debug_active |= !matches!(request, DebugRequest::Mirror(_));
+                debug.telemetry.note(request.route());
                 service_debug_request(
                     request,
                     &session,
