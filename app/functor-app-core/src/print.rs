@@ -788,6 +788,7 @@ recents: 2
                 created_at: None,
                 updated_at: None,
                 transcript: transcript.clone(),
+                scope: Default::default(),
             }],
             harnesses: vec![],
             harness_choice: Default::default(),

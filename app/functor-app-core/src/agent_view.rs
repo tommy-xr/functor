@@ -781,6 +781,7 @@ mod tests {
             message: "make it count by two".to_string(),
             harness: Harness::Claude,
             voice: None,
+            scope: Default::default(),
         };
         update(s, new).0
     }

@@ -36,6 +36,36 @@ impl Harness {
     }
 }
 
+/// How much of the user's own setup an agent run reads (D39): instructions,
+/// skills, memory and settings. The app's permissions apply at every level;
+/// the allow rules and hooks in the user's settings come only with them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// The user's own and the project's, as in their terminal.
+    #[default]
+    UserAndProject,
+    /// The project's: what it has checked in, and the user's local
+    /// settings for it (`.claude/settings.local.json`), nothing from their
+    /// home.
+    Project,
+    /// Neither: only what the app gives the run.
+    Isolated,
+}
+
+impl Scope {
+    /// The level `harness` runs at when asked for this one: Codex cannot
+    /// leave out the user's own instructions and skills, so it always reads
+    /// them (and the app never offers it less).
+    pub fn for_harness(self, harness: Harness) -> Self {
+        match harness {
+            Harness::Claude => self,
+            Harness::Codex => Self::UserAndProject,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Task {
@@ -48,6 +78,12 @@ pub struct Task {
     /// From [`derive_status`], after every change.
     pub status: TaskStatus,
     pub harness: Harness,
+    /// What its runs read of the user's setup (D39), fixed when it starts:
+    /// its follow-ups resume a conversation that holds the instructions it
+    /// read. Tasks saved
+    /// before it was kept read all of it.
+    #[serde(default)]
+    pub scope: Scope,
     /// As the agent reported it.
     pub model: Option<String>,
     /// The agent's session, from its `started`; a follow-up resumes it.
@@ -745,6 +781,7 @@ mod tests {
                 text: message.to_string(),
                 spoken: None,
             }],
+            scope: Default::default(),
         }
     }
 

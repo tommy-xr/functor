@@ -1,8 +1,8 @@
 //! Tasks on disk: one JSON file per task (`tasks::to_stored`) under
 //! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
 //! agent in `<home>/projects/<project key>/harness.json`, its canvas
-//! layout in `layout.json` and its review setting in `review.json` beside
-//! it, where home is
+//! layout in `layout.json`, its review setting in `review.json` and its
+//! instruction scope in `scope.json` beside it, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`; the recent projects, app-wide,
 //! in `<home>/recents.json`, and the agents' context windows in
 //! `<home>/context-windows.json`. Never inside the user's repo.
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Harness, Layout, Recent, ReviewSetting, Task};
+use functor_app_core::{AppState, Harness, Layout, Recent, ReviewSetting, Scope, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -46,6 +46,10 @@ fn layout_file(home: &Path, dir: &Path) -> PathBuf {
 
 fn review_file(home: &Path, dir: &Path) -> PathBuf {
     project_home(home, dir).join("review.json")
+}
+
+fn scope_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("scope.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -189,6 +193,17 @@ pub fn load_layouts(home: &Path, state: &AppState) -> BTreeMap<String, Layout> {
 /// Writes `layout` for the project at `dir`.
 pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
     save_json(&layout_file(home, dir), layout)
+}
+
+/// Each discovered project's instruction scope (D39); a missing or
+/// unreadable file is the default.
+pub fn load_scopes(home: &Path, state: &AppState) -> BTreeMap<String, Scope> {
+    load_each(home, state, scope_file)
+}
+
+/// Writes `scope` for the project at `dir`.
+pub fn save_scope(home: &Path, dir: &Path, scope: Scope) -> io::Result<()> {
+    save_json(&scope_file(home, dir), &scope)
 }
 
 /// Each discovered project's review setting; a missing or unreadable file
@@ -445,6 +460,7 @@ mod tests {
                 text: "hi".into(),
                 spoken: None,
             }],
+            scope: Default::default(),
         };
         let dir = root.join("a");
         save(&home, &dir, &task(1)).unwrap();
@@ -493,6 +509,7 @@ mod tests {
                 text: "hi".into(),
                 spoken: None,
             }],
+            scope: Default::default(),
         }
     }
 

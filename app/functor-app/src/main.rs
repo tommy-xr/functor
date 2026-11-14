@@ -128,6 +128,11 @@ enum Cmd {
         #[arg(long, default_value = "claude", value_parser = ["claude", "codex"])]
         harness: String,
 
+        /// How much of your own setup the run reads (D39); default: the
+        /// project's setting. Codex always reads all of it.
+        #[arg(long, value_parser = ["user_and_project", "project", "isolated"])]
+        scope: Option<String>,
+
         /// Print each transcript item as it completes, not all at the end.
         #[arg(long)]
         follow: bool,
@@ -337,6 +342,7 @@ async fn app(
     if let Some(Cmd::Task {
         prompt,
         harness,
+        scope,
         follow,
         start_session,
         metrics,
@@ -355,6 +361,7 @@ async fn app(
         let task = TaskArgs {
             prompt,
             harness,
+            scope: scope.map(|s| serde_json::from_value(s.into()).expect("a scope clap allows")),
             follow,
             start_session,
             metrics,
@@ -521,6 +528,7 @@ async fn print_session(
 struct TaskArgs {
     prompt: String,
     harness: Harness,
+    scope: Option<functor_app_core::Scope>,
     follow: bool,
     start_session: bool,
     metrics: Option<PathBuf>,
@@ -549,7 +557,7 @@ async fn run_task(
             return Ok(ExitCode::from(code));
         }
     }
-    let new = driver.new_task(args.prompt, args.harness, None);
+    let new = driver.new_task(args.prompt, args.harness, args.scope, None);
     let started = std::time::Instant::now();
     state.now = server::wall_ms();
     let (next, commands) = update(state, new);

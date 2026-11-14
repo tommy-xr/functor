@@ -9,8 +9,10 @@
 //                                            the real agent (spends tokens)
 //   node app/metrics/run.mjs --compare a.jsonl b.jsonl
 //
-// Options: --only id,id  --out file.jsonl (default results/<stamp>-<mode>.jsonl,
-// with a .md table beside it)  --keep (leave each scenario's temp dir, with
+// Options: --only id,id  --scope user_and_project|project|isolated (how much
+// of the user's own setup each run reads, D39; default all of it)  --out
+// file.jsonl (default results/<stamp>-<mode>.jsonl, with a .md table beside
+// it)  --keep (leave each scenario's temp dir, with
 // its workspace and the app home holding the task transcript; its path is
 // the record's `kept`). Binaries: FUNCTOR_APP_BIN, FUNCTOR_BIN (default
 // target/debug/functor-app and target/debug/functor).
@@ -116,7 +118,7 @@ function checkOne(check, ws, metrics, functor) {
 }
 
 /** Runs `functor-app task` for `scenario`; its metrics record. */
-async function runScenario(scenario, { live, keep, app, functor, rev }) {
+async function runScenario(scenario, { live, keep, app, functor, rev, scope }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `functor-metrics-${scenario.id}-`));
   try {
     const ws = workspace(scenario, tmp);
@@ -132,6 +134,7 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
     // Live sessions get a GPU, as in the app, so captures work.
     if (!live) args.push("--no-gpu");
     args.push("task", scenario.prompt, "--harness", "claude", "--start-session", "--review");
+    if (scope) args.push("--scope", scope);
     args.push("--metrics", metricsFile, "--max-input", String(MAX_INPUT));
     const timeout = live ? LIVE_TIMEOUT_S : FAKE_TIMEOUT_S;
     const { code, timedOut } = await run(app, args, env, timeout);
@@ -147,6 +150,7 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       rev,
       date: new Date().toISOString(),
       harness: m.harness,
+      scope: m.scope,
       model: m.model,
       wall_ms: m.wall_ms,
       first_event_ms: m.first_event_ms,
@@ -242,11 +246,17 @@ function grid(heads, rows, splits) {
   return lines;
 }
 
+/** What the runs read of the user's own setup (D39), as the header says it. */
+function scopeWords(records) {
+  const scopes = [...new Set(records.map((r) => r.scope).filter(Boolean))];
+  return scopes.length ? `setup: ${scopes.join(", ")}` : "setup unknown";
+}
+
 /** The records as a Markdown table. */
 export function table(records) {
   const head = records[0] ?? {};
   const lines = [
-    `${head.mode} run, ${head.date?.slice(0, 10)}, rev ${head.rev}, ${head.harness} (${head.model ?? "model unknown"})`,
+    `${head.mode} run, ${head.date?.slice(0, 10)}, rev ${head.rev}, ${head.harness} (${head.model ?? "model unknown"}), ${scopeWords(records)}`,
     "",
   ];
   const heads = ["scenario", "outcome", "wall s", "first event s", "messages", "tool calls", "by kind", "input tokens", "output tokens"];
@@ -345,7 +355,7 @@ async function main(argv) {
     console.error(`[metrics] ${scenario.id}`);
     let record;
     try {
-      record = await runScenario(scenario, { live, keep, app, functor, rev });
+      record = await runScenario(scenario, { live, keep, app, functor, rev, scope: opt("--scope") });
     } catch (e) {
       const mode = live ? "live" : "fake";
       record = { scenario: scenario.id, mode, rev, pass: false, reason: String(e), cut: "error", kept: e.kept };

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
 use functor_app_core::tasks::{TokenUsage, UsageDetail, Usd};
-use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec};
-use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts};
+use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec, Scope};
+use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts, Setup};
 use mis_types::{PermissionMode, Permissions};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -70,15 +70,30 @@ ranges, then the game. Do not show anything else they did not ask to see.";
 /// anywhere in the repo are accepted, the game tools are allowed (`mis-agent`
 /// allows its own MCP server) and anything no rule allows is denied, never
 /// asked. Shell commands run sandboxed to the repo: claude's need an allow
-/// rule (none here), codex runs any. This mode also loads the user's own
-/// agent settings, hooks and MCP servers, as in their terminal (D19), so
-/// their allow rules apply too; an isolated mode would be chosen here.
+/// rule (none here), codex runs any. At [`Scope::UserAndProject`] the run
+/// also loads the user's own agent settings, hooks and MCP servers, as in
+/// their terminal (D19), so their allow rules apply too ([`setup`]).
 pub fn permissions(repo_root: &Path) -> Permissions {
     Permissions {
         mode: PermissionMode::Folders,
         folders: vec![repo_root.to_string_lossy().into_owned()],
         mcp: vec![],
         commands: vec![],
+    }
+}
+
+/// What a run at `scope` reads of the user's setup (D39). For Claude, both
+/// narrower levels leave out the user's instructions, skills, memory, MCP
+/// servers (and the project's `.mcp.json`), and the rules and hooks in their
+/// own settings; [`Scope::Project`] keeps the project's checked-in settings
+/// and `.claude/settings.local.json`. The app's [`permissions`] apply at
+/// every level. Codex refuses them, so the core never
+/// asks (`Scope::for_harness`).
+fn setup(scope: Scope) -> Setup {
+    match scope {
+        Scope::UserAndProject => Setup::UserAndProject,
+        Scope::Project => Setup::Project,
+        Scope::Isolated => Setup::Isolated,
     }
 }
 
@@ -528,6 +543,7 @@ async fn run(
         resume: spec.resume.as_deref(),
         // Follow-ups continue the session itself (claude would otherwise fork it).
         fork: Some(false),
+        setup: setup(spec.scope),
         permissions: Some(&permissions),
         ..RunOpts::default()
     };
@@ -696,6 +712,9 @@ async fn review(
         mcp: Some(&mcp),
         permissions: Some(&permissions),
         read_only: true,
+        // Read-only runs read no settings or MCP servers already; this also
+        // leaves out auto memory.
+        setup: Setup::Isolated,
         ..RunOpts::default()
     };
     let prompt = review_prompt(spec.instructions.as_deref());
@@ -991,6 +1010,8 @@ impl Agent for FakeAgent {
     ) -> BoxFut<'a> {
         Box::pin(async move {
             let mut command = Command::new(std::env::current_exe()?);
+            // What a test checks reached the runner.
+            eprintln!("[fake agent] setup: {:?}", opts.setup);
             command.arg("--replay-events").arg(&self.fixture);
             if let Some(session) = opts.resume {
                 command.arg(format!("--replay-resume={session}"));
@@ -1339,6 +1360,7 @@ mod tests {
                 &functor_app_core::AppState::none(),
                 ".",
             ),
+            scope: Default::default(),
         });
         let pid = loop {
             if let Ok(text) = std::fs::read_to_string(&pid_file) {
