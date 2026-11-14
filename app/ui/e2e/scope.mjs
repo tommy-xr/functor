@@ -1,5 +1,5 @@
 // The instruction scope (D39), end to end against the fake agent: the
-// composer's control shows the project's level; one request can read less,
+// composer's control shows the project's level; a new task can read less,
 // and that level reaches the runner; the project's default is kept across a
 // restart; Codex offers only the full level, and says why; the review's
 // panel says it always runs isolated. Runs at 1440×900 and 700×900.

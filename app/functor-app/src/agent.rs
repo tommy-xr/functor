@@ -82,11 +82,12 @@ pub fn permissions(repo_root: &Path) -> Permissions {
     }
 }
 
-/// What a run at `scope` reads of the user's setup (D39). The narrower two
-/// leave out, for Claude, the user's instructions, skills, memory, MCP
-/// servers, and the permission rules and hooks in their settings (the
-/// app's [`permissions`] still apply); [`Scope::Project`] also leaves out
-/// the project's own `.mcp.json`. Codex refuses them, so the core never
+/// What a run at `scope` reads of the user's setup (D39). For Claude, both
+/// narrower levels leave out the user's instructions, skills, memory, MCP
+/// servers (and the project's `.mcp.json`), and the rules and hooks in their
+/// own settings; [`Scope::Project`] keeps the project's checked-in settings
+/// and `.claude/settings.local.json`. The app's [`permissions`] apply at
+/// every level. Codex refuses them, so the core never
 /// asks (`Scope::for_harness`).
 fn setup(scope: Scope) -> Setup {
     match scope {

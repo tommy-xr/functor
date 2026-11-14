@@ -79,7 +79,8 @@ pub struct Task {
     pub status: TaskStatus,
     pub harness: Harness,
     /// What its runs read of the user's setup (D39), fixed when it starts:
-    /// its follow-ups resume a session that already holds it. Tasks saved
+    /// its follow-ups resume a conversation that holds the instructions it
+    /// read. Tasks saved
     /// before it was kept read all of it.
     #[serde(default)]
     pub scope: Scope,

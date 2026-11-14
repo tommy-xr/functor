@@ -1,5 +1,5 @@
 // How much of the user's own setup an agent run reads (D39): the project's
-// level, a request's own, and what each level leaves out. No React, so
+// level, a new task's own, and what each level leaves out. No React, so
 // `node --test` runs them.
 
 import type { AppState, Harness, Scope, Task } from "./generated/protocol";
@@ -28,12 +28,13 @@ export const SCOPE_WORDS: Record<Scope, { name: string; short: string; help: str
   },
 };
 
-/** A task keeps its level: its session already holds what it read. */
-export const KEPT_NOTE = "A task keeps the level it started with: its conversation already holds what it read.";
+/** A task keeps its level: its conversation already holds the instructions it read. */
+export const KEPT_NOTE =
+  "A task keeps the level it started with: its conversation already holds the instructions it read, so a change mid-task would mix them.";
 
 /** The app's limits stay; the allow rules and hooks in a setting go with it. */
 export const LIMITS_NOTE =
-  "The app's own limits apply at every level: edits stay inside the open folder. Allow rules and hooks come " +
+  "The app's own limits apply at every level: edits inside the open folder; outside it, only what your settings allow. Allow rules and hooks come " +
   "only with the settings that hold them, so a shell command your settings allow is denied at a level that leaves them out.";
 
 /** Codex has no way to leave out the user's own instructions and skills. */
