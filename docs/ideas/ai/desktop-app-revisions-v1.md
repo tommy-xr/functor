@@ -742,11 +742,35 @@ doing chores, headset on.
   step, the outcome spoken briefly ("Changed. Ready to look at."), a question
   from the agent read out and answered by voice.
 
-**How it would be built.** The workshop is a Functor scene that contains the
-running game's frame — the same idea as the mirror (4.5), drawn small on a
-desk — so the engine gains one capability: a scene that holds another game.
-Things tied to the player's view (sky, fog, post-effects) and the world's
-bounds need answers first.
+**The workshop is itself a Functor project — a scene about a scene.** It is
+a `.fun` program like any game: its model is the workspace (where things
+stand, what is open), and it draws the miniature by containing the running
+game's frame, as the mirror does (4.5). So:
+
+- **The user can change their workspace by asking.** "Put the code shelf on
+  my left", "make the conversation bigger", "give the agents hats" is a task
+  like any other: an agent edits the workshop's own `.fun`, it hot-reloads
+  with its state kept, and the change is kept or reverted the usual way.
+- **It ships as a default the user's copy is forked from,** so updates to the
+  default converge with the user's changes rather than replacing them.
+- **The app's data comes in as plain messages** — tasks, agents and their
+  activity, request progress, what waits on the user, the forks — through one
+  small typed module, and the user's actions go out as effects (talk to this
+  agent, keep, revert, stop, go in). The rules stay in the app, not the
+  scene: confirmation for Keep, Revert and Stop, who may be steered, and what
+  an agent may run are enforced where the action lands, so no edit to the
+  workspace can remove them.
+- **It cannot lock the user out.** A workshop that fails to load, or loads
+  and misbehaves, falls back to the built-in default, with "reset my
+  workspace" always reachable by voice and by a gesture the scene does not
+  own.
+- **The same scene draws on the desktop,** where it is the agents' view in a
+  pane (D34).
+
+What the engine must gain: a scene that holds another game (and answers for
+things tied to the player's view — sky, fog, post-effects — and the world's
+bounds), text and panels drawn in the world, hands as input, and the time to
+run two programs in one headset frame.
 
 **Order to try it in:** the miniature with teleport in and out; the tasks and
 the conversation beside it; the agents; the code shelf; two miniatures for a
