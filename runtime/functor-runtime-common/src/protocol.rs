@@ -109,6 +109,10 @@
 /// variant (`Texture.withLayers`) and the `MeshOverride::Lightmap` model
 /// override (`Scene.withLightmap`). Other frames keep their shape.
 ///
+/// Also: instance paints — `paints` on the `Instanced` node
+/// (`Scene.instancedPaint`: `{tint, glow}` per copy) and `glow` on a `Lit`
+/// material, both omitted when absent, so other frames keep their shape.
+///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
 ///
@@ -1177,6 +1181,30 @@ mod tests {
         );
         let back: SceneObject = serde_json::from_str(&json).expect("deserialize instanced node");
         assert_eq!(back, scene.obj);
+
+        // Paints add one field; the instances keep their shape.
+        let SceneObject::Instanced {
+            template,
+            instances,
+            ..
+        } = scene.obj
+        else {
+            unreachable!()
+        };
+        let painted = Scene3D::instanced_painted(
+            *template,
+            instances,
+            vec![crate::scene3d::PaintData {
+                tint: [1.0, 0.5, 1.0],
+                glow: 0.25,
+            }],
+        );
+        let json = serde_json::to_string(&painted.obj).expect("serialize painted node");
+        assert!(json.ends_with(
+            r#""tint":[0.2,0.4,0.8]}],"paints":[{"tint":[1.0,0.5,1.0],"glow":0.25}]}}"#
+        ));
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize painted node");
+        assert_eq!(back, painted.obj);
     }
 
     #[test]

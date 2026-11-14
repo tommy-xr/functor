@@ -94,12 +94,12 @@ const RENDER_MESH_CAP: usize = 16;
 /// Values derived from `Arc`s, keyed by the `Arc`'s address and held weakly: a
 /// dead key's entry is dropped, and the least recently used is evicted beyond
 /// [`RENDER_MESH_CAP`]. The memo never keeps a key alive, yet pins its address.
-pub(super) struct WeakMemo<K, V> {
+pub(super) struct WeakMemo<K: ?Sized, V> {
     entries: HashMap<usize, (Weak<K>, V, u64)>,
     clock: u64,
 }
 
-impl<K, V> Default for WeakMemo<K, V> {
+impl<K: ?Sized, V> Default for WeakMemo<K, V> {
     fn default() -> Self {
         WeakMemo {
             entries: HashMap::new(),
@@ -108,13 +108,13 @@ impl<K, V> Default for WeakMemo<K, V> {
     }
 }
 
-impl<K, V: Clone> WeakMemo<K, V> {
+impl<K: ?Sized, V: Clone> WeakMemo<K, V> {
     pub(super) fn get_or_try_insert<E>(
         &mut self,
         key: &Arc<K>,
         make: impl FnOnce() -> Result<V, E>,
     ) -> Result<V, E> {
-        let address = Arc::as_ptr(key) as usize;
+        let address = Arc::as_ptr(key) as *const () as usize;
         self.clock += 1;
         let clock = self.clock;
         if let Some((_, value, last_used)) = self.entries.get_mut(&address) {

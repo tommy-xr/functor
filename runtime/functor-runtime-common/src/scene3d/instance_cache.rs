@@ -21,20 +21,51 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
-use super::{Aabb, InstanceList};
+use super::{Aabb, InstanceList, PaintList};
+
+/// A retained per-copy stream: the instance records, or the paints beside
+/// them. Each kind has its own cache, so one changing never re-uploads the
+/// other.
+pub(crate) trait Records: Clone + std::ops::Deref<Target = [Self::Record]> {
+    type Record;
+    /// What culling needs from the records (nothing, for paints).
+    type Extent: Copy;
+    fn ptr_eq(&self, other: &Self) -> bool;
+    fn extent(&self) -> Self::Extent;
+}
+
+impl Records for InstanceList {
+    type Record = super::InstanceData;
+    type Extent = InstanceExtent;
+    fn ptr_eq(&self, other: &Self) -> bool {
+        InstanceList::ptr_eq(self, other)
+    }
+    fn extent(&self) -> InstanceExtent {
+        InstanceExtent::of(self)
+    }
+}
+
+impl Records for PaintList {
+    type Record = super::PaintData;
+    type Extent = ();
+    fn ptr_eq(&self, other: &Self) -> bool {
+        PaintList::ptr_eq(self, other)
+    }
+    fn extent(&self) {}
+}
 
 /// An entry not drawn in the previous frame is evicted at the next frame's
 /// start (the terrain renderer's retention rule), so a game that rebuilds
 /// changing lists holds at most two buffers per node.
 const RETAIN_FRAMES: u64 = 1;
 
-struct Retained<B> {
+struct Retained<L: Records, B> {
     // Pins the `Arc`: its address cannot be reused while retained, so a
     // pointer match is a sound identity check.
-    list: InstanceList,
+    list: L,
     buffer: B,
     capacity: usize,
-    extent: InstanceExtent,
+    extent: L::Extent,
     last_used: u64,
 }
 
@@ -64,23 +95,23 @@ impl InstanceExtent {
 }
 
 /// One draw's buffer, and whether the caller must upload into it.
-pub(crate) struct Acquired<'a, B> {
+pub(crate) struct Acquired<'a, B, E> {
     pub buffer: B,
     /// `Some(capacity)`: upload the list into `buffer` (growing the
     /// high-water `capacity` as needed). `None`: it already holds the list.
     pub upload: Option<&'a mut usize>,
-    pub extent: InstanceExtent,
+    pub extent: E,
 }
 
-pub(crate) struct InstanceBufferCache<B> {
-    entries: HashMap<u64, Retained<B>>,
+pub(crate) struct InstanceBufferCache<B, L: Records = InstanceList> {
+    entries: HashMap<u64, Retained<L, B>>,
     // Evicted buffers, reused before creating new ones and released if a
     // whole frame passes without reuse.
     spare: Vec<(B, usize)>,
     frame: u64,
 }
 
-impl<B: Copy> Default for InstanceBufferCache<B> {
+impl<B: Copy, L: Records> Default for InstanceBufferCache<B, L> {
     fn default() -> Self {
         InstanceBufferCache {
             entries: HashMap::new(),
@@ -90,7 +121,7 @@ impl<B: Copy> Default for InstanceBufferCache<B> {
     }
 }
 
-impl<B: Copy> InstanceBufferCache<B> {
+impl<B: Copy, L: Records> InstanceBufferCache<B, L> {
     /// Start `frame`: evict entries not drawn recently into the spare pool
     /// and return the buffers to delete. `None` when `frame` already began
     /// (a stereo pair shares one frame id).
@@ -113,7 +144,11 @@ impl<B: Copy> InstanceBufferCache<B> {
 
     /// The buffer holding `list` for this draw; `create` makes a new one when
     /// no spare is free.
-    pub fn acquire(&mut self, list: &InstanceList, create: impl FnOnce() -> B) -> Acquired<'_, B> {
+    pub fn acquire(
+        &mut self,
+        list: &L,
+        create: impl FnOnce() -> B,
+    ) -> Acquired<'_, B, L::Extent> {
         let frame = self.frame;
         match self.entries.entry(content_key(list)) {
             Entry::Occupied(occupied) => {
@@ -121,13 +156,13 @@ impl<B: Copy> InstanceBufferCache<B> {
                 // The same `Arc` needs no compare; any other list is verified
                 // byte-for-byte, so a key collision costs an upload, never a
                 // wrong draw.
-                let slice_bytes = crate::terrain_renderer::slice_bytes::<super::InstanceData>;
+                let slice_bytes = crate::terrain_renderer::slice_bytes::<L::Record>;
                 let unchanged =
                     entry.list.ptr_eq(list) || slice_bytes(&entry.list) == slice_bytes(list);
                 entry.list = list.clone();
                 entry.last_used = frame;
                 if !unchanged {
-                    entry.extent = InstanceExtent::of(list);
+                    entry.extent = list.extent();
                 }
                 Acquired {
                     buffer: entry.buffer,
@@ -141,7 +176,7 @@ impl<B: Copy> InstanceBufferCache<B> {
                     list: list.clone(),
                     buffer,
                     capacity,
-                    extent: InstanceExtent::of(list),
+                    extent: list.extent(),
                     last_used: frame,
                 });
                 Acquired {
@@ -159,7 +194,7 @@ const KEY_SAMPLES: usize = 64;
 
 /// A constant-time key over the list's length and a fixed sample of its
 /// records (see the module doc for why not all of them).
-fn content_key(list: &[super::InstanceData]) -> u64 {
+fn content_key<T>(list: &[T]) -> u64 {
     use std::hash::Hasher;
     let mut hasher = crate::host_registry::FxHasher::default();
     hasher.write_usize(list.len());
@@ -282,6 +317,30 @@ mod tests {
         let mut cache = InstanceBufferCache::<u32>::default();
         cache.begin_frame(5);
         assert!(cache.begin_frame(5).is_none());
+    }
+
+    /// The paint stream's own cache: paints that change every frame upload
+    /// each frame while the same instance list uploads once.
+    #[test]
+    fn changing_paints_never_re_upload_the_instances() {
+        use crate::scene3d::{PaintData, PaintList};
+        let mut instances = InstanceBufferCache::default();
+        let mut paints = InstanceBufferCache::<u32, PaintList>::default();
+        let (mut next, mut uploads) = (0, (0, 0));
+        let spots = list(&[1.0, 2.0, 3.0]);
+        for frame in 1..10u64 {
+            instances.begin_frame(frame);
+            paints.begin_frame(frame);
+            if draw(&mut instances, &spots, &mut next).1 {
+                uploads.0 += 1;
+            }
+            let glow = PaintData { glow: frame as f32 / 10.0, ..PaintData::IDENTITY };
+            let paint: PaintList = vec![glow; 3].into();
+            if paints.acquire(&paint, || 0).upload.is_some() {
+                uploads.1 += 1;
+            }
+        }
+        assert_eq!(uploads, (1, 9));
     }
 
     #[test]

@@ -223,6 +223,29 @@ let keepResident : (t) => t
 /// (`… |> Scene.instanced(xs) |> Scene.opacity(a)`).
 let instanced : (List<Instance.t>, t) => t
 
+/// `Scene.instanced` with a paint per copy that can change every frame
+/// without re-describing the instances.
+///
+/// `paints` holds 16 bytes per instance, in instance order: four
+/// little-endian 32-bit floats `r, g, b, glow` (`Bytes.fromF32le`). The
+/// copy's tint is its `Instance.tint` times `(r, g, b)`; `glow` (0–1,
+/// clamped) mixes a lit copy's shading toward its unlit colour — 1 reads like
+/// `Scene.emissive` of that colour; it changes nothing on an unlit material.
+/// A `Scene.model` template ignores paints, as it ignores tints. Any other
+/// byte count is an error.
+///
+/// Keep `instances` the same list value from frame to frame (in the model, or
+/// a top-level def) and rebuild only `paints`: the transforms then convert
+/// and upload once, and each frame uploads 16 bytes per copy. It draws, cuts,
+/// shadows and falls back exactly as `Scene.instanced` does.
+///
+/// ```functor
+/// let lights = (towers, tts) => towers |> List.concatMap((t) => [1.0, 0.8, 0.4, pulse(t, tts)])
+/// let draw = (model, tts) => … Scene.cube() |> Scene.lit(Color.gray(0.5))
+///   |> Scene.instancedPaint(model.spots, Bytes.fromF32le(lights(model.towers, tts))) …
+/// ```
+let instancedPaint : (List<Instance.t>, Bytes.t, t) => t
+
 /// Build a scene once and reuse it while its inputs stay the same.
 ///
 /// `Scene.memo(key, deps, builder)` returns `builder(deps)`, but calls the

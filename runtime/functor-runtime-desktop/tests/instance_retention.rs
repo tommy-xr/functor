@@ -32,8 +32,13 @@ fn functor_bin() -> PathBuf {
     bin
 }
 
-/// A 50×50 cube grid; `trees` names the instance-list expression `draw` uses.
+/// A 50×50 cube grid; `trees` names the instance-list expression `draw` uses
+/// and `node` the instancing call (`Scene.instanced(...)` by default).
 fn game(trees: &str) -> String {
+    game_with(&format!("Scene.instanced({trees}, template)"))
+}
+
+fn game_with(node: &str) -> String {
     format!(
         r#"
 let grid = (offset: float) =>
@@ -47,7 +52,7 @@ let template = Scene.cube() |> Scene.lit(Color.rgb(0.3, 0.8, 0.4))
 let draw = (model, tts: float) =>
   Frame.create(
     Camera3D.lookAt(Vec3.make(0.0, 30.0, -40.0), Vec3.make(0.0, 0.0, 0.0)),
-    Scene.instanced({trees}, template))
+    {node})
 "#
     )
 }
@@ -65,6 +70,10 @@ impl Drop for Session {
 }
 
 fn launch(name: &str, trees: &str) -> Session {
+    launch_source(name, &game(trees))
+}
+
+fn launch_source(name: &str, source: &str) -> Session {
     let dir = std::env::temp_dir().join(format!("functor-instance-retention-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -73,7 +82,7 @@ fn launch(name: &str, trees: &str) -> Session {
         r#"{"language": "functor-lang", "entry": "game.fun"}"#,
     )
     .unwrap();
-    std::fs::write(dir.join("game.fun"), game(trees)).unwrap();
+    std::fs::write(dir.join("game.fun"), source).unwrap();
     let mut child = Command::new(functor_bin())
         .args([
             "-d",
@@ -89,9 +98,9 @@ fn launch(name: &str, trees: &str) -> Session {
         .spawn()
         .expect("spawn functor");
     // The stderr line reports the actual bound port.
-    let stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut stderr = BufReader::new(child.stderr.take().unwrap()).lines();
     let mut port = None;
-    for line in stderr.lines() {
+    for line in stderr.by_ref() {
         let line = line.unwrap();
         if let Some(rest) = line.split("listening on http://127.0.0.1:").nth(1) {
             port = rest
@@ -101,6 +110,8 @@ fn launch(name: &str, trees: &str) -> Session {
             break;
         }
     }
+    // Keep draining: a closed pipe would kill the runner at its next log line.
+    std::thread::spawn(move || stderr.for_each(drop));
     Session {
         child,
         port: port.expect("debug server port on stderr"),
@@ -118,6 +129,11 @@ fn state(port: u16) -> serde_json::Value {
 
 /// The per-frame upload counts of `samples` reads, once 30 frames have run.
 fn uploads_per_frame(session: &Session, samples: usize) -> Vec<u64> {
+    uploads_of(session, samples, "count")
+}
+
+/// [`uploads_per_frame`] for one `instance_uploads` field.
+fn uploads_of(session: &Session, samples: usize, field: &str) -> Vec<u64> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut counts = Vec::new();
     let mut last_frame = 0;
@@ -127,7 +143,7 @@ fn uploads_per_frame(session: &Session, samples: usize) -> Vec<u64> {
         let frame = state["frame"].as_u64().unwrap();
         if frame >= 30 && frame != last_frame {
             last_frame = frame;
-            counts.push(state["instance_uploads"]["count"].as_u64().unwrap());
+            counts.push(state["instance_uploads"][field].as_u64().unwrap());
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -147,4 +163,17 @@ fn retained_instance_lists_upload_once() {
     assert!(held.iter().all(|n| *n == 0), "held: {held:?}");
     assert!(rebuilt.iter().all(|n| *n == 0), "rebuilt: {rebuilt:?}");
     assert!(moving.iter().all(|n| *n >= 1), "moving: {moving:?}");
+}
+
+/// `Scene.instancedPaint` with the instances held and the paints changing
+/// every frame uploads the paints alone: 16 bytes per copy, not 52.
+#[test]
+#[ignore = "needs a GL display. Run with --ignored"]
+fn changing_paints_upload_without_the_instances() {
+    let node = "Scene.instancedPaint(model.trees, \
+        Bytes.fromF32le(model.trees |> List.concatMap((t) => [1.0, 1.0, 1.0, Math.sin(tts) * 0.5 + 0.5])), \
+        template)";
+    let bytes = uploads_of(&launch_source("painted", &game_with(node)), 5, "bytes");
+    println!("upload bytes/frame — painted {bytes:?}");
+    assert!(bytes.iter().all(|n| *n == 16 * 2500), "painted: {bytes:?}");
 }
