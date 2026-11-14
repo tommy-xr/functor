@@ -1,7 +1,8 @@
 //! The headset overlay's painter on the desktop, the way a Quest eye sees
 //! it: an sRGB eye buffer (hardware encode, linear blending) at Quest-like
 //! pixels per degree, the pairing card, the voice toast and the panel at
-//! several distances and angles.
+//! several distances and angles. Pins the pairing card's pixels to a golden
+//! (`LINK_OVERLAY_UPDATE=1` rewrites it).
 //!
 //! `LINK_OVERLAY_OUT=<dir>` writes each view as a PNG and prints the
 //! painter's CPU (shapes + mesh) and GPU (draw) cost. Self-skipping like
@@ -41,6 +42,8 @@ fn main() {
     let mut painter = LinkOverlayPainter::new(&gl, "#version 330 core");
     the_panel_paints_its_background_and_text(&gl, &mut painter);
     println!("test the_panel_paints_its_background_and_text ... ok");
+    the_pairing_card_matches_its_golden(&gl, &mut painter);
+    println!("test the_pairing_card_matches_its_golden ... ok");
     if let Ok(dir) = std::env::var("LINK_OVERLAY_OUT") {
         write_views(&gl, &mut painter, &dir);
     }
@@ -71,6 +74,43 @@ fn the_panel_paints_its_background_and_text(gl: &glow::Context, painter: &mut Li
     assert!(lit > 2000, "text pixels: {lit}");
 }
 
+/// The pairing card's pixels against `fixtures/link_overlay_pairing.png`
+/// (renderer-specific, like the example goldens); `LINK_OVERLAY_UPDATE=1`
+/// rewrites it.
+fn the_pairing_card_matches_its_golden(gl: &glow::Context, painter: &mut LinkOverlayPainter) {
+    let pixels = flip(&draw(gl, painter, &card(&lines(&pairing())), at(1.0, 0.0), Background::Black));
+    // The card, with a margin.
+    let (x0, y0, w, h) = (300, 240, 600, 320);
+    let crop: Vec<u8> = (y0..y0 + h)
+        .flat_map(|y| {
+            let start = ((y * SIZE.0 + x0) * 4) as usize;
+            pixels[start..start + (w * 4) as usize].to_vec()
+        })
+        .collect();
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/link_overlay_pairing.png");
+    if std::env::var_os("LINK_OVERLAY_UPDATE").is_some() {
+        let png = functor_runtime_common::frame_capture::encode_rgba_png(w, h, &crop).unwrap();
+        std::fs::write(path, png).unwrap();
+    }
+    let want = image::open(path).expect("the golden (LINK_OVERLAY_UPDATE=1 writes it)").to_rgba8();
+    assert_eq!((want.width(), want.height()), (w, h));
+    // Edge pixels may differ by a driver's rounding; the glyphs may not.
+    let off = crop
+        .chunks(4)
+        .zip(want.as_raw().chunks(4))
+        .filter(|(a, b)| a.iter().zip(*b).any(|(a, b)| a.abs_diff(*b) > 24))
+        .count();
+    assert!(off * 200 < (w * h) as usize, "{off} pixels differ from {path}");
+}
+
+fn pairing() -> PairingState {
+    PairingState::Code {
+        desktop: "MacBook-Air".into(),
+        code: "482913".into(),
+        confirmed: false,
+    }
+}
+
 fn write_views(gl: &glow::Context, painter: &mut LinkOverlayPainter, dir: &str) {
     std::fs::create_dir_all(dir).unwrap();
     let mut save = |name: &str, shapes: &[Shape], transform: Matrix4<f32>, bg: Background| {
@@ -79,12 +119,7 @@ fn write_views(gl: &glow::Context, painter: &mut LinkOverlayPainter, dir: &str) 
             .expect("encode");
         std::fs::write(format!("{dir}/{name}.png"), png).unwrap();
     };
-    let code = PairingState::Code {
-        desktop: "MacBook-Air".into(),
-        code: "482913".into(),
-        confirmed: false,
-    };
-    save("pairing", &card(&lines(&code)), at(1.0, 0.0), Background::Black);
+    save("pairing", &card(&lines(&pairing())), at(1.0, 0.0), Background::Black);
     let listening = VoiceToast {
         stage: VoiceStage::Listening { level: 7, seconds_left: None },
         transcript: None,

@@ -15,7 +15,8 @@ use cgmath::{vec3, Matrix4, One, Quaternion, Vector3};
 
 use crate::debug_protocol::{PanelState, TaskStance, VoiceToast, WristLight};
 use crate::input::XrInputSnapshot;
-use crate::link_overlay::{toast_lines, wrap, Shape};
+use crate::link_overlay::{toast_lines, Shape};
+use crate::overlay_font::{self, fit, wrap};
 use crate::TrackingPose;
 
 /// The desktop's content for the panel.
@@ -509,8 +510,8 @@ fn stance_word(stance: TaskStance) -> &'static str {
     }
 }
 
-// Metres: about 0.74 m wide at 0.9 m (the mockup's proportions); a body
-// glyph is about 0.85 degrees.
+// Metres: about 0.74 m wide at 0.9 m (the mockup's proportions). Body
+// capitals are about 0.8 degrees tall, its x-height about 0.6.
 pub const WIDTH: f32 = 0.76;
 pub const HEIGHT: f32 = 0.54;
 const PAD: f32 = 0.024;
@@ -520,35 +521,8 @@ const ROW: f32 = 0.045;
 const TITLE: f32 = 0.018;
 const BODY: f32 = 0.0135;
 const SMALL: f32 = 0.011;
-const LABEL: f32 = 0.0095;
 const BUTTON: f32 = 0.042;
 const RING: f32 = 0.0025;
-
-/// Text in the font's ASCII: typographic marks folded, others `?`.
-fn ascii(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            ' '..='~' => out.push(c),
-            '\u{2018}' | '\u{2019}' => out.push('\''),
-            '\u{201c}' | '\u{201d}' => out.push('"'),
-            '\u{2013}' | '\u{2014}' | '\u{2212}' | '\u{b7}' | '\u{2022}' => out.push('-'),
-            '\u{2026}' => out.push_str("..."),
-            '\u{2192}' => out.push_str("->"),
-            c if c.is_whitespace() => out.push(' '),
-            _ => out.push('?'),
-        }
-    }
-    out
-}
-
-/// `text` in at most `n` characters, cut with `...`.
-fn fit(text: &str, n: usize) -> String {
-    match text.chars().count() {
-        len if len <= n => text.to_string(),
-        _ => text.chars().take(n.saturating_sub(3)).collect::<String>() + "...",
-    }
-}
 
 fn outline(out: &mut Vec<Shape>, [x, y, w, h]: [f32; 4], c: [f32; 3]) {
     let c = [c[0], c[1], c[2], 1.0];
@@ -574,7 +548,7 @@ fn text(out: &mut Vec<Shape>, at: [f32; 2], size: f32, color: [f32; 3], s: &str)
         at,
         size,
         color,
-        text: ascii(s),
+        text: s.to_string(),
     });
 }
 
@@ -588,13 +562,12 @@ struct Col<'a> {
 
 impl Col<'_> {
     fn line(&mut self, s: &str, size: f32, color: [f32; 3]) {
-        let n = (self.w / size) as usize;
-        text(self.out, [self.x, self.y], size, color, &fit(&ascii(s), n));
+        text(self.out, [self.x, self.y], size, color, &fit(s, size, self.w));
         self.y -= size * 1.5 + 0.002;
     }
 
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
-        for l in wrap(&ascii(s), (self.w / size) as usize, lines) {
+        for l in wrap(s, size, self.w, lines) {
             self.line(&l, size, color);
         }
     }
@@ -624,17 +597,17 @@ impl Panel {
         // Header: the app, the project, the link's state word.
         let y = top - PAD;
         text(&mut out, [left + PAD, y], BODY, ACCENT, "FUNCTOR");
-        if let Some(project) = data.and_then(|d| d.project.as_deref()) {
-            let x = left + PAD + 9.0 * BODY;
-            text(&mut out, [x, y], BODY, MUTED, &fit(project, 24));
-        }
         let (word, color) = match connection {
             Connection::NotPaired => ("NOT PAIRED".to_string(), FAINT),
             Connection::NotConnected { .. } => ("CANNOT REACH".to_string(), WARN),
             Connection::Outdated { .. } => ("NEEDS AN UPDATE".to_string(), WARN),
-            Connection::Connected { desktop } => (fit(&ascii(desktop), 22), OK),
+            Connection::Connected { desktop } => (fit(desktop, SMALL, 22.0 * SMALL), OK),
         };
-        let wx = w / 2.0 - PAD - word.chars().count() as f32 * SMALL;
+        let wx = w / 2.0 - PAD - overlay_font::width(&word, SMALL);
+        if let Some(project) = data.and_then(|d| d.project.as_deref()) {
+            let x = left + PAD + overlay_font::width("FUNCTOR", BODY) + BODY;
+            text(&mut out, [x, y], BODY, MUTED, &fit(project, BODY, wx - x - BODY));
+        }
         text(&mut out, [wx, y], SMALL, color, &word);
         fill(&mut out, [left, top - HEADER, w, 0.002], SELECTED);
 
@@ -752,7 +725,7 @@ impl Panel {
                         true => "NOW  -  RUNNING IN THIS HEADSET",
                         false => "NOW  -  ITS GAME RUNS ON THE DESKTOP",
                     },
-                    LABEL,
+                    SMALL,
                     FAINT,
                 );
                 col.gap(0.004);
@@ -791,7 +764,7 @@ impl Panel {
                 self.buttons(col, &[label], focused.is_some(), bottom)
             }
             Section::Talk => {
-                col.line("TALK", LABEL, FAINT);
+                col.line("TALK", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
                     "Hold the right thumbstick to talk; let go to send. B cancels.",
@@ -809,7 +782,7 @@ impl Panel {
                     return None;
                 };
                 col.gap(0.008);
-                col.line("WHERE IT WENT", LABEL, FAINT);
+                col.line("WHERE IT WENT", SMALL, FAINT);
                 col.para(&route.line, BODY, TEXT, 2);
                 if let Some(Item::Move(_, to)) = &self.confirm {
                     let label = route
@@ -825,7 +798,7 @@ impl Panel {
                 None
             }
             Section::Tasks => {
-                col.line("TASKS", LABEL, FAINT);
+                col.line("TASKS", SMALL, FAINT);
                 if !data.waiting.is_empty() {
                     col.line(&data.waiting, SMALL, WARN);
                 }
@@ -856,7 +829,7 @@ impl Panel {
                 None
             }
             Section::GameMenu => {
-                col.line("GAME MENU", LABEL, FAINT);
+                col.line("GAME MENU", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
                     "A closes this panel and opens the game's own menu.",
@@ -897,18 +870,18 @@ impl Panel {
             }
             return self.buttons(col, &["Stop"], focused.is_some(), bottom);
         };
-        col.line("SIZE OF THE CHANGE", LABEL, FAINT);
+        col.line("SIZE OF THE CHANGE", SMALL, FAINT);
         col.line(&d.size, BODY, TEXT);
         col.gap(0.004);
         verdict(col, d);
         if !d.summary.is_empty() {
             col.gap(0.004);
-            col.line("SUMMARY", LABEL, FAINT);
+            col.line("SUMMARY", SMALL, FAINT);
             col.para(&d.summary, BODY, TEXT, 3);
         }
         if !d.notes.is_empty() {
             col.gap(0.004);
-            col.line("THINGS TO NOTE", LABEL, FAINT);
+            col.line("THINGS TO NOTE", SMALL, FAINT);
             for note in &d.notes {
                 col.line(&format!("- {note}"), SMALL, MUTED);
             }
@@ -934,25 +907,23 @@ impl Panel {
             outline(col.out, rect, ACCENT);
         }
         let inset = 0.01;
-        let wx = col.x + col.w - inset - word.len() as f32 * SMALL;
-        let title_n = ((wx - col.x - 2.0 * inset) / BODY) as usize;
+        let wx = col.x + col.w - inset - overlay_font::width(word, SMALL);
         let ty = col.y - 0.008;
         text(
             col.out,
             [col.x + inset, ty],
             BODY,
             TEXT,
-            &fit(&ascii(title), title_n),
+            &fit(title, BODY, wx - col.x - 2.0 * inset),
         );
         text(col.out, [wx, ty], SMALL, color, word);
-        let n = ((col.w - 2.0 * inset) / SMALL) as usize;
         let sy = ty - BODY - 0.006;
         text(
             col.out,
             [col.x + inset, sy],
             SMALL,
             FAINT,
-            &fit(&ascii(sub), n),
+            &fit(sub, SMALL, col.w - 2.0 * inset),
         );
         col.gap(ROW + 0.006);
     }
@@ -985,7 +956,7 @@ impl Panel {
                     TEXT,
                 );
             }
-            let tx = rect[0] + (bw - label.len() as f32 * BODY) / 2.0;
+            let tx = rect[0] + (bw - overlay_font::width(label, BODY)) / 2.0;
             let ty = y + (BUTTON + BODY) / 2.0;
             text(
                 col.out,
@@ -1308,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn every_view_fits_inside_the_panel_in_the_fonts_characters() {
+    fn every_view_fits_inside_the_panel_in_the_fonts_glyphs() {
         let d = data();
         let mut long = d.clone();
         long.tasks[0].title = "é".repeat(300);
@@ -1370,14 +1341,70 @@ mod tests {
                         )
                     }
                     Shape::Text { at, size, text, .. } => {
-                        assert!(text.chars().all(|c| (' '..='~').contains(&c)), "{text}");
-                        let right = at[0] + text.chars().count() as f32 * size;
+                        assert!(text.chars().all(overlay_font::has_glyph), "{text}");
+                        let right = at[0] + overlay_font::width(&text, size);
                         assert!(at[0] >= -hw && right <= hw, "{text}: {right}");
                         assert!(at[1] <= hh && at[1] - size >= -hh, "{text}: {}", at[1]);
                     }
                 }
             }
         }
+    }
+
+    /// The overlay's layout as text (each rect, each line with its measured
+    /// width) against `link_panel.layout.golden`; `UPDATE_GOLDENS=1`
+    /// rewrites it. Metrics, not pixels: it catches a font or layout change.
+    #[test]
+    fn the_layout_matches_its_golden() {
+        use crate::link_overlay::{card, lines};
+        use std::fmt::Write;
+        let d = data();
+        let mac = Connection::Connected {
+            desktop: "MacBook-Air".into(),
+        };
+        let code = crate::debug_protocol::PairingState::Code {
+            desktop: "MacBook-Air".into(),
+            code: "482913".into(),
+            confirmed: false,
+        };
+        let heard = VoiceToast {
+            stage: crate::debug_protocol::VoiceStage::Heard,
+            transcript: Some("make the ball bounce a little higher off the left wall, please".into()),
+        };
+        let page = Panel {
+            open: true,
+            section: Section::Tasks,
+            page: Some(1),
+            focus: Some(0),
+            ..Panel::default()
+        };
+        let views = [
+            ("pairing", card(&lines(&code))),
+            ("toast", card(&toast_lines(&heard))),
+            ("decision", page.shapes(Some(&d), &mac, None, Instant::now())),
+        ];
+        let mut out = String::new();
+        for (name, shapes) in views {
+            writeln!(out, "== {name}").unwrap();
+            for shape in shapes {
+                match shape {
+                    Shape::Rect { rect: [x, y, w, h], .. } => {
+                        writeln!(out, "rect {x:.4} {y:.4} {w:.4} {h:.4}").unwrap()
+                    }
+                    Shape::Text { at, size, text, .. } => {
+                        let w = overlay_font::width(&text, size);
+                        writeln!(out, "text {:.4} {:.4} {size:.4} w={w:.4} {text:?}", at[0], at[1])
+                            .unwrap()
+                    }
+                }
+            }
+        }
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/link_panel.layout.golden");
+        if std::env::var_os("UPDATE_GOLDENS").is_some() {
+            std::fs::write(path, &out).unwrap();
+        }
+        let want = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(out == want, "layout changed (UPDATE_GOLDENS=1 to accept):\n{out}");
     }
 
     /// The panel's views as PNGs in `FUNCTOR_PANEL_PNGS`, painted on the CPU
@@ -1389,55 +1416,61 @@ mod tests {
         let Some(dir) = std::env::var_os("FUNCTOR_PANEL_PNGS") else {
             return;
         };
-        let font = crate::sprite_font::atlas_texture_data();
+        let atlas = image::load_from_memory(overlay_font::ATLAS_PNG).unwrap().to_rgb8();
         let scale = 1600.0;
         let (w, h) = ((WIDTH * scale) as usize, (HEIGHT * scale) as usize);
+        // The field's median at atlas pixel `(u, v)`, bilinear like the GPU.
+        let field = |u: f32, v: f32| {
+            let (x, y) = (u - 0.5, v - 0.5);
+            let (x0, y0) = (x.floor(), y.floor());
+            let tap = |dx: f32, dy: f32| {
+                let px = (x0 + dx).clamp(0.0, atlas.width() as f32 - 1.0) as u32;
+                let py = (y0 + dy).clamp(0.0, atlas.height() as f32 - 1.0) as u32;
+                atlas.get_pixel(px, py).0.map(|c| c as f32 / 255.0)
+            };
+            let (fx, fy) = (x - x0, y - y0);
+            let mut c = [0.0; 3];
+            for (dx, dy, k) in [
+                (0.0, 0.0, (1.0 - fx) * (1.0 - fy)),
+                (1.0, 0.0, fx * (1.0 - fy)),
+                (0.0, 1.0, (1.0 - fx) * fy),
+                (1.0, 1.0, fx * fy),
+            ] {
+                let t = tap(dx, dy);
+                (0..3).for_each(|i| c[i] += t[i] * k);
+            }
+            c[0].min(c[1]).max(c[0].max(c[1]).min(c[2]))
+        };
+        // The overlay's own mesh, one quad (six vertices) at a time.
         let paint = |shapes: &[Shape]| {
             let mut px = vec![[30u8, 24, 40]; w * h];
-            let mut blend = |x: f32, y: f32, c: [f32; 3], a: f32| {
-                let ix = (x * scale + w as f32 / 2.0) as usize;
-                let iy = (h as f32 / 2.0 - y * scale) as usize;
-                if ix < w && iy < h {
-                    let p = &mut px[iy * w + ix];
-                    for k in 0..3 {
-                        p[k] = (p[k] as f32 * (1.0 - a) + c[k] * 255.0 * a) as u8;
-                    }
-                }
-            };
-            for s in shapes {
-                match s {
-                    Shape::Rect {
-                        rect: [x, y, rw, rh],
-                        color,
-                    } => {
-                        for j in 0..(rh * scale).ceil() as usize {
-                            for i in 0..(rw * scale).ceil() as usize {
-                                let c = [color[0], color[1], color[2]];
-                                blend(x + i as f32 / scale, y + j as f32 / scale, c, color[3]);
-                            }
+            let mesh = crate::link_overlay::mesh(shapes);
+            for quad in mesh.chunks(6 * 8) {
+                let (lo, hi) = (&quad[..8], &quad[2 * 8..3 * 8]);
+                let srgb = |c: f32| crate::color_space::linear_to_srgb(c) * 255.0;
+                let color = [srgb(lo[4]), srgb(lo[5]), srgb(lo[6])];
+                let [x0, y0] = [lo[0] * scale + w as f32 / 2.0, h as f32 / 2.0 - hi[1] * scale];
+                let [x1, y1] = [hi[0] * scale + w as f32 / 2.0, h as f32 / 2.0 - lo[1] * scale];
+                // Atlas texels per pixel, and the uv at the quad's top-left.
+                let texels = (hi[2] - lo[2]) * atlas.width() as f32 / (x1 - x0);
+                let (u0, v0) = (lo[2] * atlas.width() as f32, hi[3] * atlas.height() as f32);
+                let range = (overlay_font::RANGE / texels).max(1.0);
+                for iy in y0.max(0.0) as usize..(y1.ceil() as usize).min(h) {
+                    for ix in x0.max(0.0) as usize..(x1.ceil() as usize).min(w) {
+                        let (fx, fy) = (ix as f32 + 0.5 - x0, iy as f32 + 0.5 - y0);
+                        if fx < 0.0 || fy < 0.0 || fx > x1 - x0 || fy > y1 - y0 {
+                            continue;
                         }
-                    }
-                    Shape::Text {
-                        at,
-                        size,
-                        color,
-                        text,
-                    } => {
-                        let n = (size * scale).ceil() as usize;
-                        for (k, ch) in text.chars().enumerate() {
-                            let Some((cx, cy, ..)) = crate::sprite_font::glyph_cell(ch) else {
-                                continue;
-                            };
-                            for j in 0..n {
-                                for i in 0..n {
-                                    let gx = cx as usize + i * 8 / n;
-                                    let gy = cy as usize + j * 8 / n;
-                                    if font.bytes[(gy * font.width as usize + gx) * 4 + 3] > 0 {
-                                        let x = at[0] + k as f32 * size + i as f32 / scale;
-                                        blend(x, at[1] - j as f32 / scale, *color, 1.0);
-                                    }
-                                }
+                        let a = match lo[2] < 0.0 {
+                            true => lo[7],
+                            false => {
+                                let m = field(u0 + fx * texels, v0 + fy * texels);
+                                ((m - 0.5) * range + 0.5).clamp(0.0, 1.0)
                             }
+                        };
+                        let p = &mut px[iy * w + ix];
+                        for k in 0..3 {
+                            p[k] = (p[k] as f32 * (1.0 - a) + color[k] * a) as u8;
                         }
                     }
                 }
