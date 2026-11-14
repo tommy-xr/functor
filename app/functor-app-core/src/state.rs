@@ -713,8 +713,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         // Shown at once and broadcast as `ServerMsg::Transport` (below).
         Event::Client(ClientMsg::Transport { call }) => {
-            user_clock(&mut state, &call);
+            let held = !matches!(call, TransportCall::Extrapolate { .. } | TransportCall::Peek { .. });
             transport_call(&mut state, call, &mut commands);
+            // The user's own call is what the run in flight leaves behind.
+            if held {
+                let playing = playing(&state);
+                set_playing(&mut state, playing);
+            }
             (false, false)
         }
         Event::Client(ClientMsg::WatchTransport { on }) => {
@@ -1273,14 +1278,9 @@ fn playing(state: &AppState) -> Option<u64> {
     }
 }
 
-/// The user's own `call` on the bar is what the active project's run
-/// leaves behind: playing after a resume, held after a pause, step or seek.
-fn user_clock(state: &mut AppState, call: &TransportCall) {
-    let playing = match call {
-        TransportCall::Resume => state.session.as_ref().map(|s| s.id),
-        TransportCall::Pause | TransportCall::Step | TransportCall::Seek { .. } => None,
-        TransportCall::Extrapolate { .. } | TransportCall::Peek { .. } => return,
-    };
+/// What the active project's run in flight leaves behind: session
+/// `playing` playing, or the game as it is.
+fn set_playing(state: &mut AppState, playing: Option<u64>) {
     let active = state.active.as_deref();
     for task in state.tasks.iter_mut().filter(|t| Some(t.project.as_str()) == active) {
         if let Some(run) = &mut task.run {
@@ -3401,7 +3401,13 @@ fn on_session(
             let Ok(polled) = result else {
                 return false;
             };
+            let first = timeline.clock.is_none();
             timeline.polled(after, polled.frame, polled.clock);
+            // A game first seen playing (it started, or restarted, during
+            // a run) is one the run leaves playing.
+            if first && timeline.playing() {
+                set_playing(state, Some(id));
+            }
             read_marks(state, commands);
             // The clock goes as `ServerMsg::Transport`; only a new surface or
             // pointer is state.
@@ -4815,12 +4821,40 @@ mod tests {
         let (s, _) = update(s, client(ClientMsg::Transport { call: TransportCall::Resume }));
         let (_, commands) = update(s, ended(1, run));
         assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
-        // Another session (the game restarted) is not the one it took.
+        // Paused by the user, and a run started before a poll shows it:
+        // left paused.
         let (s2, _) = update(s2, session(1, polled_clock(8, playing)));
-        let (mut s2, _) = update(s2, send(1, "last"));
+        let (s2, _) = update(s2, client(ClientMsg::Transport { call: TransportCall::Pause }));
+        let (s2, _) = update(s2, send(1, "last"));
         let run = task(&s2, 1).run.as_ref().unwrap().id;
-        s2.session.as_mut().unwrap().id = 2;
-        let (_, commands) = update(s2, ended(1, run));
+        let (_, commands) = update(s2.clone(), ended(1, run));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+        // Another session (the game restarted) that is not playing is left.
+        let mut other = s2;
+        other.session.as_mut().unwrap().id = 2;
+        let (_, commands) = update(other, ended(1, run));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+    }
+
+    /// A run started before the game was first polled (a new project's
+    /// first task, a restart during the run) takes it as first seen.
+    #[test]
+    fn a_game_first_seen_playing_during_a_run_plays_again_after_it() {
+        let s = with_session(1, Some(9), running(None));
+        let (s, _) = update(s, new_task("hi"));
+        assert_eq!(task(&s, 1).run.as_ref().unwrap().playing, None);
+        let (s, _) = update(s, session(1, polled_clock(1, PolledClock::default())));
+        let (_, commands) = update(s.clone(), ended(1, 0));
+        assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
+        // First seen paused (D37: it opens paused): left paused.
+        let paused = PolledClock {
+            paused: true,
+            ..PolledClock::default()
+        };
+        let s = with_session(1, Some(9), running(None));
+        let (s, _) = update(s, new_task("hi"));
+        let (s, _) = update(s, session(1, polled_clock(1, paused)));
+        let (_, commands) = update(s, ended(1, 0));
         assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
     }
 
