@@ -129,7 +129,7 @@ enum Item {
     Keep(u64, String),
     Revert(u64, String),
     Stop(u64),
-    /// Move route `id`'s utterance (its move at this index).
+    /// Move route `id`'s utterance to this destination.
     Move(u64, Destination),
 }
 
@@ -771,7 +771,8 @@ impl Panel {
                 if !t.activity.is_empty() {
                     col.para(&t.activity, BODY, MUTED, 2);
                 }
-                if !data.waiting.is_empty() {
+                // Not on the running task it would name ("Starts after" it).
+                if !data.waiting.is_empty() && !running(t.stance) {
                     col.para(&data.waiting, SMALL, WARN, 1);
                 }
                 if let Some(d) = &t.decision {
@@ -793,7 +794,7 @@ impl Panel {
                 col.line("TALK", LABEL, FAINT);
                 col.gap(0.004);
                 col.para(
-                    "Hold the right thumbstick to talk; let go to send.",
+                    "Hold the right thumbstick to talk; let go to send. B cancels.",
                     BODY,
                     TEXT,
                     2,
