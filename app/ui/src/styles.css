@@ -2804,6 +2804,64 @@ blockquote {
   font-size: 12px;
 }
 
+/* In a narrow dock the two words give way before the round buttons do. */
+.composer-row .round {
+  flex: none;
+}
+
+.composer-row .review-menu {
+  min-width: 0;
+}
+
+.composer-row .review-toggle {
+  max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The instruction scope (D39) shares the review's look: three levels, each
+   with what it leaves out, then the project's default. */
+.scope-levels {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-levels legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.scope-level {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.scope-level input {
+  margin-top: 3px;
+}
+
+.scope-level > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scope-name {
+  font-weight: 600;
+}
+
+.scope-off {
+  opacity: 0.5;
+}
+
 /* Inside the composer, whose own textarea rule would strip its box. */
 .review-field textarea.text-input {
   padding: 6px 10px;

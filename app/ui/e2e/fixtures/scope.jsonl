@@ -1,0 +1,4 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-scope-1", "model": "claude-model"}}
+{"ms": 300, "event": {"type": "text", "text": "The count starts at 0."}}
+{"ms": 350, "event": {"type": "usage", "input": 900, "output": 8}}
+{"ms": 400, "event": {"type": "finished", "ok": true, "summary": "The count starts at 0."}}
