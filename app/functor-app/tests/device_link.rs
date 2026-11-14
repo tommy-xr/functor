@@ -2868,11 +2868,19 @@ async fn game_on_stub(
     let (id, tunnel) = (card["id"].clone(), card["tunnel"].as_str().unwrap().to_string());
     app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
         .await;
-    let on = tunnel.clone();
-    app.state_where("the game runs on the headset", 60, move |s| {
-        s["session"]["status"]["debug_url"] == on.as_str()
-    })
-    .await;
+    // Said in full if it never does: the session and the CLI check.
+    let last = std::cell::RefCell::new(Value::Null);
+    let runs = |s: &Value| {
+        *last.borrow_mut() = json!({"session": s["session"], "cli": s["cli_problem"]});
+        s["session"]["status"]["debug_url"] == tunnel.as_str()
+    };
+    let waited = tokio::time::timeout(
+        Duration::from_secs(60),
+        app.state_where("the game runs on the headset", 61, runs),
+    );
+    if waited.await.is_err() {
+        panic!("the game never ran on the headset: {}", last.borrow());
+    }
     Some((app, store, quest, tunnel))
 }
 
