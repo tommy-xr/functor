@@ -443,9 +443,15 @@ fn without_code(text: &str) -> String {
     out.join("\n")
 }
 
-/// What a task is doing: its running call's label, else its error, else
-/// nothing.
+/// What an agent holding the game paused is doing (D48).
+const GAME_PAUSED: &str = "checking the change, game paused";
+
+/// What a task is doing: checking the change with the game paused, else its
+/// running call's label, else its error, else nothing.
 fn activity_line(a: Option<&Activity>) -> String {
+    if a.is_some_and(|a| a.game_paused) {
+        return GAME_PAUSED.to_string();
+    }
     a.and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
         .cloned()
         .unwrap_or_default()

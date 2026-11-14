@@ -2168,7 +2168,7 @@ in the list have already advanced; the group is no longer in lockstep."
             self.post(
                 &target.url,
                 "/time",
-                serde_json::json!({ "type": "set", "tts": tts }).to_string(),
+                pinning(serde_json::json!({ "type": "set", "tts": tts })),
             )
             .await
         );
@@ -2900,7 +2900,7 @@ that session is not consuming its traffic"
         self.post(
             url,
             "/time",
-            serde_json::json!({ "type": "set", "tts": tts }).to_string(),
+            pinning(serde_json::json!({ "type": "set", "tts": tts })),
         )
         .await
     }
@@ -2922,7 +2922,7 @@ that session is not consuming its traffic"
             "dts": dts,
             "frames": frames,
         });
-        match self.post_advance(&target.url, body.to_string()).await {
+        match self.post_advance(&target.url, pinning(body)).await {
             Ok(_) => {}
             // A 4xx response proves the runtime rejected the command before
             // queuing it. Cancelling could discard direct-client work.
@@ -3004,7 +3004,7 @@ game loop may be stuck",
             .post(
                 &target.url,
                 "/time",
-                serde_json::json!({ "type": "cancel" }).to_string(),
+                pinning(serde_json::json!({ "type": "cancel" })),
             )
             .await
         {
@@ -5278,6 +5278,13 @@ sources to a directory that already holds the right functor.json instead.",
             .map_err(|error| format!("could not remove the stale module {stale}: {error}"))?;
     }
     Ok(files.into_iter().map(|(path, _)| path).collect())
+}
+
+/// A `POST /time` body that pins the clock, naming the agent as who paused
+/// it (`/state`'s `clock.paused_by`).
+fn pinning(mut command: Value) -> String {
+    command["by"] = "agent".into();
+    command.to_string()
 }
 
 /// The runtime's current time, from a `/state` document. Never defaulted: a

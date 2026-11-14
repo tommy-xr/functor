@@ -19,6 +19,8 @@ pub struct Transport {
     pub clock: bool,
     /// Pinned: paused, stepped, or parked on a seek.
     pub paused: bool,
+    /// Who paused it, where the runtime says (debug protocol v48).
+    pub paused_by: Option<PausedBy>,
     /// The recorded steps behind the state shown (`/state.frame`).
     pub frame: u64,
     /// The seekable window `[oldest, newest]`, numbered as `frame`; `None`
@@ -35,6 +37,19 @@ pub struct Transport {
     /// Successful hot reloads since the program loaded: a new one is an
     /// edit landing, which the page peeks at while paused.
     pub revision: u64,
+}
+
+/// Who paused the clock, as the request that paused it said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PausedBy {
+    /// An agent's game tools (its `step`).
+    Agent,
+    /// The transport bar.
+    User,
+    /// The game opened paused (D37).
+    Start,
 }
 
 /// An event on the timeline: an input edge or a hot reload, with the kind
@@ -174,6 +189,7 @@ impl Timeline {
         self.clock = Some(Transport {
             clock: true,
             paused: clock.paused,
+            paused_by: clock.paused_by.filter(|_| clock.paused),
             frame,
             recorded: clock.recorded,
             generation: clock.generation,
@@ -312,6 +328,7 @@ mod tests {
             recorded: Some(recorded),
             generation,
             program_revision: revision,
+            ..PolledClock::default()
         })
     }
 
@@ -375,6 +392,20 @@ mod tests {
         t.polled(1, 41, clock(true, [1, 103], 0, 0));
         let shown = t.clock.unwrap();
         assert_eq!((shown.frame, shown.paused, shown.seek), (41, true, 7));
+        // Who paused it shows as polled, and goes when it runs.
+        let by = |paused, paused_by| {
+            let mut t = Timeline::default();
+            let polled = PolledClock {
+                paused,
+                paused_by,
+                ..PolledClock::default()
+            };
+            t.polled(0, 1, Some(polled));
+            t.clock.unwrap().paused_by
+        };
+        assert_eq!(by(true, Some(PausedBy::Agent)), Some(PausedBy::Agent));
+        assert_eq!(by(true, None), None);
+        assert_eq!(by(false, Some(PausedBy::Agent)), None);
         // Whether it plays goes by the last call until a poll shows it.
         assert!(!t.playing());
         assert_eq!(t.call(TransportCall::Resume), Some(TransportCall::Resume));
