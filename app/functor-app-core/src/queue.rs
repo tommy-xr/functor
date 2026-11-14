@@ -372,6 +372,7 @@ mod tests {
             spoken: Some(Spoken {
                 headset: "Quest".to_string(),
                 context: None,
+                route: None,
             }),
         });
         let sent = prompt(&t);

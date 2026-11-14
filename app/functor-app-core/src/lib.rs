@@ -17,6 +17,7 @@ pub mod print;
 pub mod projects;
 pub mod protocol;
 pub mod queue;
+pub mod route;
 pub mod review;
 pub mod session;
 pub mod state;

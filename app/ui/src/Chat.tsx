@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Decision, Harness, Item, Scope, Task, Usage } from "./generated/protocol";
+import type { AppState, Change, Decision, Destination, Harness, Item, Routed, Scope, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -265,6 +265,9 @@ export function ChatDock({
         key={current?.id ?? "new"}
         task={current}
         items={items}
+        routes={(state?.routes ?? []).filter((r) => r.task === current?.id)}
+        online={online}
+        onMove={(id, to) => send({ type: "move_utterance", id, to })}
         lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
         onOpenGame={onOpenGame}
         onViewDiff={onViewDiff}
@@ -329,7 +332,7 @@ export function ChatDock({
           onStop={stop}
           onNotice={setShownNotice}
           canvasWord={canvasWord}
-          placeholder={current ? "Reply in this task" : "Ask for a change, or about the running game"}
+          placeholder={running ? "Steer this task" : current ? "Reply in this task" : "Ask for a change, or about the running game"}
         />
       </div>
     </section>
@@ -474,6 +477,9 @@ function ReviewCard({
 function Conversation({
   task,
   items,
+  routes,
+  online,
+  onMove,
   lines,
   onOpenGame,
   onViewDiff,
@@ -484,6 +490,10 @@ function Conversation({
 }: {
   task: Task | null;
   items: Item[] | undefined;
+  /** The task's decisions on where speech went that can still move (D29). */
+  routes: Routed[];
+  online: boolean;
+  onMove: (id: number, to: Destination) => void;
   lines: Line[];
   onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
@@ -528,6 +538,9 @@ function Conversation({
           repoRoot={repoRoot}
           project={project}
         />
+        {item.kind === "user" && item.spoken?.route && (
+          <RouteLine line={item.spoken.route} routed={routes.find((r) => r.item === i)} online={online} onMove={onMove} />
+        )}
         {linesAt(i + 1)}
       </Fragment>
     ));
@@ -565,6 +578,31 @@ function Conversation({
           Jump to latest
         </button>
       )}
+    </div>
+  );
+}
+
+/** Where the router put a spoken message (D29), and while it can be undone, the moves to elsewhere. */
+function RouteLine({
+  line,
+  routed,
+  online,
+  onMove,
+}: {
+  line: string;
+  routed: Routed | undefined;
+  online: boolean;
+  onMove: (id: number, to: Destination) => void;
+}) {
+  const by = routed?.by === "model" ? "Placed by the model router" : routed?.by === "you" ? "Moved by you" : "Placed by the rule: steer the running task, else a new task";
+  return (
+    <div className="route-line" data-testid="route-line">
+      <span title={routed ? by : undefined}>{line}</span>
+      {routed?.moves.map((m) => (
+        <button key={JSON.stringify(m.to)} type="button" className="link-button" disabled={!online} onClick={() => onMove(routed.id, m.to)}>
+          {m.label}
+        </button>
+      ))}
     </div>
   );
 }

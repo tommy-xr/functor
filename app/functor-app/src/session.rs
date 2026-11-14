@@ -90,6 +90,8 @@ pub struct Driver {
     evidence: crate::evidence::Worker,
     /// Games being stopped on headsets, by tunnel, until one answers.
     unloads: HashMap<String, JoinHandle<()>>,
+    /// Where speech goes, when a model can say (D29).
+    pub router: Option<crate::router::Router>,
 }
 
 pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
@@ -171,6 +173,7 @@ impl Driver {
             templates: Arc::default(),
             link: None,
             unloads: HashMap::new(),
+            router: None,
         }
     }
 
@@ -336,6 +339,11 @@ impl Driver {
                     eprintln!("functor-app: cannot save the review setting: {e}");
                 }
             }
+            Command::SaveModelRoute { dir, on } => {
+                if let Err(e) = crate::store::save_model_route(&self.home, &dir, on) {
+                    eprintln!("functor-app: cannot save the speech setting: {e}");
+                }
+            }
             Command::SaveTask { dir, task } => {
                 if let Err(e) = crate::store::save(&self.home, &dir, &task) {
                     eprintln!("functor-app: cannot save task {}: {e}", task.id);
@@ -410,6 +418,29 @@ impl Driver {
                 if let Some(link) = &self.link {
                     link.command(command);
                 }
+            }
+            Command::Route {
+                device,
+                utterance,
+                request,
+            } => {
+                let (router, events) = (self.router.clone(), self.events.clone());
+                tokio::spawn(async move {
+                    let choice = match router {
+                        Some(router) => router.choose(&request).await,
+                        None => Err("no model router".to_string()),
+                    };
+                    // The rule decides instead: said, so a router that never
+                    // answers in time can be noticed.
+                    if let Err(e) = &choice {
+                        eprintln!("functor-app: the router: {e}; the fixed rule decides");
+                    }
+                    let _ = events.send(Event::Routed {
+                        device,
+                        utterance,
+                        choice,
+                    });
+                });
             }
             // Clients and view requests are the server's (`server::run`); `--print` has neither.
             Command::Reply(_) | Command::Broadcast(_) | Command::ViewReply(_) => {}

@@ -7,6 +7,7 @@ mod evidence;
 mod files;
 mod folders;
 mod link;
+mod router;
 mod server;
 mod session;
 mod store;
@@ -309,7 +310,10 @@ async fn app(
     let hub = link::Hub::new(home.clone(), tx.clone())?;
     state.speech = hub.speaks();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
+    let router = router::Router::from_env(&agents);
+    state.router = router.is_some();
     let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
+    driver.router = router;
     driver.link = Some(hub.clone());
     if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
         // `--print` changes no task, so it measures none.
