@@ -297,6 +297,29 @@ blockquote {
   text-overflow: ellipsis;
 }
 
+/* What is wrong with the CLI the app runs: a strip under the title bar. */
+.cli-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.cli-banner p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cli-banner .button {
+  flex: 0 0 auto;
+}
+
 /* Rail */
 
 .rail {

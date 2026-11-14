@@ -93,6 +93,7 @@ export function App() {
     {/* Behind a modal, nothing takes focus or clicks. */}
     <div className="app" inert={!!state?.new_project || pairing.request !== null}>
       <TitleBar state={state} conn={conn} deferred={pairing.deferred} onHeadset={showDevices} />
+      {state?.cli_problem && <CliBanner problem={state.cli_problem} checking={state.cli_checking} online={online} send={send} />}
       <div className="workspace">
         <Rail view={view} onSelect={setView} waiting={needsYou(state?.tasks ?? [], state?.active ?? null)} />
         <div className="panes">
@@ -356,6 +357,22 @@ function TitleBar({
         Headset · {WORDS[headset]}
       </button>
     </header>
+  );
+}
+
+/**
+ * What is wrong with the `functor` the app runs (D40), under the title bar
+ * until a check finds it fine. Try again checks anew, as one may have been
+ * built meanwhile.
+ */
+function CliBanner({ problem, checking, online, send }: { problem: string; checking: boolean; online: boolean; send: Send }) {
+  return (
+    <div className="cli-banner" role="alert">
+      <p>{problem}</p>
+      <button type="button" className="button button-compact" disabled={!online || checking} onClick={() => send({ type: "check_cli" })}>
+        {checking ? "Checking…" : "Try again"}
+      </button>
+    </div>
   );
 }
 

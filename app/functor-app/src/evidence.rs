@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::changes::Git;
+use crate::cli::Cli;
 use crate::session::{poll_state, request, request_bytes};
 
 /// The most one pair of captures may take.
@@ -93,9 +94,9 @@ pub struct Job {
 pub struct Worker(UnboundedSender<Job>);
 
 impl Worker {
-    pub fn new(functor: PathBuf, home: PathBuf, events: UnboundedSender<Event>) -> Self {
+    pub fn new(cli: Arc<Cli>, home: PathBuf, events: UnboundedSender<Event>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        tokio::spawn(work(rx, functor, home, events));
+        tokio::spawn(work(rx, cli, home, events));
         Self(tx)
     }
 
@@ -106,7 +107,7 @@ impl Worker {
 
 async fn work(
     mut jobs: UnboundedReceiver<Job>,
-    functor: PathBuf,
+    cli: Arc<Cli>,
     home: PathBuf,
     events: UnboundedSender<Event>,
 ) {
@@ -119,7 +120,13 @@ async fn work(
                 None => return,
             },
         };
-        let taking = tokio::time::timeout(JOB_TIMEOUT, take(&job, &functor, &home));
+        let functor = cli.path();
+        let taking = tokio::time::timeout(JOB_TIMEOUT, async {
+            match &functor {
+                Ok(functor) => take(&job, functor, &home).await,
+                Err(reason) => withheld(reason.clone()),
+            }
+        });
         tokio::pin!(taking);
         let state = loop {
             tokio::select! {

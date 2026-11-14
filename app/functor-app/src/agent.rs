@@ -217,7 +217,7 @@ impl Agents {
 
 /// The runs in flight, by task.
 pub struct Runner {
-    functor: PathBuf,
+    cli: Arc<crate::cli::Cli>,
     agents: Agents,
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
@@ -309,7 +309,7 @@ impl Drop for RunSecret {
 
 impl Runner {
     pub fn new(
-        functor: PathBuf,
+        cli: Arc<crate::cli::Cli>,
         agents: Agents,
         git: Option<Arc<Git>>,
         events: UnboundedSender<Event>,
@@ -317,7 +317,7 @@ impl Runner {
         home: PathBuf,
     ) -> Self {
         Self {
-            functor,
+            cli,
             agents,
             git,
             events,
@@ -334,7 +334,7 @@ impl Runner {
         self.reviews.insert(spec.task, (spec.run, cancel));
         tokio::spawn(run_review(
             spec,
-            self.functor.clone(),
+            self.cli.path(),
             self.agents.clone(),
             self.git.clone(),
             self.events.clone(),
@@ -363,7 +363,7 @@ impl Runner {
         let task = tokio::spawn(run_task(
             spec,
             moment,
-            self.functor.clone(),
+            self.cli.path(),
             self.agents.clone(),
             self.git.clone(),
             self.events.clone(),
@@ -413,7 +413,7 @@ impl Runner {
 async fn run_task(
     spec: RunSpec,
     moment: PathBuf,
-    functor: PathBuf,
+    functor: Found,
     agents: Agents,
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
@@ -490,7 +490,7 @@ async fn run_task(
 /// if cancelled.
 async fn run(
     spec: &RunSpec,
-    functor: &Path,
+    functor: &Found,
     agents: &Agents,
     send: &impl Fn(RunEvent),
     mut cancel: oneshot::Receiver<()>,
@@ -610,7 +610,7 @@ async fn drive(
 #[allow(clippy::too_many_arguments)]
 async fn run_review(
     spec: ReviewSpec,
-    functor: PathBuf,
+    functor: Found,
     agents: Agents,
     git: Option<Arc<Git>>,
     events: UnboundedSender<Event>,
@@ -655,7 +655,7 @@ async fn run_review(
 #[allow(clippy::too_many_arguments)]
 async fn review(
     spec: &ReviewSpec,
-    functor: &Path,
+    functor: &Found,
     agents: &Agents,
     git: &Git,
     views: &Arc<ViewRoute>,
@@ -849,6 +849,10 @@ struct ToolServer {
     base: String,
 }
 
+/// The `functor` to run tool servers with, or why none may be started
+/// ([`crate::cli::Cli::path`]).
+type Found = Result<PathBuf, String>;
+
 /// `functor`'s arguments for a tool server attached to `attach`, forwarding
 /// view requests to `app` (its secret goes in the environment, never here),
 /// or serving a review of the brief at `review`. Without `--no-unsafe-code`
@@ -877,12 +881,14 @@ impl ToolServer {
     /// working directory is wherever it was started, not the open folder.
     /// `app_secret` is `--app-url`'s.
     async fn start(
-        functor: &Path,
+        functor: &Found,
         dir: &Path,
         args: &[&str],
         token: &str,
         app_secret: Option<&str>,
     ) -> Result<Self, String> {
+        // A problem with the `functor` found starts nothing: its message is the error.
+        let functor = functor.as_ref().map_err(String::clone)?;
         // Killed if dropped before `stop` (a cancel or failure while starting).
         let mut command = Command::new(functor);
         command
@@ -1334,7 +1340,7 @@ mod tests {
         let views = Arc::new(ViewRoute::default());
         let home = dir.path().to_path_buf();
         let mut runner = Runner::new(
-            stub,
+            Arc::new(crate::cli::Cli::checked(stub)),
             Agents::Fake {
                 run: dir.path().join("x"),
                 review: None,

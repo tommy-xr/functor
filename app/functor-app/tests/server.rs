@@ -319,7 +319,7 @@ async fn input_is_posted_to_the_session() {
     // A `functor` that only announces the fake server, then waits to be killed.
     let fake = tmp.path().join("functor");
     let script = format!(
-        "#!/bin/sh\necho '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n"
+        "#!/bin/sh\n[ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\necho '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n"
     );
     std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -409,7 +409,7 @@ async fn the_game_child_never_sees_the_token() {
     let seen = tmp.path().join("seen.txt");
     let fake = tmp.path().join("functor");
     let script = format!(
-        "#!/bin/sh\n{{ env; echo \"$@\"; }} >> '{}'\n\
+        "#!/bin/sh\n[ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n{{ env; echo \"$@\"; }} >> '{}'\n\
          echo '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n",
         seen.display()
     );

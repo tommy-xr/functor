@@ -90,3 +90,17 @@ fn bare_functor_runs_the_app_and_help_is_still_help() {
         assert!(!said.starts_with("--functor "), "{flag}: {said}");
     }
 }
+
+#[test]
+fn app_compat_answers_the_apps_check_on_stdout_alone() {
+    let out = functor().args(["app-compat", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(answer["app_protocol"].as_u64() >= Some(1), "{answer}");
+    assert!(answer["version"].is_string(), "{answer}");
+    assert!(answer["debug_protocol"].is_u64(), "{answer}");
+    // Hidden from the help.
+    let help = functor().arg("--help").output().unwrap();
+    assert!(!String::from_utf8_lossy(&help.stdout).contains("app-compat"));
+}

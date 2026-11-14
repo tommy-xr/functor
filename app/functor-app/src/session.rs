@@ -67,7 +67,7 @@ pub fn functor_bin(flag: Option<PathBuf>, env: Option<OsString>, exe: Option<Pat
 }
 
 pub struct Driver {
-    functor: PathBuf,
+    cli: Arc<crate::cli::Cli>,
     events: UnboundedSender<Event>,
     live: Option<Live>,
     runs: Runner,
@@ -146,7 +146,7 @@ impl Driver {
     /// With no workspace yet: `Command::UseWorkspace` brings its git and
     /// task ids.
     pub fn new(
-        functor: PathBuf,
+        cli: Arc<crate::cli::Cli>,
         agents: Agents,
         home: PathBuf,
         events: UnboundedSender<Event>,
@@ -154,15 +154,15 @@ impl Driver {
     ) -> Self {
         Self {
             runs: Runner::new(
-                functor.clone(),
+                cli.clone(),
                 agents,
                 None,
                 events.clone(),
                 views,
                 home.clone(),
             ),
-            evidence: crate::evidence::Worker::new(functor.clone(), home.clone(), events.clone()),
-            functor,
+            evidence: crate::evidence::Worker::new(cli.clone(), home.clone(), events.clone()),
+            cli,
             events,
             live: None,
             home,
@@ -220,6 +220,13 @@ impl Driver {
                 }
                 let args = ["run", "vr", "--device-url", tunnel.as_str()];
                 self.start(id, &dir, &args, Some(tunnel.clone()))
+            }
+            Command::CheckCli => {
+                let (cli, events) = (self.cli.clone(), self.events.clone());
+                tokio::spawn(async move {
+                    let problem = cli.check().await;
+                    let _ = events.send(Event::CliChecked { problem });
+                });
             }
             Command::StopSession { id } => {
                 if self.live.as_ref().is_some_and(|l| l.id == id) {
@@ -298,10 +305,16 @@ impl Driver {
                 });
             }
             Command::CreateProject { request, folder } => {
-                let (functor, events) = (self.functor.clone(), self.events.clone());
+                let (functor, events) = (self.cli.path(), self.events.clone());
                 tokio::task::spawn_blocking(move || {
-                    let (result, note) = match crate::creation::create(&functor, &request, &folder)
-                    {
+                    let made = functor
+                        .map_err(|reason| functor_app_core::creation::CreateFailure {
+                            reason,
+                            done: Vec::new(),
+                            not_done: Vec::new(),
+                        })
+                        .and_then(|functor| crate::creation::create(&functor, &request, &folder));
+                    let (result, note) = match made {
                         Ok(made) => (Ok(made.path), made.note),
                         Err(failure) => (Err(failure), None),
                     };
@@ -506,8 +519,9 @@ impl Driver {
     /// `functor init --list --json`'s templates, kept while the binary's
     /// modification time stays the same.
     pub fn list_templates(&self) -> impl std::future::Future<Output = TemplateList> + 'static {
-        let (functor, cache) = (self.functor.clone(), self.templates.clone());
+        let (functor, cache) = (self.cli.path(), self.templates.clone());
         async move {
+            let functor = functor?;
             let modified = std::fs::metadata(&functor).and_then(|m| m.modified()).ok();
             let kept = cache.lock().unwrap().clone();
             match (kept, modified) {
@@ -608,7 +622,11 @@ impl Driver {
         let send = |event| {
             let _ = self.events.send(Event::Session { id, event });
         };
-        let spawned = tokio::process::Command::new(&self.functor)
+        let functor = match self.cli.path() {
+            Ok(functor) => functor,
+            Err(reason) => return send(SessionEvent::StartFailed { reason }),
+        };
+        let spawned = tokio::process::Command::new(&functor)
             .arg("-d")
             .arg(dir)
             .args(args)
@@ -622,7 +640,7 @@ impl Driver {
         let child = match spawned {
             Ok(child) => child,
             Err(e) => {
-                let reason = format!("cannot run {}: {e}", self.functor.display());
+                let reason = format!("cannot run {}: {e}", functor.display());
                 return send(SessionEvent::StartFailed { reason });
             }
         };
