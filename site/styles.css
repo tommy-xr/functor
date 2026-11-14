@@ -1983,7 +1983,7 @@ a:hover {
   text-decoration: none;
 }
 
-/* The one link that leaves the page. */
+/* A link that leaves the page. */
 .docs-nav a.docs-nav-out {
   color: var(--cyan);
 }
@@ -2103,6 +2103,38 @@ a:hover {
   border-left: 3px solid var(--cyan);
   border-radius: 6px;
   background: rgba(65, 216, 230, 0.045);
+}
+
+/* A capture in the manual: the picture, then one line saying what it shows. */
+.docs-figure {
+  margin: 24px 0;
+}
+
+/* Never wider than its own pixels: a small capture stays sharp. */
+.docs-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.docs-figure figcaption {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+/* The landing page's status tag, set inline in manual prose and headings. */
+.docs-main .tag {
+  display: inline-block;
+  margin: 0 0 0 4px;
+  vertical-align: middle;
+  font-family: var(--font-mono);
+}
+
+.tag-new {
+  color: var(--pink);
 }
 
 /* ---------------------------------------------------------- API reference */
