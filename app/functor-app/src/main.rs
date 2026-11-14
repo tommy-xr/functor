@@ -415,12 +415,6 @@ async fn app(
         Ok(None) => {}
         Err(e) => eprintln!("functor-app: the device link is off: {e}"),
     };
-    // Also after the `listening on` line: what is wrong with the `functor` found.
-    let say_cli = |problem: &Option<String>| {
-        if let Some(problem) = problem {
-            eprintln!("functor-app: {problem}");
-        }
-    };
     let code = match window {
         // The full URL, for a person to open; see `server` on the token.
         None => {
@@ -429,7 +423,6 @@ async fn app(
                 token.reveal()
             );
             say_link();
-            say_cli(&state.cli_problem);
             let shutdown = async { 128 + signal.await };
             server::serve(
                 state,
@@ -446,7 +439,6 @@ async fn app(
         Some((window_origin, close)) => {
             eprintln!("[functor-app] listening on {origin}");
             say_link();
-            say_cli(&state.cli_problem);
             let _ = window_origin.send(origin);
             // Closing the window stops everything the way a signal does.
             let shutdown = async {
