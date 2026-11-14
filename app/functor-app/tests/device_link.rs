@@ -729,6 +729,19 @@ impl Review {
             r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Renamed x."}}"#,
         ];
         std::fs::write(tools.path().join("edit.jsonl"), fixture.join("\n")).unwrap();
+        // A run that talks a while, then asks and waits (each gap is ms after
+        // the line before).
+        let talk = [
+            r#"{"ms":0,"event":{"type":"started","session":"fake-session-2","model":"claude-model"}}"#,
+            r#"{"ms":500,"event":{"type":"text","text":"Looking at the ball."}}"#,
+            r#"{"ms":500,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}"#,
+            r#"{"ms":800,"event":{"type":"tool_result","content":"let x = 1"}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"Found it in game.fun. The colour is set once, at the top."}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"One question first."}}"#,
+            r#"{"ms":1500,"event":{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Should it stay red after a bounce?"}]}}}"#,
+            r#"{"ms":120000,"event":{"type":"finished","ok":true,"summary":"Asked."}}"#,
+        ];
+        std::fs::write(tools.path().join("talk.jsonl"), talk.join("\n")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -770,13 +783,18 @@ impl Review {
 
     /// `functor-app` on the repo with its link `link` (`--device-link …`).
     async fn app(&self, link: &[&str]) -> App {
+        self.app_with(link, "edit.jsonl").await
+    }
+
+    /// `app`, its fake agent replaying `fixture`.
+    async fn app_with(&self, link: &[&str], fixture: &str) -> App {
         let functor = self.tools.path().join("functor");
         let mut args = link.to_vec();
         args.extend(["--functor", functor.to_str().unwrap()]);
         let mut env = Review::git_env(self.tools.path());
         env.push((
             "FUNCTOR_APP_FAKE_AGENT",
-            self.tools.path().join("edit.jsonl").into(),
+            self.tools.path().join(fixture).into(),
         ));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
         app_env(self.repo.path(), &args, &env).await
@@ -2457,6 +2475,106 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
     wrist();
     tokio::time::sleep(Duration::from_millis(300)).await;
     quest.capture("panel-wrist-done.png");
+}
+
+/// `npm run test:quest-panel` (second half): the conversation page. A task
+/// whose fake agent talks a while, then asks: from Now the conversation
+/// opens and fills as the agent writes, following the newest; up scrolls
+/// back and stops following, down to the end follows again; the question
+/// shows. Captures land in `FUNCTOR_QUEST_CAPTURES` when set.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn quest_panel_follows_the_conversation() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let quest = Quest::attach(&["debug.oculus.guardian_pause", "debug.functor.pair_input"]);
+    let review = Review::new();
+    let app = review
+        .app_with(&["--device-link", "0.0.0.0:0"], "talk.jsonl")
+        .await;
+    let (mut app, _, _) = pair_quest_by_cable(&quest, app).await;
+    let panel = |quest: &Quest| quest.link()["panel"].clone();
+    let debug = quest.debug.clone();
+    let hold = |controls: Value, ms: u64| {
+        let debug = debug.clone();
+        async move {
+            for sample in [controls, json!({"active": true})] {
+                let mut hand = json!({"active": true});
+                hand.as_object_mut()
+                    .unwrap()
+                    .extend(sample.as_object().unwrap().clone());
+                let body = json!({"type": "xr", "right": hand}).to_string();
+                let (status, text) = post(&debug, "/input", &body).unwrap();
+                assert_eq!(status, 200, "{text}");
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
+    };
+    let a = || hold(json!({"primary_pressed": true}), 150);
+    let stick = |y: f32| hold(json!({"thumbstick": [0.0, y]}), 150);
+    let menu = || {
+        let debug = debug.clone();
+        async move {
+            for on in [true, false] {
+                let body = json!({"type": "xr", "left": {"active": true, "menu_pressed": on}});
+                post(&debug, "/input", &body.to_string()).unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+
+    app.send(json!({"type": "new_task", "message": "Make the ball red", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the task runs", 30, |s| s["tasks"][0]["run"].is_object())
+        .await;
+    let id = state["tasks"][0]["id"].as_u64().unwrap();
+    until("the headset has it", || {
+        (panel(&quest)["now"] == id).then_some(())
+    })
+    .await;
+    menu().await;
+    until("open", || (panel(&quest)["open"] == true).then_some(())).await;
+    // Now's first item is the conversation.
+    a().await;
+    a().await;
+    until("the conversation opens", || {
+        (panel(&quest)["conversation"] == id).then_some(())
+    })
+    .await;
+    let first = panel(&quest)["said"].as_u64().unwrap();
+    until("it fills as the agent writes, following", || {
+        let p = panel(&quest);
+        (p["said"].as_u64()? > first && p["following"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation.png");
+    until("the agent asks", || {
+        (panel(&quest)["question"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation-question.png");
+    // Scrolled up it stops following; down to the end it follows again.
+    stick(1.0).await;
+    until("scrolled up", || {
+        (panel(&quest)["following"] == false).then_some(())
+    })
+    .await;
+    quest.capture("conversation-scrolled.png");
+    for _ in 0..8 {
+        stick(-1.0).await;
+    }
+    assert_eq!(panel(&quest)["following"], true);
+    // B: back to Now; the menu closes the panel.
+    hold(json!({"secondary_pressed": true}), 150).await;
+    until("back to Now", || {
+        panel(&quest)["conversation"].is_null().then_some(())
+    })
+    .await;
+    menu().await;
+    until("closed", || (panel(&quest)["open"] == false).then_some(())).await;
 }
 
 /// `quest` unpaired (keeping its id, which the desktop knows it by), then
