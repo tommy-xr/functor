@@ -491,3 +491,24 @@ each turn is measured rather than guessed:
 - The reviews (on `sonnet`, isolated) cost $0.08–0.12, a ninth to a fifth
   of their run.
 - One run each.
+
+### Instruction scope (D39, 2026-11-13, rev `53f616ec`, Claude `claude-fable-5-2`)
+
+`state-question` at each level (`--scope`), back to back:
+
+| scope | outcome | wall s | tool calls | input tokens | per turn | uncached in | cache read | cache write | cached % | turns | cost $ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| yours and the project's | pass | 3.8 | 1 | 76,405 | 38.2k | 4 | 52,076 | 24,325 | 68 | 2 | 0.402 |
+| the project's only | pass | 2.5 | 1 | 51,599 | 25.8k | 4 | 25,328 | 26,267 | 49 | 2 | 0.428 |
+| isolated | pass | 2.4 | 1 | 51,316 | 25.7k | 4 | 42,146 | 9,166 | 82 | 2 | 0.157 |
+
+- **The user's own setup is about 12.5k tokens a turn**: 38.2k against
+  25.8k, a third of each turn. The project's own setup here is a few
+  hundred tokens (a scenario's folder holds one skill and no instructions).
+- **Every level worked**: the opening instructions and the app's tool server
+  are passed by the app, so the game call (`get_state`) and the answer were
+  the same at each.
+- **Cost here follows what each run found in the cache**, not the level
+  alone: the project level wrote 26k (more than the full level), isolated
+  read 42k of its 51k. Comparing costs needs repeated runs.
+- One run each.
