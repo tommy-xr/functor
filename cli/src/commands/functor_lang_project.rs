@@ -1494,7 +1494,7 @@ project root, not from {}/",
         let report = sync_project_assets(&addr, &attempted_assets, None, parts, manifests)?;
         let mut observed_assets = attempted_assets.clone();
         emit(Event::Info {
-            message: format!("synced {} to the headset", report.sent()),
+            message: report.synced(),
         });
 
         // Load only after every initial file is resident, so top-level
@@ -2107,12 +2107,17 @@ struct AssetSyncReport {
 }
 
 impl AssetSyncReport {
-    /// `3 project file(s) (1.2 MB)`, and what was not sent.
-    fn sent(&self) -> String {
-        let sent = format!("{} project file(s) ({:.1} MB)", self.files, self.bytes as f64 / (1024.0 * 1024.0));
+    /// `synced 3 project file(s) (1.2 MB) to the headset`, and what it
+    /// already held.
+    fn synced(&self) -> String {
+        let sent = format!(
+            "synced {} project file(s) ({:.1} MB) to the headset",
+            self.files,
+            self.bytes as f64 / (1024.0 * 1024.0)
+        );
         match self.held {
             0 => sent,
-            held => format!("{sent}; {held} already on the headset"),
+            held => format!("{sent}; it already had {held}"),
         }
     }
 }
@@ -3353,7 +3358,7 @@ mod tests {
 
         let first = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
         assert_eq!((first.files, first.held), (2, 0));
-        assert_eq!(first.sent(), "2 project file(s) (0.0 MB)");
+        assert_eq!(first.synced(), "synced 2 project file(s) (0.0 MB) to the headset");
         assert_eq!(installs(), ["fish.glb", "game.fun"]);
 
         // The same project again: nothing crosses, and the headset still
@@ -3361,7 +3366,7 @@ mod tests {
         let again = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
         assert_eq!(announced(), None, "a finished push announces nothing");
         assert_eq!((again.files, again.bytes, again.held), (0, 0, 2));
-        assert_eq!(again.sent(), "0 project file(s) (0.0 MB); 2 already on the headset");
+        assert_eq!(again.synced(), "synced 0 project file(s) (0.0 MB) to the headset; it already had 2");
         assert_eq!(installs(), ["fish.glb", "game.fun"]);
 
         // One file edited: one file sent.
