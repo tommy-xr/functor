@@ -73,6 +73,9 @@ async function run(browser, width, height) {
     await expect(titlebar).toContainText(nameOf(DEFAULT));
     await expect(titlebar).toContainText(`${BRANCH} · ${COMMIT}`);
     await expect(titlebar).toContainText("Headset · Not paired");
+    // In a browser the bar keeps its own padding: no room for traffic lights.
+    await expect(page.locator("html")).not.toHaveClass(/native-titlebar/);
+    await expect(titlebar).toHaveCSS("padding-left", "16px");
     // The token is dropped from the address bar once read; the title names the project.
     expect(page.url(), "address bar").not.toContain("token");
     await expect(page).toHaveTitle(`Functor — ${nameOf(DEFAULT)}`);

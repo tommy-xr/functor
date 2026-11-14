@@ -49,6 +49,9 @@ npm run test:editor-keybindings # headless e2e — opt-in Vim in the sandbox and
   desktop app (`app/ui`) also uses.
 - `manual/index.html` — getting started, the game contract, language principles,
   and topic guides. Runnable examples link directly into the sandbox.
+- `manual/app/index.html` — the desktop app's manual page, linked from the
+  manual's Tooling group. It documents only what is on `main`; its captures are
+  the landing page's (`media/app-*`).
 - `docs/index.html` / `src/api-reference-html.mjs` / `src/api-docs.ts` — the API
   reference. `site:build` regenerates gitignored `generated/api-reference.json`
   from the embedded prelude and language standard library (each module carries
