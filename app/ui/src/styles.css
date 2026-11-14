@@ -1762,6 +1762,71 @@ blockquote {
   font-variant-numeric: tabular-nums;
 }
 
+/* The mirror (D5): one strip that says where the game runs, the way back,
+   the rate and the camera, over the headset's frames. */
+.mirror {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mirror-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+}
+
+.mirror-where {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+}
+
+.mirror-where p {
+  margin: 0;
+}
+
+.mirror-where .headset-detail {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mirror-view {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.mirror-rate {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The last frame stays, faded, behind why no new one comes. */
+.game img.mirror-stale {
+  opacity: 0.35;
+}
+
+.game-mirror .game-message {
+  position: relative;
+  border-radius: var(--radius-l);
+  background: rgba(14, 18, 23, 0.85);
+}
+
 .game-banner {
   position: absolute;
   left: 50%;
