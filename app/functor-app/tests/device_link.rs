@@ -1212,17 +1212,23 @@ impl Quest {
     }
 
     fn capture(&self, name: &str) {
-        let Some(dir) = std::env::var_os("FUNCTOR_QUEST_CAPTURES") else {
-            return;
-        };
-        let addr = self.debug.strip_prefix("http://").unwrap();
-        let mut stream = TcpStream::connect(addr).unwrap();
-        write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes).unwrap();
-        let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
-        std::fs::write(Path::new(&dir).join(name), &bytes[split + 4..]).unwrap();
+        capture_to(&self.debug, name);
     }
+}
+
+/// `POST /capture` on the debug server at `url`, saved as `name` in
+/// `FUNCTOR_QUEST_CAPTURES` when set.
+fn capture_to(url: &str, name: &str) {
+    let Some(dir) = std::env::var_os("FUNCTOR_QUEST_CAPTURES") else {
+        return;
+    };
+    let addr = url.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(addr).unwrap();
+    write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).unwrap();
+    let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    std::fs::write(Path::new(&dir).join(name), &bytes[split + 4..]).unwrap();
 }
 
 impl Drop for Quest {
@@ -2281,6 +2287,8 @@ async fn quest_mirrors_the_game_in_the_headset_placement() {
             (scene(&mirror) == scene(&tunnel)).then_some(())
         })
         .await;
+        capture_to(&mirror, &format!("mirror-t{tts}.png"));
+        capture_to(&tunnel, &format!("headset-t{tts}.png"));
     }
     let (_, body) = post(&tunnel, "/time", r#"{"type":"resume"}"#).unwrap();
     eprintln!("resumed: {body}");
