@@ -90,7 +90,7 @@
             <code>wasm-pack</code>), plus an agent on your <code>PATH</code>: Claude Code (<code>claude</code>) or Codex
             (<code>codex</code>). From a checkout of the repository:
           </p>
-          <pre class="shell">npm run build:cli          # on macOS: target/release/functor, with the app built in</pre>
+          <pre class="shell">npm run build              # on macOS: target/release/functor, with the app built in</pre>
           <p>
             Then open a project. Bare <code>functor</code> opens the app; so does
             <code>functor app</code>. Its games and the agent's tools run on that same
@@ -239,7 +239,7 @@
             </li>
             <li>
               <strong>Mic.</strong> <span class="tag tag-new">New</span> Shown when the app was
-              built with speech-to-text (<code>npm run build:cli</code> on macOS is). Click to record,
+              built with speech-to-text (<code>npm run build</code> on macOS is). Click to record,
               click again to transcribe on this machine. The words land in the draft; nothing is
               sent until you send it. Not yet checked with a real microphone in the window.
             </li>
@@ -608,7 +608,7 @@ FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens
             <tr>
               <td><code>functor-app not found (looked for …)</code>, or bare <code>functor</code> prints help</td>
               <td>
-                On macOS build it in (<code>npm run build:cli</code>); elsewhere build it beside
+                On macOS build it in (<code>npm run build</code>); elsewhere build it beside
                 <code>functor</code> (<code>npm run build:app</code>), or point
                 <code>FUNCTOR_APP_BIN</code> at the binary.
               </td>
@@ -616,8 +616,9 @@ FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens
             <tr>
               <td>The functor CLI at … is older than this app, so games and the agent's tools cannot start.</td>
               <td>
-                A separate <code>functor-app</code> found an old <code>functor</code>. Build the CLI
-                in your checkout (<code>npm run build:cli</code>), or start the app with
+                A separate <code>functor-app</code> found an old <code>functor</code>. Run the build
+                the message names (<code>npm run build</code> beside a release app,
+                <code>npm run build:cli:debug</code> beside a debug one), or start the app with
                 <code>--functor &lt;path&gt;</code>, then press <em>Try again</em>. The app built
                 into <code>functor</code> runs itself, so it never sees this.
               </td>
@@ -658,7 +659,7 @@ FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens
             </tr>
             <tr>
               <td><code>speech-to-text is not in this build of the app</code></td>
-              <td>Rebuild with <code>npm run build:cli</code> (macOS) or <code>npm run build:app</code>, which turn it on.</td>
+              <td>Rebuild with <code>npm run build</code> (macOS) or <code>npm run build:app</code>, which turn it on.</td>
             </tr>
             <tr>
               <td>The device link is off, so headsets cannot find this computer.</td>

@@ -86,9 +86,11 @@ impl Cli {
             Ok(()) => None,
             Err((cause, version)) => Some(CliProblem {
                 path: shown(&path),
-                version,
+                // A development build's (`0.0.0-dev`) says nothing about its age.
+                version: version.filter(|v| !v.ends_with("-dev")),
                 cause,
                 bundled: self.bundled(&path),
+                build: self.build(),
             }),
         };
         *self.found.lock().unwrap() = match &problem {
@@ -122,6 +124,21 @@ impl Cli {
     fn contents(&self) -> Option<&Path> {
         let dir = self.exe.as_deref().and_then(Path::parent)?;
         dir.ends_with("Contents/MacOS").then(|| dir.parent()).flatten()
+    }
+
+    /// How to build a current `functor` where this app looks first: next to
+    /// it, when it runs from a checkout's `target/debug` or `target/release`.
+    /// `None` when one is named (`--functor`, `FUNCTOR_BIN`): that wins.
+    fn build(&self) -> Option<String> {
+        let named = self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty());
+        let dir = self.exe.as_deref().and_then(Path::parent).filter(|_| !named)?;
+        let script = match () {
+            _ if dir.ends_with("target/debug") => "npm run build:cli:debug",
+            _ if dir.ends_with("target/release") => "npm run build",
+            _ => return None,
+        };
+        let into = dir.join(format!("functor{}", std::env::consts::EXE_SUFFIX));
+        Some(format!("{script}, into {}", shown(&into)))
     }
 
     /// `path` is inside the `Functor.app` this app runs from.
@@ -368,6 +385,36 @@ esac"#;
         // Named, it is the user's choice.
         let named = Cli::new(None, Some("/opt/functor".into()), Some(exe));
         assert_eq!(named.find(), Path::new("/opt/functor"));
+    }
+
+    #[test]
+    fn the_fix_builds_where_this_app_looks() {
+        let at = |exe: &str, flag: Option<&str>| {
+            Cli::new(flag.map(PathBuf::from), None, Some(PathBuf::from(exe))).build()
+        };
+        assert_eq!(
+            at("/src/target/debug/functor-app", None).as_deref(),
+            Some("npm run build:cli:debug, into /src/target/debug/functor")
+        );
+        assert_eq!(
+            at("/src/target/release/functor-app", None).as_deref(),
+            Some("npm run build, into /src/target/release/functor")
+        );
+        // Named, or not run from a checkout's build: building there would not help.
+        assert_eq!(at("/src/target/debug/functor-app", Some("/old/functor")), None);
+        assert_eq!(at("/usr/local/bin/functor-app", None), None);
+    }
+
+    #[tokio::test]
+    async fn a_development_build_says_no_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = r#"case "$1" in
+  --version) echo 'functor-cli 0.0.0-dev' ;;
+  *) exit 2 ;;
+esac"#;
+        let cli = Cli::new(Some(fake(dir.path(), dev)), None, None);
+        let problem = cli.check().await.expect("too old");
+        assert_eq!((problem.cause, problem.version), (CliCause::TooOld, None));
     }
 
     #[test]

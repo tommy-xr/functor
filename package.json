@@ -16,6 +16,8 @@
     "build:app-ui": "node app/ui/build.mjs",
     "build:app": "npm run build:app-ui && cargo build --release -p functor-app --features whisper",
     "package:app": "node app/package/macos.mjs",
+    "app": "node scripts/app.mjs",
+    "app:debug": "node scripts/app.mjs --debug",
     "check:app-ui": "tsc -p app/ui --noEmit",
     "test:app-ui": "npm run build:app-ui && cargo build -p functor-app && node app/ui/e2e/shell.mjs && node app/ui/e2e/chat.mjs && node app/ui/e2e/changes.mjs && node app/ui/e2e/panes.mjs && node app/ui/e2e/placements.mjs && node app/ui/e2e/folders.mjs && node app/ui/e2e/newproject.mjs && node app/ui/e2e/agentview.mjs && node app/ui/e2e/tasks.mjs && node app/ui/e2e/decision.mjs && node app/ui/e2e/review.mjs && node app/ui/e2e/transport.mjs && node app/ui/e2e/paths.mjs && node app/ui/e2e/devices.mjs && node app/ui/e2e/headset.mjs && node app/ui/e2e/cable.mjs && node app/ui/e2e/agents.mjs && node app/ui/e2e/room.mjs && node app/ui/e2e/scope.mjs && node app/ui/e2e/voice.mjs && node app/ui/e2e/queue.mjs && node app/ui/e2e/route.mjs && node app/ui/e2e/cli.mjs",
     "test:app-ui-unit": "node --test app/ui/src/*.test.ts",

@@ -110,7 +110,7 @@ cargo build --release --bin functor                          # the CLI (embeds t
 Or use the bundled convenience script, which runs both in order:
 
 ```sh
-npm run build              # everything: CLI, both wasm bundles, and the site
+npm run build              # everything: CLI (+ the app on macOS), both wasm bundles, and the site
 npm run build:cli          # release build → target/release/functor (on macOS with the desktop app)
 npm run build:cli:debug    # debug build   → target/debug/functor (the CLI alone)
 ```
@@ -142,9 +142,11 @@ starts is that same executable again, so they never differ. On macOS
 npm run build:cli          # macOS: the UI bundle, then target/release/functor with the app
 ```
 
-That is `npm run build:app-ui`, then
+`npm run build` does the same as its first step. That is the web runtime
+bundle, `npm run build:app-ui` (when the UI changed), then
 `cargo build --release -p functor-cli --bin functor --features whisper`
-(`whisper` turns on `app`). Elsewhere `build:cli` builds the CLI alone, as the
+(`whisper` turns on `app`), in that order: the binary embeds both bundles.
+`npm run build:cli -- --cli-only` builds the CLI alone on macOS too. Elsewhere `build:cli` builds the CLI alone, as the
 window is macOS-only; `--features app` adds the app there too, for
 `functor app -- --headless`. A plain `cargo build` leaves the app out.
 

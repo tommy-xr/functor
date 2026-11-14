@@ -177,11 +177,15 @@ language, prelude, and semantics are documented in the **`functor-lang` skill** 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
 `wasm-pack`.
 
-**Build everything** — the CLI, both wasm bundles, and the site:
+**Build everything** — the CLI (on macOS with the desktop app built in), both wasm bundles,
+and the site:
 
 ```sh
 npm run build
 ```
+
+Afterwards on macOS `./target/release/functor` with no arguments opens a current app: one
+command, and the app's games and tools are that same binary.
 
 Reach for this when you don't know which pieces a change touches. The individual
 targets are silently order-dependent, and getting the order wrong fails at
@@ -199,11 +203,12 @@ npm run build:cli           # the wasm bundle, then the functor CLI (RELEASE) �
 npm run build:cli:debug     # a debug build of the CLI alone → target/debug/functor
 ```
 
-On macOS `build:cli` also builds the desktop app into that binary (`scripts/build-cli.mjs`: the
-app UI bundle, then `--features whisper`, which turns on the CLI's `app` feature; D40): bare
-`functor` opens the app in-process and its children are the same executable. `build:cli:debug`
-and plain `cargo build` leave the app out; the standalone `functor-app` (`npm run build:app`)
-remains for the app's tests.
+On macOS `build:cli` also builds the desktop app into that binary (`scripts/build-cli.mjs`, in
+order: the web runtime bundle, the app UI bundle when its sources changed, then `--features
+whisper`, which turns on the CLI's `app` feature; D40): bare `functor` opens the app in-process
+and its children are the same executable. `npm run build:cli -- --cli-only`, `build:cli:debug`
+and plain `cargo build` leave the app out (lighter; CI builds the CLI that way); the standalone
+`functor-app` (`npm run build:app`) remains for the app's tests.
 
 (The human-facing docs mirror this split: `README.md` covers installing and using
 Functor; `DEVELOPMENT.md` covers building the CLI from source.)
