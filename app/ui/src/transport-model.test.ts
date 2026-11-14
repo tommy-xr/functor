@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createTimelineState, deriveTimelineView, editPeeks, follow, followMarks, keyAction, reduceTimeline } from "./transport-model.ts";
+import { createTimelineState, deriveTimelineView, editPeeks, follow, followMarks, keyAction, pausedLabel, reduceTimeline } from "./transport-model.ts";
 import type { Transport } from "./generated/protocol";
 
 const at = (frame: number, over: Partial<Transport> = {}): Transport => ({
   clock: true,
   paused: false,
+  paused_by: null,
   frame,
   recorded: [1, frame],
   generation: 0,
@@ -99,6 +100,15 @@ test("the switch is the model's preview, so the rail shows its window", () => {
   assert.equal(deriveTimelineView(state)!.previewFrames, 120);
   state = follow(state, at(50, { paused: true }));
   assert.equal(deriveTimelineView(state)!.previewFrames, 0);
+});
+
+test("a paused bar says who paused it", () => {
+  assert.equal(pausedLabel(at(5)), null);
+  assert.equal(pausedLabel(at(5, { paused: true, paused_by: "agent" })), "Paused by the agent");
+  assert.equal(pausedLabel(at(5, { paused: true, paused_by: "start" })), "Paused at start");
+  assert.equal(pausedLabel(at(5, { paused: true, paused_by: "user" })), "Paused");
+  // A runtime that names nobody.
+  assert.equal(pausedLabel(at(5, { paused: true })), "Paused");
 });
 
 test("an edit landing while paused with the switch off is peeked at", () => {
