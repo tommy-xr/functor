@@ -2738,6 +2738,8 @@ async fn voice_stages_on_this_machine() {
     let mut app = app_env(&project, &args, &envs).await;
     let store = tempfile::tempdir().unwrap();
     drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../functor-stt/fixtures/");
     let clips = ["jump-twice-as-high.wav", "make-the-ball-red.wav", "crates-sky-and-coin.wav"];
     for (n, clip) in clips.iter().enumerate() {
@@ -2751,7 +2753,13 @@ async fn voice_stages_on_this_machine() {
             app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
                 .await;
         }
-        assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+        let said = loop {
+            match quest.line("voice 1 ") {
+                l if l.starts_with("voice 1 heard") || l.starts_with("voice 1 transcribed") => {}
+                l => break l,
+            }
+        };
+        assert_eq!(said, "voice 1 working", "{clip}");
         let state = app
             .state_where("the run's end", 60, |s| {
                 (s["tasks"].as_array().into_iter().flatten())
