@@ -2725,10 +2725,10 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     ];
     let real = std::env::var_os("FUNCTOR_STT_REAL").is_some();
     let voice = tempfile::tempdir().unwrap();
-    let said = voice.path().join("said");
+    let voice_log = voice.path().join("said");
     let mut envs = vec![
         ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
-        ("FUNCTOR_APP_FAKE_VOICE", said.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_VOICE", voice_log.to_str().unwrap()),
     ];
     if !real {
         envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
@@ -2792,7 +2792,7 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // Its reply is said aloud (D47), and not before the first clip started.
     let mut spoke = String::new();
     for _ in 0..50 {
-        spoke = std::fs::read_to_string(&said).unwrap_or_default();
+        spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
         if spoke.contains("play ") {
             break;
         }
