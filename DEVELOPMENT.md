@@ -131,13 +131,24 @@ in as a library and run in-process — there is no separate `functor-runner`), u
 
 ## Desktop app (preview)
 
-`functor-app` (under `app/`) is a chat-and-game-view app around a project. It is
+`functor-app` (under `app/`) is a chat-and-game-view app around a project; using
+it is covered in [the manual](https://functor.games/manual/app/). It is
 not part of the default workspace build. Build it with its UI embedded, plus the
 release CLI it runs game sessions with:
 
 ```sh
 npm run build:app          # the UI bundle, then target/release/functor-app
 npm run build:cli          # target/release/functor, built separately
+```
+
+`build:app` turns on local speech-to-text (`--features whisper`), which compiles
+whisper.cpp. Its model (about 148 MB) is fetched on first use into
+`~/.functor/models` (`FUNCTOR_MODELS` overrides), not at build time. To skip the
+C++ build, leave the feature off: the composer shows no mic, and a headset's
+voice clip is answered with "speech-to-text is not in this build".
+
+```sh
+npm run build:app-ui && cargo build --release -p functor-app   # no speech-to-text
 ```
 
 Run it from the release `functor` (it finds the `functor-app` next to itself,
@@ -151,8 +162,74 @@ else `FUNCTOR_APP_BIN`, else on PATH):
 `--headless` prints `[functor-app] listening on http://127.0.0.1:<port>/#token=…`.
 The token is new each launch and the server refuses the page's socket without
 it, so open that exact URL (a reload of the page needs it again). Saved tasks,
-transcripts and the window's size and place live in `~/.functor/app/`
-(`FUNCTOR_APP_HOME` overrides).
+transcripts, headset pairings and the window's size and place live in
+`~/.functor/app/` (`FUNCTOR_APP_HOME` overrides).
+
+Besides the loopback UI server, the app opens the **device link**: a listener on
+every interface (a free port) with an mDNS advert, for headsets to pair, and an
+`adb devices` poll for headsets on a cable. `--no-device-link` turns all three
+off; `--device-link <addr>` chooses where it listens.
+
+### Testing the app
+
+| Command | What it runs | Needs |
+| --- | --- | --- |
+| `cargo test -p functor-app-core -p functor-app -p functor-stt` | The core's state machine, and the app end to end over its socket under a fake agent (`FUNCTOR_APP_FAKE_AGENT=<fixture>`). | `FUNCTOR_BIN=<a built functor>` for the tests that start a real game or tool server; they print `skipped` without it. |
+| `npm run test:app-ui-unit` | The UI's pure models (`app/ui/src/*.test.ts`) under `node --test`. | Nothing built. |
+| `npm run check:app-ui` | `tsc` over the UI. | — |
+| `npm run test:app-ui` | Builds the UI and a debug `functor-app`, then drives the page in Playwright's Chromium (`app/ui/e2e/*.mjs`) against `--headless --no-gpu`, with the fake agent and `device-stub` headsets. | `FUNCTOR_BIN` for the scripts that need a real `functor` (new project, agent views, the Headset placement); `APP_UI_SHOTS=<dir>` saves screenshots. |
+| `npm run metrics:app` | Each scenario in `app/metrics/scenarios.json` through `functor-app task --review` on a fresh git copy of its example, judged mechanically; writes `app/metrics/results/<stamp>-<mode>.jsonl` and a `.md` table. Replays recorded runs by default. | Debug `functor-app` and `functor` (`FUNCTOR_APP_BIN` / `FUNCTOR_BIN` override). `FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live` runs the real agent and **spends tokens**; `-- --compare a.jsonl b.jsonl` prints deltas. |
+| `npm run test:metrics-app` | The metrics runner's own tests. | — |
+
+The wire types the UI imports (`app/ui/src/generated/protocol.ts`) are generated
+from the core; after changing one, regenerate with
+`UPDATE_TS=1 cargo test -p functor-app-core --features ts ts_bindings` (CI fails
+if stale). `cargo test -p functor-stt --features whisper` builds whisper.cpp but
+fetches no model; its real transcription test runs only with
+`FUNCTOR_STT_REAL=1`.
+
+**Tests pass `--no-device-link`.** Every test that starts the app does, unless
+it is about the link: a test run must not open a port on the LAN, advertise the
+machine by mDNS, or talk to a headset that happens to be plugged in. The tests
+that do pair use `--device-link 127.0.0.1:0 --no-mdns --adb <a fake>` against
+`functor-app device-stub` processes, so they stay on loopback too.
+
+### Quest tests
+
+These drive a real headset and are skipped unless `FUNCTOR_QUEST_E2E=1` (the npm
+scripts set it). All need one Quest on `adb` with a debuggable
+`dev.functor.runner` installed (`npm run build:oculus:apk`), on the same Wi-Fi
+as this machine. Controller presses are injected, so nobody wears the headset.
+Each puts the headset's own pairing back afterwards;
+`FUNCTOR_QUEST_CAPTURES=<dir>` keeps stills.
+
+| Command | What it proves | Also needs |
+| --- | --- | --- |
+| `npm run test:quest-link` | Pairing by code over Wi-Fi and mDNS, the tunnel, relinking, Forget. | — |
+| `npm run test:quest-cable` | Pairing over the cable with no code; the headset then links over Wi-Fi. | — |
+| `npm run test:quest-run` | `functor run vr --device-url` pushes source and a large asset through the tunnel alone (no `adb forward`), and an edit hot-reloads. | `FUNCTOR_BIN` |
+| `npm run test:quest-placement` | The Headset placement from the app: run there, pause and step, capture through the tunnel, return to the desktop. | `FUNCTOR_BIN` |
+| `npm run test:quest-voice` | Push-to-talk and every state of the status toast, against a stub desktop. The microphone is replaced by a test tone. | — |
+
+### Functor.app (macOS)
+
+```sh
+npm run package:app        # builds both release binaries → target/package/Functor.app
+open target/package/Functor.app
+open target/package/Functor.app --args -d ~/code/my-game
+cp -R target/package/Functor.app /Applications/
+```
+
+The bundle holds `functor-app` (UI built in), the `functor` it runs games with
+(`Contents/Helpers`), and the icon (`app/package/icon.svg`). It is ad-hoc
+signed: it runs on the Mac that built it, but Gatekeeper rejects it elsewhere
+(a downloaded copy is quarantined and blocked as from an unidentified
+developer). Opened from Finder or the Dock, it opens the last project and takes
+`PATH` from your login shell, so `claude`, `codex` and `adb` are found. While it
+runs, `open` only brings it forward: `--args` reach a fresh launch. The first
+mic recording and the first headset search ask for microphone and
+local-network access, and ask again after each rebuild (an ad-hoc signature
+changes with the binary).
 
 ## What `build`/`run` do under the hood
 
