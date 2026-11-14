@@ -683,6 +683,20 @@ tool call is a visible link from the figure to its target (a file, the
 miniature, the network). A subagent splits off as a smaller figure. Context
 is something the figure carries, and it fills.
 
+**Several agents, in a hierarchy.** An orchestrator hands work to subagents:
+it stands by the tasks, passes a piece of work along a visible link, and the
+subagent goes to its target and comes back with the result. Who works for
+whom is readable at a glance (tethers, or a faint tree on the floor), two
+levels shown and deeper ones folded into a count. The tasks panel shows the
+same tree.
+
+**What watching them is for — all three.** Progress in real time (position,
+link, bubble, context). Steering: an agent can be addressed — look or point
+at a figure and talk to that one; talking to the orchestrator redirects the
+whole effort, talking to a subagent only its piece; stop is on the figure,
+and stopping an orchestrator stops what is under it. And delight: the
+figures have some character, never at the cost of reading them.
+
 **The code map.** A shelf of blocks, one per file, floors for its
 definitions; changed blocks glow; pointing at one opens its change. It grows
 into a city (D33) only when the project is large.
