@@ -7876,6 +7876,93 @@ mod tests {
         assert_eq!(stages(&commands), [(1, Stage::Reloaded)]);
     }
 
+    fn link(conn: u64, linked: bool) -> Event {
+        Event::Link(match linked {
+            true => LinkEvent::Connected {
+                conn,
+                device: "aa".into(),
+                name: "Quest aa".into(),
+                app_version: "0.0.0".into(),
+                link: crate::devices::LinkKind::Wifi,
+            },
+            false => LinkEvent::Disconnected { conn, lost: None },
+        })
+    }
+
+    /// The headset goes away mid-run: its utterance is still followed. A
+    /// run that ends ok meanwhile waits for it however long, then for the
+    /// push `functor run vr` holds until it is back: `Reloaded` once it
+    /// lands, or `Failed` only past the grace counted from the relink.
+    #[test]
+    fn an_away_headset_is_waited_for_not_failed() {
+        let (s, commands) = update(voice_task_running(), link(0, false));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(s.voice.len(), 1, "still followed");
+        // The run starts while away: told that the headset is away.
+        assert_eq!(headset_away(&s, "examples/a").as_deref(), Some("Quest aa"));
+        let (s, _) = update(s, agent(4, 0, finished()));
+        let (s, commands) = update(AppState { clock: 1_000, ..s }, ended(4, 0));
+        assert_eq!(stages(&commands), [], "the change is ready; it loads when the headset is back");
+        let late = AppState {
+            clock: 1_000 + 10 * voice::RELOAD_GRACE_MS,
+            ..s
+        };
+        let (s, commands) = update(late, Event::Link(LinkEvent::Tick));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(s.voice.len(), 1);
+        // Back: the push lands, the game reloads.
+        let (back, commands) = update(s, link(1, true));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(headset_away(&back, "examples/a"), None);
+        assert_eq!(stages(&reloaded_commands(back.clone(), 6)), [(1, Stage::Reloaded)]);
+        // Back with no reload: failed once the grace from the relink passes.
+        let (s, commands) = update(back, Event::Link(LinkEvent::Tick));
+        assert_eq!(stages(&commands), []);
+        let later = AppState {
+            clock: s.clock + voice::RELOAD_GRACE_MS,
+            ..s
+        };
+        let (_, commands) = update(later, Event::Link(LinkEvent::Tick));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("did not reload")));
+    }
+
+    /// The headset app restarted while away: `run vr` loads the game
+    /// afresh (its revision starts again), with the run's saved edit.
+    #[test]
+    fn a_fresh_load_after_the_run_counts_as_its_reload() {
+        let (s, _) = update(voice_task_running(), link(0, false));
+        let (s, _) = update(s, agent(4, 0, finished()));
+        let (s, _) = update(s, ended(4, 0));
+        let (s, _) = update(s, link(1, true));
+        assert_eq!(stages(&reloaded_commands(s, 0)), [(1, Stage::Reloaded)]);
+    }
+
+    /// A run that fails while the headset is away still says so: the shell
+    /// keeps the status for its relink.
+    #[test]
+    fn a_failure_while_away_is_still_reported() {
+        let (s, _) = update(voice_task_running(), link(0, false));
+        let error = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Ended {
+                error: Some("boom".to_string()),
+            },
+        };
+        let (_, commands) = update(s, error);
+        assert_eq!(stages(&commands), [(1, Stage::Failed("boom".to_string()))]);
+    }
+
+    /// The commands of a poll reporting program revision `revision`.
+    fn reloaded_commands(s: AppState, revision: u64) -> Vec<Command> {
+        let id = s.session.as_ref().unwrap().id;
+        let clock = PolledClock {
+            program_revision: revision,
+            ..PolledClock::default()
+        };
+        update(s, session(id, polled_clock(8, clock))).1
+    }
+
     /// Said while a task runs for the game: that task is stopped and
     /// resumed with it (D29's steer), and only the new utterance is followed.
     /// A run cut before its agent started (no session yet, or steered twice
