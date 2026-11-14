@@ -257,8 +257,8 @@ fn received_utterance(stub: &stub::Stub) -> (u64, Vec<i16>) {
     (utterance, pcm)
 }
 
-/// Holds to talk for 2.5 s, captured as `name` while listening; how long
-/// it was held.
+/// Holds to talk, captured as `name` while listening, then 2.5 s more (a
+/// capture stalls the headset's frames for seconds); how long it was held.
 fn talk(quest: &Quest, name: &str) -> Duration {
     let held = Instant::now();
     quest.hold(json!({"thumbstick_pressed": true}));
@@ -269,7 +269,7 @@ fn talk(quest: &Quest, name: &str) -> Duration {
     });
     assert!(listening["seconds_left"].is_null());
     quest.capture(name);
-    std::thread::sleep(Duration::from_millis(2500).saturating_sub(held.elapsed()));
+    std::thread::sleep(Duration::from_millis(2500));
     quest.hold(json!({}));
     let released = held.elapsed();
     until("sending", || {

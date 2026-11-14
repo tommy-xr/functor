@@ -466,6 +466,12 @@ impl Input {
                 ffi::AAUDIO_INPUT_PRESET_VOICE_RECOGNITION as _,
             );
             ffi::AAudioStreamBuilder_setSharingMode(builder, ffi::AAUDIO_SHARING_MODE_SHARED as _);
+            // A second of room: a frame that stalls loses no audio (the
+            // default holds about 0.3 s).
+            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(
+                builder,
+                functor_device_link::voice::SAMPLE_RATE as i32,
+            );
             let mut stream = std::ptr::null_mut();
             let opened = ffi::AAudioStreamBuilder_openStream(builder, &mut stream);
             ffi::AAudioStreamBuilder_delete(builder);
