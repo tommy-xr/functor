@@ -729,6 +729,22 @@ impl Review {
             r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Renamed x."}}"#,
         ];
         std::fs::write(tools.path().join("edit.jsonl"), fixture.join("\n")).unwrap();
+        // A run that talks a while, then asks and waits (each gap is ms after
+        // the line before).
+        let talk = [
+            r#"{"ms":0,"event":{"type":"started","session":"fake-session-2","model":"claude-model"}}"#,
+            r#"{"ms":500,"event":{"type":"text","text":"Looking at the ball."}}"#,
+            r#"{"ms":500,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}"#,
+            r#"{"ms":800,"event":{"type":"tool_result","content":"let x = 1"}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"Found it in game.fun. The colour is set once, at the top."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"The ball's material is a plain colour, so red is one value. The bounce does not touch it, and nothing else reads it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"I can change it in place, or add a colour field to the ball so a later change can animate it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"Changing it in place is one line. A field is three lines and a test."}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"One question first."}}"#,
+            r#"{"ms":1500,"event":{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Should it stay red after a bounce?"}]}}}"#,
+            r#"{"ms":120000,"event":{"type":"finished","ok":true,"summary":"Asked."}}"#,
+        ];
+        std::fs::write(tools.path().join("talk.jsonl"), talk.join("\n")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -770,13 +786,18 @@ impl Review {
 
     /// `functor-app` on the repo with its link `link` (`--device-link …`).
     async fn app(&self, link: &[&str]) -> App {
+        self.app_with(link, "edit.jsonl").await
+    }
+
+    /// `app`, its fake agent replaying `fixture`.
+    async fn app_with(&self, link: &[&str], fixture: &str) -> App {
         let functor = self.tools.path().join("functor");
         let mut args = link.to_vec();
         args.extend(["--functor", functor.to_str().unwrap()]);
         let mut env = Review::git_env(self.tools.path());
         env.push((
             "FUNCTOR_APP_FAKE_AGENT",
-            self.tools.path().join("edit.jsonl").into(),
+            self.tools.path().join(fixture).into(),
         ));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
         app_env(self.repo.path(), &args, &env).await
@@ -849,7 +870,7 @@ async fn pair_client(app: &mut App, quest: &headset::Client) {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
-    use functor_device_link::panel::{Action, Stance, Update, ACTION_CHANNEL};
+    use functor_device_link::panel::{Action, Role, Stance, Update, ACTION_CHANNEL};
     let review = Review::new();
     let mut app = review
         .app(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", NO_ADB])
@@ -876,6 +897,18 @@ async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
     );
     let decision = task.decision.as_ref().unwrap();
     assert_eq!(decision.size, "+1 -1, 1 file, game logic");
+    // The task's conversation, as text: the request, the step, the outcome.
+    let c = panel.conversation.as_ref().unwrap();
+    let said: Vec<(Role, &str)> = c.items.iter().map(|i| (i.role, i.text.as_str())).collect();
+    assert_eq!(c.task, id);
+    assert_eq!(
+        said,
+        [
+            (Role::You, "Rename x"),
+            (Role::App, "editing game.fun"),
+            (Role::App, "Done")
+        ]
+    );
     let link = quest.link().unwrap();
     let send = |action: &Action| quest.send_channel(link, ACTION_CHANNEL, action.encode(), false);
 
@@ -1224,7 +1257,11 @@ fn capture_to(url: &str, name: &str) {
     };
     let addr = url.strip_prefix("http://").unwrap();
     let mut stream = TcpStream::connect(addr).unwrap();
-    write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        stream,
+        "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).unwrap();
     let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
@@ -2414,6 +2451,8 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
         s["current_task"]["a"] == id
     })
     .await;
+    // The page opens on its conversation; Keep is next.
+    down().await;
     quest.capture("panel-decision.png");
     a().await;
     until("Keep waits for its confirm", || {
@@ -2441,6 +2480,106 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
     wrist();
     tokio::time::sleep(Duration::from_millis(300)).await;
     quest.capture("panel-wrist-done.png");
+}
+
+/// `npm run test:quest-panel` (second half): the conversation page. A task
+/// whose fake agent talks a while, then asks: from Now the conversation
+/// opens and fills as the agent writes, following the newest; up scrolls
+/// back and stops following, down to the end follows again; the question
+/// shows. Captures land in `FUNCTOR_QUEST_CAPTURES` when set.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn quest_panel_follows_the_conversation() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let quest = Quest::attach(&["debug.oculus.guardian_pause", "debug.functor.pair_input"]);
+    let review = Review::new();
+    let app = review
+        .app_with(&["--device-link", "0.0.0.0:0"], "talk.jsonl")
+        .await;
+    let (mut app, _, _) = pair_quest_by_cable(&quest, app).await;
+    let panel = |quest: &Quest| quest.link()["panel"].clone();
+    let debug = quest.debug.clone();
+    let hold = |controls: Value, ms: u64| {
+        let debug = debug.clone();
+        async move {
+            for sample in [controls, json!({"active": true})] {
+                let mut hand = json!({"active": true});
+                hand.as_object_mut()
+                    .unwrap()
+                    .extend(sample.as_object().unwrap().clone());
+                let body = json!({"type": "xr", "right": hand}).to_string();
+                let (status, text) = post(&debug, "/input", &body).unwrap();
+                assert_eq!(status, 200, "{text}");
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
+    };
+    let a = || hold(json!({"primary_pressed": true}), 150);
+    let stick = |y: f32| hold(json!({"thumbstick": [0.0, y]}), 150);
+    let menu = || {
+        let debug = debug.clone();
+        async move {
+            for on in [true, false] {
+                let body = json!({"type": "xr", "left": {"active": true, "menu_pressed": on}});
+                post(&debug, "/input", &body.to_string()).unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+
+    app.send(json!({"type": "new_task", "message": "Make the ball red", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the task runs", 30, |s| s["tasks"][0]["run"].is_object())
+        .await;
+    let id = state["tasks"][0]["id"].as_u64().unwrap();
+    until("the headset has it", || {
+        (panel(&quest)["now"] == id).then_some(())
+    })
+    .await;
+    menu().await;
+    until("open", || (panel(&quest)["open"] == true).then_some(())).await;
+    // Now's first item is the conversation.
+    a().await;
+    a().await;
+    until("the conversation opens", || {
+        (panel(&quest)["conversation"] == id).then_some(())
+    })
+    .await;
+    let first = panel(&quest)["said"].as_u64().unwrap();
+    until("it fills as the agent writes, following", || {
+        let p = panel(&quest);
+        (p["said"].as_u64()? > first && p["following"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation.png");
+    until("the agent asks", || {
+        (panel(&quest)["question"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation-question.png");
+    // Scrolled up it stops following; down to the end it follows again.
+    stick(1.0).await;
+    until("scrolled up", || {
+        (panel(&quest)["following"] == false).then_some(())
+    })
+    .await;
+    quest.capture("conversation-scrolled.png");
+    for _ in 0..8 {
+        stick(-1.0).await;
+    }
+    assert_eq!(panel(&quest)["following"], true);
+    // B: back to Now; the menu closes the panel.
+    hold(json!({"secondary_pressed": true}), 150).await;
+    until("back to Now", || {
+        panel(&quest)["conversation"].is_null().then_some(())
+    })
+    .await;
+    menu().await;
+    until("closed", || (panel(&quest)["open"] == false).then_some(())).await;
 }
 
 /// `quest` unpaired (keeping its id, which the desktop knows it by), then
@@ -2824,7 +2963,8 @@ async fn a_second_clip_is_routed_and_moved() {
         ),
     ];
     let mut app = app_env(&project, &args, &envs).await;
-    app.send(json!({"type": "set_model_route", "on": true})).await;
+    app.send(json!({"type": "set_model_route", "on": true}))
+        .await;
     app.state_where("the model routes speech", 10, |s| {
         s["router"] == true && s["model_routes"] == json!(["."])
     })
@@ -2887,9 +3027,11 @@ async fn a_second_clip_is_routed_and_moved() {
             s["tasks"].as_array().is_some_and(|t| t.len() == 1)
         })
         .await;
-    let moved = state["routes"].as_array().unwrap().iter().find(|r| r["by"] == "you").cloned();
-    assert_eq!(
-        moved.unwrap()["line"],
-        "Moved: steered “make the ball red”"
-    );
+    let moved = state["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["by"] == "you")
+        .cloned();
+    assert_eq!(moved.unwrap()["line"], "Moved: steered “make the ball red”");
 }

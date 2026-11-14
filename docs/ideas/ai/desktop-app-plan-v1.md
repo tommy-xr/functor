@@ -138,6 +138,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.3 | Quest: `RECORD_AUDIO`, mic capture, thumbstick push-to-talk, clip + capsule data sent over the link. | Stub sends a recorded clip end to end; headset for the mic. |
 | 4.4 | Headset status toast (heard → working → reloaded) driven over the link. | Capture on device or emulator. |
 | 4.4a | Overlay panel (D28): the runtime draws the panel over any game on the menu button — Now and Talk first, then Tasks — fed over the link; the wrist light when closed. | Emulator captures; device when attached; `frame_bench` unchanged when the panel is closed. |
+| 4.4c | The conversation in the headset (D41): the current task's transcript on the panel channel, bounded and rate-limited; a Conversation page in the panel that follows new text and scrolls, a question shown first, push-to-talk inline; the agent's first reply and result as toasts when the panel is closed. | Protocol bounds and version tests; desktop tests that the transcript is bounded, redacted and rate-limited; overlay tests for follow, scroll and questions; `test:quest-panel` extended on the device. |
 | 4.4b | Router (D29, D30): one model call per utterance splitting it into steer / new task, the decision shown with overrides on desktop and headset, steer as stop-and-resume, a task queue that starts the next task with every later utterance attached. | Core unit tests for the queue; router tests on recorded utterances; fake-agent end to end. |
 | S3 | Spike before 4.5: can `/state.model` round-trip into a second session for `examples/vr-lab` and two other examples? List what breaks (closures, host handles). | Findings appended here. |
 | 4.5 | Mirror view (D5): desktop draws from the headset's state with head view and switchable dev cameras (D18, via the debug camera); fall back to the headset's own capture where S3 says the model does not round-trip. | Stub feeds recorded state; frame matches a golden. |
@@ -306,6 +307,34 @@ APK over adb.
   APK (404), and says so. Not in the frame, so not mirrored: what the
   headset shell draws itself (passthrough feed, fused room mesh, the link
   panel and toasts).
+
+### S9 — the workspace contract (2026-11-14)
+
+The document is [`docs/workspace-contract.md`](../../workspace-contract.md): a
+proposal (v0) to review before anything is built on it. No code changed.
+
+- **Three contracts today, one a projection of another.** The page
+  (`AppState`, `ClientMsg` / `ServerMsg`), the headset (link channels 1–4)
+  and the agent's app tools (`/agent/view`, `app_context`). Every panel
+  action already becomes a `ClientMsg` and the panel is a pure function of
+  `AppState`; the contract makes that the rule for every client.
+- **The same concept is typed more than once:** stance (three enums),
+  destination (two), the decision (structured on the page, worded for the
+  panel), refusal (three shapes), request stages (three lists).
+- **Confirmation is in the clients,** not the app: the panel's second press
+  and the page's revert dialog. The core holds only the revert's `tree`
+  witness. The proposal moves it behind the contract, collected by a host
+  surface a scene cannot draw.
+- **The page's state holds what a forked scene must not get:** absolute
+  paths, the debug URL, tunnel URLs, pairing codes, tool inputs, file text.
+- **Missing for D44 / D45, in order:** one reply shape with confirmation,
+  request progress, the pending list, agents with ids and targets, the task
+  tree and the manager, game handles, forks, the code map, voice out,
+  project switching outside the page.
+- **Migration in six PRs,** the page and panel working after each: a shared
+  contract crate; `Workspace` as a projection of `AppState`; replies and
+  confirmation; requests, pending and version negotiation; agents and the
+  tree; the scene transport.
 
 ## Agent-run metrics
 
