@@ -757,15 +757,17 @@ view, scene}`, where `scene` is the frame on screen (as `/scene`), `tts` the
 clock it was drawn at, and `view` the camera it was seen from — on a
 headset, the frame's camera composed with the head between the eyes (`null`
 while the head is untracked); on desktop, the camera on screen. The shell
-only hands over shared pointers; the compact JSON is written on the
-connection's thread, so a poll costs the frame nothing. `503` before the
+only hands over shared pointers, outside the lockstep other requests
+take; the compact JSON is written on the connection's thread. `503` before the
 first frame, `413` past 8 MiB.
 
 `run native --mirror <url>` runs no game logic: it polls `<url>/mirror`, at
 most `--mirror-fps` times a second (default 20), one request at a time, and
 draws each frame from its `view` at its `tts` (so render-time animation
 matches). It polls only while someone sees it: a visible window, a
-`--capture-frame` run, or a `/stream` client of a hidden session. Input is
+`--capture-frame` run, or a `/stream` client of a hidden session (so a
+`POST /capture` of an unstreamed hidden mirror shows its last frame).
+`--headless` has nothing to draw with and is refused. Input is
 ignored; `POST /camera` moves only this session's view. Assets load from
 the project directory, so run it in the same project. `/state.mirror`
 reports `{source, watched, frames, fps, latency_ms, source_frame,

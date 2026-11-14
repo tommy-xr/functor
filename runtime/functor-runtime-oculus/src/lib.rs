@@ -2026,7 +2026,8 @@ pub fn android_main(app: AndroidApp) {
         for (rx, via_link) in receivers {
             let Some(rx) = rx else { continue };
             while let Ok(request) = rx.try_recv() {
-                debug_active = true;
+                // A mirror's snapshot is self-contained: no lockstep for it.
+                debug_active |= !matches!(request, DebugRequest::Mirror(_));
                 service_debug_request(
                     request,
                     &session,
