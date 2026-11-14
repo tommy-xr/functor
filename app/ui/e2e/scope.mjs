@@ -6,8 +6,9 @@
 //
 //   npm run test:app-ui
 //
-// APP_UI_SHOTS=<dir> saves stills of the open panel (Claude and Codex) and
-// the review's panel, at both widths.
+// APP_UI_SHOTS=<dir> saves stills of the composer, the open panel (Claude,
+// Codex, and a task that keeps its level) and the review's panel, at both
+// widths.
 import { chromium, expect } from "@playwright/test";
 import { ROOT, reopen, requireBuilt, shot, startServer, stopServer, tempProject, watchErrors, watchExternal } from "./app.mjs";
 
@@ -54,6 +55,7 @@ async function scopeView(browser, width, height) {
 
     // The project's level: all of the user's setup.
     await expect(toggle).toHaveText("Setup");
+    await shot(page, `scope-composer-${width}`);
     await toggle.click();
     await expect(level("Yours and the project's")).toBeChecked();
     await expect(panel).toContainText("nor the permission rules and hooks in your user settings");
@@ -72,6 +74,7 @@ async function scopeView(browser, width, height) {
     await toggle.click();
     await expect(level("Yours and the project's")).toBeDisabled();
     await expect(panel).toContainText("A task keeps the level it started with");
+    await shot(page, `scope-kept-${width}`);
     await page.keyboard.press("Escape");
     await newTask();
     await expect(toggle).toHaveText("Setup");
