@@ -28,7 +28,7 @@ use crate::review::{
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
-    Item, Run, RunEvent, Spoken, Task, TaskStatus, Usage,
+    Item, Run, RunEvent, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
 use crate::voice::{self, Route, Stage, Utterance};
@@ -92,6 +92,11 @@ pub struct AppState {
     pub layouts: BTreeMap<String, Layout>,
     /// Recent projects, most recent first; kept for the app, not the folder.
     pub recents: Vec<Recent>,
+    /// The context window of each harness and model seen (`activity::window_key`),
+    /// app-wide: it arrives only as a run ends, so is kept for the next.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub context_windows: BTreeMap<String, u64>,
     /// The window can show a native folder picker (`ClientMsg::PickFolder`).
     pub native_picker: bool,
     /// Why the last folder asked for did not open; cleared by the next try.
@@ -204,6 +209,7 @@ impl AppState {
             can_review: false,
             layouts,
             recents: Vec::new(),
+            context_windows: BTreeMap::new(),
             native_picker: false,
             open_error: None,
             opening: 0,
@@ -432,6 +438,8 @@ pub enum Command {
     ListDirs { path: String },
     /// Remember the recent projects, app-wide.
     SaveRecents { recents: Vec<Recent> },
+    /// Keep the context windows seen (`AppState::context_windows`).
+    SaveContextWindows { windows: BTreeMap<String, u64> },
     /// Start an agent run, answering with `Event::Run`s that end in `Ended`.
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
@@ -911,6 +919,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Run { task, run, event } => {
             let ended = matches!(event, RunEvent::Ended { .. });
+            remember_window(&mut state, task, run, &event, &mut commands);
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
             let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
@@ -977,7 +986,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     voice::progress(&mut state, &mut commands);
     prune_highlight(&mut state);
-    let activity = activities(&state.tasks);
+    let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
     let changed = changed
         || state.highlight != highlighted
@@ -1179,6 +1188,7 @@ fn opened(
         harnesses: _,
         can_review: _,
         recents: _,
+        context_windows: _,
         native_picker: _,
         open_error: _,
         opening: _,
@@ -2590,6 +2600,33 @@ fn on_run(
     }
 }
 
+/// Keeps the context window a run reports (Claude's, as it ends) for its
+/// harness and model's later runs, and saves it when new.
+fn remember_window(
+    state: &mut AppState,
+    id: u64,
+    run: u64,
+    event: &RunEvent,
+    commands: &mut Vec<Command>,
+) {
+    let RunEvent::Agent(AgentEvent::UsageDetail(UsageDetail {
+        context_window: Some(window),
+        ..
+    })) = event
+    else {
+        return;
+    };
+    let task = (state.tasks.iter()).find(|t| t.id == id && t.run.as_ref().is_some_and(|r| r.id == run));
+    let Some(model) = task.and_then(|t| Some((t.harness, t.model.as_deref()?))) else {
+        return;
+    };
+    let key = crate::activity::window_key(model.0, model.1);
+    if state.context_windows.insert(key, *window) != Some(*window) {
+        let windows = state.context_windows.clone();
+        commands.push(Command::SaveContextWindows { windows });
+    }
+}
+
 pub(crate) fn save(root: &Path, task: &Task) -> Command {
     Command::SaveTask {
         dir: project_dir(root, &task.project),
@@ -3742,7 +3779,7 @@ mod tests {
 
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
-        s.activity = activities(&s.tasks);
+        s.activity = activities(&s.tasks, &s.context_windows);
         s.decisions = decisions(&s.tasks);
         s
     }
@@ -3836,6 +3873,55 @@ mod tests {
         let (s, _) = update(s, agent(1, 0, finished()));
         let (s, _) = update(s, ended(1, 0));
         assert_eq!(s.activity[&1].stance, Stance::Done);
+    }
+
+    /// A model's first run has no context bar until it ends, with the
+    /// window; that window is kept (and saved) for its later runs.
+    #[test]
+    fn the_context_window_arrives_at_a_runs_end_and_is_kept() {
+        use crate::activity::ContextFill;
+        use crate::tasks::TokenUsage;
+        let detail = |cache_read, window| {
+            let last = TokenUsage {
+                cache_read,
+                ..TokenUsage::default()
+            };
+            AgentEvent::UsageDetail(UsageDetail {
+                total: last,
+                last: Some(last),
+                context_window: window,
+                ..UsageDetail::default()
+            })
+        };
+        let started = AgentEvent::Started {
+            session: Some("s".into()),
+            model: Some("m".into()),
+        };
+        let (s, _) = update(state(), new_task("hi"));
+        let (s, _) = update(s, agent(1, 0, started));
+        let (s, _) = update(s, agent(1, 0, detail(800, None)));
+        assert_eq!(s.activity[&1].context, None);
+        let (s, commands) = update(s, agent(1, 0, detail(900, Some(1000))));
+        let windows = BTreeMap::from([("claude/m".to_string(), 1000)]);
+        assert!(commands.contains(&Command::SaveContextWindows { windows: windows.clone() }));
+        let fill = Some(ContextFill { used: 900, window: 1000 });
+        assert_eq!(s.activity[&1].context, fill);
+        // The same window again is not saved again.
+        let (s, commands) = update(s, agent(1, 0, detail(950, Some(1000))));
+        assert!(!commands.iter().any(|c| matches!(c, Command::SaveContextWindows { .. })));
+        let usage = AgentEvent::Usage {
+            input: 950,
+            output: 1,
+        };
+        let (s, _) = update(s, agent(1, 0, usage));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, ended(1, 0));
+        // After the run, the last use stands; a follow-up's first event
+        // shows it at once, before any usage of its own.
+        assert_eq!(s.activity[&1].context, Some(ContextFill { used: 950, window: 1000 }));
+        let (s, _) = update(s, send(1, "again"));
+        assert_eq!(s.activity[&1].context, Some(ContextFill { used: 950, window: 1000 }));
+        assert_eq!(s.context_windows, windows);
     }
 
     #[test]

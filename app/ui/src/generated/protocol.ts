@@ -3,14 +3,23 @@
 
 export type Activity = { stance: Stance, 
 /**
- * The run's calls still waiting on their results, oldest first.
+ * The main agent's calls still waiting on their results, oldest first.
  */
 calls: Array<Call>, 
 /**
  * The last run's error or refusal, one short line; cleared by the
  * user's next message.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * The subagents running, oldest first, each started by one of `calls`.
+ */
+subagents: Array<Subagent>, 
+/**
+ * How full the main agent's context is, once both its use and its
+ * model's window are known.
+ */
+context: ContextFill | null, };
 
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -212,6 +221,11 @@ result: string, ok: boolean, };
  * UI → core.
  */
 export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+
+/**
+ * Tokens of context in use, of the model's `window`.
+ */
+export type ContextFill = { used: number, window: number, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -770,6 +784,19 @@ export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
  * Where creating a project is.
  */
 export type Step = { "kind": "editing" } | { "kind": "creating", path: string, } | { "kind": "opening", path: string, } | { "kind": "failed", reason: string, done: Array<string>, not_done: Array<string>, };
+
+/**
+ * A subagent at work, under the call that started it.
+ */
+export type Subagent = { 
+/**
+ * What it was asked to do: its call's description.
+ */
+label: string, 
+/**
+ * Its own calls still waiting on their results, oldest first.
+ */
+calls: Array<Call>, };
 
 /**
  * Where [`LayoutOp::Open`] puts a view. One already open moves only to a

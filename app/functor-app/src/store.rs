@@ -4,7 +4,8 @@
 //! layout in `layout.json` and its review setting in `review.json` beside
 //! it, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`; the recent projects, app-wide,
-//! in `<home>/recents.json`. Never inside the user's repo.
+//! in `<home>/recents.json`, and the agents' context windows in
+//! `<home>/context-windows.json`. Never inside the user's repo.
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
 //! home never give two tasks one id. All of it is private to the user.
 
@@ -325,6 +326,21 @@ pub fn load_recents(home: &Path) -> Vec<Recent> {
 
 pub fn save_recents(home: &Path, recents: &[Recent]) -> io::Result<()> {
     save_json(&recents_file(home), &recents)
+}
+
+fn context_windows_file(home: &Path) -> PathBuf {
+    home.join("context-windows.json")
+}
+
+/// Each harness and model's context window seen (`activity::window_key`);
+/// none if the file is missing or unreadable.
+pub fn load_context_windows(home: &Path) -> BTreeMap<String, u64> {
+    let text = std::fs::read_to_string(context_windows_file(home)).unwrap_or_default();
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_context_windows(home: &Path, windows: &BTreeMap<String, u64>) -> io::Result<()> {
+    save_json(&context_windows_file(home), windows)
 }
 
 /// Writes `task` for the project at `dir`, replacing its file whole.

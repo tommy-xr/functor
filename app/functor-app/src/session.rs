@@ -310,6 +310,11 @@ impl Driver {
                     eprintln!("functor-app: cannot save the recent projects: {e}");
                 }
             }
+            Command::SaveContextWindows { windows } => {
+                if let Err(e) = crate::store::save_context_windows(&self.home, &windows) {
+                    eprintln!("functor-app: cannot save the context windows: {e}");
+                }
+            }
             // Without a client to answer there is no one to list for.
             Command::ListDirs { .. } => {}
             Command::StartRun(spec) => self.runs.start(*spec),
