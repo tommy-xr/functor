@@ -121,6 +121,8 @@ struct Inner {
     cable_written: AtomicU64,
     /// Turns headsets' clips into text.
     speech: Speech,
+    /// Says replies aloud (D47); `None`: off, or no voice here.
+    replies: Option<Arc<crate::reply::Replies>>,
     /// One transcription at a time, app-wide, held until it finishes: a
     /// headset that reconnects cannot start more.
     transcribing: Arc<tokio::sync::Semaphore>,
@@ -213,6 +215,7 @@ impl Hub {
             cable_writes: tokio::sync::Mutex::new(()),
             cable_written: AtomicU64::new(0),
             speech: Speech::from_env(),
+            replies: crate::reply::Replies::from_env(),
             transcribing: Arc::new(tokio::sync::Semaphore::new(1)),
         })))
     }
@@ -383,6 +386,11 @@ impl Hub {
         self.0.speech.available()
     }
 
+    /// Whether replies are said aloud (D47).
+    pub fn replies(&self) -> bool {
+        self.0.replies.is_some()
+    }
+
     /// `pcm`'s text, waiting for any transcription in progress first (the
     /// composer's user sees "Transcribing…"; a headset is refused instead).
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
@@ -413,6 +421,16 @@ impl Hub {
             }
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
+            }
+            // On this machine's speakers for now, whichever headset asked.
+            LinkCommand::Say { text, .. } => {
+                if let Some(replies) = self.0.replies.clone() {
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = replies.say(&text) {
+                            eprintln!("functor-app: cannot say the reply: {e}");
+                        }
+                    });
+                }
             }
             LinkCommand::Panel { conn, panel } => to(
                 conn,
@@ -1002,6 +1020,12 @@ impl Connection {
                 channel: voice::CLIP_CHANNEL,
                 data,
             } => {
+                // The user is talking: a reply still playing stops (barge-in).
+                if let (Ok(voice::Clip::Start { .. }), Some(replies)) =
+                    (voice::Clip::decode(&data), &self.hub.0.replies)
+                {
+                    replies.stop();
+                }
                 let before = self.voice.arriving();
                 let heard = self.voice.receive(&data, now_ms());
                 if let Some(utterance) = self.voice.arriving().filter(|u| before != Some(*u)) {

@@ -12,6 +12,7 @@ mod folders;
 mod link;
 #[cfg(target_os = "macos")]
 mod pointer;
+mod reply;
 #[cfg(target_os = "macos")]
 mod popouts;
 mod router;
@@ -345,6 +346,7 @@ async fn app(
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;
     state.speech = hub.speaks();
+    state.speak = hub.replies();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
     let router = router::Router::from_env(&agents);
     state.router = router.is_some();

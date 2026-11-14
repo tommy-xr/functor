@@ -643,6 +643,46 @@ panel shows the current task's conversation as a page of its own.
 - **With the panel closed,** the status toast also shows the agent's first
   reply and the final result, so the loop is visible without opening anything.
 
+### D47 — the agent answers aloud
+
+*2026-11-14. Extends D8, D29, D41.*
+
+A request the user spoke is answered in speech, so the loop closes without
+reading.
+
+- **When:** as a spoken request reaches its outcome — answered, changed and
+  reloaded, or failed. Not at progress points for now: the toast and the panel
+  carry those.
+- **On by default for a spoken request, with a setting to mute**
+  (`FUNCTOR_APP_SPEAK=off` until the settings page has it). A typed
+  request is silent unless speech is turned on for it. Nothing listens: this
+  is a reply to something the user said, so it does not fall under "off until
+  turned on".
+- **What is said:** one or two sentences written for the ear — no paths, no
+  code, no markdown. The working agent writes it: a spoken request's prompt
+  asks it to end its last message with a `Spoken:` line. That costs about 30
+  output tokens and no time. When the line is missing, the reply's first
+  sentences are used, cleaned the same way. A separate summariser run was the
+  alternative: another process start and model call, 3–6 s later, to restate
+  what the working agent already knows. The presentation agent (D31) may
+  write the line later for changes that get a presentation.
+- **The app adds what it knows and the agent does not:** "It's ready for you
+  to look at" when the change waits for review; that it failed, and why in a
+  few words.
+- **Synthesis is local, on the Mac:** no audio and no text leaves the
+  machine. First the macOS system voice: nothing to download, 15 ms to the
+  first audio once warm (330 ms cold) through the system's API; the first
+  build runs the `say` tool instead, 0.6–1.6 s a reply. Later, as a choice, Kokoro for a
+  better voice: Apache-2.0, an 88 MB model and 26 MB of voices, 260 ms to the
+  first sentence. Piper is faster (55 ms) but its phonemiser is GPL and its
+  voices' licences vary. The Quest has a system speech service, but it is not
+  a documented engine for apps and its voice is not ours to choose.
+- **Where it plays:** in the headset when one is linked — PCM on a link
+  channel of its own, through the headset's audio output — otherwise on the
+  desktop. The first build plays on the desktop only.
+- **Barge-in:** holding push-to-talk stops the reply at once. A new reply
+  replaces one still playing.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
