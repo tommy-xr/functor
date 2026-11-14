@@ -401,7 +401,6 @@ pub struct SpikesReport {
     pub spikes: Vec<SpikeRecord>,
     /// Frames over [`STALL_US`] since launch, oldest first; the newest
     /// [`STALLS`]. `default` because a pre-v48 runtime omits it.
-    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default)]
     pub stalls: Vec<StallRecord>,
 }
