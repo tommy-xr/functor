@@ -379,7 +379,15 @@ async fn app(
             return Ok(ExitCode::from(2));
         }
         Some(dir) => server::Ui::Dir(dir),
-        None => server::Ui::Embedded,
+        None => {
+            if server::UI_STALE {
+                eprintln!(
+                    "functor-app: the built-in UI is older than app/ui/src; \
+                     run `npm run build:app-ui`, then rebuild functor-app"
+                );
+            }
+            server::Ui::Embedded
+        }
     };
     // For the new-project modal; listed again whenever it opens.
     driver.run(Command::ListTemplates).await;

@@ -19,10 +19,29 @@ fn main() {
     let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
     let dist = ui.join("dist");
     let mut files = Vec::new();
+    // A `dist` older than the UI's source would put an old page in a new
+    // app (one whose window expects page changes that are not there).
+    let mut stale = false;
     if dist.join("index.html").is_file() {
         walk(&dist, &mut files);
         files.sort();
         println!("cargo:rerun-if-changed={}", dist.display());
+        let src = ui.join("src");
+        println!("cargo:rerun-if-changed={}", src.display());
+        let mut sources = Vec::new();
+        walk(&src, &mut sources);
+        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let newest = sources
+            .iter()
+            .filter(|p| !p.to_string_lossy().contains(".test."))
+            .filter_map(|p| modified(p))
+            .max();
+        stale = newest > modified(&dist.join("app.js"));
+        if stale {
+            println!(
+                "cargo:warning=app/ui/dist is older than app/ui/src: run `npm run build:app-ui`, then rebuild"
+            );
+        }
     } else {
         // Reruns once a build creates `dist`.
         println!("cargo:rerun-if-changed={}", ui.display());
@@ -41,6 +60,7 @@ fn main() {
         .unwrap();
     }
     out.push_str("];\n");
+    writeln!(out, "pub static UI_STALE: bool = {stale};").unwrap();
     let path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ui_assets.rs");
     std::fs::write(path, out).unwrap();
 }
