@@ -46,6 +46,8 @@ pub mod webview_overlay;
 mod webview_keys;
 #[cfg(not(target_arch = "wasm32"))]
 mod thread_qos;
+#[cfg(target_os = "macos")]
+mod background;
 #[cfg(not(target_arch = "wasm32"))]
 mod ws_host;
 #[cfg(not(target_arch = "wasm32"))]
