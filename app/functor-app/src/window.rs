@@ -15,9 +15,9 @@ use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
-use tao::platform::macos::EventLoopExtMacOS;
+use tao::platform::macos::{EventLoopExtMacOS, WindowBuilderExtMacOS};
 use tao::platform::run_return::EventLoopExtRunReturn;
-use tao::window::{Window, WindowBuilder};
+use tao::window::{Theme, Window, WindowBuilder};
 use wry::{NewWindowResponse, WebView, WebViewBuilder};
 
 use functor_app_core::folders::MAX_RECENTS;
@@ -33,6 +33,22 @@ const MIN: (f64, f64) = (800.0, 560.0);
 /// How long `--window-smoke` waits for the page to connect.
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The page's base colour (`--bg`), behind it before it paints.
+const BACKGROUND: (u8, u8, u8, u8) = (0x0e, 0x12, 0x17, 0xff);
+
+/// Where the traffic lights sit in the page's title bar (points from the
+/// window's top left), and the least left padding that clears them.
+const LIGHTS_AT: (f64, f64) = (16.0, 20.0);
+const TRAFFIC_LIGHTS: f64 = 76.0;
+
+/// `--window-smoke`'s probe: the page reports its title bar's left padding,
+/// then presses the bar's empty middle, as a person would to move the window.
+const SMOKE_PROBE: &str = r#"(() => {
+  const bar = document.querySelector(".titlebar");
+  window.ipc.postMessage(JSON.stringify({ inset: parseFloat(getComputedStyle(bar).paddingLeft) }));
+  bar.querySelector(".spacer").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, detail: 1 }));
+})();"#;
+
 /// How long quitting waits for the runtime thread to stop everything.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -43,6 +59,12 @@ enum UserEvent {
     Menu(MenuId),
     /// The page's recent projects, for Open Recent.
     Recents(Vec<Recent>),
+    /// A press on the page's title bar: move the window, or (a double
+    /// press) zoom it.
+    Drag,
+    Zoom,
+    /// The title bar's left padding, which `--window-smoke` asks for.
+    Inset(f64),
     /// The runtime thread has finished.
     Done,
 }
@@ -102,6 +124,10 @@ pub fn run(
     let mut close = Some(close);
     let mut result = None;
     let mut smoke_failed = false;
+    // `--window-smoke`'s checks of the title bar: its inset, and a press on
+    // it reaching here.
+    let (mut inset, mut dragged) = (None, false);
+    let mut fullscreen = false;
     event_loop.run_return(|event, _, flow| {
         match event {
             Event::NewEvents(StartCause::Init) => menu.init_for_nsapp(),
@@ -121,14 +147,38 @@ pub fn run(
                 event: WindowEvent::CloseRequested,
                 ..
             } => stop(&mut close, geometry.as_deref(), &window),
+            // Native fullscreen hides the traffic lights, so the page
+            // drops its inset for them.
+            Event::WindowEvent {
+                event: WindowEvent::Resized(_),
+                ..
+            } => {
+                if fullscreen != window.fullscreen().is_some() {
+                    fullscreen = !fullscreen;
+                    let _ = webview.evaluate_script(&fullscreen_script(fullscreen));
+                }
+            }
             Event::UserEvent(UserEvent::Title(t)) => {
                 // The page names the project once its socket has the state.
-                if smoke && close.is_some() && t.starts_with("Functor — ") {
+                if smoke && close.is_some() && t.starts_with("Functor — ") && inset.is_none() {
                     eprintln!("[functor-app] window smoke: the page connected ({t})");
-                    stop(&mut close, geometry.as_deref(), &window);
+                    if let Err(e) = webview.evaluate_script(SMOKE_PROBE) {
+                        eprintln!("functor-app: window smoke: cannot probe the title bar: {e}");
+                    }
                 }
+                // A reloaded page starts without the fullscreen class.
+                if fullscreen {
+                    let _ = webview.evaluate_script(&fullscreen_script(true));
+                }
+                // Hidden, but Mission Control and the Window menu show it.
                 window.set_title(&t);
             }
+            Event::UserEvent(UserEvent::Drag) if smoke => dragged = true,
+            Event::UserEvent(UserEvent::Drag) => {
+                let _ = window.drag_window();
+            }
+            Event::UserEvent(UserEvent::Zoom) => window.set_maximized(!window.is_maximized()),
+            Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
             // The page acts on its own menu commands, as on its buttons.
             Event::UserEvent(UserEvent::Menu(id)) => {
                 if let Some(script) = menu_script(id.as_ref(), &recents) {
@@ -154,6 +204,20 @@ pub fn run(
                         STOP_TIMEOUT.as_secs()
                     ),
                 }
+            }
+            _ => {}
+        }
+        // The smoke passes once the bar clears the traffic lights and a
+        // press on it has arrived here.
+        match inset {
+            Some(px) if smoke && close.is_some() && px < TRAFFIC_LIGHTS => {
+                eprintln!("functor-app: window smoke: the title bar's inset is {px}px");
+                smoke_failed = true;
+                stop(&mut close, geometry.as_deref(), &window);
+            }
+            Some(px) if smoke && close.is_some() && dragged => {
+                eprintln!("[functor-app] window smoke: title bar inset {px}px; a press on it arrived");
+                stop(&mut close, geometry.as_deref(), &window);
             }
             _ => {}
         }
@@ -199,8 +263,16 @@ fn open(
         })
         .collect();
     let at = place(geometry.and_then(load), &screens);
+    // The page's own bar is the title bar: the native one is transparent,
+    // under the page, with only its traffic lights showing.
     let window = WindowBuilder::new()
         .with_title("Functor")
+        .with_title_hidden(true)
+        .with_titlebar_transparent(true)
+        .with_fullsize_content_view(true)
+        .with_traffic_light_inset(LogicalPosition::new(LIGHTS_AT.0, LIGHTS_AT.1))
+        .with_theme(Some(Theme::Dark))
+        .with_background_color(BACKGROUND)
         .with_inner_size(LogicalSize::new(at.w, at.h))
         .with_min_inner_size(LogicalSize::new(MIN.0, MIN.1))
         .with_position(LogicalPosition::new(at.x, at.y))
@@ -209,14 +281,15 @@ fn open(
         .map_err(io::Error::other)?;
 
     let title = event_loop.create_proxy();
-    let listed = event_loop.create_proxy();
+    let ipc = event_loop.create_proxy();
     let nav_origin = origin.to_string();
     let ipc_origin = origin.to_string();
     let webview = WebViewBuilder::new()
         .with_url(format!("{origin}/"))
+        .with_background_color(BACKGROUND)
         // Only on our own page; `server` describes the token's model.
         .with_initialization_script(format!(
-            "if (location.origin === {}) window.functorToken = {};",
+            "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; }}",
             serde_json::to_string(origin).expect("a string"),
             serde_json::to_string(token.reveal()).expect("a string"),
         ))
@@ -233,8 +306,8 @@ fn open(
         // Only our page's messages; they only label menu items.
         .with_ipc_handler(move |req| {
             if own(&req.uri().to_string(), &ipc_origin) {
-                if let Some(list) = parse_recents(req.body()) {
-                    let _ = listed.send_event(UserEvent::Recents(list));
+                if let Some(event) = parse_ipc(req.body()) {
+                    let _ = ipc.send_event(event);
                 }
             }
         })
@@ -344,15 +417,36 @@ fn fill_recent(menu: &Submenu, recents: &[Recent]) {
     menu.set_enabled(!recents.is_empty());
 }
 
-/// The page's `{"recents": [{"name", "path"}, …]}`, at most [`MAX_RECENTS`].
-fn parse_recents(body: &str) -> Option<Vec<Recent>> {
+/// The page's messages: `{"recents": [{"name", "path"}, …]}` (at most
+/// [`MAX_RECENTS`]), `{"titlebar": "drag" | "zoom"}`, or `{"inset": px}`.
+fn parse_ipc(body: &str) -> Option<UserEvent> {
     #[derive(serde::Deserialize)]
-    struct Listed {
-        recents: Vec<Recent>,
+    #[serde(rename_all = "lowercase")]
+    enum Msg {
+        Recents(Vec<Recent>),
+        Titlebar(Press),
+        Inset(f64),
     }
-    let mut list = serde_json::from_str::<Listed>(body).ok()?.recents;
-    list.truncate(MAX_RECENTS);
-    Some(list)
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Press {
+        Drag,
+        Zoom,
+    }
+    Some(match serde_json::from_str::<Msg>(body).ok()? {
+        Msg::Recents(mut list) => {
+            list.truncate(MAX_RECENTS);
+            UserEvent::Recents(list)
+        }
+        Msg::Titlebar(Press::Drag) => UserEvent::Drag,
+        Msg::Titlebar(Press::Zoom) => UserEvent::Zoom,
+        Msg::Inset(px) => UserEvent::Inset(px),
+    })
+}
+
+/// The script that tells the page whether the window is in fullscreen.
+fn fullscreen_script(on: bool) -> String {
+    format!("document.documentElement.classList.toggle(\"fullscreen\", {on});")
 }
 
 /// The script that hands menu item `id`'s command to the page, which sends
@@ -541,6 +635,24 @@ mod tests {
         );
         for id in ["recent-1", "recent-x", "quit", ""] {
             assert_eq!(menu_script(id, &recents), None, "{id}");
+        }
+    }
+
+    fn parse_recents(body: &str) -> Option<Vec<Recent>> {
+        match parse_ipc(body)? {
+            UserEvent::Recents(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn title_bar_presses_from_the_page() {
+        let press = |body| parse_ipc(body);
+        assert!(matches!(press(r#"{"titlebar":"drag"}"#), Some(UserEvent::Drag)));
+        assert!(matches!(press(r#"{"titlebar":"zoom"}"#), Some(UserEvent::Zoom)));
+        assert!(matches!(press(r#"{"inset":84}"#), Some(UserEvent::Inset(px)) if px == 84.0));
+        for bad in [r#"{"titlebar":"close"}"#, r#"{"titlebar":1}"#, r#"{"inset":"84px"}"#] {
+            assert!(press(bad).is_none(), "{bad}");
         }
     }
 

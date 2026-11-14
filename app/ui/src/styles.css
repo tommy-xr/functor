@@ -217,6 +217,17 @@ blockquote {
   box-shadow: var(--shadow-bar);
 }
 
+/* The macOS window's title bar: clear of its traffic lights, except in
+   fullscreen, where they hide. */
+.native-titlebar .titlebar {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.native-titlebar:not(.fullscreen) .titlebar {
+  padding-left: 84px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
