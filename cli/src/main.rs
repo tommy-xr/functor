@@ -363,6 +363,10 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         app_args: Vec<String>,
     },
+    /// Print what this CLI offers the desktop app, as JSON (`app_protocol`,
+    /// `version`, `debug_protocol`): the app's check before it runs it.
+    #[command(hide = true)]
+    AppCompat,
     /// Inspect assets headlessly (no GPU/GL context).
     Inspect {
         #[command(subcommand)]
@@ -443,6 +447,11 @@ async fn main() -> tokio::io::Result<()> {
     if let Err(message) = validate_args(&args) {
         eprintln!("error: {message}");
         process::exit(2);
+    }
+    // A handshake: its JSON line is all of stdout.
+    if let Command::AppCompat = &args.command {
+        println!("{}", commands::app::compat_json(VERSION));
+        return Ok(());
     }
 
     // `mcp` owns stdout: it speaks JSON-RPC there. It therefore dispatches
@@ -666,6 +675,7 @@ async fn run(args: &Args) -> io::Result<()> {
             | Command::Inspect { .. }
             | Command::Mcp { .. }
             | Command::App { .. }
+            | Command::AppCompat
             | Command::Import => {
                 unreachable!("is_routed excludes")
             }
@@ -856,7 +866,7 @@ async fn run(args: &Args) -> io::Result<()> {
         // Handled earlier (before functor.json validation).
         Command::Inspect { .. } => unreachable!(),
         // Handled earlier (before the output stream is initialized).
-        Command::Mcp { .. } | Command::App { .. } => unreachable!(),
+        Command::Mcp { .. } | Command::App { .. } | Command::AppCompat => unreachable!(),
         // Handled earlier (right after functor.json validation).
         Command::Import => unreachable!(),
     }
@@ -922,6 +932,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Develop { .. } => "develop",
         Command::Mcp { .. } => "mcp",
         Command::App { .. } => "app",
+        Command::AppCompat => "app-compat",
         Command::Inspect { .. } => "inspect",
         Command::Import => "import",
         Command::Push { .. } => "push",

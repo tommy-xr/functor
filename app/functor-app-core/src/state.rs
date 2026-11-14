@@ -11,6 +11,7 @@ use crate::agent_view::{
     step_clicked, AppContext, Highlight, ViewReply, ViewRequest,
 };
 use crate::changes::Change;
+use crate::cli::CliProblem;
 use crate::creation::{
     folder_name, CreateFailure, NewProject, NewProjectRequest, Step, Template, OPEN_STEP, TASK_STEP,
 };
@@ -130,6 +131,11 @@ pub struct AppState {
     pub templates: Vec<Template>,
     /// Why there are no templates (no `functor`, or one too old to list them).
     pub templates_error: Option<String>,
+    /// What is wrong with the `functor` the app runs ([`CliProblem::message`]):
+    /// while set, nothing is started with it (D40). `None`: nothing found wrong.
+    pub cli_problem: Option<String>,
+    /// The shell is checking `functor` again (Try again).
+    pub cli_checking: bool,
     /// The new-project modal, while open.
     pub new_project: Option<NewProject>,
     /// Where the last project was created, the modal's next default.
@@ -257,6 +263,8 @@ impl AppState {
             opening: 0,
             templates: Vec::new(),
             templates_error: None,
+            cli_problem: None,
+            cli_checking: false,
             new_project: None,
             last_parent: None,
             first_task: None,
@@ -316,6 +324,11 @@ pub enum Event {
     /// `functor init --list --json`'s templates, or why there are none.
     Templates {
         result: Result<Vec<Template>, String>,
+    },
+    /// The shell's check of the `functor` it runs: what is wrong with it,
+    /// or `None` when nothing is.
+    CliChecked {
+        problem: Option<CliProblem>,
     },
     /// The shell's `CreateProject`: the project's folder (with a `note`
     /// to show once it is open), or how it failed.
@@ -439,6 +452,9 @@ pub enum Command {
     },
     /// Kill session `id`'s child.
     StopSession { id: u64 },
+    /// Check the `functor` the shell runs again (found anew), answering with
+    /// `Event::CliChecked`.
+    CheckCli,
     /// `GET /state?model=0` on session `id`'s debug server after the poll
     /// interval (shorter when `fast`), posted in order with its calls;
     /// `after` seeks were sent before it.
@@ -894,6 +910,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Created { result, note } => {
             (created(&mut state, result, note, &mut commands), false)
         }
+        Event::Client(ClientMsg::CheckCli) => {
+            let check = !state.cli_checking;
+            if check {
+                state.cli_checking = true;
+                commands.push(Command::CheckCli);
+            }
+            (check, true)
+        }
+        Event::CliChecked { problem } => (cli_checked(&mut state, problem, &mut commands), false),
         Event::Client(ClientMsg::PickFolder) => {
             if !state.native_picker {
                 let reason = "there is no folder picker here: type the folder's path";
@@ -1353,6 +1378,8 @@ fn opened(
         opening: _,
         templates: _,
         templates_error: _,
+        cli_problem: _,
+        cli_checking: _,
         new_project: _,
         last_parent: _,
         first_task: _,
@@ -1571,6 +1598,26 @@ fn create_project(
     let np = state.new_project.as_mut().expect("checked");
     let changed = np.step != step;
     np.step = step;
+    changed
+}
+
+/// The shell checked its `functor`. Once a problem is gone, what it refused
+/// starts again: the failed game session, the templates.
+fn cli_checked(state: &mut AppState, problem: Option<CliProblem>, commands: &mut Vec<Command>) -> bool {
+    let message = problem.map(|p| p.message());
+    let fixed = state.cli_problem.is_some() && message.is_none();
+    let changed = state.cli_checking || state.cli_problem != message;
+    state.cli_checking = false;
+    state.cli_problem = message;
+    if fixed {
+        let failed = state.session.as_ref().is_some_and(|s| matches!(s.status, SessionStatus::Failed { .. }));
+        if failed {
+            start(state, commands);
+        }
+        if state.templates_error.is_some() {
+            commands.push(Command::ListTemplates);
+        }
+    }
     changed
 }
 
@@ -3570,6 +3617,65 @@ mod tests {
             assert_eq!(next, before);
             assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
         }
+    }
+
+    fn too_old() -> crate::cli::CliProblem {
+        crate::cli::CliProblem {
+            path: "~/.functor/bin/functor".to_string(),
+            version: Some("0.1.2".to_string()),
+            cause: crate::cli::CliCause::TooOld,
+            bundled: false,
+        }
+    }
+
+    #[test]
+    fn a_cli_problem_is_kept_until_a_check_finds_none() {
+        let checked = |state, problem| update(state, Event::CliChecked { problem });
+        let (bad, commands) = checked(state(), Some(too_old()));
+        assert_eq!(bad.cli_problem, Some(too_old().message()));
+        assert_eq!(commands, vec![broadcast(&bad)]);
+        // Try again: one check at a time.
+        let (checking, commands) = update(bad.clone(), client(ClientMsg::CheckCli));
+        assert!(checking.cli_checking);
+        assert_eq!(commands, vec![Command::CheckCli, broadcast(&checking)]);
+        let (again, commands) = update(checking.clone(), client(ClientMsg::CheckCli));
+        assert_eq!(again, checking);
+        assert!(!commands.contains(&Command::CheckCli), "{commands:?}");
+        // Still too old: the same message, no longer checking.
+        let (still, _) = checked(checking.clone(), Some(too_old()));
+        assert_eq!(still, bad);
+        // Fixed: the message goes, and nothing failed to start meanwhile.
+        let (fixed, commands) = checked(checking, None);
+        assert_eq!(fixed.cli_problem, None);
+        assert!(!fixed.cli_checking);
+        assert_eq!(commands, vec![broadcast(&fixed)]);
+    }
+
+    #[test]
+    fn a_fixed_cli_starts_what_it_refused() {
+        let refused = AppState {
+            cli_problem: Some(too_old().message()),
+            templates_error: Some(too_old().message()),
+            ..with_session(2, None, SessionStatus::Failed { reason: too_old().message() })
+        };
+        let (next, commands) = update(refused, Event::CliChecked { problem: None });
+        assert_eq!(next.session.as_ref().unwrap().status, SessionStatus::Starting);
+        assert_eq!(
+            commands,
+            vec![
+                start_cmd(3, "examples/a", Display::Hidden),
+                Command::ListTemplates,
+                broadcast(&next)
+            ]
+        );
+        // A stopped game stays stopped.
+        let stopped = AppState {
+            cli_problem: Some(too_old().message()),
+            ..with_session(2, None, SessionStatus::Stopped)
+        };
+        let (next, commands) = update(stopped, Event::CliChecked { problem: None });
+        assert_eq!(next.session.unwrap().status, SessionStatus::Stopped);
+        assert!(!commands.iter().any(|c| matches!(c, Command::StartSession { .. })));
     }
 
     #[test]

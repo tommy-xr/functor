@@ -273,7 +273,7 @@ fn undo(made: &[PathBuf], done: &mut Vec<String>) {
 
 // Spelled with `/` and run with `sh` scripts as `functor`, as on Unix.
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Command;
 
@@ -294,7 +294,7 @@ mod tests {
     }
 
     /// A `functor` that runs `script` (`$2` is the `-d` folder).
-    fn fake_functor(dir: &Path, script: &str) -> PathBuf {
+    pub(crate) fn fake_functor(dir: &Path, script: &str) -> PathBuf {
         let path = dir.join("fake-functor");
         // Written by a child: a file this process holds open for writing can
         // be inherited by another test's fork, and running it then fails

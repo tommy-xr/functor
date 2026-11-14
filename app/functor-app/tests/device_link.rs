@@ -745,7 +745,7 @@ impl Review {
         });
         let functor = tools.path().join("functor");
         let script = format!(
-            "#!/bin/sh\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\nexec cat >/dev/null\n"
+            "#!/bin/sh\n[ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\nexec cat >/dev/null\n"
         );
         std::fs::write(&functor, script).unwrap();
         std::fs::set_permissions(&functor, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2326,6 +2326,7 @@ fn voice_functor(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("functor");
     let script = format!(
         "#!/bin/sh\n\
+         [ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n\
          if [ \"$1\" = mcp ]; then\n\
            echo '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\n\
            exec cat >/dev/null\n\

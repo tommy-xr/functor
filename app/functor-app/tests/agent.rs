@@ -273,7 +273,7 @@ mod stub {
         let port = serve(tx);
         let path = dir.join("functor");
         let script = format!(
-            "#!/bin/sh\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\n{body}\n"
+            "#!/bin/sh\n[ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\necho '[mcp] listening on http://127.0.0.1:{port}/mcp' >&2\n{body}\n"
         );
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -436,6 +436,42 @@ fn cli_task_with_a_failed_run_exits_1() {
         String::from_utf8(out.stdout).unwrap(),
         "you: hi\nfailed: spawning claude\n"
     );
+}
+
+/// A `functor` from before the app's check starts no tool server: the run
+/// fails with the check's message, not the tool server's own error.
+#[cfg(unix)]
+#[test]
+fn cli_task_with_a_too_old_functor_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = tree();
+    let home = tempfile::tempdir().unwrap();
+    let old = home.path().join("functor");
+    let log = home.path().join("ran.txt");
+    let script = format!(
+        "#!/bin/sh\necho \"$@\" >> '{}'\n\
+         [ \"$1\" = --version ] && {{ echo 'functor-cli 0.1.2'; exit 0; }}\n\
+         echo \"error: unrecognized subcommand '$1'\" >&2; exit 2\n",
+        log.display()
+    );
+    std::fs::write(&old, script).unwrap();
+    std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let fixture = fixture("claude-game-tool.jsonl");
+    let out = task_command(repo.path(), home.path(), &old, &fixture, "hi")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    // In the home directory (`HOME`), so shown from `~`.
+    assert_eq!(
+        stdout,
+        "you: hi\nfailed: The functor CLI at ~/functor (0.1.2) is older than this app, so games \
+and the agent's tools cannot start. Build it in this checkout (npm run build:cli), or pass \
+--functor <path>.\n"
+    );
+    // Asked only what it offers: never `mcp`.
+    let ran = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(ran, "app-compat --json\n--version\n");
 }
 
 /// `--max-input` stops a run past its budget, and `--metrics` says so.

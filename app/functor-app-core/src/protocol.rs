@@ -22,6 +22,8 @@ pub enum ClientMsg {
     },
     /// Start a game session for the active project, unless one is live.
     StartSession,
+    /// Check the `functor` the app runs again (Try again on its problem).
+    CheckCli,
     StopSession,
     /// Forwarded to a running session; dropped otherwise. Not answered.
     Input {

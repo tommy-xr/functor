@@ -116,11 +116,12 @@ export function tempProject(project) {
  * `dir: null` passes no `-d`, so the app picks its folder from `cwd` and its
  * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
  * and resolves with its address as `link`; its cable side runs `adb` (a fake,
- * or by default none, so no real headset is touched).
+ * or by default none, so no real headset is touched). `functor`: the CLI it
+ * runs (default `FUNCTOR_BIN`).
  */
 export function startServer(
   port = 0,
-  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, fakeReview, token, deviceLink = false, adb = "/nonexistent/adb" } = {},
+  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, fakeReview, token, deviceLink = false, adb = "/nonexistent/adb", functor = FUNCTOR } = {},
 ) {
   const args = ["--headless", "--port", String(port)];
   // No LAN listener or mDNS advert unless a test pairs a stub device.
@@ -128,7 +129,7 @@ export function startServer(
   else args.push("--device-link", "127.0.0.1:0", "--no-mdns", "--adb", adb);
   if (dir) args.push("-d", dir);
   if (!gpu) args.push("--no-gpu");
-  if (FUNCTOR) args.push("--functor", FUNCTOR);
+  if (functor) args.push("--functor", functor);
   // XDG_CONFIG_HOME too: git also reads its ignore and attributes files there.
   const env = { ...process.env, ...GIT_ENV, XDG_CONFIG_HOME: home, FUNCTOR_APP_HOME: home };
   if (fakeAgent) env.FUNCTOR_APP_FAKE_AGENT = fakeAgent;

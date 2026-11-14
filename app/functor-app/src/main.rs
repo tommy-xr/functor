@@ -2,6 +2,7 @@
 
 mod agent;
 mod changes;
+mod cli;
 mod creation;
 mod evidence;
 mod files;
@@ -259,17 +260,11 @@ async fn app(
     if let Err(e) = store::make_private(&home) {
         eprintln!("functor-app: cannot make {} private: {e}", home.display());
     }
-    let functor = session::functor_bin(
+    let cli = std::sync::Arc::new(cli::Cli::new(
         args.functor,
         std::env::var_os("FUNCTOR_BIN"),
         std::env::current_exe().ok(),
-    );
-    // Absolute, as children run in project directories; a bare name is
-    // still looked up on PATH.
-    let functor = match functor.components().count() {
-        1 => functor,
-        _ => std::path::absolute(functor)?,
-    };
+    ));
     // Absolute: the fake agent's child runs in the project directory.
     let fixture = |var| std::env::var_os(var).filter(|f: &std::ffi::OsString| !f.is_empty());
     let agents = match fixture("FUNCTOR_APP_FAKE_AGENT") {
@@ -293,6 +288,9 @@ async fn app(
     state.native_picker = window.is_some();
     state.recents = store::load_recents(&home);
     state.context_windows = store::load_context_windows(&home);
+    // Before its first use: a problem starts nothing and is said (D40).
+    let problem = cli.check().await;
+    (state, _) = update(state, Event::CliChecked { problem });
     let dir = args.dir.map(std::fs::canonicalize).transpose()?;
     let cwd = match dir {
         Some(_) => None,
@@ -312,7 +310,7 @@ async fn app(
     let views = std::sync::Arc::new(agent::ViewRoute::default());
     let router = router::Router::from_env(&agents);
     state.router = router.is_some();
-    let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
+    let mut driver = Driver::new(cli.clone(), agents, home, tx.clone(), views.clone());
     driver.router = router;
     driver.link = Some(hub.clone());
     if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
@@ -409,6 +407,12 @@ async fn app(
         Ok(None) => {}
         Err(e) => eprintln!("functor-app: the device link is off: {e}"),
     };
+    // Also after the `listening on` line: what is wrong with the `functor` found.
+    let say_cli = |problem: &Option<String>| {
+        if let Some(problem) = problem {
+            eprintln!("functor-app: {problem}");
+        }
+    };
     let code = match window {
         // The full URL, for a person to open; see `server` on the token.
         None => {
@@ -417,6 +421,7 @@ async fn app(
                 token.reveal()
             );
             say_link();
+            say_cli(&state.cli_problem);
             let shutdown = async { 128 + signal.await };
             server::serve(
                 state,
@@ -433,6 +438,7 @@ async fn app(
         Some((window_origin, close)) => {
             eprintln!("[functor-app] listening on {origin}");
             say_link();
+            say_cli(&state.cli_problem);
             let _ = window_origin.send(origin);
             // Closing the window stops everything the way a signal does.
             let shutdown = async {

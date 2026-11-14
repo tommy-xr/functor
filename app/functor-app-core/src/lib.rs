@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod agent_view;
 pub mod changes;
+pub mod cli;
 pub mod creation;
 pub mod decision;
 pub mod devices;
@@ -28,6 +29,7 @@ pub mod voice;
 
 pub use agent_view::AppContext;
 pub use changes::Change;
+pub use cli::{CliCause, CliProblem};
 pub use devices::{Device, DeviceState, Devices, Headset, LinkCommand, LinkEvent};
 pub use folders::Recent;
 pub use layout::{Layout, LayoutOp, View};

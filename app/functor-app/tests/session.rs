@@ -76,7 +76,7 @@ fn sigterm_kills_the_child() {
 
     let dir = tempfile::tempdir().unwrap();
     let fake = dir.path().join("functor");
-    std::fs::write(&fake, "#!/bin/sh\nexec sleep 60\n").unwrap();
+    std::fs::write(&fake, "#!/bin/sh\n[ \"$1\" = app-compat ] && { echo '{\"app_protocol\":1}'; exit 0; }\nexec sleep 60\n").unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let counter = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/counter");
     let app = Command::new(env!("CARGO_BIN_EXE_functor-app"))
@@ -92,7 +92,8 @@ fn sigterm_kills_the_child() {
     let deadline = Instant::now() + Duration::from_secs(30);
     let child = loop {
         let out = Command::new("pgrep")
-            .args(["-P", &app.id().to_string()])
+            // The game (its `exec sleep`), not the check (`sh`, `functor app-compat`) before it.
+            .args(["-P", &app.id().to_string(), "sleep"])
             .output()
             .unwrap();
         if let Some(pid) = String::from_utf8_lossy(&out.stdout)

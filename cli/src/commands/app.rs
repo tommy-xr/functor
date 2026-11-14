@@ -6,6 +6,24 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// What this CLI offers the desktop app, which requires a minimum: bump it
+/// whenever the app starts using something new from the CLI (a flag, a
+/// subcommand, an output it reads). 1: `run native --paused`/`--hidden`,
+/// `run vr --device-url`, `mcp --http`/`--review`/`--app-url`,
+/// `init --list --json` and `run native --replay-input`.
+pub const APP_PROTOCOL: u32 = 1;
+
+/// `functor app-compat`'s answer: one JSON line the app checks before its
+/// first use of this CLI.
+pub fn compat_json(version: &str) -> String {
+    serde_json::json!({
+        "app_protocol": APP_PROTOCOL,
+        "version": version,
+        "debug_protocol": functor_runtime_common::debug_protocol::DEBUG_PROTOCOL_VERSION,
+    })
+    .to_string()
+}
+
 /// The app binary's file name on this OS.
 fn app_name() -> String {
     format!("functor-app{}", std::env::consts::EXE_SUFFIX)

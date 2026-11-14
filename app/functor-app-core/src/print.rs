@@ -38,6 +38,9 @@ pub fn print(state: &AppState) -> String {
         format!("session: {}", session(state)),
         format!("mode: {}", mode(state)),
     ];
+    if let Some(problem) = &state.cli_problem {
+        lines.push(format!("cli: {problem}"));
+    }
     if let Some(active) = active {
         let layout = state.layouts.get(active).cloned().unwrap_or_default();
         lines.push(format!("placement: {}", print_placement(&layout.game)));
