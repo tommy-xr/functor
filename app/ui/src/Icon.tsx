@@ -14,6 +14,7 @@ const ICONS: Record<string, ReactNode> = {
   ),
   send: <path d="M12 19V5M6 11l6-6 6 6" />,
   stop: <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />,
+  play: <path d="M8 5.5v13l10.5-6.5z" />,
   power: <path d="M12 3v8M7.1 6.4a7 7 0 1 0 9.8 0" />,
   "chevron-up": <path d="M6 15l6-6 6 6" />,
   history: (

@@ -1,0 +1,18 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-room-1", "model": "claude-model"}}
+{"ms": 300, "event": {"type": "usage_detail", "total": {"input": 2, "cache_read": 280000, "cache_creation": 0, "output": 10}, "last": {"input": 2, "cache_read": 280000, "cache_creation": 0, "output": 10}}}
+{"ms": 2000, "event": {"type": "tool_use", "name": "Agent", "input": {"description": "Find the spawn code", "prompt": "Find where the player spawns.", "subagent_type": "general-purpose"}}}
+{"ms": 2000, "event": {"type": "tool_use_meta", "id": "toolu_a", "parent_id": null}}
+{"ms": 2300, "event": {"type": "tool_use", "name": "Read", "input": {"file_path": "game.fun"}}}
+{"ms": 2300, "event": {"type": "tool_use_meta", "id": "toolu_b", "parent_id": "toolu_a"}}
+{"ms": 5500, "event": {"type": "tool_result", "content": "13\tlet init = { count: 0.0 }"}}
+{"ms": 5500, "event": {"type": "tool_result_meta", "id": "toolu_b", "is_error": false}}
+{"ms": 6000, "event": {"type": "tool_result", "content": "The count starts in `init`, game.fun line 13."}}
+{"ms": 6000, "event": {"type": "tool_result_meta", "id": "toolu_a", "is_error": null}}
+{"ms": 6200, "event": {"type": "tool_use", "name": "Bash", "input": {"command": "cargo test", "description": "Run the tests"}}}
+{"ms": 6200, "event": {"type": "tool_use_meta", "id": "toolu_c", "parent_id": null}}
+{"ms": 8500, "event": {"type": "tool_result", "content": "Exit code 101\nerror: could not find `Cargo.toml`"}}
+{"ms": 8500, "event": {"type": "tool_result_meta", "id": "toolu_c", "is_error": true}}
+{"ms": 11000, "event": {"type": "text", "text": "The count starts at 0 in `init` (game.fun line 13)."}}
+{"ms": 11100, "event": {"type": "usage", "input": 600000, "output": 120}}
+{"ms": 11100, "event": {"type": "usage_detail", "total": {"input": 6, "cache_read": 590000, "cache_creation": 9994, "output": 120}, "last": {"input": 2, "cache_read": 299000, "cache_creation": 998, "output": 40}, "turns": 3, "cost_usd": 0.21, "api_ms": 9000, "context_window": 1000000}}
+{"ms": 11200, "event": {"type": "finished", "ok": true, "summary": "The count starts at 0 in `init` (game.fun line 13)."}}

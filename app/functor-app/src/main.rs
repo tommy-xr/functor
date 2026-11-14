@@ -7,10 +7,12 @@ mod evidence;
 mod files;
 mod folders;
 mod link;
+mod router;
 mod server;
 mod session;
 mod store;
 mod stub;
+mod voice;
 #[cfg(target_os = "macos")]
 mod window;
 
@@ -21,7 +23,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use functor_app_core::metrics::run_metrics;
+use functor_app_core::metrics::{review_metrics, run_metrics};
 use functor_app_core::protocol::{ClientMsg, ServerMsg};
 use functor_app_core::{
     print, print_change, print_item, update, AppState, Command, Event, Harness, Item, RunEvent,
@@ -127,6 +129,11 @@ enum Cmd {
         #[arg(long, default_value = "claude", value_parser = ["claude", "codex"])]
         harness: String,
 
+        /// How much of your own setup the run reads (D39); default: the
+        /// project's setting. Codex always reads all of it.
+        #[arg(long, value_parser = ["user_and_project", "project", "isolated"])]
+        scope: Option<String>,
+
         /// Print each transcript item as it completes, not all at the end.
         #[arg(long)]
         follow: bool,
@@ -143,11 +150,25 @@ enum Cmd {
         /// reports usage as it goes; Codex only at the end, too late to stop.
         #[arg(long, value_name = "TOKENS")]
         max_input: Option<u64>,
+
+        /// When the run leaves a change, review it as the app does (D31, as
+        /// the project's setting says) and wait for that too; its numbers go
+        /// in the metrics as `review`. `FUNCTOR_APP_FAKE_REVIEW=<fixture>`
+        /// replays one under the fake agent.
+        #[arg(long)]
+        review: bool,
     },
     /// Speak the device side of the device link, for tests: pair, link,
     /// answer canned debug requests.
     #[command(hide = true)]
     DeviceStub(stub::StubArgs),
+    /// Print the voice capsule (plan 4.1) a running game's state makes: its
+    /// frame, game time and, on a headset, head and controller poses, as JSON.
+    Capsule {
+        /// The game's debug server, `http://127.0.0.1:<port>`.
+        #[arg(long, value_name = "URL")]
+        from_session: String,
+    },
 }
 
 /// The window's side of the runtime thread: where to send the server's
@@ -160,6 +181,8 @@ type WindowLink = (
 fn main() -> std::io::Result<ExitCode> {
     // First, while this is the only thread: it edits the environment.
     let token = server::Token::take();
+    #[cfg(target_os = "macos")]
+    use_login_path();
     let mut args = Args::parse();
     if let Some(fixture) = &args.replay_events {
         return Ok(
@@ -182,6 +205,22 @@ fn main() -> std::io::Result<ExitCode> {
             unreachable!("just matched");
         };
         return Ok(runtime()?.block_on(stub::run(stub)));
+    }
+    if let Some(Cmd::Capsule { from_session }) = &args.command {
+        let read = session::request(from_session, "GET", "/state?model=0", &[], "");
+        let state = runtime()?
+            .block_on(read)
+            .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+        return Ok(match state {
+            Ok(state) => {
+                println!("{}", voice::capsule_from_state(&state).to_json());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("functor-app: cannot read {from_session}: {e}");
+                ExitCode::FAILURE
+            }
+        });
     }
     if args.headless {
         return runtime()?.block_on(app(args, token, None));
@@ -232,15 +271,28 @@ async fn app(
         _ => std::path::absolute(functor)?,
     };
     // Absolute: the fake agent's child runs in the project directory.
-    let agents = match std::env::var_os("FUNCTOR_APP_FAKE_AGENT").filter(|f| !f.is_empty()) {
-        Some(fixture) => Agents::Fake(std::path::absolute(fixture)?),
+    let fixture = |var| std::env::var_os(var).filter(|f: &std::ffi::OsString| !f.is_empty());
+    let agents = match fixture("FUNCTOR_APP_FAKE_AGENT") {
+        Some(run) => Agents::Fake {
+            run: std::path::absolute(run)?,
+            review: fixture("FUNCTOR_APP_FAKE_REVIEW")
+                .map(std::path::absolute)
+                .transpose()?,
+        },
         None => Agents::Real,
     };
     let mut state = AppState::none();
     state.no_gpu = args.no_gpu;
     state.harnesses = agents.available();
+    // `task` reviews only when asked; `--print` runs nothing.
+    let asked = match &args.command {
+        Some(Cmd::Task { review, .. }) => *review,
+        _ => !args.print,
+    };
+    state.can_review = asked && agents.can_review();
     state.native_picker = window.is_some();
     state.recents = store::load_recents(&home);
+    state.context_windows = store::load_context_windows(&home);
     let dir = args.dir.map(std::fs::canonicalize).transpose()?;
     let cwd = match dir {
         Some(_) => None,
@@ -252,11 +304,16 @@ async fn app(
     // on whatever was open last.
     let interactive = !args.print && args.command.is_none();
     state.start_on_open = interactive;
+    state.auto_start = interactive;
     let recents = if interactive { &state.recents[..] } else { &[] };
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;
+    state.speech = hub.speaks();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
+    let router = router::Router::from_env(&agents);
+    state.router = router.is_some();
     let mut driver = Driver::new(functor, agents, home, tx.clone(), views.clone());
+    driver.router = router;
     driver.link = Some(hub.clone());
     if let Some(folder) = functor_app_core::folders::startup(dir, cwd, recents) {
         // `--print` changes no task, so it measures none.
@@ -290,23 +347,31 @@ async fn app(
     if let Some(Cmd::Task {
         prompt,
         harness,
+        scope,
         follow,
         start_session,
         metrics,
         max_input,
+        review,
     }) = args.command
     {
         let harness = match harness.as_str() {
             "codex" => Harness::Codex,
             _ => Harness::Claude,
         };
+        let calls = match review {
+            true => Some(server::serve_views(views.clone(), driver.home(), hub.clone()).await?),
+            false => None,
+        };
         let task = TaskArgs {
             prompt,
             harness,
+            scope: scope.map(|s| serde_json::from_value(s.into()).expect("a scope clap allows")),
             follow,
             start_session,
             metrics,
             max_input,
+            calls,
         };
         return run_task(state, driver, events, task).await;
     }
@@ -323,7 +388,7 @@ async fn app(
     let signal = shutdown_signal()?;
     let (listener, origin) = server::bind(args.port).await?;
     // Runs started from here on can show views (`task` and `--print` have no route).
-    views.listen(&origin);
+    views.listen(&origin, false);
     // The rest of the app works without the link; why it is off is said
     // after the `listening on` line, which launchers read first.
     let link = match args.no_device_link {
@@ -468,10 +533,13 @@ async fn print_session(
 struct TaskArgs {
     prompt: String,
     harness: Harness,
+    scope: Option<functor_app_core::Scope>,
     follow: bool,
     start_session: bool,
     metrics: Option<PathBuf>,
     max_input: Option<u64>,
+    /// With `--review`: the view route its reviews report through.
+    calls: Option<UnboundedReceiver<server::ViewCall>>,
 }
 
 /// `task`: runs one task to its end, printing its transcript. Exits 0 if it
@@ -494,7 +562,7 @@ async fn run_task(
             return Ok(ExitCode::from(code));
         }
     }
-    let new = driver.new_task(args.prompt, args.harness);
+    let new = driver.new_task(args.prompt, args.harness, args.scope, None);
     let started = std::time::Instant::now();
     state.now = server::wall_ms();
     let (next, commands) = update(state, new);
@@ -525,12 +593,34 @@ async fn run_task(
     let mut cut = None;
     // When the run went over `--max-input` without finishing.
     let mut over: Option<std::time::Instant> = None;
+    // The run's time, and the review's start (`--review`).
+    let mut wall = None;
+    let mut review_started = None;
+    let mut calls = args.calls;
     let signal = loop {
         if args.follow {
             printed = print_settled(&transcript(&state), printed);
         }
         let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
+        let preparing = (task.review.as_ref())
+            .is_some_and(|r| r.state == functor_app_core::review::ReviewState::Preparing);
+        if task.run.is_none() {
+            wall.get_or_insert_with(|| started.elapsed());
+        }
+        if preparing {
+            review_started.get_or_insert_with(std::time::Instant::now);
+        }
         let Some(run) = &task.run else {
+            if preparing {
+                // Bounded by the review's own limits.
+                tokio::select! {
+                    biased;
+                    signal = &mut shutdown => break Some(signal),
+                    Some(call) = next_call(&mut calls) => state = answer(state, call, &mut driver).await,
+                    Some(event) = events.recv() => state = step(state, event, &mut driver).await,
+                }
+                continue;
+            }
             break None;
         };
         let finished = matches!(task.transcript.last(), Some(Item::Finished { .. }));
@@ -557,8 +647,9 @@ async fn run_task(
             }
         }
     };
-    let wall = started.elapsed();
-    // Stops the run (on a signal or a cut) and the session.
+    let wall = wall.unwrap_or_else(|| started.elapsed());
+    let review_ms = review_started.map(|t| t.elapsed().as_millis() as u64);
+    // Stops the run (on a signal or a cut), a review and the session.
     state = step(state, Event::Shutdown, &mut driver).await;
     if let Some(path) = &args.metrics {
         let task = state.tasks.iter().find(|t| t.id == id).expect("the task");
@@ -566,6 +657,12 @@ async fn run_task(
         record["wall_ms"] = (wall.as_millis() as u64).into();
         record["first_event_ms"] = first_event.map(|d| d.as_millis() as u64).into();
         record["cut"] = cut.or(signal.map(|s| format!("signal {s}"))).into();
+        if let Some(review) = &task.review {
+            let mut r = serde_json::to_value(review_metrics(review, task.report.as_ref()))
+                .expect("metrics serialize");
+            r["wall_ms"] = review_ms.into();
+            record["review"] = r;
+        }
         if let Err(e) = std::fs::write(path, format!("{record}\n")) {
             eprintln!("functor-app: cannot write {}: {e}", path.display());
         }
@@ -611,6 +708,32 @@ fn say(item: &Item) {
     let _ = writeln!(std::io::stdout(), "{}", print_item(item));
 }
 
+/// The next view request to `task`'s route, if it serves one.
+async fn next_call(calls: &mut Option<UnboundedReceiver<server::ViewCall>>) -> Option<server::ViewCall> {
+    match calls {
+        Some(calls) => calls.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Steps `call`'s event, sending the core's answer back to its caller.
+async fn answer(mut state: AppState, call: server::ViewCall, driver: &mut Driver) -> AppState {
+    state.now = server::wall_ms();
+    let (state, commands) = update(state, call.event);
+    let mut reply = Some(call.reply);
+    for command in commands {
+        match command {
+            Command::ViewReply(answer) => {
+                if let Some(reply) = reply.take() {
+                    let _ = reply.send(answer);
+                }
+            }
+            command => driver.run(command).await,
+        }
+    }
+    state
+}
+
 async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppState {
     state.now = server::wall_ms();
     let (state, commands) = update(state, event);
@@ -618,6 +741,74 @@ async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppStat
         driver.run(command).await;
     }
     state
+}
+
+/// Mark the login shell's `PATH` in its output, apart from anything its
+/// startup or logout files print.
+#[cfg(any(target_os = "macos", test))]
+const PATH_START: &str = "__FUNCTOR_PATH__";
+#[cfg(any(target_os = "macos", test))]
+const PATH_END: &str = "__FUNCTOR_PATH_END__";
+
+/// In `Functor.app`, takes the login shell's `PATH`: Finder and the Dock
+/// start apps with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, which has no
+/// `claude`, `codex` or `adb`. Gives up after 3s, keeping the PATH it has.
+#[cfg(target_os = "macos")]
+fn use_login_path() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let exe = std::env::current_exe().unwrap_or_default();
+    if !exe
+        .parent()
+        .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+    {
+        return;
+    }
+    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
+    let Ok(mut child) = Command::new(shell)
+        .args([
+            "-ilc",
+            &format!("printf '{PATH_START}%s{PATH_END}' \"$PATH\""),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        // Its own group: an interactive shell on a terminal would take the
+        // terminal's foreground from this app.
+        .process_group(0)
+        .spawn()
+    else {
+        return;
+    };
+    // Reads until the PATH is complete, not to EOF: a background job its
+    // startup files began can hold the pipe open after the shell exits.
+    let mut stdout = child.stdout.take().expect("piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut out, mut buf) = (Vec::new(), [0; 4096]);
+        while let Ok(n @ 1..) = std::io::Read::read(&mut stdout, &mut buf) {
+            out.extend_from_slice(&buf[..n]);
+            if let Some(path) = login_path(&String::from_utf8_lossy(&out)) {
+                let _ = tx.send(path.to_string());
+                return;
+            }
+        }
+    });
+    let path = rx.recv_timeout(Duration::from_secs(3));
+    let _ = child.kill();
+    let _ = child.wait();
+    if let Ok(path) = path {
+        std::env::set_var("PATH", path);
+    }
+}
+
+/// The `PATH` in a login shell's output, once it has printed all of it.
+#[cfg(any(target_os = "macos", test))]
+fn login_path(out: &str) -> Option<&str> {
+    let (before, _) = out.split_once(PATH_END)?;
+    let (_, path) = before.rsplit_once(PATH_START)?;
+    // Absolute, so a shell that left `$PATH` unexpanded is not taken at its word.
+    Some(path).filter(|p| p.starts_with('/'))
 }
 
 /// Resolves to the signal number on SIGINT, SIGTERM or SIGHUP (Ctrl-C off Unix).
@@ -641,4 +832,22 @@ fn shutdown_signal() -> std::io::Result<impl Future<Output = u8>> {
         let _ = tokio::signal::ctrl_c().await;
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn login_path_skips_what_startup_and_logout_files_print() {
+        let out = format!(
+            "welcome {PATH_START} banner\n{PATH_START}/opt/bin:/usr/bin{PATH_END}bye\n"
+        );
+        assert_eq!(login_path(&out), Some("/opt/bin:/usr/bin"));
+        // Not complete yet: more is still to be read.
+        assert_eq!(login_path(&format!("{PATH_START}/opt/bin")), None);
+        assert_eq!(login_path("no mark"), None);
+        assert_eq!(login_path(&format!("{PATH_START}{PATH_END}")), None);
+        assert_eq!(login_path(&format!("{PATH_START}$PATH{PATH_END}")), None);
+    }
 }

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Functor.app's icon: the brand f (docs/media/functor-icon.svg) on the
+       macOS tile — 824px squircle at 100px margins, the site's dark violet
+       lit pink from below. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#241c42"/>
+      <stop offset="1" stop-color="#0f0c1d"/>
+    </linearGradient>
+    <radialGradient id="horizon" cx="512" cy="924" r="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e858b8" stop-opacity="0.55"/>
+      <stop offset="0.6" stop-color="#e858b8" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#e858b8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <g id="mark" fill="#41d8e6">
+      <path d="M382 341 545 179H735L615 300H548L382 466Z"/>
+      <path d="M382 493 497 380V748L382 837Z"/>
+      <path d="M518 426H693L597 522H518Z"/>
+    </g>
+    <clipPath id="tile">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" filter="url(#drop)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#ground)"/>
+  <g clip-path="url(#tile)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#horizon)"/>
+  </g>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#fff" stroke-opacity="0.08" stroke-width="3"/>
+
+  <!-- The mark, centred and scaled to ~62% of the tile's height. -->
+  <g transform="translate(512 512) scale(0.78) translate(-558 -508)">
+    <use href="#mark" opacity="0.45" filter="url(#glow)"/>
+    <use href="#mark"/>
+  </g>
+</svg>

@@ -19,7 +19,7 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, Scope,
     SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -50,11 +50,19 @@ const SOURCE_POLL: Duration = Duration::from_millis(500);
 const LAYOUT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// The `functor` to run: `--functor`, else `FUNCTOR_BIN`, else one next to
-/// this executable (`exe`), else `functor` on `PATH`.
+/// this executable (`exe`), else `Functor.app`'s `Contents/Helpers/functor`,
+/// else `functor` on `PATH`.
 pub fn functor_bin(flag: Option<PathBuf>, env: Option<OsString>, exe: Option<PathBuf>) -> PathBuf {
     let name = format!("functor{}", std::env::consts::EXE_SUFFIX);
+    // Helpers, not MacOS: there the game child would share the app's bundle
+    // id (its own Functor Dock tile, and Quit by id could reach it instead).
+    let local = |dir: &Path| {
+        [dir.join(&name), dir.parent()?.join("Helpers").join(&name)]
+            .into_iter()
+            .find(|p| p.is_file())
+    };
     flag.or_else(|| env.filter(|e| !e.is_empty()).map(PathBuf::from))
-        .or_else(|| Some(exe?.parent()?.join(&name)).filter(|p| p.is_file()))
+        .or_else(|| local(exe?.parent()?))
         .unwrap_or_else(|| name.into())
 }
 
@@ -82,6 +90,8 @@ pub struct Driver {
     evidence: crate::evidence::Worker,
     /// Games being stopped on headsets, by tunnel, until one answers.
     unloads: HashMap<String, JoinHandle<()>>,
+    /// Where speech goes, when a model can say (D29).
+    pub router: Option<crate::router::Router>,
 }
 
 pub type TemplateList = Result<Vec<functor_app_core::creation::Template>, String>;
@@ -163,6 +173,7 @@ impl Driver {
             templates: Arc::default(),
             link: None,
             unloads: HashMap::new(),
+            router: None,
         }
     }
 
@@ -174,7 +185,13 @@ impl Driver {
 
     /// A client's new task as the core takes it: with an id reserved in
     /// the store. A task the core then rejects leaves its id unused.
-    pub fn new_task(&mut self, message: String, harness: Harness) -> Event {
+    pub fn new_task(
+        &mut self,
+        message: String,
+        harness: Harness,
+        scope: Option<Scope>,
+        voice: Option<Box<functor_app_core::voice::Utterance>>,
+    ) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
         if let Ok(id) = id {
             self.next_task = id + 1;
@@ -183,6 +200,8 @@ impl Driver {
             id: id.map_err(|e| e.to_string()),
             message,
             harness,
+            scope,
+            voice,
         }
     }
 
@@ -289,8 +308,12 @@ impl Driver {
                     let _ = events.send(Event::Created { result, note });
                 });
             }
-            Command::ReserveTask { message, harness } => {
-                let event = self.new_task(message, harness);
+            Command::ReserveTask {
+                message,
+                harness,
+                voice,
+            } => {
+                let event = self.new_task(message, harness, None, voice);
                 let _ = self.events.send(event);
             }
             // Without a client to answer there is no one to check for.
@@ -300,10 +323,27 @@ impl Driver {
                     eprintln!("functor-app: cannot save the recent projects: {e}");
                 }
             }
+            Command::SaveContextWindows { windows } => {
+                if let Err(e) = crate::store::save_context_windows(&self.home, &windows) {
+                    eprintln!("functor-app: cannot save the context windows: {e}");
+                }
+            }
             // Without a client to answer there is no one to list for.
             Command::ListDirs { .. } => {}
             Command::StartRun(spec) => self.runs.start(*spec),
             Command::StopRun { task, run } => self.runs.stop(task, run).await,
+            Command::StartReview(spec) => self.runs.start_review(*spec),
+            Command::StopReview { task, run } => self.runs.stop_review(task, run),
+            Command::SaveReview { dir, setting } => {
+                if let Err(e) = crate::store::save_review(&self.home, &dir, &setting) {
+                    eprintln!("functor-app: cannot save the review setting: {e}");
+                }
+            }
+            Command::SaveModelRoute { dir, on } => {
+                if let Err(e) = crate::store::save_model_route(&self.home, &dir, on) {
+                    eprintln!("functor-app: cannot save the speech setting: {e}");
+                }
+            }
             Command::SaveTask { dir, task } => {
                 if let Err(e) = crate::store::save(&self.home, &dir, &task) {
                     eprintln!("functor-app: cannot save task {}: {e}", task.id);
@@ -317,6 +357,11 @@ impl Driver {
             Command::SaveHarness { dir, harness } => {
                 if let Err(e) = crate::store::save_harness(&self.home, &dir, harness) {
                     eprintln!("functor-app: cannot save the agent choice: {e}");
+                }
+            }
+            Command::SaveScope { dir, scope } => {
+                if let Err(e) = crate::store::save_scope(&self.home, &dir, scope) {
+                    eprintln!("functor-app: cannot save the instruction scope: {e}");
                 }
             }
             Command::SaveLayout { dir, layout } => {
@@ -373,6 +418,29 @@ impl Driver {
                 if let Some(link) = &self.link {
                     link.command(command);
                 }
+            }
+            Command::Route {
+                device,
+                utterance,
+                request,
+            } => {
+                let (router, events) = (self.router.clone(), self.events.clone());
+                tokio::spawn(async move {
+                    let choice = match router {
+                        Some(router) => router.choose(&request).await,
+                        None => Err("no model router".to_string()),
+                    };
+                    // The rule decides instead: said, so a router that never
+                    // answers in time can be noticed.
+                    if let Err(e) = &choice {
+                        eprintln!("functor-app: the router: {e}; the fixed rule decides");
+                    }
+                    let _ = events.send(Event::Routed {
+                        device,
+                        utterance,
+                        choice,
+                    });
+                });
             }
             // Clients and view requests are the server's (`server::run`); `--print` has neither.
             Command::Reply(_) | Command::Broadcast(_) | Command::ViewReply(_) => {}
@@ -1319,5 +1387,14 @@ mod tests {
             dir.path().join(&name)
         );
         assert_eq!(functor_bin(None, None, None), PathBuf::from(&name));
+        // In Functor.app: Contents/MacOS/functor-app runs Contents/Helpers/functor.
+        let contents = dir.path().join("Functor.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
+        std::fs::write(contents.join("Helpers").join(&name), "").unwrap();
+        assert_eq!(
+            functor_bin(None, None, Some(contents.join("MacOS/functor-app"))),
+            contents.join("Helpers").join(&name)
+        );
     }
 }

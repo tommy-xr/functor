@@ -217,6 +217,25 @@ blockquote {
   box-shadow: var(--shadow-bar);
 }
 
+/* The macOS window's title bar: clear of its traffic lights, except in
+   fullscreen, where they hide. */
+.native-titlebar .titlebar {
+  flex-wrap: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* One row at the window's narrowest: the branch gives way first. */
+.native-titlebar .titlebar .branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.native-titlebar:not(.fullscreen) .titlebar {
+  padding-left: 84px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -2190,6 +2209,43 @@ blockquote {
   white-space: pre-wrap;
 }
 
+/* Where the router put a spoken message, under it; the moves follow the line. */
+.route-line {
+  align-self: flex-end;
+  max-width: 88%;
+  margin-top: -4px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 2px 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.speech-on {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A message said in a headset: where, above the words. */
+.spoken-from {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: normal;
+}
+
+.spoken-from .icon {
+  width: 12px;
+  height: 12px;
+}
+
 /* The agent's Markdown. */
 .md {
   display: flex;
@@ -2623,6 +2679,21 @@ blockquote {
   border-color: var(--faint);
 }
 
+/* Where the message goes; the link switches it (a new task ↔ the task). */
+.composer-place {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.composer-place > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .chips {
   padding: 0;
   list-style: none;
@@ -2684,6 +2755,12 @@ blockquote {
   border: 0;
 }
 
+/* The mic while it records. */
+.round.recording {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
 .round-send {
   border: 0;
   background: var(--accent);
@@ -2720,6 +2797,133 @@ blockquote {
 
 .model-picker .icon {
   right: 8px;
+}
+
+/* The review setting (D31): a quiet word beside the agent picker, its
+   panel opening upward over the chat, as wide as the composer's row. */
+.composer-row:has(.review-menu) {
+  position: relative;
+}
+
+.review-toggle {
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.review-toggle:hover:not(:disabled),
+.review-toggle[aria-expanded="true"] {
+  color: var(--text);
+}
+
+.review-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 3;
+  max-width: 360px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-l);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-bar);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-on {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.review-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* In a narrow dock the two words give way before the round buttons do. */
+.composer-row .round {
+  flex: none;
+}
+
+.composer-row .review-menu {
+  min-width: 0;
+}
+
+.composer-row .review-toggle {
+  max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The instruction scope (D39) shares the review's look: three levels, each
+   with what it leaves out, then the project's default. */
+.scope-levels {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-levels legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.scope-level {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.scope-level input {
+  margin-top: 3px;
+}
+
+.scope-level > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scope-name {
+  font-weight: 600;
+}
+
+.scope-off {
+  opacity: 0.5;
+}
+
+/* Inside the composer, whose own textarea rule would strip its box. */
+.review-field textarea.text-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--sunk);
+  font-size: 12.5px;
+  resize: vertical;
 }
 
 /* The agent's views (D25): its tab mark, the floating restore bar, the
@@ -2950,6 +3154,21 @@ blockquote {
 
 .tasks-group-label {
   padding: 0 4px;
+}
+
+/* Why the Queued group waits: the one line that says what holds it. */
+.tasks-wait {
+  margin: 2px 4px 4px;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Not started yet: an outline where the others are filled. */
+.badge-queued {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--muted);
 }
 
 .tasks-group-toggle {
@@ -3531,6 +3750,23 @@ blockquote {
   color: var(--text);
   font-size: 14px;
   line-height: 1.55;
+}
+
+/* Who prepared the summary, that it is being prepared, or why it was not;
+   and what a mechanical style check found. Quiet: facts about the text. */
+.first-review,
+.first-style {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.first-review-failed,
+.first-style {
+  color: var(--warn);
 }
 
 .first-lines {
@@ -4123,6 +4359,102 @@ g.avatar-eyes {
   color: var(--text-2);
   font-size: 11px;
   text-align: center;
+}
+
+/* A subagent: a smaller figure on a tether from the bubble of the agent
+   that started it. */
+.agent-sub {
+  position: relative;
+  min-width: 0;
+  padding-left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-sub::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: -5px;
+  width: 9px;
+  height: 16px;
+  border-left: 1.5px solid var(--border-strong);
+  border-bottom: 1.5px solid var(--border-strong);
+  border-bottom-left-radius: 6px;
+}
+
+.agent-sub .avatar {
+  width: 22px;
+  height: 22px;
+}
+
+.agent-sub-bubble {
+  flex: 1 1 auto;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.agent-sub-bubble::before {
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  left: -4px;
+}
+
+.agent-sub-bubble .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* How much room is left: a health bar in Claude's colour (Codex reports
+   no per-message usage, so has none), amber from
+   70% full, red from 90%. */
+.agent-room {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-room-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip);
+  overflow: hidden;
+}
+
+.agent-room-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--claude);
+}
+
+.agent-room-pct {
+  flex: none;
+  min-width: 3.5ch;
+  text-align: right;
+}
+
+.agent-room-low .agent-room-fill {
+  background: var(--warn);
+}
+
+.agent-room-low .agent-room-pct {
+  color: var(--warn);
+}
+
+.agent-room-out .agent-room-fill {
+  background: var(--danger);
+}
+
+.agent-room-out .agent-room-pct {
+  color: var(--danger);
 }
 
 /* Only while it works does anything move. */

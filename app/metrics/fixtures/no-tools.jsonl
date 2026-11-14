@@ -1,4 +1,5 @@
 {"ms":0,"event":{"type":"started","session":"fake-no-tools","model":"claude-model"}}
 {"ms":10,"event":{"type":"text","text":"ready"}}
 {"ms":20,"event":{"type":"usage","input":35783,"output":4}}
+{"ms":20,"event":{"type":"usage_detail","total":{"input":4,"cache_read":30000,"cache_creation":5779,"output":4},"last":{"input":4,"cache_read":30000,"cache_creation":5779,"output":4},"turns":1,"cost_usd":0.021,"api_ms":1500,"context_window":1000000}}
 {"ms":30,"event":{"type":"finished","ok":true,"summary":"ready"}}

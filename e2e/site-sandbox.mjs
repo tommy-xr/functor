@@ -1193,6 +1193,32 @@ for (const example of examples) {
   check("manual highlights Functor Lang blocks", highlighted > 10, `${highlighted} keyword spans`);
   check("manual offers try-it buttons", tryButtons >= 4, `${tryButtons} buttons`);
 
+  // The desktop app's page: reached from the manual's nav, and every link on
+  // it into the site lands on a page (and on an id, when it names one).
+  {
+    const app = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+    await app.goto(`${BASE}/manual/`);
+    await app.locator('.docs-nav a[href="app/"]').click();
+    await app.waitForURL(/\/manual\/app\/$/);
+    const hrefs = await app
+      .locator("a[href]")
+      .evaluateAll((links) => links.map((a) => a.href).filter((href) => href.startsWith(location.origin)));
+    const broken = [];
+    const checked = new Set(hrefs);
+    for (const href of checked) {
+      const url = new URL(href);
+      const res = await fetch(url);
+      const id = decodeURIComponent(url.hash.slice(1));
+      if (!res.ok || (id && !(await res.text()).includes(`id="${id}"`))) broken.push(href);
+    }
+    check(
+      "desktop app manual page links resolve",
+      checked.size > 10 && broken.length === 0,
+      broken.join(", ") || `${checked.size} links`
+    );
+    await app.close();
+  }
+
   // Follow the first try-it link in THIS page (target=_blank would detach).
   const href = await page.locator("a.try-button").first().getAttribute("href");
   await page.goto(`${BASE}/${href}`);

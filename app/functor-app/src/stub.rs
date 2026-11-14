@@ -7,7 +7,11 @@
 //! heartbeats, and can be told to misbehave. One line per event on stdout:
 //! `code 482913`, `paired <desktop>`, `linked <desktop>`, `request GET
 //! /state` (with a body's size: `request POST /reload-asset 1024`),
-//! `rejected <why>`, `ended <why>`.
+//! `rejected <why>`, `ended <why>`. With `--say <wav>` it speaks that clip
+//! once a game runs on it, printing each voice status it gets back: `voice 1 heard`,
+//! `voice 1 transcribed <text>`, `voice 1 working`, `voice 1 reloaded`,
+//! `voice 1 failed <why>`, `voice 1 idle`; with `--say-again`, the clip
+//! again as utterance 2 once the first is working.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,6 +19,7 @@ use std::time::Duration;
 
 use functor_device_link::device::{self, Device, Identity};
 use functor_device_link::file::Stored;
+use functor_device_link::voice::{self, Capsule, Clip};
 use functor_device_link::wire::{Frame, Hello, Mode, Reply, Response, Status};
 use functor_device_link::{hex, os_random, shared, unhex, End, OsEntropy, Secret, SharedEntropy};
 use functor_device_link::{HEARTBEAT_MS, MAX_MESSAGE, VERSION};
@@ -57,6 +62,21 @@ pub struct StubArgs {
     /// one written over the cable does), then link with it.
     #[arg(long)]
     wait_for_pairing: bool,
+
+    /// Once the desktop runs a game here (it polls `/state`), speak this
+    /// clip (16 kHz mono 16-bit WAV) as utterance 1, with a capsule naming
+    /// the frame.
+    #[arg(long, value_name = "WAV")]
+    say: Option<PathBuf>,
+
+    /// With --say: cancel the clip halfway instead of ending it.
+    #[arg(long, requires = "say")]
+    cancel: bool,
+
+    /// With --say: once the desktop says the first is working, speak the
+    /// clip again as utterance 2.
+    #[arg(long, requires = "say")]
+    say_again: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +89,10 @@ enum Misbehave {
     Stall,
     /// Once linked, send a message over the size limit.
     Oversize,
+    /// Once linked, send an unreadable message on the voice channel.
+    VoiceGarbage,
+    /// Once linked, speak a clip longer than the voice limit.
+    VoiceTooLong,
 }
 
 fn say(line: &str) {
@@ -101,7 +125,22 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
         frame: 0,
         paused: false,
         rendered: 0,
+        revision: 0,
     };
+    let clip = match &args.say {
+        Some(wav) => match std::fs::read(wav)
+            .map_err(|e| e.to_string())
+            .and_then(|b| functor_stt::read_wav(&b))
+        {
+            Ok(pcm) => Some(pcm),
+            Err(e) => {
+                say(&format!("ended cannot read {}: {e}", wav.display()));
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
+    let mut said = false;
     loop {
         if args.wait_for_pairing {
             loop {
@@ -126,7 +165,7 @@ pub async fn run(args: StubArgs) -> std::process::ExitCode {
             },
         };
         let result = tokio::select! {
-            r = session(&args, &mut stored, &mut runtime, &addr) => r,
+            r = session(&args, &mut stored, &mut runtime, &addr, clip.as_deref(), &mut said) => r,
             _ = &mut signal => return std::process::ExitCode::SUCCESS,
         };
         // Waiting for pairings written from outside, the file is theirs.
@@ -155,6 +194,8 @@ struct Runtime {
     paused: bool,
     /// `/state.rendered_frames`: one per poll, from 0 when the stub starts.
     rendered: u64,
+    /// `/state.clock.program_revision`: one more per `/reload-project`.
+    revision: u64,
 }
 
 /// One connection; `Ok(true)` when it paired.
@@ -163,6 +204,8 @@ async fn session(
     stored: &mut Stored,
     runtime: &mut Runtime,
     addr: &str,
+    clip: Option<&[i16]>,
+    said: &mut bool,
 ) -> Result<bool, String> {
     let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE));
     let url = format!("ws://{addr}{PATH}");
@@ -259,6 +302,24 @@ async fn session(
                         }
                         _ => {}
                     }
+                    let frames = match args.misbehave {
+                        Some(Misbehave::VoiceGarbage) => vec![Frame::Channel {
+                            channel: voice::CLIP_CHANNEL,
+                            data: b"garbage".to_vec(),
+                        }],
+                        Some(Misbehave::VoiceTooLong) => {
+                            let samples = voice::MAX_CLIP / 2 + voice::SAMPLE_RATE as usize;
+                            utterance(&vec![0; samples], runtime, false, 1)
+                        }
+                        _ => Vec::new(),
+                    };
+                    for frame in frames {
+                        for msg in machine.send(&frame).map_err(|e| e.to_string())? {
+                            ws.send(Message::Binary(msg.into()))
+                                .await
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
                 }
                 device::Event::Request(r) => {
                     match r.body.len() {
@@ -266,14 +327,45 @@ async fn session(
                         n => say(&format!("request {} {} {n}", r.method, r.target)),
                     }
                     served += 1;
-                    let response =
-                        canned(r.id, &r.method, &r.target, &r.body, &args.name, served, runtime);
-                    for msg in machine.respond(response).map_err(|e| e.to_string())? {
-                        ws.send(Message::Binary(msg.into()))
-                            .await
-                            .map_err(|e| e.to_string())?;
+                    let response = canned(
+                        r.id, &r.method, &r.target, &r.body, &args.name, served, runtime,
+                    );
+                    let mut frames = vec![Frame::Response(response)];
+                    // Spoken once a game runs here: the desktop polls its state.
+                    if let (Some(pcm), false, "/state") =
+                        (clip, *said, r.target.split('?').next().unwrap_or(""))
+                    {
+                        frames.extend(utterance(pcm, runtime, args.cancel, 1));
+                        *said = true;
+                    }
+                    for frame in frames {
+                        for msg in machine.send(&frame).map_err(|e| e.to_string())? {
+                            ws.send(Message::Binary(msg.into()))
+                                .await
+                                .map_err(|e| e.to_string())?;
+                        }
                     }
                 }
+                device::Event::Channel {
+                    channel: voice::STATUS_CHANNEL,
+                    data,
+                } => match voice::Status::decode(&data) {
+                    Ok(status) => {
+                        say(&status_line(&status));
+                        let first_working =
+                            status.utterance == Some(1) && status.stage == voice::Stage::Working;
+                        if let (true, true, Some(pcm)) = (args.say_again, first_working, clip) {
+                            for frame in utterance(pcm, runtime, false, 2) {
+                                for msg in machine.send(&frame).map_err(|e| e.to_string())? {
+                                    ws.send(Message::Binary(msg.into()))
+                                        .await
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => say(&format!("voice unreadable {e}")),
+                },
                 device::Event::Channel { .. } => {}
                 device::Event::Rejected(reject) => say(&format!("rejected {reject:?}")),
             }
@@ -365,7 +457,7 @@ fn canned(
                 "paused": runtime.paused,
                 "recorded": { "oldest": 0, "newest": runtime.frame },
                 "generation": 0,
-                "program_revision": 0,
+                "program_revision": runtime.revision,
             });
             let state = serde_json::json!({
                 "stub": true,
@@ -395,9 +487,11 @@ fn canned(
                 .and_then(percent_decode);
             (200, "text/plain", "loaded project".to_string())
         }
-        ("POST", "/reload-project" | "/reload-asset" | "/sync-assets") => {
+        ("POST", "/reload-project") => {
+            runtime.revision += 1;
             (200, "text/plain", "ok".to_string())
         }
+        ("POST", "/reload-asset" | "/sync-assets") => (200, "text/plain", "ok".to_string()),
         _ => (404, "text/plain", "not found\n".to_string()),
     };
     Response {
@@ -406,6 +500,56 @@ fn canned(
         headers: vec![("content-type".into(), kind.into())],
         body: body.into_bytes(),
     }
+}
+
+/// `pcm` as utterance 1's frames: a start with a capsule naming the
+/// frame, chunks, then its end (or, with `cancel`, a cancel halfway).
+fn utterance(pcm: &[i16], runtime: &Runtime, cancel: bool, utterance: u64) -> Vec<Frame> {
+    let capsule = Capsule {
+        frame: Some(runtime.frame),
+        pointing_at: Some("the stub".to_string()),
+        ..Capsule::default()
+    };
+    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let chunks: Vec<&[u8]> = bytes.chunks(voice::MAX_CHUNK).collect();
+    let mut clips = vec![Clip::Start {
+        utterance,
+        capsule: capsule.to_json(),
+    }];
+    let sent = if cancel {
+        chunks.len() / 2
+    } else {
+        chunks.len()
+    };
+    for (seq, data) in chunks[..sent].iter().enumerate() {
+        clips.push(Clip::Chunk {
+            utterance,
+            seq: seq as u32,
+            data: data.to_vec(),
+        });
+    }
+    clips.push(match cancel {
+        true => Clip::Cancel { utterance },
+        false => Clip::End { utterance },
+    });
+    clips
+        .iter()
+        .map(|c| c.frame().expect("within the limits"))
+        .collect()
+}
+
+/// `voice 1 transcribed make it red`.
+fn status_line(status: &voice::Status) -> String {
+    let u = status.utterance.map_or("-".to_string(), |u| u.to_string());
+    let stage = match &status.stage {
+        voice::Stage::Heard => "heard".to_string(),
+        voice::Stage::Transcribed { text } => format!("transcribed {text}"),
+        voice::Stage::Working => "working".to_string(),
+        voice::Stage::Reloaded => "reloaded".to_string(),
+        voice::Stage::Failed { reason } => format!("failed {reason}"),
+        voice::Stage::Idle => "idle".to_string(),
+    };
+    format!("voice {u} {stage}")
 }
 
 /// `%XX` escapes decoded; `None` for a bad one or a name that is not UTF-8.

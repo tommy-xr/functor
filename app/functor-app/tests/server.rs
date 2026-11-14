@@ -195,6 +195,47 @@ async fn the_socket_needs_the_token_and_our_own_origin() {
     }
 }
 
+/// `POST path` with `body` from `origin` over HTTP/1.1: the response as text.
+fn post(addr: &str, path: &str, origin: Option<&str>, body: &[u8]) -> String {
+    let mut stream = TcpStream::connect(addr).unwrap();
+    let origin = origin.map_or(String::new(), |o| format!("Origin: {o}\r\n"));
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\n{origin}Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+/// The composer's mic: `POST /transcribe` takes 16-bit PCM with the token
+/// from our own page (as `/ws`), and answers its text.
+#[test]
+fn transcribe_needs_the_token_and_takes_16_bit_audio() {
+    let tmp = tree();
+    let server = serve_env(tmp.path(), &[], &[("FUNCTOR_APP_FAKE_TRANSCRIPT", "make it red")]);
+    let token = server.ws.split_once("token=").unwrap().1;
+    let path = format!("/transcribe?token={token}");
+    let own = format!("http://{}", server.addr);
+    let pcm = [0u8; 3200];
+    for (path, origin) in [
+        ("/transcribe", None),
+        ("/transcribe?token=0123", Some(own.as_str())),
+        (path.as_str(), Some("http://evil.example")),
+    ] {
+        let refused = post(&server.addr, path, origin, &pcm);
+        assert!(refused.starts_with("HTTP/1.1 403"), "{path} {origin:?}: {refused}");
+    }
+    let odd = post(&server.addr, &path, Some(&own), &[0u8; 3]);
+    assert!(odd.starts_with("HTTP/1.1 400"), "{odd}");
+    let heard = post(&server.addr, &path, Some(&own), &pcm);
+    assert!(heard.starts_with("HTTP/1.1 200"), "{heard}");
+    assert!(heard.ends_with(r#"{"text":"make it red"}"#), "{heard}");
+}
+
 /// `GET path` over HTTP/1.1: the status line, headers and body as text.
 fn get(addr: &str, path: &str) -> String {
     let mut stream = TcpStream::connect(addr).unwrap();
@@ -368,7 +409,7 @@ async fn the_game_child_never_sees_the_token() {
     let seen = tmp.path().join("seen.txt");
     let fake = tmp.path().join("functor");
     let script = format!(
-        "#!/bin/sh\n{{ env; echo \"$@\"; }} > '{}'\n\
+        "#!/bin/sh\n{{ env; echo \"$@\"; }} >> '{}'\n\
          echo '[debug-server] listening on http://127.0.0.1:{port}' >&2\nexec sleep 30\n",
         seen.display()
     );
@@ -382,8 +423,8 @@ async fn the_game_child_never_sees_the_token() {
     );
     assert!(server.ws.ends_with(token), "{}", server.ws);
     let mut socket = connect(&server.ws).await;
-    // The game starts by itself on open. A second start here would run the
-    // script again, emptying the file while the first run still reads as running.
+    // The game starts by itself on open. The script appends: the app may run
+    // `functor` for other things too, and no run of it may see the token.
     state_where(&mut socket, |s| s["session"]["status"]["kind"] == "running").await;
     let seen = std::fs::read_to_string(&seen).unwrap();
     assert!(seen.contains("--debug-port"), "{seen}");

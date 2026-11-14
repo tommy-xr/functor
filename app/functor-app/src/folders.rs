@@ -143,6 +143,9 @@ pub fn load(path: &str, home: &Path, track: bool) -> Result<Loaded, String> {
     let layouts = crate::store::load_layouts(home, &state);
     state = update(state, Event::LayoutsLoaded { layouts }).0;
     state.harness_choice = crate::store::load_harnesses(home, &state);
+    state.scope_choice = crate::store::load_scopes(home, &state);
+    state.review_settings = crate::store::load_reviews(home, &state);
+    state.model_routes = crate::store::load_model_routes(home, &state);
     let root = PathBuf::from(&state.repo_root);
     let git = track.then(|| Git::open(&root, home)).flatten();
     state.tracks_changes = git.is_some();

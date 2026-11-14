@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::changes::FileDiff;
 use crate::creation::{NewProjectRequest, Plan};
 use crate::layout::LayoutOp;
-use crate::tasks::{Harness, Item};
+use crate::review::ReviewSetting;
+use crate::tasks::{Harness, Item, Scope};
 use crate::transport::{Mark, Transport, TransportCall};
 use crate::AppState;
 
@@ -36,12 +37,20 @@ pub enum ClientMsg {
     WatchTransport {
         on: bool,
     },
-    /// Start a task in the active project with its first message.
+    /// Start a task in the active project with its first message; `scope`
+    /// for this task, else the project's (D39). Queued while the project is
+    /// busy (D30).
     NewTask {
         message: String,
         harness: Harness,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        scope: Option<Scope>,
     },
-    /// A follow-up on `task`, continuing its agent session.
+    /// A message to `task`: a follow-up continuing its agent session (and
+    /// reading what it started with); while it runs, a steer (its run stops
+    /// and resumes with it, D29); while it is queued, added to what it starts
+    /// with (D30).
     SendMessage {
         task: u64,
         message: String,
@@ -49,6 +58,24 @@ pub enum ClientMsg {
     /// Stop `task`'s run.
     StopTask {
         task: u64,
+    },
+    /// Move queued `task` to place `to` (0: next) in its project's queue
+    /// (D30); past the end is last.
+    MoveQueued {
+        task: u64,
+        to: usize,
+    },
+    /// Start queued `task` now, beside a change waiting for a decision
+    /// (which holds only the queue's own starts); refused while a run or a
+    /// revert holds its project.
+    StartQueued {
+        task: u64,
+    },
+    /// Move the spoken message of decision `id` (`AppState::routes`) to
+    /// `to`, one of its moves (D29's override).
+    MoveUtterance {
+        id: u64,
+        to: crate::route::Destination,
     },
     /// Answered with [`ServerMsg::Transcript`].
     GetTranscript {
@@ -58,6 +85,19 @@ pub enum ClientMsg {
     /// per project.
     SetHarness {
         harness: Harness,
+    },
+    /// Whether a model places the active project's speech (D29); remembered.
+    SetModelRoute {
+        on: bool,
+    },
+    /// How much of the user's own setup the active project's runs read
+    /// (D39); remembered per project.
+    SetScope {
+        scope: Scope,
+    },
+    /// How the active project's changes are reviewed (D31); remembered.
+    SetReview {
+        setting: ReviewSetting,
     },
     /// Answered with [`ServerMsg::Diff`]; also refreshes the task's change.
     GetDiff {

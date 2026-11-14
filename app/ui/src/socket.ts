@@ -36,6 +36,17 @@ export function evidenceUrl(name: string): string {
   return `/evidence/${encodeURIComponent(name)}?token=${encodeURIComponent(TOKEN)}`;
 }
 
+/** The text spoken in `pcm` (16 kHz mono), transcribed by the app on this machine. */
+export async function transcribe(pcm: Int16Array): Promise<string> {
+  const res = await fetch(`/transcribe?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+    // Little-endian, as every machine the app runs on stores it.
+    body: new Uint8Array(pcm.buffer as ArrayBuffer, pcm.byteOffset, pcm.byteLength),
+  });
+  if (!res.ok) throw new Error((await res.text()) || `the app answered ${res.status}`);
+  return ((await res.json()) as { text: string }).text;
+}
+
 function takeToken(): string {
   const injected = (window as { functorToken?: string }).functorToken;
   if (injected) return injected;

@@ -20,6 +20,7 @@ test("evidence is the agent's checks, then the predicted path", () => {
       { ran: "functor test", result: "4 expects pass", ok: true },
       { ran: "functor build", result: "1 error", ok: false },
     ],
+    reviewed: false,
   };
   assert.deepEqual(evidenceLines(task(report, { kind: "shown", before: "a", after: "b" })), [
     { code: "functor test", text: "4 expects pass", ok: true },

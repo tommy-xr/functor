@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>games.functor.app</string>
+	<key>CFBundleName</key>
+	<string>Functor</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Functor listens when you press the mic in the chat, and turns your words into text on this computer.</string>
+</dict>
+</plist>

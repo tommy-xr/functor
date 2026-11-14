@@ -7,11 +7,15 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::activity::{classify, CallKind};
-use crate::tasks::{Harness, Item, Task};
+use crate::decision::{style_flags, Check, Report};
+use crate::review::{Review, ReviewState};
+use crate::tasks::{Harness, Item, Scope, Task, UsageDetail, Usd};
 
 #[derive(Debug, Serialize)]
 pub struct RunMetrics {
     pub harness: Harness,
+    /// What the run read of the user's own setup (D39).
+    pub scope: Scope,
     /// As the agent reported it.
     pub model: Option<String>,
     /// `ok`, `failed: <summary>` or `stopped`.
@@ -26,8 +30,90 @@ pub struct RunMetrics {
     /// Cumulative, as the agent reported it; input includes cached tokens.
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    #[serde(flatten)]
+    pub split: Split,
     /// The last agent text block.
     pub answer: Option<String>,
+}
+
+/// A task's review (D31): its outcome, usage and the report it wrote.
+#[derive(Debug, Serialize)]
+pub struct ReviewMetrics {
+    pub harness: Harness,
+    pub model: Option<String>,
+    /// `preparing`, `prepared` or `failed: <reason>`.
+    pub ended: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    #[serde(flatten)]
+    pub split: Split,
+    /// The review's report, verbatim, when it wrote one.
+    pub summary: Option<String>,
+    pub notes: Option<Vec<String>>,
+    pub evidence: Vec<Check>,
+    /// [`style_flags`] on its summary.
+    pub style: Vec<String>,
+}
+
+/// The usage split, cumulative and subagents included, as far as the
+/// harness gives it: Claude all of it, Codex the tokens only. Each field is
+/// left out of the record when absent.
+#[derive(Debug, Default, PartialEq, Serialize)]
+pub struct Split {
+    /// Prompt tokens neither read from nor written to the cache.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uncached_input: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<u64>,
+    /// Prompt tokens written to the cache.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_output: Option<u64>,
+    /// Claude Code's `num_turns`: not exactly its API requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<Usd>,
+    /// Time spent in API calls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_ms: Option<u64>,
+}
+
+fn split(detail: Option<&UsageDetail>) -> Split {
+    let Some(d) = detail else {
+        return Split::default();
+    };
+    Split {
+        uncached_input: Some(d.total.input),
+        cache_read: Some(d.total.cache_read),
+        cache_creation: Some(d.total.cache_creation),
+        reasoning_output: d.total.reasoning_output,
+        turns: d.turns,
+        cost_usd: d.cost_usd,
+        api_ms: d.api_ms,
+    }
+}
+
+/// `review`'s numbers, with `report` when the review wrote it.
+pub fn review_metrics(review: &Review, report: Option<&Report>) -> ReviewMetrics {
+    let report = report.filter(|r| r.reviewed).cloned().unwrap_or_default();
+    ReviewMetrics {
+        harness: review.harness,
+        model: review.model.clone(),
+        ended: match &review.state {
+            ReviewState::Preparing => "preparing".to_string(),
+            ReviewState::Prepared => "prepared".to_string(),
+            ReviewState::Failed { reason } => format!("failed: {reason}"),
+        },
+        input_tokens: review.usage.map(|u| u.input),
+        output_tokens: review.usage.map(|u| u.output),
+        split: split(review.detail.as_ref()),
+        style: report.summary.as_deref().map(style_flags).unwrap_or_default(),
+        summary: report.summary,
+        notes: report.notes,
+        evidence: report.evidence,
+    }
 }
 
 /// `task`'s last run: the items after its last user message.
@@ -39,6 +125,7 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
         .map_or(0, |i| i + 1);
     let mut m = RunMetrics {
         harness: task.harness,
+        scope: task.scope,
         model: task.model.clone(),
         ended: "unfinished".to_string(),
         messages: 0,
@@ -47,6 +134,7 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
         tools: BTreeMap::new(),
         input_tokens: None,
         output_tokens: None,
+        split: Split::default(),
         answer: None,
     };
     for item in &task.transcript[start..] {
@@ -60,9 +148,14 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
                 *m.calls.entry(classify(name, input).kind).or_default() += 1;
                 *m.tools.entry(name.clone()).or_default() += 1;
             }
-            Item::Usage { input, output } => {
+            Item::Usage {
+                input,
+                output,
+                detail,
+            } => {
                 m.input_tokens = Some(*input);
                 m.output_tokens = Some(*output);
+                m.split = split(detail.as_ref());
             }
             Item::Finished { ok: true, .. } => m.ended = "ok".to_string(),
             Item::Finished { ok: false, summary } => {
@@ -92,29 +185,41 @@ mod tests {
             model: Some("m".into()),
             session_id: None,
             run: None,
+            queued: None,
             baseline: None,
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             change: None,
             reverting: false,
             created_at: None,
             updated_at: None,
             transcript: vec![],
+            scope: Default::default(),
         };
         let tool = |name: &str, input| Item::Tool {
             name: name.into(),
             input,
             result: Some("r".into()),
+            id: None,
+            parent_id: None,
+            is_error: None,
         };
         task.transcript = vec![
-            Item::User { text: "old".into() },
+            Item::User {
+                text: "old".into(),
+                spoken: None,
+            },
             tool("Read", json!({})),
             Item::Finished {
                 ok: false,
                 summary: None,
             },
-            Item::User { text: "new".into() },
+            Item::User {
+                text: "new".into(),
+                spoken: None,
+            },
             tool("ToolSearch", json!({"query": "x"})),
             tool("mcp__mis__get_state", json!({})),
             tool("mcp__mis__get_state", json!({})),
@@ -129,6 +234,18 @@ mod tests {
             Item::Usage {
                 input: 900,
                 output: 30,
+                detail: Some(crate::tasks::UsageDetail {
+                    total: crate::tasks::TokenUsage {
+                        input: 12,
+                        cache_read: 800,
+                        cache_creation: 88,
+                        output: 30,
+                        reasoning_output: None,
+                    },
+                    turns: Some(3),
+                    cost_usd: Some(Usd(0.25)),
+                    ..Default::default()
+                }),
             },
             Item::Finished {
                 ok: true,
@@ -145,5 +262,14 @@ mod tests {
         assert_eq!(m.answer.as_deref(), Some("last"));
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(json["calls"], json!({"game": 2, "skills": 1}));
+        // The split, as far as the harness gave it: absent fields are left out.
+        assert_eq!(
+            (&json["uncached_input"], &json["cache_read"], &json["cache_creation"]),
+            (&json!(12), &json!(800), &json!(88))
+        );
+        assert_eq!((&json["turns"], &json["cost_usd"]), (&json!(3), &json!(0.25)));
+        for absent in ["api_ms", "reasoning_output"] {
+            assert!(json.get(absent).is_none(), "{absent}: {json}");
+        }
     }
 }

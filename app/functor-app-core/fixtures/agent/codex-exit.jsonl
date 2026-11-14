@@ -1,0 +1,14 @@
+{"event":{"model":null,"session":"fake-thread-2","type":"started"},"ms":1278}
+{"event":{"text":"I’ll run those commands in order.","type":"text"},"ms":8037}
+{"event":{"input":{"command":"/bin/zsh -lc 'cat notes.txt'"},"name":"shell","type":"tool_use"},"ms":8795}
+{"event":{"id":"item_3","parent_id":null,"type":"tool_use_meta"},"ms":8795}
+{"event":{"content":"first line\nsecond\n","type":"tool_result"},"ms":8795}
+{"event":{"id":"item_3","is_error":false,"type":"tool_result_meta"},"ms":8795}
+{"event":{"input":{"command":"/bin/zsh -lc 'exit 3'"},"name":"shell","type":"tool_use"},"ms":8851}
+{"event":{"id":"item_4","parent_id":null,"type":"tool_use_meta"},"ms":8851}
+{"event":{"content":"","type":"tool_result"},"ms":8851}
+{"event":{"id":"item_4","is_error":true,"type":"tool_result_meta"},"ms":8851}
+{"event":{"text":"done","type":"text"},"ms":13721}
+{"event":{"input":44381,"output":68,"type":"usage"},"ms":13754}
+{"event":{"api_ms":null,"context_window":null,"cost_usd":null,"last":null,"total":{"cache_creation":0,"cache_read":34176,"input":10205,"output":68,"reasoning_output":0},"turns":null,"type":"usage_detail"},"ms":13754}
+{"event":{"ok":true,"summary":"done","type":"finished"},"ms":13754}

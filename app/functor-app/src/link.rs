@@ -17,6 +17,9 @@
 //!   ask the desktop for anything end its link.
 //! - Headsets on a USB cable, seen through adb and paired over it with no
 //!   code ([`cable`]).
+//! - A linked headset's spoken clips on the voice channel, assembled per
+//!   link ([`crate::voice`]), transcribed here and handed to the core; the
+//!   progress goes back on the status channel.
 
 mod cable;
 
@@ -34,9 +37,11 @@ use axum::Router;
 use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::panel::{Panel as CorePanel, PanelAction};
+use functor_app_core::route::Destination;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
 use functor_device_link::panel;
+use functor_device_link::voice;
 use functor_device_link::wire::{self, Frame, Hello, Mode, Reject, Reply};
 use functor_device_link::{hex, shared, DesktopId, End, Error, OsEntropy, Secret, VERSION};
 use functor_device_link::{HEARTBEAT_MS, MAX_FRAME, MAX_MESSAGE};
@@ -54,6 +59,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use crate::server::{now_ms, wall_ms};
 use crate::store::{self, StoredPairing};
+use crate::voice::{Assembler, Heard, Speech};
 
 pub use functor_device_link::{PATH, SERVICE};
 
@@ -112,6 +118,11 @@ struct Inner {
     cable_writes: tokio::sync::Mutex<()>,
     /// Writes finished so far: a probe that overlapped one is stale.
     cable_written: AtomicU64,
+    /// Turns headsets' clips into text.
+    speech: Speech,
+    /// One transcription at a time, app-wide, held until it finishes: a
+    /// headset that reconnects cannot start more.
+    transcribing: Arc<tokio::sync::Semaphore>,
 }
 
 #[derive(Default)]
@@ -146,8 +157,14 @@ enum ConnCmd {
         wire::Request,
         oneshot::Sender<Result<wire::Response, String>>,
     ),
-    /// A frame for the device, once linked.
+    /// Send this frame on the link (voice status).
     Send(Frame),
+    /// Utterance `utterance` turned into text, or why not.
+    Transcribed {
+        utterance: u64,
+        text: Result<String, String>,
+        capsule: String,
+    },
 }
 
 impl Hub {
@@ -177,6 +194,8 @@ impl Hub {
             cable_poke: tokio::sync::Notify::new(),
             cable_writes: tokio::sync::Mutex::new(()),
             cable_written: AtomicU64::new(0),
+            speech: Speech::from_env(),
+            transcribing: Arc::new(tokio::sync::Semaphore::new(1)),
         })))
     }
 
@@ -341,6 +360,18 @@ impl Hub {
         release(&mut s.asking_per_ip, ip);
     }
 
+    /// Whether this app can turn speech into text.
+    pub fn speaks(&self) -> bool {
+        self.0.speech.available()
+    }
+
+    /// `pcm`'s text, waiting for any transcription in progress first (the
+    /// composer's user sees "Transcribing…"; a headset is refused instead).
+    pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
+        let _turn = self.0.transcribing.acquire().await.map_err(|e| e.to_string())?;
+        self.0.speech.transcribe(pcm).await
+    }
+
     fn secret(&self, device: &str) -> Option<Secret> {
         let s = self.0.state.lock().unwrap();
         let p = s.pairings.iter().find(|p| p.id == device)?;
@@ -373,6 +404,25 @@ impl Hub {
                 conn,
                 ConnCmd::Send(panel::Update::Refused { reason }.frame()),
             ),
+            LinkCommand::Voice {
+                device,
+                utterance,
+                stage,
+            } => {
+                use functor_app_core::voice::Stage as Core;
+                let stage = match stage {
+                    Core::Working => voice::Stage::Working,
+                    Core::Reloaded => voice::Stage::Reloaded,
+                    Core::Failed(reason) => voice::Stage::Failed { reason },
+                };
+                let status = voice::Status {
+                    utterance: Some(utterance),
+                    stage,
+                };
+                if let Some(link) = self.link_of(&device) {
+                    let _ = link.send(ConnCmd::Send(status.frame()));
+                }
+            }
         }
     }
 
@@ -518,6 +568,7 @@ impl Hub {
             }
         };
         let (cmds, rx) = mpsc::unbounded_channel();
+        let me = cmds.clone();
         let id = {
             let mut s = self.0.state.lock().unwrap();
             s.next_conn += 1;
@@ -537,6 +588,9 @@ impl Hub {
             linked: None,
             waiting: HashMap::new(),
             next_request: 0,
+            me,
+            voice: Assembler::default(),
+            outgoing: Vec::new(),
         };
         let end = link.run(ws, rx).await;
         link.finish(end);
@@ -694,6 +748,12 @@ struct Connection {
     linked: Option<String>,
     waiting: HashMap<u32, oneshot::Sender<Result<wire::Response, String>>>,
     next_request: u32,
+    /// Its own command channel, for work it hands off (transcription).
+    me: UnboundedSender<ConnCmd>,
+    /// The clip being heard on the voice channel.
+    voice: Assembler,
+    /// Frames to send after this step's events (voice status).
+    outgoing: Vec<Frame>,
 }
 
 type Ws = tokio_tungstenite::WebSocketStream<TcpStream>;
@@ -748,10 +808,14 @@ impl Connection {
                         let _ = tokio::time::timeout(WRITE_TIMEOUT, ws.close(None)).await;
                         return Ok(());
                     }
-                    ConnCmd::Send(frame) => match self.machine.send(&frame) {
-                        Ok(msgs) => desktop_output(msgs),
-                        Err(_) => continue,
-                    },
+                    ConnCmd::Send(frame) => {
+                        self.outgoing.push(frame);
+                        desktop_output(Vec::new())
+                    }
+                    ConnCmd::Transcribed { utterance, text, capsule } => {
+                        self.transcribed(utterance, text, &capsule);
+                        desktop_output(Vec::new())
+                    }
                     ConnCmd::Request(mut request, reply) => {
                         // Requests whose callers gave up free their slots.
                         self.waiting.retain(|_, r| !r.is_closed());
@@ -773,10 +837,15 @@ impl Connection {
                         }
                     }
                 },
-                _ = tick.tick() => match self.machine.check(now_ms()) {
-                    Some(e) => return Err(e),
-                    None => continue,
-                },
+                _ = tick.tick() => {
+                    if let Some(e) = self.machine.check(now_ms()) {
+                        return Err(e);
+                    }
+                    if let Some(heard) = self.voice.check(now_ms()) {
+                        self.heard(heard);
+                    }
+                    desktop_output(Vec::new())
+                }
                 _ = ping.tick(), if self.machine.linked() => {
                     match self.machine.send(&Frame::Ping(now_ms())) {
                         Ok(msgs) => desktop_output(msgs),
@@ -790,6 +859,12 @@ impl Connection {
             }
             for msg in out.send {
                 put(&mut ws, msg).await?;
+            }
+            for frame in std::mem::take(&mut self.outgoing) {
+                // A link not up yet (or gone) has no one to tell.
+                for msg in self.machine.send(&frame).unwrap_or_default() {
+                    put(&mut ws, msg).await?;
+                }
             }
             match out.end {
                 None => {}
@@ -894,6 +969,15 @@ impl Connection {
                 channel: panel::ACTION_CHANNEL,
                 data,
             } => self.panel_action(&data),
+            // Only a linked device's frames reach here as events.
+            desktop::Event::Channel {
+                channel: voice::CLIP_CHANNEL,
+                data,
+            } => {
+                if let Some(heard) = self.voice.receive(&data, now_ms()) {
+                    self.heard(heard);
+                }
+            }
             desktop::Event::Channel { .. } => {}
             desktop::Event::Mismatch(pre) => hub.send(LinkEvent::Mismatch {
                 device: hex(&pre.device),
@@ -915,6 +999,74 @@ impl Connection {
             }),
             Err(e) => eprintln!("functor-app: a headset panel action we cannot read: {e}"),
         }
+    }
+
+    /// Acts on what the voice channel heard: a status to send, or a whole
+    /// clip to transcribe (off this loop; the text comes back as
+    /// `ConnCmd::Transcribed`).
+    fn heard(&mut self, heard: Heard) {
+        let (utterance, pcm, capsule) = match heard {
+            Heard::Status(status) => return self.outgoing.push(status.frame()),
+            Heard::Clip {
+                utterance,
+                pcm,
+                capsule,
+            } => (utterance, pcm, capsule),
+        };
+        let Ok(permit) = self.hub.0.transcribing.clone().try_acquire_owned() else {
+            let _ = self.voice.transcribed(utterance);
+            let reason = "still working on another request".to_string();
+            return self.say(utterance, voice::Stage::Failed { reason });
+        };
+        self.say(utterance, voice::Stage::Heard);
+        let speech = self.hub.0.speech.clone();
+        let me = self.me.clone();
+        let name = format!("{}-{utterance}", self.linked.as_deref().unwrap_or("device"));
+        let home = self.hub.0.home.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            crate::voice::keep_audio(&home, &name, &pcm);
+            let text = speech.transcribe(pcm).await;
+            let _ = me.send(ConnCmd::Transcribed {
+                utterance,
+                text,
+                capsule,
+            });
+        });
+    }
+
+    /// Utterance `utterance`'s text: shown to the headset and handed to the core.
+    fn transcribed(&mut self, utterance: u64, text: Result<String, String>, capsule: &str) {
+        if !self.voice.transcribed(utterance) {
+            return;
+        }
+        match text {
+            Ok(text) if !text.is_empty() => {
+                let stage = voice::Stage::Transcribed { text: text.clone() };
+                self.say(utterance, stage);
+                self.hub.send(LinkEvent::Utterance {
+                    conn: self.id,
+                    utterance,
+                    text,
+                    context: crate::voice::render(capsule),
+                });
+            }
+            Ok(_) => self.say(
+                utterance,
+                voice::Stage::Failed {
+                    reason: "heard no words".to_string(),
+                },
+            ),
+            Err(reason) => self.say(utterance, voice::Stage::Failed { reason }),
+        }
+    }
+
+    fn say(&mut self, utterance: u64, stage: voice::Stage) {
+        let status = voice::Status {
+            utterance: Some(utterance),
+            stage,
+        };
+        self.outgoing.push(status.frame());
     }
 
     fn unpend(&mut self) {
@@ -966,6 +1118,7 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                 id: t.id,
                 title: t.title.clone(),
                 stance: match t.stance {
+                    _ if t.queued => panel::Stance::Queued,
                     Stance::Thinking => panel::Stance::Thinking,
                     Stance::Working => panel::Stance::Working,
                     Stance::Waiting => panel::Stance::Waiting,
@@ -983,6 +1136,21 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                 }),
             })
             .collect(),
+        waiting: p.waiting.clone().unwrap_or_default(),
+        route: p.route.as_ref().map(|r| panel::Route {
+            id: r.id,
+            line: r.line.clone(),
+            moves: (r.moves.iter())
+                .map(|m| panel::Move {
+                    label: m.label.clone(),
+                    to: match m.to {
+                        Destination::Steer { task } => panel::Destination::Steer { task },
+                        Destination::New => panel::Destination::New,
+                        Destination::Queued { task } => panel::Destination::Queued { task },
+                    },
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -992,6 +1160,14 @@ fn core_action(action: panel::Action) -> PanelAction {
         panel::Action::Keep { task } => PanelAction::Keep { task },
         panel::Action::Revert { task, tree } => PanelAction::Revert { task, tree },
         panel::Action::Stop { task } => PanelAction::Stop { task },
+        panel::Action::Move { id, to } => PanelAction::Move {
+            id,
+            to: match to {
+                panel::Destination::Steer { task } => Destination::Steer { task },
+                panel::Destination::New => Destination::New,
+                panel::Destination::Queued { task } => Destination::Queued { task },
+            },
+        },
     }
 }
 

@@ -1,13 +1,15 @@
 //! Tasks on disk: one JSON file per task (`tasks::to_stored`) under
 //! `<home>/projects/<project key>/tasks/<id>.json`, and the project's picked
-//! agent in `<home>/projects/<project key>/harness.json` and its canvas
-//! layout in `layout.json` beside it, where home is
+//! agent in `<home>/projects/<project key>/harness.json`, its canvas
+//! layout in `layout.json`, its review setting in `review.json` and its
+//! instruction scope in `scope.json` beside it, where home is
 //! `FUNCTOR_APP_HOME` or `~/.functor/app`; the recent projects, app-wide,
-//! in `<home>/recents.json`. Never inside the user's repo.
+//! in `<home>/recents.json`, and the agents' context windows in
+//! `<home>/context-windows.json`. Never inside the user's repo.
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
 //! home never give two tasks one id. All of it is private to the user.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -16,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use functor_app_core::projects::project_dir;
 use functor_app_core::tasks::{from_stored, to_stored};
-use functor_app_core::{AppState, Harness, Layout, Recent, Task};
+use functor_app_core::{AppState, Harness, Layout, Recent, ReviewSetting, Scope, Task};
 
 /// `FUNCTOR_APP_HOME` (`env`), else `.functor/app` in `user_home`.
 pub fn home(env: Option<OsString>, user_home: Option<PathBuf>) -> Option<PathBuf> {
@@ -40,6 +42,18 @@ fn harness_file(home: &Path, dir: &Path) -> PathBuf {
 
 fn layout_file(home: &Path, dir: &Path) -> PathBuf {
     project_home(home, dir).join("layout.json")
+}
+
+fn review_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("review.json")
+}
+
+fn route_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("model-route.json")
+}
+
+fn scope_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("scope.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -185,6 +199,39 @@ pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
     save_json(&layout_file(home, dir), layout)
 }
 
+/// The discovered projects whose speech the model router places.
+pub fn load_model_routes(home: &Path, state: &AppState) -> BTreeSet<String> {
+    let on: BTreeMap<String, bool> = load_each(home, state, route_file);
+    on.into_iter().filter(|(_, on)| *on).map(|(p, _)| p).collect()
+}
+
+/// Writes whether the model router places speech in the project at `dir`.
+pub fn save_model_route(home: &Path, dir: &Path, on: bool) -> io::Result<()> {
+    save_json(&route_file(home, dir), &on)
+}
+
+/// Each discovered project's instruction scope (D39); a missing or
+/// unreadable file is the default.
+pub fn load_scopes(home: &Path, state: &AppState) -> BTreeMap<String, Scope> {
+    load_each(home, state, scope_file)
+}
+
+/// Writes `scope` for the project at `dir`.
+pub fn save_scope(home: &Path, dir: &Path, scope: Scope) -> io::Result<()> {
+    save_json(&scope_file(home, dir), &scope)
+}
+
+/// Each discovered project's review setting; a missing or unreadable file
+/// is the default.
+pub fn load_reviews(home: &Path, state: &AppState) -> BTreeMap<String, ReviewSetting> {
+    load_each(home, state, review_file)
+}
+
+/// Writes `setting` for the project at `dir`.
+pub fn save_review(home: &Path, dir: &Path, setting: &ReviewSetting) -> io::Result<()> {
+    save_json(&review_file(home, dir), setting)
+}
+
 /// Each discovered project's value from its `file`, by project path;
 /// missing or unreadable ones are left out.
 fn load_each<T: serde::de::DeserializeOwned>(
@@ -311,6 +358,21 @@ pub fn save_recents(home: &Path, recents: &[Recent]) -> io::Result<()> {
     save_json(&recents_file(home), &recents)
 }
 
+fn context_windows_file(home: &Path) -> PathBuf {
+    home.join("context-windows.json")
+}
+
+/// Each harness and model's context window seen (`activity::window_key`);
+/// none if the file is missing or unreadable.
+pub fn load_context_windows(home: &Path) -> BTreeMap<String, u64> {
+    let text = std::fs::read_to_string(context_windows_file(home)).unwrap_or_default();
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+pub fn save_context_windows(home: &Path, windows: &BTreeMap<String, u64>) -> io::Result<()> {
+    save_json(&context_windows_file(home), windows)
+}
+
 /// Writes `task` for the project at `dir`, replacing its file whole.
 pub fn save(home: &Path, dir: &Path, task: &Task) -> io::Result<()> {
     let tasks = tasks_dir(home, dir);
@@ -400,15 +462,21 @@ mod tests {
             model: None,
             session_id: Some("s".into()),
             run: None,
+            queued: None,
             baseline: None,
             change: None,
             reverting: false,
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: Some(1),
-            transcript: vec![Item::User { text: "hi".into() }],
+            transcript: vec![Item::User {
+                text: "hi".into(),
+                spoken: None,
+            }],
+            scope: Default::default(),
         };
         let dir = root.join("a");
         save(&home, &dir, &task(1)).unwrap();
@@ -444,15 +512,21 @@ mod tests {
             model: None,
             session_id: None,
             run: None,
+            queued: None,
             baseline: None,
             change: None,
             reverting: false,
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: Some(1),
-            transcript: vec![Item::User { text: "hi".into() }],
+            transcript: vec![Item::User {
+                text: "hi".into(),
+                spoken: None,
+            }],
+            scope: Default::default(),
         }
     }
 
