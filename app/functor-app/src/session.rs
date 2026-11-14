@@ -19,8 +19,8 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, Scope,
-    SessionCall, SessionEvent, TransportCall,
+    listening_url, Command, Event, Harness, Layout, LogPage, Pointer, Polled, PolledClock,
+    Scope, SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -953,9 +953,15 @@ fn parse_state(body: &str) -> Result<Polled, String> {
             program_revision: c["program_revision"].as_u64().unwrap_or(0),
         }
     });
+    // Absent before debug protocol v44: a visible cursor, as the view had.
+    let pointer = match state["pointer"].as_str() {
+        Some("captured") => Pointer::Captured,
+        _ => Pointer::Visible,
+    };
     Ok(Polled {
         frame,
         surface,
+        pointer,
         clock,
     })
 }
@@ -1179,6 +1185,7 @@ mod tests {
             Polled {
                 frame: 12,
                 surface: Some([800, 600]),
+                pointer: Pointer::Visible,
                 clock: Some(PolledClock {
                     paused: true,
                     recorded: Some([3, 40]),
@@ -1190,6 +1197,10 @@ mod tests {
         // A runtime before the clock (v37) reports none; nothing recorded is no window.
         let old = serde_json::json!({"frame": 1, "input": {"mouse": {}}});
         assert_eq!(parse_state(&old.to_string()).unwrap().clock, None);
+        // Nor its pointer (v44): a visible cursor, as before.
+        assert_eq!(parse_state(&old.to_string()).unwrap().pointer, Pointer::Visible);
+        let captured = serde_json::json!({"frame": 1, "pointer": "captured", "input": {}});
+        assert_eq!(parse_state(&captured.to_string()).unwrap().pointer, Pointer::Captured);
         let bare = serde_json::json!({"frame": 0, "clock": ClockState::default(), "input": {}});
         assert_eq!(
             parse_state(&bare.to_string()).unwrap().clock,

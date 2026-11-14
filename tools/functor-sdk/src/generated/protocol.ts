@@ -505,7 +505,7 @@ export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in
  * boundary. The F# `Input.Key` DU mirrors these discriminants in
  * `Input.ofKeyCode` — keep the two in sync when adding keys.
  */
-export type Key = "Unknown" | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Num0" | "Num1" | "Num2" | "Num3" | "Num4" | "Num5" | "Num6" | "Num7" | "Num8" | "Num9";
+export type Key = "Unknown" | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Num0" | "Num1" | "Num2" | "Num3" | "Num4" | "Num5" | "Num6" | "Num7" | "Num8" | "Num9" | "Tab" | "Shift" | "Control" | "Alt" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" | "Minus" | "Equal" | "LeftBracket" | "RightBracket" | "Backslash" | "Semicolon" | "Quote" | "Comma" | "Period" | "Slash";
 
 /**
  * A fixed set of modeled mouse buttons.
@@ -606,6 +606,13 @@ warning?: string,
  * while `settings` asks for one.
  */
 camera?: SensorStreamState, };
+
+/**
+ * `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
+ * (`"mouseCapture"` on, the cursor policy not `visible`, and the game reads
+ * mouse motion) or with a visible cursor.
+ */
+export type PointerMode = "captured" | "visible";
 
 /**
  * The oldest and newest frames of a recorded window, inclusive.
@@ -748,6 +755,13 @@ model_debug: string, input: InputSnapshot,
  * (v16). Omitted by runtimes that don't report it.
  */
 sim_thread?: string, 
+/**
+ * How the game's own window treats the mouse (v44): `captured` when a
+ * click would capture it for relative free-look, `visible` when the
+ * cursor stays and moves are absolute. Omitted by runtimes without a
+ * desktop pointer (the headset).
+ */
+pointer?: PointerMode, 
 /**
  * The headset display's refresh rate (v15). `None` — and omitted from the
  * JSON — on runtimes that do not control one, such as desktop.

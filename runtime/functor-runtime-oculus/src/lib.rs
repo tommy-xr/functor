@@ -1150,6 +1150,7 @@ fn service_debug_request(
                     },
                     input,
                     sim_thread: Some(sim_thread),
+                    pointer: None,
                     display_refresh_rate,
                     instance_uploads,
                     config: g.config(),

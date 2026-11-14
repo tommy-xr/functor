@@ -14,6 +14,9 @@ export const APP = `${ROOT}target/debug/functor-app${EXE}`;
 export const FUNCTOR = process.env.FUNCTOR_BIN && existsSync(process.env.FUNCTOR_BIN) ? process.env.FUNCTOR_BIN : null;
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
+/** The game view's banner while it has input without a pointer lock: ⌘Esc releases it. */
+export const RELEASE_HINT = /^(⌘|Meta\+)Esc to release$/;
+
 /** A session's own clock (`/state`'s `frame` and `clock`), without the model. */
 export async function clock(debugUrl) {
   const state = await (await fetch(`${debugUrl}/state?model=0`)).json();

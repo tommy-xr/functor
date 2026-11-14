@@ -245,7 +245,11 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 43 adds `panel` on `GET /state`'s `link` ([`PanelState`]): the headset
 /// panel's navigation and the wrist light. Task ids only: titles and
 /// summaries stay on the link.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 43;
+///
+/// 44 adds `pointer` on `GET /state` ([`PointerMode`]) and the keys Tab,
+/// Shift, Control, Alt, F1–F12 and punctuation (`crate::Key`) to `POST
+/// /input` and the reported key sets.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 44;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -432,6 +436,17 @@ pub fn discovery_json() -> String {
     .to_string()
 }
 
+/// `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
+/// (`"mouseCapture"` on, the cursor policy not `visible`, and the game reads
+/// mouse motion) or with a visible cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PointerMode {
+    Captured,
+    Visible,
+}
+
 /// A pixel rectangle in the runtime's output surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -563,6 +578,13 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_thread: Option<String>,
+    /// How the game's own window treats the mouse (v44): `captured` when a
+    /// click would capture it for relative free-look, `visible` when the
+    /// cursor stays and moves are absolute. Omitted by runtimes without a
+    /// desktop pointer (the headset).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<PointerMode>,
     /// The headset display's refresh rate (v15). `None` — and omitted from the
     /// JSON — on runtimes that do not control one, such as desktop.
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -1812,6 +1834,7 @@ mod tests {
             model: json!({ "label": "hello" }),
             model_debug: "Model {\n  label: \"hello\"\n}".into(),
             sim_thread: None,
+            pointer: None,
             input: InputSnapshot {
                 held_keys: vec![Key::W, Key::Up],
                 mouse: crate::MouseSnapshot {

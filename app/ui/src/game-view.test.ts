@@ -1,24 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fitRect, headsetChoices, headsetNote, streamUrl, toSurface, wireKey } from "./game-view.ts";
+import { fitRect, headsetChoices, headsetNote, streamUrl, toSurface } from "./game-view.ts";
 import type { Device, Session, Transport } from "./generated/protocol";
-
-test("keys map to the wire's names", () => {
-  assert.equal(wireKey("KeyA"), "a");
-  assert.equal(wireKey("KeyZ"), "z");
-  assert.equal(wireKey("Digit0"), "0");
-  assert.equal(wireKey("Numpad7"), "7");
-  assert.equal(wireKey("ArrowUp"), "up");
-  assert.equal(wireKey("ArrowRight"), "right");
-  assert.equal(wireKey("Space"), "space");
-  assert.equal(wireKey("Enter"), "enter");
-});
-
-test("keys the wire does not know, and Escape, are not forwarded", () => {
-  for (const code of ["Escape", "Tab", "ShiftLeft", "F1", "Minus", "NumpadEnter", "", "toString", "constructor"]) {
-    assert.equal(wireKey(code), null, code);
-  }
-});
 
 test("a wider view letterboxes the frame left and right", () => {
   // A 4:3 frame in a 16:9 box, frame larger than the box.

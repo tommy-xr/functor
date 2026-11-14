@@ -29,7 +29,7 @@ use crate::review::{
     brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
     ReviewState,
 };
-use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
+use crate::session::{Display, Pointer, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
@@ -3298,6 +3298,7 @@ fn on_session(
             session.status = SessionStatus::Running {
                 debug_url,
                 surface: None,
+                pointer: Pointer::Visible,
                 timeline: Box::default(),
             };
         }
@@ -3321,10 +3322,13 @@ fn on_session(
             };
             timeline.polled(after, polled.frame, polled.clock);
             read_marks(state, commands);
-            // The clock goes as `ServerMsg::Transport`; only a new surface is state.
+            // The clock goes as `ServerMsg::Transport`; only a new surface or
+            // pointer is state.
             return match &mut state.session.as_mut().map(|s| &mut s.status) {
-                Some(SessionStatus::Running { surface, .. }) if *surface != polled.surface => {
-                    *surface = polled.surface;
+                Some(SessionStatus::Running {
+                    surface, pointer, ..
+                }) if (*surface, *pointer) != (polled.surface, polled.pointer) => {
+                    (*surface, *pointer) = (polled.surface, polled.pointer);
                     true
                 }
                 _ => false,
@@ -3411,6 +3415,7 @@ mod tests {
         SessionStatus::Running {
             debug_url: URL.to_string(),
             surface: frame.map(|_| SURFACE),
+            pointer: Pointer::Visible,
             timeline: Box::new(timeline),
         }
     }
@@ -3427,6 +3432,7 @@ mod tests {
             result: Ok(Polled {
                 frame,
                 surface: Some(SURFACE),
+                pointer: Pointer::Visible,
                 clock: Some(clock),
             }),
         }
@@ -3881,15 +3887,19 @@ mod tests {
             result: Ok(Polled {
                 frame: 12,
                 surface: Some([1024, 768]),
+                pointer: Pointer::Captured,
                 clock: Some(PolledClock::default()),
             }),
         };
         let (next, commands) = update(before, session(1, resized));
-        let Some(SessionStatus::Running { surface, .. }) = next.session.as_ref().map(|s| &s.status)
+        let Some(SessionStatus::Running {
+            surface, pointer, ..
+        }) = next.session.as_ref().map(|s| &s.status)
         else {
             panic!("{next:?}");
         };
         assert_eq!(*surface, Some([1024, 768]));
+        assert_eq!(*pointer, Pointer::Captured);
         assert_eq!(commands, vec![poll(1), broadcast(&next)]);
     }
 
@@ -3988,6 +3998,7 @@ mod tests {
             result: Ok(Polled {
                 frame: 41,
                 surface: Some(SURFACE),
+                pointer: Pointer::Visible,
                 clock: Some(paused),
             }),
         };
@@ -4004,6 +4015,7 @@ mod tests {
                 result: Ok(Polled {
                     frame: 7,
                     surface: Some(SURFACE),
+                    pointer: Pointer::Visible,
                     clock: None,
                 }),
             };

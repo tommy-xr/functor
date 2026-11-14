@@ -8,6 +8,8 @@ mod evidence;
 mod files;
 mod folders;
 mod link;
+#[cfg(target_os = "macos")]
+mod pointer;
 mod router;
 mod server;
 mod session;

@@ -1721,6 +1721,11 @@ blockquote {
   border-color: var(--accent-soft);
 }
 
+/* The native window holds the cursor still under its lock; this hides it. */
+.game-locked {
+  cursor: none;
+}
+
 /* The accent border shows focus once captured; an outline would double it. */
 .game-live:focus-visible {
   outline: none;

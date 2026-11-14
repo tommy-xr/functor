@@ -259,10 +259,28 @@ function GameHost({ state, online, send, children }: { state: AppState | null; o
     return el;
   });
   const [slot, setSlot] = useState<HTMLElement | null>(null);
-  const claim = useCallback((el: HTMLElement, on: boolean) => setSlot((s) => (on ? el : s === el ? null : s)), []);
+  // What had focus inside the view when its slot went away (before the slot
+  // leaves the page): a move to a new slot (an agent splitting beside it)
+  // hands it back, so the user keeps playing (D25).
+  const focused = useRef<HTMLElement | null>(null);
+  const claim = useCallback((el: HTMLElement, on: boolean) => {
+    const active = document.activeElement;
+    if (!on && active instanceof HTMLElement && el.contains(active)) {
+      focused.current = active;
+      // Only for a slot claimed in this same update.
+      queueMicrotask(() => (focused.current = null));
+    }
+    setSlot((s) => (on ? el : s === el ? null : s));
+  }, []);
   useLayoutEffect(() => {
-    if (slot) slot.appendChild(host);
-    else host.remove();
+    if (!slot) {
+      host.remove();
+      return;
+    }
+    slot.appendChild(host);
+    const had = focused.current;
+    focused.current = null;
+    if (had?.isConnected && document.activeElement !== had) had.focus({ preventScroll: true });
   }, [slot, host]);
   return (
     <GameSlotContext.Provider value={claim}>

@@ -2,13 +2,15 @@ import {
   useEffect,
   useRef,
   useState,
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent,
   type RefObject,
 } from "react";
-import type { AppState, Device, GameInput, MouseButton } from "./generated/protocol";
-import { fitRect, headsetNote, streamUrl, toSurface, wireKey, type Rect, type Size } from "./game-view";
+import type { AppState, Device, GameInput, MouseButton, Pointer } from "./generated/protocol";
+import { Held, keyDown, LockedCursor, wireKey } from "./game-input";
+import { fitRect, headsetNote, streamUrl, toSurface, type Rect, type Size } from "./game-view";
 import { placementOf } from "./layout-model";
 import type { Send } from "./socket";
 import { TransportBar, useTransport } from "./TransportBar";
@@ -16,6 +18,16 @@ import { TransportBar, useTransport } from "./TransportBar";
 
 const BUTTONS: Record<number, MouseButton> = { 0: "left", 1: "middle", 2: "right" };
 const RESIZE_DEBOUNCE_MS = 200;
+
+/**
+ * The native window locks the pointer itself (WKWebView refuses the Pointer
+ * Lock API): it holds the cursor still and sends the mouse's deltas to
+ * `window.functorPointer`. A browser uses `requestPointerLock`.
+ */
+const NATIVE_POINTER = (window as { functorNativePointer?: boolean }).functorNativePointer === true;
+const nativePointer = (lock: boolean) =>
+  (window as { ipc?: { postMessage(m: string): void } }).ipc?.postMessage(JSON.stringify({ pointer: lock ? "lock" : "unlock" }));
+const RELEASE_KEYS = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘Esc" : "Meta+Esc";
 
 /** The Game tab: the session's state in one line, or its live frames. */
 export function GameView({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
@@ -31,6 +43,7 @@ export function GameView({ state, online, send }: { state: AppState | null; onli
       <LiveGame
         debugUrl={status.debug_url}
         surface={status.surface}
+        pointer={status.pointer}
         noGpu={state!.no_gpu}
         online={online}
         send={send}
@@ -94,14 +107,15 @@ function GameMessage({ text, error = false }: { text: string; error?: boolean })
 
 /**
  * A running hidden session: its `/stream` in an `<img>` while the page is
- * shown, and keyboard and mouse forwarded once clicked. Esc always releases
- * and is never forwarded, so a game that uses Esc needs its own window.
- * Paused, input is not forwarded, as the game's own window ignores it then.
- * The transport bar sits under it (`compact` in the mini view).
+ * shown, and keyboard and mouse forwarded once clicked (the rules are in
+ * `game-input.ts`). Paused, input is not forwarded, as the game's own window
+ * ignores it then. The transport bar sits under it (`compact` in the mini
+ * view).
  */
 function LiveGame({
   debugUrl,
   surface,
+  pointer,
   noGpu,
   online,
   send,
@@ -109,6 +123,7 @@ function LiveGame({
 }: {
   debugUrl: string;
   surface: [number, number] | null;
+  pointer: Pointer;
   noGpu: boolean;
   online: boolean;
   send: Send;
@@ -139,7 +154,7 @@ function LiveGame({
 
   // The frame's own pixels in CSS pixels cap its size, so it is never scaled up.
   const rect = box && frame ? fitRect(box, frame, { w: frame.w / dpr, h: frame.h / dpr }) : null;
-  const capture = useCapture(send, area, rect ?? (box && { x: 0, y: 0, ...box }), surface, paused);
+  const capture = useCapture(send, area, rect ?? (box && { x: 0, y: 0, ...box }), surface, pointer, paused);
   const { release } = capture;
   // Offline or paused, input would be dropped or ignored, so the view lets go of it.
   useEffect(() => {
@@ -150,7 +165,7 @@ function LiveGame({
     <div className="game-stack">
     <div
       ref={area}
-      className={`game game-live${capture.captured ? " game-captured" : ""}`}
+      className={`game game-live${capture.captured ? " game-captured" : ""}${capture.locked ? " game-locked" : ""}`}
       data-testid="game-view"
       tabIndex={0}
       aria-label="Game"
@@ -173,7 +188,13 @@ function LiveGame({
         }}
       />
       <span className="game-banner" role="status">
-        {paused ? "Paused" : capture.captured ? "Esc to release" : "Click to play"}
+        {paused
+          ? "Paused"
+          : !capture.captured
+            ? "Click to play"
+            : capture.locked && !NATIVE_POINTER
+              ? "Esc to release"
+              : `${RELEASE_KEYS} to release`}
       </span>
     </div>
     {transport?.clock && visible && (
@@ -194,30 +215,43 @@ type Point = { x: number; y: number };
 
 /**
  * Click-to-capture input. While captured, keys and mouse go to the session
- * (moves and wheel coalesced to one per animation frame); on release every
- * held key and button is let go on the wire, so nothing sticks.
+ * (moves and wheel coalesced to one per animation frame), and a
+ * captured-mouse game gets the pointer locked, its moves then relative.
+ * Releasing (⌘Esc, the browser's Esc out of a lock, focus leaving the view
+ * or the window, the view going away) lets go of every held key and button
+ * on the wire, so nothing sticks.
  */
 function useCapture(
   send: Send,
   area: RefObject<HTMLDivElement | null>,
   rect: Rect | null,
   surface: [number, number] | null,
+  pointer: Pointer,
   paused: boolean,
 ) {
   const [captured, setCaptured] = useState(false);
-  const live = useRef({ captured, rect, surface, send });
-  live.current = { captured, rect, surface, send };
-  const held = useRef({ keys: new Set<string>(), buttons: new Set<MouseButton>() });
+  const [locked, setLocked] = useState(false);
+  const live = useRef({ captured, rect, surface, pointer, send });
+  live.current = { captured, rect, surface, pointer, send };
+  const held = useRef(new Held());
   const pending = useRef<{ move: Point | null; wheel: number; raf: number }>({ move: null, wheel: 0, raf: 0 });
+  // The cursor the lock moves, from the press that took it; null unlocked.
+  const cursor = useRef<LockedCursor | null>(null);
 
   // Stable across renders, reading the latest props through `live`.
   const [ops] = useState(() => {
     const input = (input: GameInput) => live.current.send({ type: "input", input });
+    // A position went since the capture: a press lands there rather than
+    // at its own whole-pixel position, which can differ by one.
+    let placed = false;
     const flush = () => {
       const p = pending.current;
       cancelAnimationFrame(p.raf);
       p.raf = 0;
-      if (p.move) input({ type: "mouse_move", ...p.move });
+      if (p.move) {
+        placed = true;
+        input({ type: "mouse_move", ...p.move });
+      }
       if (p.wheel) input({ type: "mouse_wheel", delta: p.wheel });
       p.move = null;
       p.wheel = 0;
@@ -225,31 +259,73 @@ function useCapture(
     const schedule = () => {
       if (!pending.current.raf) pending.current.raf = requestAnimationFrame(flush);
     };
-    const queueMove = (e: { clientX: number; clientY: number }) => {
+    /** Where `e` lands in the game's surface, through the letterbox. */
+    const at = (e: { clientX: number; clientY: number }): Point | null => {
       const { rect, surface } = live.current;
       const el = area.current;
-      if (!rect || !surface || !el) return;
+      if (!rect || !surface || !el) return null;
       // `rect` is in the padding box, inside the area's border.
-      const at = el.getBoundingClientRect();
-      const x = e.clientX - at.left - el.clientLeft;
-      const y = e.clientY - at.top - el.clientTop;
-      pending.current.move = toSurface(x, y, rect, {
-        w: surface[0],
-        h: surface[1],
-      });
+      const box = el.getBoundingClientRect();
+      const x = e.clientX - box.left - el.clientLeft;
+      const y = e.clientY - box.top - el.clientTop;
+      return toSurface(x, y, rect, { w: surface[0], h: surface[1] });
+    };
+    // Unlocked, the pointer's position; locked, the pointer does not move.
+    const queueMove = (e: { clientX: number; clientY: number }, press = false) => {
+      if (press && (placed || pending.current.move)) return;
+      const point = cursor.current ? null : at(e);
+      if (!point) return;
+      pending.current.move = point;
       schedule();
+    };
+    const queueDelta = (dx: number, dy: number) => {
+      if (!cursor.current || (!dx && !dy)) return;
+      pending.current.move = cursor.current.move(dx, dy);
+      schedule();
+    };
+    // Edges go at once, after the moves queued before them.
+    const edges = (inputs: (GameInput | null)[]) => {
+      const sent = inputs.filter((i) => i !== null);
+      if (sent.length) flush();
+      sent.forEach(input);
+    };
+    const lock = (e: { clientX: number; clientY: number }) => {
+      const { pointer, surface } = live.current;
+      if (pointer !== "captured") return;
+      cursor.current = new LockedCursor(at(e) ?? { x: (surface?.[0] ?? 0) / 2, y: (surface?.[1] ?? 0) / 2 });
+      if (NATIVE_POINTER) {
+        nativePointer(true);
+        setLocked(true);
+        return;
+      }
+      // Refused, moves stay absolute.
+      const refused = () => {
+        cursor.current = null;
+        setLocked(false);
+      };
+      try {
+        (area.current?.requestPointerLock() as Promise<void> | undefined)?.catch?.(refused);
+      } catch {
+        refused();
+      }
+    };
+    const unlock = () => {
+      if (!cursor.current) return;
+      cursor.current = null;
+      setLocked(false);
+      if (NATIVE_POINTER) nativePointer(false);
+      else if (document.pointerLockElement === area.current) document.exitPointerLock();
     };
     const release = () => {
       if (!live.current.captured) return;
       flush();
-      for (const key of held.current.keys) input({ type: "key", key, down: false });
-      for (const button of held.current.buttons) input({ type: "mouse_button", button, down: false });
-      held.current.keys.clear();
-      held.current.buttons.clear();
+      edges(held.current.releaseAll());
+      unlock();
+      placed = false;
       live.current.captured = false;
       setCaptured(false);
     };
-    return { input, flush, schedule, queueMove, release };
+    return { flush, schedule, queueMove, queueDelta, edges, lock, release };
   });
 
   // Let go when the view goes away (tab switch, session stop).
@@ -268,21 +344,35 @@ function useCapture(
     // On the window, so a button let go outside the view is still released.
     const onMouseUp = (e: MouseEvent) => {
       const button = BUTTONS[e.button];
-      if (!button || !held.current.buttons.delete(button)) return;
-      ops.flush();
-      ops.input({ type: "mouse_button", button, down: false });
+      if (button) ops.edges([held.current.button(button, false)]);
     };
+    // The browser's lock taken (moves become relative), or ended by the
+    // browser itself (its Esc), which ends the capture too.
+    const onLockChange = () => {
+      if (document.pointerLockElement === el) setLocked(true);
+      else if (cursor.current) ops.release();
+    };
+    // The native window's lock: deltas, or the window letting go on its own.
+    const onNative = (msg: { dx?: number; dy?: number; lost?: boolean }) => {
+      if (msg.lost) ops.release();
+      else ops.queueDelta(msg.dx ?? 0, msg.dy ?? 0);
+    };
+    const win = window as { functorPointer?: typeof onNative };
+    win.functorPointer = onNative;
     // Another app taking focus, or the page going away, keeps the view focused
     // but its key-ups never arrive.
     el.addEventListener("wheel", onWheel, { passive: false });
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("blur", ops.release);
     window.addEventListener("pagehide", ops.release);
+    document.addEventListener("pointerlockchange", onLockChange);
     return () => {
+      if (win.functorPointer === onNative) delete win.functorPointer;
       el.removeEventListener("wheel", onWheel);
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("blur", ops.release);
       window.removeEventListener("pagehide", ops.release);
+      document.removeEventListener("pointerlockchange", onLockChange);
     };
   }, [area, ops]);
 
@@ -297,47 +387,53 @@ function useCapture(
         live.current.captured = true;
         setCaptured(true);
         e.currentTarget.focus();
+        ops.lock(e);
         return;
       }
       const button = BUTTONS[e.button];
-      if (!button || held.current.buttons.has(button)) return;
-      ops.queueMove(e);
-      ops.flush();
-      held.current.buttons.add(button);
-      ops.input({ type: "mouse_button", button, down: true });
+      const press = button ? held.current.button(button, true) : null;
+      if (!press) return;
+      ops.queueMove(e, true);
+      ops.edges([press]);
     },
+    // Pointer events, for their fractional positions.
     onPointerMove: (e: PointerEvent<HTMLDivElement>) => {
-      if (captured) ops.queueMove(e);
+      if (!captured) return;
+      if (document.pointerLockElement === e.currentTarget) ops.queueDelta(e.movementX, e.movementY);
+      else ops.queueMove(e);
     },
     onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
       if (!captured) return;
-      if (e.code === "Escape") {
+      const { inputs, release, handled } = keyDown(held.current, e);
+      if (handled) {
+        // Kept from the app's shortcuts and the browser (Tab, F5, Space).
         e.preventDefault();
-        ops.release();
-        return;
+        e.stopPropagation();
       }
-      // Browser and system shortcuts keep working; the wire has no modifiers yet.
-      const key = wireKey(e.code);
-      if (!key || e.metaKey || e.ctrlKey) return;
-      e.preventDefault();
-      if (e.repeat || held.current.keys.has(key)) return;
-      ops.flush();
-      held.current.keys.add(key);
-      ops.input({ type: "key", key, down: true });
+      if (release) ops.release();
+      else ops.edges(inputs);
     },
     onKeyUp: (e: KeyboardEvent<HTMLDivElement>) => {
       const key = wireKey(e.code);
-      if (!key || !held.current.keys.delete(key)) return;
+      const up = key ? held.current.key(key, false) : null;
+      if (!up) return;
       e.preventDefault();
-      ops.flush();
-      ops.input({ type: "key", key, down: false });
+      ops.edges([up]);
     },
-    onBlur: ops.release,
+    // Focus moving elsewhere in the page ends the capture; the view moving
+    // to another slot (an agent splitting beside it) gets it back first
+    // (`GameHost`), so it does not.
+    onBlur: (e: FocusEvent<HTMLDivElement>) => {
+      const el = e.currentTarget;
+      setTimeout(() => {
+        if (document.activeElement !== el) ops.release();
+      });
+    },
     onContextMenu: (e: ReactMouseEvent) => {
       if (captured) e.preventDefault();
     },
   };
-  return { captured, release: ops.release, handlers };
+  return { captured, locked, release: ops.release, handlers };
 }
 
 /** `el`'s content size in CSS pixels, following resizes. */

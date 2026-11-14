@@ -1,36 +1,12 @@
-// The game view's pure parts: which keys reach the game, where the frame sits
-// in the view, where a pointer lands in the game, and the headset placement's
-// choices and note.
+// The game view's pure parts: where the frame sits in the view, where a
+// pointer lands in the game, and the headset placement's choices and note
+// (its input rules are `game-input.ts`).
 
 import type { Device, Session, Transport } from "./generated/protocol";
 import { fixFor, WORDS } from "./devices-model.ts";
 
 export type Size = { w: number; h: number };
 export type Rect = { x: number; y: number; w: number; h: number };
-
-/** `KeyboardEvent.code` → the `/input` wire's key name. Escape is absent: it releases input. */
-const KEYS: Record<string, string> = {
-  ArrowUp: "up",
-  ArrowDown: "down",
-  ArrowLeft: "left",
-  ArrowRight: "right",
-  Space: "space",
-  Enter: "enter",
-};
-for (let i = 0; i < 26; i++) {
-  const letter = String.fromCharCode(97 + i);
-  KEYS[`Key${letter.toUpperCase()}`] = letter;
-}
-// The native window folds the numpad into the digit row too.
-for (let d = 0; d <= 9; d++) {
-  KEYS[`Digit${d}`] = String(d);
-  KEYS[`Numpad${d}`] = String(d);
-}
-
-/** The wire name for `code`, or null for a key the wire does not know (it is ignored). */
-export function wireKey(code: string): string | null {
-  return Object.hasOwn(KEYS, code) ? KEYS[code]! : null;
-}
 
 /**
  * `frame`'s rect centred in `box`, letterboxed to its aspect ratio and no
