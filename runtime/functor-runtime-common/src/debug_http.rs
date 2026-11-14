@@ -712,7 +712,11 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             if let (Ok(Some(files)), Ok(Some(bytes))) =
                 (query_number::<u64>(query, "push_files"), query_number::<u64>(query, "push_bytes"))
             {
-                *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((files, bytes));
+                let mut push = PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                // A manifest's own count (it knows what is held) stands.
+                if push.is_none_or(|push| !push.from_manifest) {
+                    *push = Some(Push { files, bytes, held_bytes: 0, from_manifest: false });
+                }
             }
             let body = match upload_part(query, body, max) {
                 Ok(Some(whole)) => whole,
@@ -738,6 +742,13 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     return Some(());
                 }
             };
+            // Kept by content when the push named it; refused when its bytes
+            // are not the ones named (cut short, or changed since).
+            if let Some(Err(error)) = crate::push_cache::installed().map(|cache| cache.accept(&asset.path, &asset.bytes)) {
+                respond_text(&mut stream, cors_origin, 400, "Bad Request", &error);
+                return Some(());
+            }
+            ASSET_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
@@ -822,9 +833,73 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        ("POST", "/push-manifest") => {
+            let manifest = match parse_json_capped::<crate::push_cache::Manifest>(
+                &mut reader,
+                content_length,
+                debug_protocol::MAX_ASSET_MANIFEST_BYTES,
+            ) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let message = format!("body must be {{\"files\": [{{path, size, hash}}]}}: {error}");
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &message);
+                    return Some(());
+                }
+            };
+            if let Some(error) = manifest
+                .files
+                .iter()
+                .find_map(|file| debug_protocol::validate_project_asset_path(&file.path).err())
+            {
+                let message = format!("bad push manifest: {error}");
+                respond_text(&mut stream, cors_origin, 400, "Bad Request", &message);
+                return Some(());
+            }
+            // Without a cache (desktop), everything is asked for.
+            let (held, answer) = match crate::push_cache::installed() {
+                Some(cache) => cache.begin(&manifest),
+                None => {
+                    let mut missing: Vec<String> = manifest.files.iter().map(|file| file.hash.clone()).collect();
+                    missing.sort();
+                    missing.dedup();
+                    (Vec::new(), crate::push_cache::ManifestAnswer { missing })
+                }
+            };
+            let lacks = |file: &&crate::push_cache::ManifestFile| answer.missing.contains(&file.hash);
+            let sending: Vec<_> = manifest.files.iter().filter(lacks).collect();
+            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Push {
+                files: sending.len() as u64,
+                bytes: sending.iter().map(|file| file.size).sum(),
+                held_bytes: held.iter().map(|(_, bytes)| bytes.len() as u64).sum(),
+                from_manifest: true,
+            });
+            // What it holds installs as an upload would, without counting as one.
+            for (path, bytes) in held {
+                let (resp_tx, resp_rx) = mpsc::channel();
+                let asset = debug_protocol::ProjectAsset { path, bytes };
+                if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
+                    return runtime_gone(&mut stream, cors_origin);
+                }
+                if !matches!(recv(resp_rx), Ok(Ok(_))) {
+                    let message = "the runtime did not install a cached file";
+                    respond_text(&mut stream, cors_origin, 503, "Service Unavailable", message);
+                    return Some(());
+                }
+            }
+            let body = serde_json::to_vec(&answer).unwrap_or_default();
+            respond_bytes(&mut stream, cors_origin, 200, "OK", "application/json", &body)
+        }
+        ("POST", "/clear-push-cache") => {
+            let freed = crate::push_cache::installed().map_or(0, |cache| cache.clear());
+            let message = format!("cleared the pushed-file cache ({freed} bytes)");
+            respond_text(&mut stream, cors_origin, 200, "OK", &message)
+        }
         ("POST", "/sync-assets") => {
             *UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            if let Some(cache) = crate::push_cache::installed() {
+                cache.end();
+            }
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
                 content_length,
@@ -951,13 +1026,33 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
 
 static ASSET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The files and bytes the push in flight said it will send
-/// (`/reload-asset?push_files=…&push_bytes=…`), until its `/sync-assets`.
-static PUSH: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+static ASSET_FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// What the push in flight announced it will send, as `(files, bytes)`;
-/// `None` between pushes and from a sender that announces nothing.
-pub fn push_announced() -> Option<(u64, u64)> {
+/// Files `POST /reload-asset` has received in this process (not those a
+/// push's manifest installed from the cache).
+pub fn asset_files_received() -> u64 {
+    ASSET_FILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the push in flight will send, and what it need not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Push {
+    /// Files and bytes to upload.
+    pub files: u64,
+    pub bytes: u64,
+    /// Bytes the device already held (`POST /push-manifest`).
+    pub held_bytes: u64,
+    /// Counted by the device from a manifest, not announced by the sender
+    /// (`/reload-asset?push_files=…&push_bytes=…`).
+    pub from_manifest: bool,
+}
+
+/// The push in flight, until its `/sync-assets`.
+static PUSH: std::sync::Mutex<Option<Push>> = std::sync::Mutex::new(None);
+
+/// What the push in flight will send; `None` between pushes and from a
+/// sender that says nothing.
+pub fn push_announced() -> Option<Push> {
     *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 

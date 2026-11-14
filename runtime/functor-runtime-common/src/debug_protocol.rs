@@ -266,7 +266,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// status card ([`crate::load_status`]) while it shows. `POST /reload-asset` takes
 /// `push_files` and `push_bytes` in its query: what the push in flight will
 /// send in all, for that card's count; an older runtime ignores them.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
+///
+/// 49 adds `POST /push-manifest` and `POST /clear-push-cache`: a push names
+/// its files by content hash first and uploads only those the device's
+/// pushed-file cache lacks ([`crate::push_cache`]). A pre-v49 runtime
+/// answers 404: send everything.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 49;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -396,6 +401,16 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "POST",
         path: "/project-files",
         description: "answer one request from GET /project-files: a binary envelope (u32 header length, JSON header {session, path, status: bytes|current|missing, version?, message?}, then the bytes); also an unasked update (bytes or missing) of a file this session got; 409 for another session or an unrequested path",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/push-manifest",
+        description: "begin a push: {\"files\": [{path, size, hash}]} (hash: lowercase hex sha256). A device with a pushed-file cache installs the files it holds and answers {\"missing\": [hash]}: upload only the files with those hashes (each is checked against its hash, 400 otherwise); a runtime without one asks for all",
+    },
+    DebugRoute {
+        method: "POST",
+        path: "/clear-push-cache",
+        description: "forget every file the pushed-file cache holds",
     },
     DebugRoute {
         method: "POST",
@@ -2452,6 +2467,8 @@ mod tests {
             "POST /reload-asset",
             "GET /project-files",
             "POST /project-files",
+            "POST /push-manifest",
+            "POST /clear-push-cache",
             "POST /sync-assets",
             "POST /rewind",
             "POST /seek",
