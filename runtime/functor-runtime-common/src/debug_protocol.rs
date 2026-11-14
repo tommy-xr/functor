@@ -2379,6 +2379,7 @@ mod tests {
             "GET /spikes",
             "GET /input-log",
             "GET /scene",
+            "GET /mirror",
             "GET /trace",
             "GET /project",
             "POST /input",
