@@ -417,19 +417,27 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
-                    // No stage of its own on the wire (an older headset could
-                    // not read one): the toast clears. The answer is in the
-                    // request's record (`AppState::requests`) for the panel.
-                    Core::Answered(_) => voice::Stage::Idle,
+                    Core::Answered(text) => voice::Stage::Answered { text },
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {
                     utterance: Some(utterance),
                     stage,
                 };
-                let sent = self
-                    .link_of(&device)
-                    .is_some_and(|link| link.send(ConnCmd::Send(status.frame())).is_ok());
+                // A headset from before `Answered` drops it unread: `Idle`
+                // first, so its toast clears rather than stays on Working.
+                let before = matches!(status.stage, voice::Stage::Answered { .. }).then(|| {
+                    voice::Status {
+                        utterance: Some(utterance),
+                        stage: voice::Stage::Idle,
+                    }
+                });
+                let sent = self.link_of(&device).is_some_and(|link| {
+                    before
+                        .into_iter()
+                        .chain([status.clone()])
+                        .all(|s| link.send(ConnCmd::Send(s.frame())).is_ok())
+                });
                 if !sent {
                     self.0.state.lock().unwrap().unsent.insert(device, status);
                 }
