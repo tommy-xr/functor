@@ -3,7 +3,7 @@
 //! which become the client messages the desktop UI sends for the same
 //! choices.
 
-use crate::activity::{classify, CallKind, Stance};
+use crate::activity::{classify, question, Activity, CallKind, Stance};
 use crate::decision::{count, Depth, Kind};
 use crate::devices::{DeviceState, LinkCommand};
 use crate::layout::Placement;
@@ -170,10 +170,7 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
                 title: t.title.clone(),
                 stance: stance(t),
                 queued: t.status == TaskStatus::Queued,
-                activity: activity
-                    .and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
-                    .cloned()
-                    .unwrap_or_default(),
+                activity: activity_line(activity),
                 decision: decision(state, t),
             }
         })
@@ -264,8 +261,12 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
         });
     };
     for item in &task.transcript {
-        let step = matches!(item, Item::Tool { name, .. } if name != "AskUserQuestion");
-        if !step {
+        let call = match item {
+            Item::Tool { name, input, .. } => Some(classify(name, input)),
+            _ => None,
+        };
+        let ask = call.as_ref().is_some_and(|c| c.kind == CallKind::Ask);
+        if call.is_none() || ask {
             steps = 0;
         }
         match item {
@@ -276,12 +277,11 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
                 }
             }
             Item::Agent { text, .. } => push(&mut items, Role::Agent, false, text),
-            Item::Tool { name, input, .. } if name == "AskUserQuestion" => {
-                let question = input["questions"][0]["question"].as_str().unwrap_or("");
-                push(&mut items, Role::Agent, false, question);
+            Item::Tool { input, .. } if ask => {
+                push(&mut items, Role::Agent, false, question(input));
             }
-            Item::Tool { name, input, .. } => {
-                let label = classify(name, input).label;
+            Item::Tool { .. } => {
+                let label = call.map(|c| c.label).unwrap_or_default();
                 steps += 1;
                 if steps > 1 {
                     items.pop();
@@ -312,10 +312,7 @@ fn conversation(state: &AppState, task: &Task) -> Conversation {
         task: task.id,
         title: task.title.clone(),
         stance: activity.map_or(Stance::Done, |a| a.stance),
-        activity: activity
-            .and_then(|a| a.calls.first())
-            .map(|c| c.label.clone())
-            .unwrap_or_default(),
+        activity: activity_line(activity),
         question: activity.is_some_and(|a| a.calls.iter().any(|c| c.kind == CallKind::Ask)),
         earlier,
         items,
@@ -347,6 +344,14 @@ fn decision(state: &AppState, task: &Task) -> Option<PanelDecision> {
             .map(|n| n.iter().take(NOTES).cloned().collect())
             .unwrap_or_default(),
     })
+}
+
+/// What a task is doing: its running call's label, else its error, else
+/// nothing.
+fn activity_line(a: Option<&Activity>) -> String {
+    a.and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// For each connected headset whose link is new (a relink may come before
