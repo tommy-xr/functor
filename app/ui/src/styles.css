@@ -217,6 +217,25 @@ blockquote {
   box-shadow: var(--shadow-bar);
 }
 
+/* The macOS window's title bar: clear of its traffic lights, except in
+   fullscreen, where they hide. */
+.native-titlebar .titlebar {
+  flex-wrap: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* One row at the window's narrowest: the branch gives way first. */
+.native-titlebar .titlebar .branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.native-titlebar:not(.fullscreen) .titlebar {
+  padding-left: 84px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -2819,6 +2838,64 @@ blockquote {
   font-size: 12px;
 }
 
+/* In a narrow dock the two words give way before the round buttons do. */
+.composer-row .round {
+  flex: none;
+}
+
+.composer-row .review-menu {
+  min-width: 0;
+}
+
+.composer-row .review-toggle {
+  max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The instruction scope (D39) shares the review's look: three levels, each
+   with what it leaves out, then the project's default. */
+.scope-levels {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-levels legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.scope-level {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.scope-level input {
+  margin-top: 3px;
+}
+
+.scope-level > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scope-name {
+  font-weight: 600;
+}
+
+.scope-off {
+  opacity: 0.5;
+}
+
 /* Inside the composer, whose own textarea rule would strip its box. */
 .review-field textarea.text-input {
   padding: 6px 10px;
@@ -4261,6 +4338,102 @@ g.avatar-eyes {
   color: var(--text-2);
   font-size: 11px;
   text-align: center;
+}
+
+/* A subagent: a smaller figure on a tether from the bubble of the agent
+   that started it. */
+.agent-sub {
+  position: relative;
+  min-width: 0;
+  padding-left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-sub::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: -5px;
+  width: 9px;
+  height: 16px;
+  border-left: 1.5px solid var(--border-strong);
+  border-bottom: 1.5px solid var(--border-strong);
+  border-bottom-left-radius: 6px;
+}
+
+.agent-sub .avatar {
+  width: 22px;
+  height: 22px;
+}
+
+.agent-sub-bubble {
+  flex: 1 1 auto;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.agent-sub-bubble::before {
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  left: -4px;
+}
+
+.agent-sub-bubble .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* How much room is left: a health bar in Claude's colour (Codex reports
+   no per-message usage, so has none), amber from
+   70% full, red from 90%. */
+.agent-room {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-room-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip);
+  overflow: hidden;
+}
+
+.agent-room-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--claude);
+}
+
+.agent-room-pct {
+  flex: none;
+  min-width: 3.5ch;
+  text-align: right;
+}
+
+.agent-room-low .agent-room-fill {
+  background: var(--warn);
+}
+
+.agent-room-low .agent-room-pct {
+  color: var(--warn);
+}
+
+.agent-room-out .agent-room-fill {
+  background: var(--danger);
+}
+
+.agent-room-out .agent-room-pct {
+  color: var(--danger);
 }
 
 /* Only while it works does anything move. */

@@ -54,6 +54,9 @@ export function ReviewSettings({
             own report is shown.
           </p>
           <p className="review-help">Agent: Claude, for every task. Codex reviews cannot be held read-only yet.</p>
+          <p className="review-help">
+            It reads none of your setup or the project's (instructions, skills, memory, settings): a review always runs isolated.
+          </p>
           <label className="review-field">
             <span>Model</span>
             <input

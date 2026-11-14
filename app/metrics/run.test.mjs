@@ -23,13 +23,15 @@ function recorded(id) {
   const tools = {};
   let messages = 0;
   let usage = {};
+  let detail = null;
   for (const line of lines) {
     const name = line.mcp ? `mcp__mis__${line.mcp.tool}` : line.event?.type === "tool_use" && line.event.name;
     if (name) tools[name] = (tools[name] ?? 0) + 1;
     if (line.event?.type === "text") messages += 1;
     if (line.event?.type === "usage") usage = line.event;
+    if (line.event?.type === "usage_detail") detail = line.event;
   }
-  return { tools, messages, input: usage.input, output: usage.output };
+  return { tools, messages, input: usage.input, output: usage.output, detail };
 }
 
 /** A temp dir removed after test `t`. */
@@ -56,6 +58,7 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
     assert.equal(r.pass, true, `${r.scenario}: ${r.reason}`);
     assert.equal(r.ended, "ok", r.scenario);
     assert.equal(r.model, "claude-model", r.scenario);
+    assert.equal(r.scope, "user_and_project", r.scenario);
     assert.deepEqual(r.tools, want.tools, r.scenario);
     assert.equal(r.tool_calls, Object.values(want.tools).reduce((a, n) => a + n, 0), r.scenario);
     assert.equal(
@@ -66,6 +69,13 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
     assert.equal(r.messages, want.messages, r.scenario);
     assert.equal(r.input_tokens, want.input, r.scenario);
     assert.equal(r.output_tokens, want.output, r.scenario);
+    // The split as recorded, or none of it.
+    assert.equal(r.uncached_input, want.detail?.total.input, r.scenario);
+    assert.equal(r.cache_read, want.detail?.total.cache_read, r.scenario);
+    assert.equal(r.cache_creation, want.detail?.total.cache_creation, r.scenario);
+    assert.equal(r.turns, want.detail?.turns, r.scenario);
+    assert.equal(r.cost_usd, want.detail?.cost_usd, r.scenario);
+    assert.equal(r.api_ms, want.detail?.api_ms, r.scenario);
     assert.ok(r.first_event_ms != null && r.first_event_ms <= r.wall_ms, r.scenario);
     // A change is reviewed after the run (D31), its numbers apart; an answer is not.
     const edits = byId[r.scenario].checks.some((c) => c.changed);
@@ -73,6 +83,8 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
       assert.equal(r.review.ended, "prepared", r.scenario);
       assert.equal(r.review.input_tokens, review.input, r.scenario);
       assert.equal(r.review.output_tokens, review.output, r.scenario);
+      assert.equal(r.review.cache_read, review.detail.total.cache_read, r.scenario);
+      assert.equal(r.review.turns, undefined, r.scenario);
       assert.equal(r.review.summary, "The agent changed one value in `game.fun`. Check the game.", r.scenario);
       assert.ok(r.review.wall_ms != null, r.scenario);
     } else {
@@ -81,7 +93,13 @@ test("every scenario reproduces its fixture's numbers and passes", (t) => {
   }
   const md = fs.readFileSync(path.join(tmp, "fake.md"), "utf8");
   for (const s of scenarios) assert.match(md, new RegExp(`^\\| ${s.id} \\| pass \\|`, "m"));
+  assert.match(md, /^fake run, .*, setup: user_and_project$/m);
   assert.match(md, /^\| weak-jump \| prepared \| claude-review-model \|/m);
+  // The split's columns show where any record has them; a record without shows a dash.
+  assert.match(md, /^\| scenario \| outcome \| .* \| output tokens \| uncached in \| cache read \| cache write \| cached % \| turns \| cost \$ \| API s \|$/m);
+  assert.match(md, /^\| no-tools \| pass \| .* \| 4 \| 4 \| 30000 \| 5779 \| 84 \| 1 \| 0\.021 \| 1\.5 \|$/m);
+  assert.match(md, /^\| state-question \| pass \| .* \| – \| – \| – \| – \| – \| – \| – \|$/m);
+  assert.match(md, /^\| scenario \| review \| .* \| style flags \| uncached in \| cache read \| cache write \| cached % \|$/m);
 });
 
 test("compare shows each scenario's deltas, and those on one side only", () => {

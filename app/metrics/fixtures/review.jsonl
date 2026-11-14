@@ -2,4 +2,5 @@
 {"ms":10,"mcp":{"tool":"task_change","arguments":{}}}
 {"ms":20,"mcp":{"tool":"report","arguments":{"summary":"The agent changed one value in `game.fun`. Check the game.","notes":["Nobody ran the game after the change."],"evidence":[]}}}
 {"ms":30,"event":{"type":"usage","input":52000,"output":600}}
+{"ms":30,"event":{"type":"usage_detail","total":{"input":2000,"cache_read":50000,"cache_creation":0,"output":600}}}
 {"ms":40,"event":{"type":"finished","ok":true,"summary":"Reported."}}

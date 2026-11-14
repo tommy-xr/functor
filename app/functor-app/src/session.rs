@@ -19,7 +19,7 @@ use functor_app_core::projects::read_project_files;
 use functor_app_core::protocol::ServerMsg;
 use functor_app_core::transport::enqueue;
 use functor_app_core::{
-    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock,
+    listening_url, Command, Event, Harness, Layout, LogPage, Polled, PolledClock, Scope,
     SessionCall, SessionEvent, TransportCall,
 };
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -50,11 +50,19 @@ const SOURCE_POLL: Duration = Duration::from_millis(500);
 const LAYOUT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// The `functor` to run: `--functor`, else `FUNCTOR_BIN`, else one next to
-/// this executable (`exe`), else `functor` on `PATH`.
+/// this executable (`exe`), else `Functor.app`'s `Contents/Helpers/functor`,
+/// else `functor` on `PATH`.
 pub fn functor_bin(flag: Option<PathBuf>, env: Option<OsString>, exe: Option<PathBuf>) -> PathBuf {
     let name = format!("functor{}", std::env::consts::EXE_SUFFIX);
+    // Helpers, not MacOS: there the game child would share the app's bundle
+    // id (its own Functor Dock tile, and Quit by id could reach it instead).
+    let local = |dir: &Path| {
+        [dir.join(&name), dir.parent()?.join("Helpers").join(&name)]
+            .into_iter()
+            .find(|p| p.is_file())
+    };
     flag.or_else(|| env.filter(|e| !e.is_empty()).map(PathBuf::from))
-        .or_else(|| Some(exe?.parent()?.join(&name)).filter(|p| p.is_file()))
+        .or_else(|| local(exe?.parent()?))
         .unwrap_or_else(|| name.into())
 }
 
@@ -178,6 +186,7 @@ impl Driver {
         &mut self,
         message: String,
         harness: Harness,
+        scope: Option<Scope>,
         voice: Option<Box<functor_app_core::voice::Utterance>>,
     ) -> Event {
         let id = crate::store::reserve_id(&self.home, self.next_task);
@@ -188,6 +197,7 @@ impl Driver {
             id: id.map_err(|e| e.to_string()),
             message,
             harness,
+            scope,
             voice,
         }
     }
@@ -300,7 +310,7 @@ impl Driver {
                 harness,
                 voice,
             } => {
-                let event = self.new_task(message, harness, voice);
+                let event = self.new_task(message, harness, None, voice);
                 let _ = self.events.send(event);
             }
             // Without a client to answer there is no one to check for.
@@ -308,6 +318,11 @@ impl Driver {
             Command::SaveRecents { recents } => {
                 if let Err(e) = crate::store::save_recents(&self.home, &recents) {
                     eprintln!("functor-app: cannot save the recent projects: {e}");
+                }
+            }
+            Command::SaveContextWindows { windows } => {
+                if let Err(e) = crate::store::save_context_windows(&self.home, &windows) {
+                    eprintln!("functor-app: cannot save the context windows: {e}");
                 }
             }
             // Without a client to answer there is no one to list for.
@@ -334,6 +349,11 @@ impl Driver {
             Command::SaveHarness { dir, harness } => {
                 if let Err(e) = crate::store::save_harness(&self.home, &dir, harness) {
                     eprintln!("functor-app: cannot save the agent choice: {e}");
+                }
+            }
+            Command::SaveScope { dir, scope } => {
+                if let Err(e) = crate::store::save_scope(&self.home, &dir, scope) {
+                    eprintln!("functor-app: cannot save the instruction scope: {e}");
                 }
             }
             Command::SaveLayout { dir, layout } => {
@@ -1336,5 +1356,14 @@ mod tests {
             dir.path().join(&name)
         );
         assert_eq!(functor_bin(None, None, None), PathBuf::from(&name));
+        // In Functor.app: Contents/MacOS/functor-app runs Contents/Helpers/functor.
+        let contents = dir.path().join("Functor.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
+        std::fs::write(contents.join("Helpers").join(&name), "").unwrap();
+        assert_eq!(
+            functor_bin(None, None, Some(contents.join("MacOS/functor-app"))),
+            contents.join("Helpers").join(&name)
+        );
     }
 }

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::tasks::{Item, Task, TaskStatus};
+use crate::tasks::{Harness, Item, Task, TaskStatus};
 
 /// Longest call label or error line, in characters.
 const LABEL_CHARS: usize = 40;
@@ -16,11 +16,36 @@ const LABEL_CHARS: usize = 40;
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Activity {
     pub stance: Stance,
-    /// The run's calls still waiting on their results, oldest first.
+    /// The main agent's calls still waiting on their results, oldest first.
     pub calls: Vec<Call>,
     /// The last run's error or refusal, one short line; cleared by the
     /// user's next message.
     pub error: Option<String>,
+    /// The subagents running, oldest first: while the call that started
+    /// them is out, or (one started in the background, whose call returns
+    /// at once; its end is not reported) while a call of its own is.
+    pub subagents: Vec<Subagent>,
+    /// How full the main agent's context is, once both its use and its
+    /// model's window are known.
+    pub context: Option<ContextFill>,
+}
+
+/// A subagent at work, under the call that started it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Subagent {
+    /// What it was asked to do: its call's description.
+    pub label: String,
+    /// Its own calls still waiting on their results, oldest first.
+    pub calls: Vec<Call>,
+}
+
+/// Tokens of context in use, of the model's `window`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct ContextFill {
+    pub used: u64,
+    pub window: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,32 +89,76 @@ pub struct Call {
     pub label: String,
 }
 
-/// Every task's activity, by id, but a queued one's: it has no agent yet.
-pub fn activities(tasks: &[Task]) -> BTreeMap<u64, Activity> {
+/// Every task's activity, by id, but a queued one's (it has no agent yet);
+/// `windows` are the context windows seen, by [`window_key`].
+pub fn activities(tasks: &[Task], windows: &BTreeMap<String, u64>) -> BTreeMap<u64, Activity> {
     tasks
         .iter()
         .filter(|t| t.queued.is_none())
-        .map(|t| (t.id, activity(t)))
+        .map(|t| (t.id, activity(t, windows)))
         .collect()
 }
 
+/// Where the context window of `harness` running `model` is remembered.
+/// It is reported only at a run's end (Claude's), so a model's first run
+/// has none until then.
+pub fn window_key(harness: Harness, model: &str) -> String {
+    format!("{}/{model}", harness.name())
+}
+
 /// `task`'s activity, from its run, status and last run's items.
-pub fn activity(task: &Task) -> Activity {
+pub fn activity(task: &Task, windows: &BTreeMap<String, u64>) -> Activity {
     let items = &task.transcript;
     let start = items
         .iter()
         .rposition(|i| matches!(i, Item::User { .. }))
         .map_or(0, |i| i + 1);
     let last = &items[start..];
-    let calls: Vec<Call> = match task.run {
+    // A call answers to the main agent (no parent) or to a subagent. Once
+    // the run's calls carry ids, one without is not placed until its id
+    // comes (the next event).
+    let ids = last.iter().any(|i| matches!(i, Item::Tool { id: Some(_), .. }));
+    let running = |parent: Option<&str>| -> Vec<Call> {
+        match task.run {
+            Some(_) => last
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Tool {
+                        name,
+                        input,
+                        result: None,
+                        parent_id,
+                        id,
+                        ..
+                    } if parent_id.as_deref() == parent && (id.is_some() || !ids) => {
+                        Some(classify(name, input))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => vec![],
+        }
+    };
+    let calls = running(None);
+    // Running while its call is out, or (one started in the background,
+    // whose call returns at once) while a call of its own is.
+    let subagents = match task.run {
         Some(_) => last
             .iter()
             .filter_map(|i| match i {
                 Item::Tool {
                     name,
                     input,
-                    result: None,
-                } => Some(classify(name, input)),
+                    result,
+                    id: Some(id),
+                    ..
+                } if is_subagent(name) => {
+                    let calls = running(Some(id));
+                    (result.is_none() || !calls.is_empty()).then(|| Subagent {
+                        label: cut(input["description"].as_str().unwrap_or("subagent")),
+                        calls,
+                    })
+                }
                 _ => None,
             })
             .collect(),
@@ -125,19 +194,55 @@ pub fn activity(task: &Task) -> Activity {
         stance,
         calls,
         error,
+        subagents,
+        context: context(task, windows),
     }
 }
 
+/// The main agent's latest prompt size, of its model's window: this run's
+/// latest, else the last one reported (a follow-up resumes that context).
+/// Codex reports no per-message usage, and no window, so it has none.
+fn context(task: &Task, windows: &BTreeMap<String, u64>) -> Option<ContextFill> {
+    let window = *windows.get(&window_key(task.harness, task.model.as_deref()?))?;
+    let live = task.run.as_ref().and_then(|r| r.detail).and_then(|d| d.last);
+    let used = live.or_else(|| {
+        task.transcript.iter().rev().find_map(|i| match i {
+            Item::Usage {
+                detail: Some(d), ..
+            } => d.last,
+            _ => None,
+        })
+    })?;
+    Some(ContextFill {
+        used: used.prompt(),
+        window,
+    })
+}
+
+/// Claude's tool that starts a subagent (`Task` before it was renamed).
+fn is_subagent(name: &str) -> bool {
+    matches!(name, "Agent" | "Task")
+}
+
+/// How Claude words a call it refused: no rule allowed it.
+const REFUSALS: &[&str] = &["Claude requested permissions to", "This command requires approval"];
+
 /// A failed run's summary, or a refusal, as one line. Errors the agent
 /// works past (a missed edit, a failing command) are not marked: they are
-/// routine. Tool results carry no refusal flag in the event stream, so a
-/// refusal is read from Claude's wording.
+/// routine. Claude flags both a refusal and a failing command as an error
+/// (`is_error`), so a refusal is the flag with Claude's wording; a result
+/// flagged as no error is never one, and one without the flag (older
+/// logs) goes by the wording.
 fn error_of(item: &Item) -> Option<String> {
     match item {
         Item::Finished { ok: false, summary } => Some(line(summary.as_deref())),
         Item::Tool {
-            result: Some(text), ..
-        } if text.starts_with("Claude requested permissions to") => Some(line(Some(text))),
+            result: Some(text),
+            is_error,
+            ..
+        } if *is_error != Some(false) && REFUSALS.iter().any(|r| text.starts_with(r)) => {
+            Some(line(Some(text)))
+        }
         _ => None,
     }
 }
@@ -180,7 +285,7 @@ pub fn classify(name: &str, input: &Value) -> Call {
             CallKind::Network,
             format!("searching the web for {}", s("query")),
         ),
-        "Task" | "Agent" => (CallKind::Agents, format!("subagent: {}", s("description"))),
+        _ if is_subagent(name) => (CallKind::Agents, format!("subagent: {}", s("description"))),
         "SendMessage" | "TaskStop" => (CallKind::Agents, "talking to a subagent".into()),
         "Skill" => (CallKind::Skills, format!("using {}", s("skill"))),
         "ToolSearch" => (CallKind::Skills, "loading tools".into()),
@@ -626,10 +731,17 @@ mod tests {
     /// The activity after each event that changed it, as `stance kind:label… !error`.
     fn replay(task: &mut Task, log: &str) -> Vec<String> {
         let show = |task: &Task| {
-            let a = activity(task);
+            let a = activity(task, &BTreeMap::new());
             let mut s = format!("{:?}", a.stance);
             for call in &a.calls {
                 s += &format!(" {:?}:{}", call.kind, call.label);
+            }
+            for sub in &a.subagents {
+                s += &format!(" [{}", sub.label);
+                for call in &sub.calls {
+                    s += &format!(" {:?}:{}", call.kind, call.label);
+                }
+                s += "]";
             }
             if let Some(e) = a.error {
                 s += &format!(" !{e}");
@@ -678,7 +790,7 @@ mod tests {
             text: "ok".into(),
             spoken: None,
         });
-        assert_eq!(activity(&task).error, None);
+        assert_eq!(activity(&task, &BTreeMap::new()).error, None);
     }
 
     #[test]
@@ -709,8 +821,8 @@ mod tests {
         let mut task = running();
         task.run = None;
         task.status = derive_status(&task);
-        assert_eq!(activity(&task).stance, Stance::Failed);
-        assert_eq!(activity(&task).error, Some(cut(INTERRUPTED)));
+        assert_eq!(activity(&task, &BTreeMap::new()).stance, Stance::Failed);
+        assert_eq!(activity(&task, &BTreeMap::new()).error, Some(cut(INTERRUPTED)));
     }
 
     #[test]
@@ -726,15 +838,18 @@ mod tests {
             (TaskStatus::Failed { summary: None }, Stance::Failed),
         ] {
             task.status = status;
-            assert_eq!(activity(&task).stance, stance);
+            assert_eq!(activity(&task, &BTreeMap::new()).stance, stance);
         }
         // An unanswered call of an ended run is not running.
         task.transcript.push(Item::Tool {
             name: "Read".into(),
             input: json!({}),
             result: None,
+            id: None,
+            parent_id: None,
+            is_error: None,
         });
-        assert_eq!(activity(&task).calls, []);
+        assert_eq!(activity(&task, &BTreeMap::new()).calls, []);
     }
 
     #[test]
@@ -744,16 +859,123 @@ mod tests {
             name: "Read".into(),
             input: json!({}),
             result: Some(content.into()),
+            id: None,
+            parent_id: None,
+            is_error: None,
         };
         // A file that quotes a refusal is not one, nor an error worked past.
         task.transcript.push(read(CLAUDE));
         task.transcript.push(read(
             "<tool_use_error>File does not exist.</tool_use_error>",
         ));
-        assert_eq!(activity(&task).error, None);
+        assert_eq!(activity(&task, &BTreeMap::new()).error, None);
         task.transcript
             .push(read("Claude requested permissions to write to x.fun"));
         let refused = "Claude requested permissions to write t…";
-        assert_eq!(activity(&task).error.as_deref(), Some(refused));
+        assert_eq!(activity(&task, &BTreeMap::new()).error.as_deref(), Some(refused));
+    }
+
+    const SUBAGENT: &str = include_str!("../fixtures/agent/claude-subagent.jsonl");
+
+    /// A subagent's calls sit under it, not among the main agent's, and a
+    /// command that failed (flagged as an error) is worked past, unmarked.
+    #[test]
+    fn a_subagents_calls_are_its_own_and_a_failed_command_is_not_red() {
+        let mut task = running();
+        assert_eq!(
+            replay(&mut task, SUBAGENT),
+            [
+                "Thinking",
+                // The call, then its id: a subagent.
+                "Working Agents:subagent: Read notes.txt first line",
+                "Working Agents:subagent: Read notes.txt first line [Read notes.txt first line]",
+                "Working Agents:subagent: Read notes.txt first line [Read notes.txt first line Files:reading notes.txt]",
+                "Working Agents:subagent: Read notes.txt first line [Read notes.txt first line]",
+                "Thinking",
+                "Working Files:running cat missing.txt",
+                "Thinking",
+                "Working Files:running ls",
+                "Thinking",
+                "Done",
+            ]
+        );
+    }
+
+    /// A subagent started in the background: its call returns at once, and
+    /// it shows while a call of its own runs.
+    #[test]
+    fn a_background_subagent_shows_while_its_calls_run() {
+        let call = |name: &str, input, result: Option<&str>, id: &str, parent: Option<&str>| Item::Tool {
+            name: name.into(),
+            input,
+            result: result.map(Into::into),
+            id: Some(id.into()),
+            parent_id: parent.map(Into::into),
+            is_error: None,
+        };
+        let mut task = running();
+        let started = Some("Async agent launched");
+        task.transcript.push(call("Agent", json!({"description": "Scan"}), started, "a", None));
+        task.transcript.push(call("Grep", json!({"pattern": "x"}), None, "b", Some("a")));
+        let a = activity(&task, &BTreeMap::new());
+        assert_eq!(a.calls, []);
+        assert_eq!(a.subagents.len(), 1);
+        assert_eq!((a.subagents[0].label.as_str(), a.subagents[0].calls.len()), ("Scan", 1));
+        // Its call answered: gone.
+        let Item::Tool { result, .. } = task.transcript.last_mut().unwrap() else {
+            unreachable!()
+        };
+        *result = Some("hit".into());
+        assert_eq!(activity(&task, &BTreeMap::new()).subagents, []);
+    }
+
+    /// Claude flags a refusal and a failing command alike (`is_error`), so
+    /// the flag alone cannot mark a refusal: it takes the flag and the
+    /// wording, and a result flagged as no error is never one.
+    #[test]
+    fn a_refusal_is_flagged_and_worded_as_one() {
+        let result = |content: &str, is_error| Item::Tool {
+            name: "Bash".into(),
+            input: json!({}),
+            result: Some(content.into()),
+            id: Some("t".into()),
+            parent_id: None,
+            is_error,
+        };
+        let error = |item| {
+            let mut task = running();
+            task.transcript.push(item);
+            activity(&task, &BTreeMap::new()).error
+        };
+        assert_eq!(error(result("Exit code 1\ncat: x: No such file", Some(true))), None);
+        assert_eq!(
+            error(result("This command requires approval", Some(true))).as_deref(),
+            Some("This command requires approval")
+        );
+        let quoted = "Claude requested permissions to use Bash, but you haven't granted it yet.";
+        assert_eq!(error(result(quoted, Some(false))), None);
+        assert!(error(result(quoted, Some(true))).is_some());
+    }
+
+    /// The bar needs the model's window, which only a finished run gave.
+    #[test]
+    fn the_context_fill_is_the_main_agents_last_prompt_of_the_models_window() {
+        let mut task = running();
+        replay(&mut task, SUBAGENT);
+        assert_eq!(task.model.as_deref(), Some("claude-haiku-5-5"));
+        assert_eq!(activity(&task, &BTreeMap::new()).context, None);
+        let windows = BTreeMap::from([(window_key(Harness::Claude, "claude-haiku-5-5"), 1_000_000)]);
+        let fill = ContextFill {
+            used: 2 + 21_222 + 108,
+            window: 1_000_000,
+        };
+        assert_eq!(activity(&task, &windows).context, Some(fill));
+        // Codex reports no per-message usage: no bar, whatever is known.
+        let mut task = running();
+        task.harness = Harness::Codex;
+        replay(&mut task, include_str!("../fixtures/agent/codex-exit.jsonl"));
+        task.model = Some("gpt-x".into());
+        let any = BTreeMap::from([(window_key(Harness::Codex, "gpt-x"), 1)]);
+        assert_eq!(activity(&task, &any).context, None);
     }
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Activity, AppState, Task, TaskStatus } from "./generated/protocol";
-import { bubble, cardLabel, cardTasks, dockTask } from "./agent-model.ts";
+import { bubble, cardLabel, cardTasks, dockTask, room, subBubble } from "./agent-model.ts";
 
 const task = (id: number, status: TaskStatus, over: Partial<Task> = {}): Task => ({
   id,
@@ -20,7 +20,7 @@ const task = (id: number, status: TaskStatus, over: Partial<Task> = {}): Task =>
   ...over,
 });
 
-const act = (stance: Activity["stance"], over: Partial<Activity> = {}): Activity => ({ stance, calls: [], error: null, ...over });
+const act = (stance: Activity["stance"], over: Partial<Activity> = {}): Activity => ({ stance, calls: [], error: null, subagents: [], context: null, ...over });
 
 const running = { id: 0, usage: null, views: 0 };
 
@@ -92,5 +92,32 @@ test("a card's name says who, on what, and what it is doing", () => {
   assert.equal(
     cardLabel(t, act("working", { calls: calls.slice(0, 1), error: "refused" })),
     "Codex on “Faster guns”: Working. running cargo test, error: refused",
+  );
+});
+
+test("the context bar goes amber at 70% and red at 90%, and is absent when unknown", () => {
+  assert.equal(room(null), null);
+  assert.deepEqual(room({ used: 412_300, window: 1_000_000 }), {
+    percent: 41,
+    level: "ok",
+    title: "Context 41% full: 412.3k of 1M tokens",
+  });
+  assert.equal(room({ used: 699, window: 1000 })!.level, "ok");
+  assert.equal(room({ used: 700, window: 1000 })!.level, "low");
+  assert.equal(room({ used: 899, window: 1000 })!.level, "low");
+  assert.equal(room({ used: 900, window: 1000 })!.level, "out");
+  // Past the window stays a full bar.
+  assert.equal(room({ used: 1200, window: 1000 })!.percent, 100);
+});
+
+test("a subagent's figure shows its own call, and the card names it and the room left", () => {
+  const sub = { label: "Find the spawn code", calls: [{ kind: "files" as const, label: "reading spawn.fun" }] };
+  assert.deepEqual(subBubble(sub), { stance: "working", kind: "files", text: "reading spawn.fun" });
+  assert.deepEqual(subBubble({ ...sub, calls: [] }), { stance: "thinking", kind: "thinking", text: "thinking" });
+  const t = task(1, { kind: "in_progress" }, { title: "Spawn", run: running });
+  const calls = [{ kind: "agents" as const, label: "subagent: Find the spawn code" }];
+  assert.equal(
+    cardLabel(t, act("working", { calls, subagents: [sub], context: { used: 75, window: 100 } })),
+    "Claude on “Spawn”: Working. subagent: Find the spawn code; subagent “Find the spawn code”: reading spawn.fun; context 75% full",
   );
 });

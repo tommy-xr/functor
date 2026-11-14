@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Decision, Harness, Item, Task, Usage } from "./generated/protocol";
+import type { AppState, Change, Decision, Harness, Item, Scope, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -36,6 +36,8 @@ import { PathCard } from "./PathEvidence";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import { ReviewSettings } from "./ReviewSettings";
+import { ScopeSettings } from "./ScopeSettings";
+import { projectScope, taskScope } from "./scope-model";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { transcribe } from "./socket";
 import { record, type Recording } from "./mic";
@@ -181,6 +183,9 @@ export function ChatDock({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<{ task: number | null; text: string } | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
+  // The level picked for a new task (D39), until it is sent or another task is shown.
+  const [scopePick, setScopePick] = useState<Scope | null>(null);
+  useEffect(() => setScopePick(null), [current?.id]);
   useEffect(() => {
     if (!pending || !accepted || accepted.text !== pending.text) return;
     // A new task becomes the current one in the core as it starts.
@@ -217,6 +222,7 @@ export function ChatDock({
   );
   const agent = dockTask(state, current?.id ?? null);
   const harness: Harness = current?.harness ?? pickHarness(state);
+  const scope = taskScope(scopePick, current, state, harness);
   const running = current?.run != null;
   // Where the message goes, and the one-click switch to the other place (a new task ↔ a task).
   const [switched, setSwitched] = useState(false);
@@ -228,12 +234,15 @@ export function ChatDock({
   const submit = () => {
     const text = draft;
     if (!text.trim() || pending || !online || !place) return;
+    // The level picked applies to a task started from a new one; a new task
+    // switched to from a task takes the project's.
     const sent =
       place.kind === "task"
         ? send({ type: "send_message", task: place.task, message: text })
-        : send({ type: "new_task", message: text, harness });
+        : send({ type: "new_task", message: text, harness, ...(current === null && { scope }) });
     if (!sent) return;
     setPending({ task: place.kind === "task" ? place.task : null, text });
+    setScopePick(null);
     setSwitched(false);
     // Steering the running task from a new one shows that task.
     if (place.kind === "task" && place.task !== current?.id) setSelected(place.task);
@@ -297,7 +306,19 @@ export function ChatDock({
           pickable={current === null}
           onHarness={(h) => send({ type: "set_harness", harness: h })}
           review={
-            <ReviewSettings state={state} online={online} onChange={(setting) => send({ type: "set_review", setting })} />
+            <>
+              <ScopeSettings
+                scope={scope}
+                pickable={current === null}
+                projectDefault={projectScope(state)}
+                harness={harness}
+                online={online}
+                disabled={!state?.active}
+                onPick={setScopePick}
+                onDefault={(s) => send({ type: "set_scope", scope: s })}
+              />
+              <ReviewSettings state={state} online={online} onChange={(setting) => send({ type: "set_review", setting })} />
+            </>
           }
           running={running}
           place={place?.line ?? null}

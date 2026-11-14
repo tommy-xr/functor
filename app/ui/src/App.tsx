@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { AppState, ClientMsg, Session, View as TabView } from "./generated/protocol";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { ChatDock } from "./Chat";
@@ -234,6 +234,21 @@ type WindowHooks = {
   ipc?: { postMessage: (text: string) => void };
 };
 
+/** The title bar's controls, which a press acts on instead of moving the window. */
+const TITLEBAR_CONTROLS = "button, .pill";
+
+/**
+ * In the macOS window the page's bar is the title bar: a press on its empty
+ * parts moves the window, a double press zooms it. A browser has no `ipc`.
+ */
+function titlebarPress(e: MouseEvent) {
+  const ipc = (window as WindowHooks).ipc;
+  if (!ipc || e.button !== 0 || (e.target as Element).closest(TITLEBAR_CONTROLS)) return;
+  // As a native title bar: focus stays where it was, nothing is dragged out.
+  e.preventDefault();
+  ipc.postMessage(JSON.stringify({ titlebar: e.detail === 2 ? "zoom" : "drag" }));
+}
+
 /**
  * The window's menu bar: Open Folder and Open Recent arrive as messages to
  * send like a button's, and the recent projects go out for Open Recent.
@@ -306,7 +321,7 @@ function TitleBar({
     document.title = name ? `Functor — ${name}` : "Functor";
   }, [name]);
   return (
-    <header className="titlebar">
+    <header className="titlebar" onMouseDown={titlebarPress}>
       <span className="brand">
         <img src="icon.svg" alt="" width={28} height={28} />
         Functor

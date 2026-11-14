@@ -29,7 +29,7 @@ use crate::review::{
 use crate::session::{Display, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
-    Item, Run, RunEvent, Spoken, Task, TaskStatus, Usage,
+    Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
 use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
 use crate::voice::{self, Route, Stage, Utterance};
@@ -89,6 +89,9 @@ pub struct AppState {
     pub harnesses: Vec<Harness>,
     /// Per project path, the agent last picked for its new tasks.
     pub harness_choice: BTreeMap<String, Harness>,
+    /// Per project path, how much of the user's own setup its runs read
+    /// (D39); absent: all of it.
+    pub scope_choice: BTreeMap<String, Scope>,
     /// Per project path, how its changes are reviewed (D31); absent: the
     /// default.
     pub review_settings: BTreeMap<String, ReviewSetting>,
@@ -101,6 +104,11 @@ pub struct AppState {
     pub layouts: BTreeMap<String, Layout>,
     /// Recent projects, most recent first; kept for the app, not the folder.
     pub recents: Vec<Recent>,
+    /// The context window of each harness and model seen (`activity::window_key`),
+    /// app-wide: it arrives only as a run ends, so is kept for the next.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub context_windows: BTreeMap<String, u64>,
     /// The window can show a native folder picker (`ClientMsg::PickFolder`).
     pub native_picker: bool,
     /// Why the last folder asked for did not open; cleared by the next try.
@@ -211,10 +219,12 @@ impl AppState {
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
+            scope_choice: BTreeMap::new(),
             review_settings: BTreeMap::new(),
             can_review: false,
             layouts,
             recents: Vec::new(),
+            context_windows: BTreeMap::new(),
             native_picker: false,
             open_error: None,
             opening: 0,
@@ -301,6 +311,8 @@ pub enum Event {
         id: Result<u64, String>,
         message: String,
         harness: Harness,
+        /// This request's level (D39), else the project's.
+        scope: Option<Scope>,
         /// The utterance it was said as, from a headset.
         voice: Option<Box<Utterance>>,
     },
@@ -443,6 +455,8 @@ pub enum Command {
     ListDirs { path: String },
     /// Remember the recent projects, app-wide.
     SaveRecents { recents: Vec<Recent> },
+    /// Keep the context windows seen (`AppState::context_windows`).
+    SaveContextWindows { windows: BTreeMap<String, u64> },
     /// Start an agent run, answering with `Event::Run`s that end in `Ended`.
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
@@ -462,6 +476,8 @@ pub enum Command {
     DeleteTask { dir: PathBuf, task: u64 },
     /// Remember `harness` as the pick for new tasks in the project at `dir`.
     SaveHarness { dir: PathBuf, harness: Harness },
+    /// Remember `scope` for the runs of the project at `dir` (D39).
+    SaveScope { dir: PathBuf, scope: Scope },
     /// Remember `layout` for the project at `dir`; writes may be coalesced.
     SaveLayout { dir: PathBuf, layout: Box<Layout> },
     /// Read `path` (checked by [`check_relative`]) in project `project`'s
@@ -519,6 +535,8 @@ pub struct RunSpec {
     pub task: u64,
     pub run: u64,
     pub harness: Harness,
+    /// How much of the user's own setup the run reads (D39).
+    pub scope: Scope,
     /// The task's project directory: the agent's working directory.
     pub dir: PathBuf,
     /// What the agent may edit.
@@ -613,6 +631,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::StopSession) => (stop(&mut state, &mut commands), true),
         Event::Client(ClientMsg::SetHarness { harness }) => {
             (set_harness(&mut state, harness, &mut commands), true)
+        }
+        Event::Client(ClientMsg::SetScope { scope }) => {
+            (set_scope(&mut state, scope, &mut commands), true)
         }
         Event::Client(ClientMsg::SetReview { setting }) => {
             (set_review(&mut state, setting, &mut commands), true)
@@ -861,10 +882,11 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             id,
             message,
             harness,
+            scope,
             voice: None,
         } => match id {
             Ok(id) => (
-                new_task(&mut state, id, message, harness, None, &mut commands),
+                new_task(&mut state, id, message, harness, scope, None, &mut commands),
                 false,
             ),
             Err(e) => (
@@ -935,6 +957,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         Event::Run { task, run, event } => {
             let ended = matches!(event, RunEvent::Ended { .. });
+            remember_window(&mut state, task, run, &event, &mut commands);
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
             let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
@@ -1002,7 +1025,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
     prune_highlight(&mut state);
-    let activity = activities(&state.tasks);
+    let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
     let queues = queue::queues(&state.tasks, state.tracks_changes, state.active.as_deref());
     let changed = changed
@@ -1197,6 +1220,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        scope_choice,
         review_settings,
         layouts,
         // Derived from `tasks` at the end of the step.
@@ -1210,6 +1234,7 @@ fn opened(
         harnesses: _,
         can_review: _,
         recents: _,
+        context_windows: _,
         native_picker: _,
         open_error: _,
         opening: _,
@@ -1243,6 +1268,7 @@ fn opened(
         tasks,
         current_task,
         harness_choice,
+        scope_choice,
         review_settings,
         layouts,
         // The old folder's highlight could name a project of the same path.
@@ -1614,6 +1640,23 @@ fn set_harness(state: &mut AppState, harness: Harness, commands: &mut Vec<Comman
     true
 }
 
+/// Records `scope` as the active project's level (D39); false when it
+/// already is.
+fn set_scope(state: &mut AppState, scope: Scope, commands: &mut Vec<Command>) -> bool {
+    let Some(path) = &state.active else {
+        return false;
+    };
+    if state.scope_choice.get(path).copied().unwrap_or_default() == scope {
+        return false;
+    }
+    commands.push(Command::SaveScope {
+        dir: project_dir(Path::new(&state.repo_root), path),
+        scope,
+    });
+    state.scope_choice.insert(path.clone(), scope);
+    true
+}
+
 /// Applies `op` to the active project's layout. A live game in a pane
 /// keeps its tab: closing it is refused (Stop game, or another placement,
 /// first). A placement whose session runs differently restarts it.
@@ -1892,18 +1935,20 @@ fn delete_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bo
     true
 }
 
-/// Starts task `id` in the active project with `message`, or queues it
-/// while the project is busy ([`queue::holds`], D30); refused where nothing
-/// starts unasked.
+/// Starts task `id` in the active project with `message` (reading `scope` of
+/// the user's setup, else the project's level), or queues it while the
+/// project is busy ([`queue::holds`], D30); refused where nothing starts
+/// unasked.
 fn new_task(
     state: &mut AppState,
     id: u64,
     message: String,
     harness: Harness,
+    scope: Option<Scope>,
     spoken: Option<Spoken>,
     commands: &mut Vec<Command>,
 ) -> bool {
-    match create_task(state, id, message, harness, spoken, commands) {
+    match create_task(state, id, message, harness, scope, spoken, commands) {
         Ok(()) => true,
         Err(reason) => reject(commands, reason),
     }
@@ -1915,6 +1960,7 @@ fn create_task(
     id: u64,
     message: String,
     harness: Harness,
+    scope: Option<Scope>,
     spoken: Option<Spoken>,
     commands: &mut Vec<Command>,
 ) -> Result<(), String> {
@@ -1929,12 +1975,14 @@ fn create_task(
         return Err(wait.reason());
     }
     state.current_task.insert(project.clone(), Some(id));
+    let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,
         project,
         title: title(&message),
         status: TaskStatus::Queued,
         harness,
+        scope: scope.unwrap_or_default().for_harness(harness),
         model: None,
         session_id: None,
         run: None,
@@ -2154,9 +2202,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     let prompt = queue::prompt(task);
     task.run = Some(Run {
         id: run,
-        usage: None,
-        views: 0,
-        started: false,
+        ..Default::default()
     });
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
@@ -2166,6 +2212,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         task: id,
         run,
         harness: task.harness,
+        scope: task.scope,
         dir: project_dir(&root, &task.project),
         repo_root: root.clone(),
         message: prompt,
@@ -2278,7 +2325,8 @@ fn voice_task(
         }
         (Ok(id), Route::New) => {
             let spoken = Some(u.spoken.clone());
-            create_task(state, id, u.text.clone(), harness, spoken, commands).map(|()| id)
+            // The project's level (D39).
+            create_task(state, id, u.text.clone(), harness, None, spoken, commands).map(|()| id)
         }
     };
     match started {
@@ -2582,6 +2630,7 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
         model,
         state: review_state,
         usage: None,
+        detail: None,
         staged: None,
     });
     commands.push(save(&root, task));
@@ -2612,6 +2661,10 @@ fn on_review(
         // Kept with the task, sent with the next change.
         ReviewEvent::Agent(AgentEvent::Usage { input, output }) => {
             review.usage = Some(Usage { input, output });
+            false
+        }
+        ReviewEvent::Agent(AgentEvent::UsageDetail(detail)) => {
+            review.detail = Some(detail);
             false
         }
         ReviewEvent::Agent(_) => false,
@@ -2758,6 +2811,33 @@ fn on_run(
             broadcast_items(commands, task, changed);
             true
         }
+    }
+}
+
+/// Keeps the context window a run reports (Claude's, as it ends) for its
+/// harness and model's later runs, and saves it when new.
+fn remember_window(
+    state: &mut AppState,
+    id: u64,
+    run: u64,
+    event: &RunEvent,
+    commands: &mut Vec<Command>,
+) {
+    let RunEvent::Agent(AgentEvent::UsageDetail(UsageDetail {
+        context_window: Some(window),
+        ..
+    })) = event
+    else {
+        return;
+    };
+    let task = (state.tasks.iter()).find(|t| t.id == id && t.run.as_ref().is_some_and(|r| r.id == run));
+    let Some(model) = task.and_then(|t| Some((t.harness, t.model.as_deref()?))) else {
+        return;
+    };
+    let key = crate::activity::window_key(model.0, model.1);
+    if state.context_windows.insert(key, *window) != Some(*window) {
+        let windows = state.context_windows.clone();
+        commands.push(Command::SaveContextWindows { windows });
     }
 }
 
@@ -3852,6 +3932,7 @@ mod tests {
             message: message.to_string(),
             harness: Harness::Claude,
             voice: None,
+            scope: Default::default(),
         }
     }
 
@@ -3914,7 +3995,7 @@ mod tests {
 
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
-        s.activity = activities(&s.tasks);
+        s.activity = activities(&s.tasks, &s.context_windows);
         s.decisions = decisions(&s.tasks);
         s.queues = queue::queues(&s.tasks, s.tracks_changes, s.active.as_deref());
         s
@@ -3957,6 +4038,7 @@ mod tests {
                     attach: None,
                     moment: false,
                     context: crate::agent_view::app_context(&s0, "examples/a"),
+                    scope: Default::default(),
                 })),
                 Command::SaveTask {
                     dir: PathBuf::from("/repo/examples/a"),
@@ -4009,6 +4091,91 @@ mod tests {
         let (s, _) = update(s, agent(1, 0, finished()));
         let (s, _) = update(s, ended(1, 0));
         assert_eq!(s.activity[&1].stance, Stance::Done);
+    }
+
+    /// A model's first run has no context bar until it ends, with the
+    /// window; that window is kept (and saved) for its later runs.
+    #[test]
+    fn the_context_window_arrives_at_a_runs_end_and_is_kept() {
+        use crate::activity::ContextFill;
+        use crate::tasks::TokenUsage;
+        let detail = |cache_read, window| {
+            let last = TokenUsage {
+                cache_read,
+                ..TokenUsage::default()
+            };
+            AgentEvent::UsageDetail(UsageDetail {
+                total: last,
+                last: Some(last),
+                context_window: window,
+                ..UsageDetail::default()
+            })
+        };
+        let started = AgentEvent::Started {
+            session: Some("s".into()),
+            model: Some("m".into()),
+        };
+        let (s, _) = update(state(), new_task("hi"));
+        let (s, _) = update(s, agent(1, 0, started));
+        let (s, _) = update(s, agent(1, 0, detail(800, None)));
+        assert_eq!(s.activity[&1].context, None);
+        let (s, commands) = update(s, agent(1, 0, detail(900, Some(1000))));
+        let windows = BTreeMap::from([("claude/m".to_string(), 1000)]);
+        assert!(commands.contains(&Command::SaveContextWindows { windows: windows.clone() }));
+        let fill = Some(ContextFill { used: 900, window: 1000 });
+        assert_eq!(s.activity[&1].context, fill);
+        // The same window again is not saved again.
+        let (s, commands) = update(s, agent(1, 0, detail(950, Some(1000))));
+        assert!(!commands.iter().any(|c| matches!(c, Command::SaveContextWindows { .. })));
+        let usage = AgentEvent::Usage {
+            input: 950,
+            output: 1,
+        };
+        let (s, _) = update(s, agent(1, 0, usage));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, ended(1, 0));
+        // After the run, the last use stands; a follow-up's first event
+        // shows it at once, before any usage of its own.
+        assert_eq!(s.activity[&1].context, Some(ContextFill { used: 950, window: 1000 }));
+        let (s, _) = update(s, send(1, "again"));
+        assert_eq!(s.activity[&1].context, Some(ContextFill { used: 950, window: 1000 }));
+        assert_eq!(s.context_windows, windows);
+    }
+
+    /// D39: the project's level by default, a new task's own when it gives
+    /// one, kept with the task; Codex always reads all of the user's setup.
+    #[test]
+    fn a_tasks_scope_is_its_own_else_the_projects_and_never_less_for_codex() {
+        let task_with = |harness, scope| Event::NewTask {
+            id: Ok(1),
+            message: "hi".into(),
+            harness,
+            scope,
+            voice: None,
+        };
+        // The project's default, saved; setting it again changes nothing.
+        let (s, commands) = update(state(), client(ClientMsg::SetScope { scope: Scope::Isolated }));
+        assert!(commands.contains(&Command::SaveScope {
+            dir: PathBuf::from("/repo/examples/a"),
+            scope: Scope::Isolated
+        }));
+        let (s, commands) = update(s, client(ClientMsg::SetScope { scope: Scope::Isolated }));
+        assert!(!commands.iter().any(|c| matches!(c, Command::SaveScope { .. })));
+        let (s2, commands) = update(s.clone(), task_with(Harness::Claude, None));
+        assert_eq!(spec(&commands).scope, Scope::Isolated);
+        assert_eq!(task(&s2, 1).scope, Scope::Isolated);
+        // A task's own level, kept by its follow-ups (they resume its session).
+        let (s2, commands) = update(s.clone(), task_with(Harness::Claude, Some(Scope::Project)));
+        assert_eq!(spec(&commands).scope, Scope::Project);
+        let (s2, _) = update(s2, agent(1, 0, finished()));
+        let (s2, _) = update(s2, ended(1, 0));
+        let (s2, commands) = update(s2, send(1, "more"));
+        assert_eq!(spec(&commands).scope, Scope::Project);
+        assert_eq!(task(&s2, 1).scope, Scope::Project);
+        // Codex: all of it, whatever the project or the request says.
+        let (s3, commands) = update(s, task_with(Harness::Codex, Some(Scope::Isolated)));
+        assert_eq!(spec(&commands).scope, Scope::UserAndProject);
+        assert_eq!(task(&s3, 1).scope, Scope::UserAndProject);
     }
 
     #[test]
@@ -4139,7 +4306,16 @@ mod tests {
         );
         // A queued task has no agent, so no card.
         assert!(!s.activity.contains_key(&2));
-        let (s, commands) = update(s, nth_task(3, "third"));
+        // Queued with the level picked, kept until it starts (D39).
+        let isolated = Event::NewTask {
+            id: Ok(3),
+            message: "third".to_string(),
+            harness: Harness::Claude,
+            scope: Some(crate::tasks::Scope::Isolated),
+            voice: None,
+        };
+        let (s, commands) = update(s, isolated);
+        assert_eq!(task(&s, 3).scope, crate::tasks::Scope::Isolated);
         assert_eq!(queue_of(&s, "examples/a").unwrap().tasks, [2, 3]);
         assert!(matches!(&commands[..], [Command::SaveTask { .. }, _, _]));
 
@@ -4450,9 +4626,7 @@ mod tests {
         });
         cut.run = Some(Run {
             id: 3,
-            usage: None,
-            views: 0,
-            started: false,
+            ..Default::default()
         });
         cut.status = TaskStatus::InProgress;
         let (s, _) = update(
@@ -4481,6 +4655,7 @@ mod tests {
             message: "hi".to_string(),
             harness: Harness::Claude,
             voice: None,
+            scope: Default::default(),
         };
         let (next, commands) = update(state(), failed);
         assert_eq!(next, state());
@@ -4488,6 +4663,7 @@ mod tests {
         let bare = client(ClientMsg::NewTask {
             message: "hi".to_string(),
             harness: Harness::Claude,
+            scope: Default::default(),
         });
         let (next, commands) = update(state(), bare);
         assert_eq!(next, state());
@@ -4594,7 +4770,8 @@ mod tests {
             msg,
             ClientMsg::NewTask {
                 message: "hi".to_string(),
-                harness: Harness::Codex
+                harness: Harness::Codex,
+                scope: Default::default(),
             }
         );
         let json = serde_json::to_value(ServerMsg::Item {
@@ -5178,6 +5355,7 @@ mod tests {
             message: "Make it spin".into(),
             harness: Harness::Codex,
             voice: None,
+            scope: Default::default(),
         };
         let (s, _) = update(s, codex_task);
         let (mut s, _) = update(s, baseline(1, 0, "tree-1"));
@@ -7029,6 +7207,7 @@ mod tests {
             message: "go".to_string(),
             harness: Harness::Claude,
             voice,
+            scope: Default::default(),
         };
         update(s, reserved).0
     }
@@ -7061,6 +7240,7 @@ mod tests {
             message: message.clone(),
             harness: *harness,
             voice: Some(u.clone()),
+            scope: Default::default(),
         };
         let (s, commands) = update(s, reserved);
         assert_eq!(
@@ -7167,6 +7347,7 @@ mod tests {
             id: Ok(4),
             message: "go".to_string(),
             harness: Harness::Claude,
+            scope: None,
             voice,
         };
         let (s, commands) = update(s, reserved);
@@ -7270,6 +7451,7 @@ mod tests {
             model: None,
             state: ReviewState::Preparing,
             usage: None,
+            detail: None,
             staged: None,
         });
         assert_eq!(voice::route(&s, "aa", "and blue"), Route::New);
@@ -7324,6 +7506,7 @@ mod tests {
             id: Ok(5),
             message: "go".to_string(),
             harness: Harness::Claude,
+            scope: None,
             voice,
         };
         let (s, commands) = update(s, reserved);
