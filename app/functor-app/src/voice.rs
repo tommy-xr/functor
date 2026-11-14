@@ -257,7 +257,7 @@ impl Speech {
 
     /// Whether this app can turn speech into text.
     pub fn available(&self) -> bool {
-        !matches!(self, Speech::Off)
+        cfg!(feature = "whisper") || matches!(self, Speech::Fake(_))
     }
 
     /// The text spoken in `pcm` (16 kHz mono), off the async threads.

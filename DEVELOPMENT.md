@@ -211,6 +211,26 @@ Each puts the headset's own pairing back afterwards;
 | `npm run test:quest-placement` | The Headset placement from the app: run there, pause and step, capture through the tunnel, return to the desktop. | `FUNCTOR_BIN` |
 | `npm run test:quest-voice` | Push-to-talk and every state of the status toast, against a stub desktop. The microphone is replaced by a test tone. | — |
 
+### Functor.app (macOS)
+
+```sh
+npm run package:app        # builds both release binaries → target/package/Functor.app
+open target/package/Functor.app
+open target/package/Functor.app --args -d ~/code/my-game
+cp -R target/package/Functor.app /Applications/
+```
+
+The bundle holds `functor-app` (UI built in), the `functor` it runs games with
+(`Contents/Helpers`), and the icon (`app/package/icon.svg`). It is ad-hoc
+signed: it runs on the Mac that built it, but Gatekeeper rejects it elsewhere
+(a downloaded copy is quarantined and blocked as from an unidentified
+developer). Opened from Finder or the Dock, it opens the last project and takes
+`PATH` from your login shell, so `claude`, `codex` and `adb` are found. While it
+runs, `open` only brings it forward: `--args` reach a fresh launch. The first
+mic recording and the first headset search ask for microphone and
+local-network access, and ask again after each rebuild (an ad-hoc signature
+changes with the binary).
+
 ## What `build`/`run` do under the hood
 
 The `functor` binary is **self-contained**: the desktop runtime is linked in and the

@@ -50,11 +50,19 @@ const SOURCE_POLL: Duration = Duration::from_millis(500);
 const LAYOUT_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// The `functor` to run: `--functor`, else `FUNCTOR_BIN`, else one next to
-/// this executable (`exe`), else `functor` on `PATH`.
+/// this executable (`exe`), else `Functor.app`'s `Contents/Helpers/functor`,
+/// else `functor` on `PATH`.
 pub fn functor_bin(flag: Option<PathBuf>, env: Option<OsString>, exe: Option<PathBuf>) -> PathBuf {
     let name = format!("functor{}", std::env::consts::EXE_SUFFIX);
+    // Helpers, not MacOS: there the game child would share the app's bundle
+    // id (its own Functor Dock tile, and Quit by id could reach it instead).
+    let local = |dir: &Path| {
+        [dir.join(&name), dir.parent()?.join("Helpers").join(&name)]
+            .into_iter()
+            .find(|p| p.is_file())
+    };
     flag.or_else(|| env.filter(|e| !e.is_empty()).map(PathBuf::from))
-        .or_else(|| Some(exe?.parent()?.join(&name)).filter(|p| p.is_file()))
+        .or_else(|| local(exe?.parent()?))
         .unwrap_or_else(|| name.into())
 }
 
@@ -1336,5 +1344,14 @@ mod tests {
             dir.path().join(&name)
         );
         assert_eq!(functor_bin(None, None, None), PathBuf::from(&name));
+        // In Functor.app: Contents/MacOS/functor-app runs Contents/Helpers/functor.
+        let contents = dir.path().join("Functor.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
+        std::fs::write(contents.join("Helpers").join(&name), "").unwrap();
+        assert_eq!(
+            functor_bin(None, None, Some(contents.join("MacOS/functor-app"))),
+            contents.join("Helpers").join(&name)
+        );
     }
 }
