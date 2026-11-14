@@ -6195,7 +6195,7 @@ mod tests {
             registry.insert(url.clone(), None, None, None, None);
             registry.insert(url.clone(), None, None, None, None);
         }
-        let target = server.target("s1").unwrap();
+        let target = server.target("s1").await.unwrap();
 
         let error = server.abort_advance(&target, "advance failed".into()).await;
 
