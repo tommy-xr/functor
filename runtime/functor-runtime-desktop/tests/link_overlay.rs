@@ -124,11 +124,13 @@ fn write_views(gl: &glow::Context, painter: &mut LinkOverlayPainter, dir: &str) 
     let listening = VoiceToast {
         stage: VoiceStage::Listening { level: 7, seconds_left: None },
         transcript: None,
+        waiting: None,
     };
     save("toast-listening", &card(&toast_lines(&listening)), at(1.0, 0.0), Background::Bright);
     let heard = VoiceToast {
         stage: VoiceStage::Working,
         transcript: Some(TRANSCRIPT.into()),
+        waiting: None,
     };
     save("toast-transcript", &card(&toast_lines(&heard)), at(1.0, 0.0), Background::Bright);
     for view in ["now", "tasks", "decision", "talk", "conversation", "cannot-reach"] {
@@ -180,6 +182,7 @@ fn toast() -> VoiceToast {
     VoiceToast {
         stage: VoiceStage::Listening { level: 7, seconds_left: None },
         transcript: None,
+        waiting: None,
     }
 }
 

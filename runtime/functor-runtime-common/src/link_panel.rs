@@ -1789,6 +1789,7 @@ mod tests {
         let toast = VoiceToast {
             stage: crate::debug_protocol::VoiceStage::Heard,
             transcript: Some("word ".repeat(80)),
+            waiting: None,
         };
         let now = Instant::now();
         let conns = [
@@ -1874,6 +1875,7 @@ mod tests {
         let heard = VoiceToast {
             stage: crate::debug_protocol::VoiceStage::Heard,
             transcript: Some("make the ball bounce a little higher off the left wall, please".into()),
+            waiting: None,
         };
         let page = Panel {
             open: true,
@@ -1995,6 +1997,7 @@ mod tests {
                 seconds_left: None,
             },
             transcript: None,
+            waiting: None,
         };
         let at = |section, page, focus, confirm| Panel {
             open: true,
