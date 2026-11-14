@@ -246,6 +246,67 @@ its `app/spikes/s2-agent/events/`.
 - Not checked: a real refusal and ask mode, raw Codex output for MCP calls,
   image tool results.
 
+### S3 — mirroring the headset's game (2026-11-14)
+
+`examples/vr-lab`, `examples/physics` (every body drawn through
+`Physics.transformed`) and `examples/primitives` (model `{}`, all motion from
+`tts`). Release desktop builds; Quest 3 at 120 Hz on the dev (debuggable)
+APK over adb.
+
+| | primitives | physics | vr-lab |
+| --- | --- | --- | --- |
+| `/state.model` JSON | 2 B | 46 B | 6.4 KB (6.8 KB on the Quest) |
+| model change per frame | 0 | 0 | ~0.4 KB |
+| `/scene` (pretty) | 21 KB | 25 KB | 428 KB |
+| the same frame, compact | 3.1 KB | 3.9 KB | 38 KB |
+| frame change per frame | ~0.4 KB | ~0.35 KB | 0 (idle) |
+
+- **The model is plain data, but `draw` reads more than the model.** None of
+  the three models holds a closure or host value, and the plain-data codec
+  typed messages use would carry them; no verb loads a model into a session.
+  But vr-lab draws free props at `Physics.pose` and physics draws every body
+  through `Physics.transformed`: a session given only the model draws them
+  where its own unstepped world has them. Following the model means also
+  shipping the physics world (its snapshot is the whole rapier state) or a
+  new pose-override seam, and render-time animation needs the clock too.
+- **The frame needs nothing else.** `draw`'s output is serde data with
+  physics poses, memo subtrees and clip times already resolved; the desktop
+  has the project's files for assets. A desktop session drawing another's
+  frames rendered vr-lab pixel-identical (desktop to desktop, 1600×1200),
+  and a recorded primitives frame matches primitives' own golden. **So the
+  mirror carries frames, not models.**
+- **Existing routes are too costly to poll on the headset** (vr-lab, 4.5 s
+  each; "missed" counts frames that missed a display refresh):
+
+  | poll | latency p50 | frames | missed |
+  | --- | --- | --- | --- |
+  | none | — | 546–548 | 2–4 |
+  | `/scene` 10 Hz | 39 ms | 454 | 59 |
+  | `/scene` 30 Hz | 39 ms | 222 | 145 |
+  | `/state` 10 Hz | 17 ms | 524 | 24 |
+  | `/state?model=0` 30 Hz | 12 ms | 505 | 40 |
+
+  `/scene` pretty-prints the frame on the render thread; `/state` builds on
+  the sim thread. A model mirror must serialize on the sim thread (values
+  are `Rc`); a frame is an `Arc` another thread can serialize. Hence a new
+  `GET /mirror`: frame, head view and clock, compact, written on the HTTP
+  thread. (The app's 20 Hz `/state?model=0` transport poll costs the headset
+  missed refreshes too: follow-up.)
+- **No pushed channel.** The desktop polls `/mirror` through the tunnel, one
+  request at a time, at most 20 Hz, and only while a page streams the
+  mirror, so a closed mirror costs the headset nothing and the link carries
+  ≤0.8 MB/s for vr-lab. Measured through the Wi-Fi link
+  (`npm run test:quest-mirror`, hello-cubes, Quest 3 at 80 Hz, dev APK, 4 s
+  each): 17–18 fps mirrored, a poll's round trip 115–146 ms; headset
+  frames closed vs open 323–329 vs 324, frame p99 13.5–13.8 vs 13.8 ms, 0
+  vs 0 missed refreshes. Not measured: `/mirror` with vr-lab's 38 KB frame
+  on the headset (the run was cut short), and a release APK.
+- **No capture fallback.** A frame has no closure or host-handle failure
+  mode; the mirror fails only past 8 MiB of JSON (413) or against an older
+  APK (404), and says so. Not in the frame, so not mirrored: what the
+  headset shell draws itself (passthrough feed, fused room mesh, the link
+  panel and toasts).
+
 ## Agent-run metrics
 
 `npm run metrics:app` (task 1.19; `app/metrics/`) runs each scenario in

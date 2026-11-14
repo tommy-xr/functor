@@ -32,8 +32,8 @@ use std::time::Instant;
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::debug_protocol::{
-    CaptureError, DebugRequest, DisplayRefreshRate, InputCommand, RuntimeState, RuntimeView,
-    RuntimeViewport,
+    CaptureError, DebugRequest, DisplayRefreshRate, InputCommand, MirrorSnapshot, RuntimeState,
+    RuntimeView, RuntimeViewport,
 };
 use functor_runtime_common::device_files::DeviceFiles;
 use functor_runtime_common::environment_depth::EnvironmentDepthSource;
@@ -877,6 +877,11 @@ struct DebugLoopState {
     // Debug requests may arrive while paused or between device fixed steps.
     input_edges: functor_runtime_common::InputEdges,
     last_frame: Option<Arc<Frame>>,
+    /// `last_frame`'s camera composed with the head between the eyes, for
+    /// `/mirror`; `None` while the head is untracked.
+    last_view: Option<functor_runtime_common::Camera>,
+    /// The clock `last_frame` rendered at.
+    last_tts: f32,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
     /// `None` when the runtime lacks XR_FB_display_refresh_rate.
     display_refresh_rate: Option<DisplayRefreshRate>,
@@ -1171,6 +1176,7 @@ fn service_debug_request(
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link,
+                    mirror: None,
                 });
             });
         }
@@ -1194,6 +1200,14 @@ fn service_debug_request(
                 .unwrap_or_else(|error| Some(format!("{{\"error\":{:?}}}", error.to_string())))
                 .unwrap_or_else(|| "{\"error\":\"no frame rendered yet\"}".to_string());
             let _ = response.send(json);
+        }
+        DebugRequest::Mirror(response) => {
+            let _ = response.send(debug.last_frame.clone().map(|scene| MirrorSnapshot {
+                rendered_frames: debug.rendered_frames,
+                tts: debug.last_tts,
+                view: debug.last_view.clone(),
+                scene,
+            }));
         }
         DebugRequest::Trace(response) => {
             let paused = clock.is_paused();
@@ -2012,7 +2026,8 @@ pub fn android_main(app: AndroidApp) {
         for (rx, via_link) in receivers {
             let Some(rx) = rx else { continue };
             while let Ok(request) = rx.try_recv() {
-                debug_active = true;
+                // A mirror's snapshot is self-contained: no lockstep for it.
+                debug_active |= !matches!(request, DebugRequest::Mirror(_));
                 service_debug_request(
                     request,
                     &session,
@@ -2744,8 +2759,18 @@ images cannot be posed"
             debug.stages = Some(timings);
         }
 
-        // `/scene` serves the frame on screen.
+        // `/scene` and `/mirror` serve the frame on screen.
         debug.last_frame = Some(frame);
+        // The head between the eyes, through an eye's vertical field of view.
+        debug.last_view = tracking_reference.and(tracked_center).map(|_| {
+            functor_runtime_common::Camera {
+                fov_radians: views
+                    .first()
+                    .map_or(lod_camera.fov_radians, |v| v.fov.angle_up - v.fov.angle_down),
+                ..lod_camera
+            }
+        });
+        debug.last_tts = frame_time.tts;
         if let Some(pushed) = pushed_progress {
             lockstep = feedback
                 || functor_runtime_common::sim_driver::assets_busy(&pushed, &asset_cache.progress())

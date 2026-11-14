@@ -28,6 +28,8 @@ mod desktop_gamepad;
 #[cfg(not(target_arch = "wasm32"))]
 mod desktop_xr_emulator;
 #[cfg(not(target_arch = "wasm32"))]
+mod mirror_game;
+#[cfg(not(target_arch = "wasm32"))]
 mod net_dispatch;
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_game;
