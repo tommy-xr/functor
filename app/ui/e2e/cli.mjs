@@ -51,8 +51,8 @@ async function check(browser, width, height) {
     await page.goto(server.url);
     await expect(banner).toBeVisible();
     await expect(banner).toContainText(`The functor CLI at ${functor} (0.1.2) is older than this app`);
-    await expect(banner).toContainText("npm run build:cli");
-    await expect(banner).toContainText("--functor <path>");
+    // Named with --functor, so that is the fix (not a build where this app looks).
+    await expect(banner).toContainText("Pass --functor <path> to a current one.");
     // The game it refused to start says the same, once, where its error would be.
     const message = (await banner.locator("p").textContent()).trim();
     await expect(page.getByTestId("game-view")).toHaveText(message);

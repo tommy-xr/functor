@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chromium, expect } from "@playwright/test";
-import { APP, chooseProject, FUNCTOR, openStreams, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { APP, APP_ARGS, chooseProject, FUNCTOR, openStreams, ROOT, requireBuilt, startServer, stopServer, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 const SHOTS = process.env.APP_UI_SHOTS;
@@ -24,7 +24,7 @@ requireBuilt();
 const git = (...args) => execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" }).trim();
 const BRANCH = git("rev-parse", "--abbrev-ref", "HEAD");
 const COMMIT = git("rev-parse", "--short", "HEAD");
-const printed = execFileSync(APP, ["--headless", "--print", "-d", ROOT], { encoding: "utf8" });
+const printed = execFileSync(APP, [...APP_ARGS, "--headless", "--print", "-d", ROOT], { encoding: "utf8" });
 const DEFAULT = printed.match(/^active: (.+)$/m)[1];
 const nameOf = (path) => path.split("/").pop();
 
