@@ -594,6 +594,28 @@ ran with, and the metrics record it too, so the cost of each level is known
 rather than guessed (one turn is about 35k input tokens today, of which the
 user's own setup is roughly a quarter).
 
+### D40 — one binary
+
+The app and the CLI become one executable, `functor`. Today they are two, and
+the app runs whatever `functor` it finds; when that one is older, the game
+and the agent's tools fail to start with errors about arguments.
+
+- **`functor` with no arguments opens the app, in-process.** The game
+  sessions and the agent's tool server are the same executable started again
+  (`run native …`, `mcp …`), so the app and its CLI cannot differ.
+- **The app is a library the CLI links,** behind a build feature: a CLI-only
+  build stays possible for CI and for platforms without the window.
+- **Releases carry the app** because they already carry `functor`.
+- **On macOS the game child says it is a background process** when it starts,
+  so it takes no Dock tile of its own and "Quit" quits the app, also inside
+  the `.app` bundle, which then holds one executable.
+- **Elsewhere,** where there is no window yet, `functor` with no arguments
+  keeps printing help, or serves the page to a browser.
+
+Until then the app checks the `functor` it found before using it and, when it
+is too old, says which one it is and how to fix it, in one place — not as
+launch errors in the game view and the chat.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
