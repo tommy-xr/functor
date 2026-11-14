@@ -338,8 +338,11 @@ let grab = (s) =>
   resets the next delay to 250ms; dropping the subscription cancels the retry.
 - **`Key` is a built-in module**: `Key.t`, the variant the `input` hook's
   `key` parameter carries — `Key.A`..`Key.Z`, `Key.Up`/`Down`/`Left`/`Right`,
-  `Key.Space`/`Enter`/`Escape`, and the digit row as `Key.Num0`..`Key.Num9`
-  (NOT bare digits). Match constructors (`| Key.W =>`) or compare
+  `Key.Space`/`Enter`/`Escape`, the digit row as `Key.Num0`..`Key.Num9`
+  (NOT bare digits), `Key.Tab`, `Key.Shift`/`Control`/`Alt` (either side),
+  `Key.F1`..`Key.F12`, and punctuation by US-layout position
+  (`Minus`/`Equal`/`LeftBracket`/`RightBracket`/`Backslash`/`Semicolon`/
+  `Quote`/`Comma`/`Period`/`Slash`). No Command/Super or backquote. Match constructors (`| Key.W =>`) or compare
   (`key == Key.Enter`); a typo (`Key.Enterr`) is a load-time error — the
   reason keys stopped being strings. `Random` is likewise built-in (the
   abstract `Random.Seed` — see the Random builtins above).

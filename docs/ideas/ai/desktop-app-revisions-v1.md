@@ -237,6 +237,13 @@ never shown twice.
 - **One banner** (D17): "Click to play", "Esc to release", or "Mirrored from
   headset".
 
+*Revised 2026-11-13 (1.4b): while the game has input, every key it knows
+goes to it — Esc, Tab and the function keys too — and ⌘ is the app's: ⌘
+chords never reach the game, and ⌘Esc releases ("⌘Esc to release"). A game
+that captures the mouse gets the pointer locked on Click to play. Focus
+leaving the view, the window or the tab, or an app dialog opening, releases
+everything held.*
+
 Flows:
 
 1. **At the desk.** Start game → the Game tab opens in the focused pane. Open

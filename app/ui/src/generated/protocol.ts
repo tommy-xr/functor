@@ -417,6 +417,11 @@ export type FileDiff = { file: FileChange,
 lines: Array<DiffLine>, omitted: Omitted | null, };
 
 /**
+ * A window's place and size in points, its top left from the main screen's.
+ */
+export type Frame = { x: number, y: number, width: number, height: number, };
+
+/**
  * Keyboard and mouse input in the debug server's `POST /input` shape.
  */
 export type GameInput = { "type": "key", key: string, down: boolean, } | { "type": "mouse_move", x: number, y: number, } | { "type": "mouse_button", button: MouseButton, down: boolean, } | { "type": "mouse_wheel", delta: number, };
@@ -518,13 +523,18 @@ game: GamePlacement,
 /**
  * What the agent arranged (D25). Absent from older layouts.
  */
-agent: AgentLayout, };
+agent: AgentLayout, 
+/**
+ * Panes in windows of their own, in the order they were popped out.
+ * Absent from older layouts.
+ */
+windows: Array<PopOut>, };
 
 /**
  * A change to the layout. Ops naming a pane or split that is gone (another
  * window changed the layout first) change nothing.
  */
-export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "place_on_headset", device: string, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, };
+export type LayoutOp = { "type": "open", view: View, target: Target, } | { "type": "move", view: View, pane: number, index: number, } | { "type": "close", view: View, } | { "type": "close_pane", pane: number, } | { "type": "split", pane: number, direction: Direction, } | { "type": "focus", pane: number, } | { "type": "resize", split: number, ratio: number, } | { "type": "reset" } | { "type": "place", placement: Placement, } | { "type": "place_on_headset", device: string, } | { "type": "set_mini", mini: Mini, } | { "type": "restore" } | { "type": "close_agent_tabs" } | { "type": "agent_arranges", on: boolean, } | { "type": "pop_out", pane: number, } | { "type": "dock", window: number, } | { "type": "set_frame", window: number, frame: Frame, };
 
 export type LineKind = "hunk" | "context" | "added" | "removed" | "note";
 
@@ -546,6 +556,12 @@ kind: string, label: string, };
  * aspect ratio, and the page shrinks it to fit a smaller canvas.
  */
 export type Mini = { corner: Corner, width: number, };
+
+/**
+ * A hidden `functor run native --mirror <tunnel>` drawing the headset's
+ * frames, streamed to the Game tab while it shows.
+ */
+export type Mirror = { "kind": "starting" } | { "kind": "running", debug_url: string, } | { "kind": "failed", reason: string, };
 
 /**
  * The game as the task's baseline was taken: where both paths start.
@@ -665,6 +681,27 @@ git_init: boolean,
  * The steps, in order, as the modal lists them.
  */
 steps: Array<string>, };
+
+/**
+ * How a game takes the mouse (debug protocol v45's `/state.pointer`).
+ */
+export type Pointer = "captured" | "visible";
+
+/**
+ * A pane the user popped out into its own window (D20): one pane of tabs,
+ * named by its pane's id. Only the user opens and closes one; the agent
+ * shows a view already in it there, and opens new ones in the main window.
+ */
+export type PopOut = { pane: Pane, 
+/**
+ * The main window's pane its tabs go back to when it closes (else the
+ * focused one): the pane beside it when it was popped out.
+ */
+home: number | null, 
+/**
+ * Where the window was, once its shell reported it.
+ */
+frame: Frame | null, };
 
 export type Project = { 
 /**
@@ -836,14 +873,23 @@ id: number,
 /**
  * The child's process id once spawned.
  */
-pid: number | null, status: SessionStatus, };
+pid: number | null, status: SessionStatus, 
+/**
+ * A headset session's mirror on this computer (D5); `None` for a
+ * local session, or without a GPU.
+ */
+mirror: Mirror | null, };
 
 export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "kind": "running", debug_url: string, 
 /**
  * The game's pointer surface (`/state.input.mouse.surface_width`,
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
-surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+surface: [number, number] | null, 
+/**
+ * How the game takes the mouse (`/state.pointer`), from the same poll.
+ */
+pointer: Pointer, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
 
 /**
  * Which app needs the update.

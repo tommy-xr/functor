@@ -51,17 +51,22 @@ jobs:
             bin: functor
             lsp_bin: functor-lang-lsp
             lsp_target: x86_64-unknown-linux-musl
+          # features: macOS `functor` carries the desktop app (D40) with its
+          # speech-to-text (`whisper` turns on `app`), as `npm run build:cli`
+          # builds it there.
           - os: macos-15 # Apple Silicon (native)
             target: aarch64-apple-darwin
             bin: functor
             lsp_bin: functor-lang-lsp
             lsp_target: aarch64-apple-darwin
+            features: whisper
           - os: macos-15 # Intel, cross-compiled on the arm64 runner
             target: x86_64-apple-darwin
             bin: functor
             lsp_bin: functor-lang-lsp
             lsp_target: x86_64-apple-darwin
             cross: true
+            features: whisper
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: functor.exe
@@ -110,12 +115,19 @@ jobs:
         run: wasm-pack build --target=web
         working-directory: runtime/functor-runtime-web
 
+      # The app embeds its UI bundle at compile time.
+      - name: Build the app's UI
+        if: matrix.features
+        run: |
+          npm ci
+          npm run build:app-ui
+
       # FUNCTOR_RELEASE_VERSION bakes the version into the binary's `--version`
       # (the crate itself is 0.0.0-dev). For a dispatch build this is 0.0.0-dev;
       # the release pipeline passes the real tag. `--target` makes the output
       # path uniform (target/<triple>/release/) across native and cross builds.
       - name: Build functor binary
-        run: cargo build --bin functor --release --target ${{ matrix.target }}
+        run: cargo build -p functor-cli --bin functor --release --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
         env:
           FUNCTOR_RELEASE_VERSION: ${{ inputs.version }}
 
@@ -130,6 +142,10 @@ jobs:
           "$bin" --version
           "$bin" --version | grep -qF "${{ inputs.version }}"
           "$bin" -d examples/primitives build
+          # With the app: it opens the project in-process (no window, no game).
+          if [ -n "${{ matrix.features }}" ]; then
+            "$bin" -d examples/primitives app -- --headless --print --no-device-link | grep -qx "active: examples/primitives"
+          fi
 
       # Cross-compiled target: can't execute an x86_64 binary on the arm64
       # runner, so assert it's a valid x86_64 Mach-O instead. The arm64 job

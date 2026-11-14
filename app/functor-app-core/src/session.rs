@@ -16,6 +16,21 @@ pub struct Session {
     /// The child's process id once spawned.
     pub pid: Option<u32>,
     pub status: SessionStatus,
+    /// A headset session's mirror on this computer (D5); `None` for a
+    /// local session, or without a GPU.
+    pub mirror: Option<Mirror>,
+}
+
+/// A hidden `functor run native --mirror <tunnel>` drawing the headset's
+/// frames, streamed to the Game tab while it shows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Mirror {
+    Starting,
+    Running { debug_url: String },
+    /// It could not start, or it exited.
+    Failed { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +46,8 @@ pub enum SessionStatus {
         /// The game's pointer surface (`/state.input.mouse.surface_width`,
         /// `surface_height`): the space `/input` mouse coordinates are in.
         surface: Option<[u32; 2]>,
+        /// How the game takes the mouse (`/state.pointer`), from the same poll.
+        pointer: Pointer,
         /// Its clock and marks: sent as `ServerMsg::Transport` and
         /// `ServerMsg::Marks`, never with the state, as they change every poll.
         #[serde(skip)]
@@ -45,6 +62,18 @@ pub enum SessionStatus {
     Failed {
         reason: String,
     },
+}
+
+/// How a game takes the mouse (debug protocol v45's `/state.pointer`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Pointer {
+    /// Captured for relative free-look: the game view locks the pointer.
+    Captured,
+    /// A visible cursor at absolute positions; also a runtime too old to say.
+    #[default]
+    Visible,
 }
 
 /// How the session runs: its project's game placement decides (`Placement::session_mode`).
@@ -136,6 +165,10 @@ pub enum SessionEvent {
     },
     /// A project file changed after the child ended.
     SourceChanged,
+    /// The headset session's mirror's debug server line.
+    MirrorListening { debug_url: String },
+    /// The mirror could not start, or exited.
+    MirrorFailed { reason: String },
 }
 
 /// What the core keeps from a `GET /state`.
@@ -144,6 +177,7 @@ pub struct Polled {
     pub frame: u64,
     /// `None` while the game reports no surface (0×0).
     pub surface: Option<[u32; 2]>,
+    pub pointer: Pointer,
     /// `/state.clock`; `None` from a runtime too old to report it.
     pub clock: Option<PolledClock>,
 }

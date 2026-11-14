@@ -686,6 +686,36 @@ pub enum Key {
     Num7,
     Num8,
     Num9,
+    // Tab, the modifiers (left and right fold into one), function keys and
+    // punctuation, named for the US layout's key positions. Command/Super is
+    // not a game key: it belongs to the OS and the shell's shortcuts. Nor is
+    // the backquote, which toggles the native window's time-travel console.
+    Tab,
+    Shift,
+    Control,
+    Alt,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
+    Minus,
+    Equal,
+    LeftBracket,
+    RightBracket,
+    Backslash,
+    Semicolon,
+    Quote,
+    Comma,
+    Period,
+    Slash,
 }
 
 /// Canonical mouse-button identifier shared across every runtime, mirroring
@@ -808,7 +838,7 @@ pub enum RecordedInput {
 impl Key {
     /// All key variants in discriminant order. Keep in sync with the enum above
     /// (guarded by `from_i32_round_trips`).
-    pub const ALL: [Key; 44] = [
+    pub const ALL: [Key; 70] = [
         Key::Unknown,
         Key::A,
         Key::B,
@@ -853,6 +883,32 @@ impl Key {
         Key::Num7,
         Key::Num8,
         Key::Num9,
+        Key::Tab,
+        Key::Shift,
+        Key::Control,
+        Key::Alt,
+        Key::F1,
+        Key::F2,
+        Key::F3,
+        Key::F4,
+        Key::F5,
+        Key::F6,
+        Key::F7,
+        Key::F8,
+        Key::F9,
+        Key::F10,
+        Key::F11,
+        Key::F12,
+        Key::Minus,
+        Key::Equal,
+        Key::LeftBracket,
+        Key::RightBracket,
+        Key::Backslash,
+        Key::Semicolon,
+        Key::Quote,
+        Key::Comma,
+        Key::Period,
+        Key::Slash,
     ];
 
     /// The key whose `as i32` discriminant equals `value`, if any. The inverse
@@ -862,7 +918,8 @@ impl Key {
     }
 
     /// Parse the case-insensitive wire/display spelling used by debug input
-    /// (`"w"`, `"Up"`, `"space"`, or a bare digit). Keeping this beside the
+    /// (`"w"`, `"Up"`, `"space"`, `"f1"`, a bare digit, or any variant's
+    /// name). Keeping this beside the
     /// canonical enum makes desktop and device debug servers accept exactly
     /// the same key names.
     pub fn from_name(name: &str) -> Option<Key> {
@@ -876,16 +933,11 @@ impl Key {
                 return Key::from_i32((byte - b'0') as i32 + Key::Num0 as i32);
             }
         }
-        match name.as_str() {
-            "up" => Some(Key::Up),
-            "down" => Some(Key::Down),
-            "left" => Some(Key::Left),
-            "right" => Some(Key::Right),
-            "space" => Some(Key::Space),
-            "enter" => Some(Key::Enter),
-            "escape" => Some(Key::Escape),
-            _ => None,
-        }
+        // Any other key by its variant's name: `up`, `tab`, `f1`, `leftbracket`.
+        Key::ALL
+            .into_iter()
+            .skip(1)
+            .find(|k| format!("{k:?}").eq_ignore_ascii_case(&name))
     }
 
     /// The key's short display name — `"W"`, `"Up"`, `"Space"`, bare digits
@@ -1402,6 +1454,13 @@ mod tests {
         assert_eq!(Key::from_name("SPACE"), Some(Key::Space));
         assert_eq!(Key::from_name("0"), Some(Key::Num0));
         assert_eq!(Key::from_name("9"), Some(Key::Num9));
+        assert_eq!(Key::from_name("Tab"), Some(Key::Tab));
+        assert_eq!(Key::from_name("f12"), Some(Key::F12));
+        assert_eq!(Key::from_name("leftbracket"), Some(Key::LeftBracket));
+        // Every deliverable key parses by its variant's name.
+        for key in Key::ALL.into_iter().skip(1) {
+            assert_eq!(Key::from_name(&format!("{key:?}")), Some(key), "{key:?}");
+        }
         assert_eq!(Key::from_name("unknown"), None);
         assert_eq!(Key::from_name(""), None);
     }

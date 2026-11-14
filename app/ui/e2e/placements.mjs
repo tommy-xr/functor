@@ -11,7 +11,7 @@
 // stills at both widths and the frames of a pane → mini → drag → resize →
 // dock loop at 1440×900.
 import { chromium, expect } from "@playwright/test";
-import { FUNCTOR, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
+import { FUNCTOR, RELEASE_HINT, reopen, requireBuilt, shot, startServer, stopServer, tabs, tempProject, watchErrors, watchExternal, watchState } from "./app.mjs";
 
 const PROJECT = "examples/counter";
 
@@ -153,13 +153,13 @@ async function placements(browser, width, height) {
     await page.keyboard.press("Tab");
     await expect(mini.getByRole("button", { name: "Dock" })).toBeFocused();
 
-    // Click to play and Esc to release, as in a pane.
+    // Click to play and ⌘Esc to release, as in a pane.
     const banner = mini.getByRole("status");
     if (FUNCTOR) {
       await expect(banner).toHaveText("Click to play");
       await mini.getByTestId("game-view").click();
-      await expect(banner).toHaveText("Esc to release");
-      await page.keyboard.press("Escape");
+      await expect(banner).toHaveText(RELEASE_HINT);
+      await page.keyboard.press("Meta+Escape");
       await expect(banner).toHaveText("Click to play");
     }
 

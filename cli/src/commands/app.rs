@@ -1,6 +1,6 @@
-//! `functor app`: finds the desktop app's `functor-app` binary and runs it
-//! with this `functor` as its CLI. Process launching only — the CLI does not
-//! link the app.
+//! `functor app`: the desktop app. Built with the `app` feature it runs
+//! in-process, its children this same executable (D40); without it, this
+//! finds the `functor-app` binary and runs it with this `functor` as its CLI.
 
 use std::ffi::OsString;
 use std::io;
@@ -75,9 +75,25 @@ fn locate(functor: Option<&Path>) -> Result<PathBuf, String> {
     )
 }
 
-/// Whether a `functor-app` can be found.
+/// Whether bare `functor` opens the app: built in, where its window is
+/// (macOS; elsewhere help, D40); else a `functor-app` that can be found.
 pub fn installed() -> bool {
-    locate(std::env::current_exe().ok().as_deref()).is_ok()
+    match cfg!(feature = "app") {
+        true => cfg!(target_os = "macos"),
+        false => locate(std::env::current_exe().ok().as_deref()).is_ok(),
+    }
+}
+
+/// Runs the app in this process with `dir` and `extra` as its arguments
+/// (as `functor-app`'s). On the main thread, with no async runtime yet.
+#[cfg(feature = "app")]
+pub fn run_in_process(dir: Option<&Path>, extra: &[String]) -> io::Result<std::process::ExitCode> {
+    let mut argv = vec![OsString::from("functor app")];
+    if let Some(dir) = dir {
+        argv.extend([OsString::from("-d"), dir.into()]);
+    }
+    argv.extend(extra.iter().map(OsString::from));
+    functor_app::run(argv, functor_app::Host::Cli)
 }
 
 /// `functor-app`'s arguments: this CLI, the project directory, then `extra`.

@@ -17,11 +17,18 @@ const PHASE = { timeout: 10_000 };
 
 requireBuilt();
 
-/** The levels the fake agent was run at, as it logs them. */
+/** The levels the fake agent was run at, as it logs them. Read by whole
+ *  lines: stderr is unbuffered, so one logged line can arrive in pieces. */
 function setups(server) {
   const seen = [];
+  let rest = "";
   server.child.stderr.on("data", (d) => {
-    for (const m of String(d).matchAll(/\[fake agent\] setup: (\w+)/g)) seen.push(m[1]);
+    const lines = (rest + d).split("\n");
+    rest = lines.pop();
+    for (const line of lines) {
+      const m = line.match(/\[fake agent\] setup: (\w+)/);
+      if (m) seen.push(m[1]);
+    }
   });
   return seen;
 }
@@ -67,7 +74,7 @@ async function scopeView(browser, width, height) {
     await expect(toggle).toHaveText("Isolated");
     await page.keyboard.press("Escape");
     await ask("Where does the count start?");
-    await expect.poll(() => seen.at(-1)).toBe("Isolated");
+    await expect.poll(() => seen.at(-1), PHASE).toBe("Isolated");
     // The task keeps it, fixed (its session holds what it read); a new task
     // goes back to the project's.
     await expect(toggle).toHaveText("Isolated");
@@ -91,7 +98,7 @@ async function scopeView(browser, width, height) {
     await newTask();
     await expect(toggle).toHaveText("Project only");
     await ask("And now?");
-    await expect.poll(() => seen.at(-1)).toBe("Project");
+    await expect.poll(() => seen.at(-1), PHASE).toBe("Project");
 
     // Codex: only the full level, and why.
     await newTask();
@@ -105,7 +112,7 @@ async function scopeView(browser, width, height) {
     await shot(page, `scope-panel-codex-${width}`);
     await page.keyboard.press("Escape");
     await ask("Count?");
-    await expect.poll(() => seen.at(-1)).toBe("UserAndProject");
+    await expect.poll(() => seen.at(-1), PHASE).toBe("UserAndProject");
 
     // The review's panel: isolated, as a fact.
     await dock.getByRole("button", { name: /^Review (on|off)$/ }).click();

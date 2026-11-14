@@ -603,7 +603,7 @@ fn snapshot(game: &mut dyn Game, req: FrameRequest, drain_preloads: bool) -> Sim
     SimSnapshot {
         seq: 0,
         sim_ns: 0,
-        time: req.time,
+        time: game.render_time(req.time),
         frame,
         ui: if req.ui { game.ui() } else { View::Empty },
         webview_html: req

@@ -10,9 +10,18 @@ import { expect } from "@playwright/test";
 
 export const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const EXE = process.platform === "win32" ? ".exe" : "";
-export const APP = `${ROOT}target/debug/functor-app${EXE}`;
 export const FUNCTOR = process.env.FUNCTOR_BIN && existsSync(process.env.FUNCTOR_BIN) ? process.env.FUNCTOR_BIN : null;
+// APP_IN_FUNCTOR=1 drives the app inside `functor` (FUNCTOR_BIN, built with
+// `--features app`) instead of `functor-app`: `functor app …`, whose game
+// sessions are that same executable (D40).
+const IN_FUNCTOR = process.env.APP_IN_FUNCTOR === "1";
+export const APP = IN_FUNCTOR ? FUNCTOR : `${ROOT}target/debug/functor-app${EXE}`;
+/** What precedes the app's own arguments on `APP`'s command line. */
+export const APP_ARGS = IN_FUNCTOR ? ["app"] : [];
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
+
+/** The game view's banner while it has input without a pointer lock: ⌘Esc releases it. */
+export const RELEASE_HINT = /^(⌘|Meta\+)Esc to release$/;
 
 /** A session's own clock (`/state`'s `frame` and `clock`), without the model. */
 export async function clock(debugUrl) {
@@ -20,10 +29,29 @@ export async function clock(debugUrl) {
   return { frame: state.frame, ...state.clock };
 }
 
+/** Connections to `port` held by anything but functor and functor-app: the page's streams. */
+export function openStreams(port) {
+  let out = "";
+  try {
+    out = execFileSync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:ESTABLISHED"], { encoding: "utf8" });
+  } catch {
+    // lsof exits 1 when nothing matches.
+  }
+  return out
+    .split("\n")
+    .slice(1)
+    .filter((l) => l && !l.startsWith("functor") && l.includes(`->127.0.0.1:${port} `)).length;
+}
+
+/** The session's `/state.input`, read by the test (the page never talks to it). */
+export async function sessionInput(debugUrl) {
+  return (await (await fetch(`${debugUrl}/state?model=0`)).json()).input;
+}
+
 /** Exits unless functor-app and the built UI exist. */
 export function requireBuilt() {
   for (const [path, what] of [
-    [APP, "cargo build -p functor-app"],
+    [APP ?? "FUNCTOR_BIN", IN_FUNCTOR ? "cargo build -p functor-cli --features app, and set FUNCTOR_BIN" : "cargo build -p functor-app"],
     [`${ROOT}app/ui/dist/index.html`, "npm run build:app-ui"],
   ]) {
     if (!existsSync(path)) {
@@ -117,11 +145,11 @@ export function tempProject(project) {
  * recent projects. `deviceLink` turns the device link on (loopback, no mDNS)
  * and resolves with its address as `link`; its cable side runs `adb` (a fake,
  * or by default none, so no real headset is touched). `functor`: the CLI it
- * runs (default `FUNCTOR_BIN`).
+ * runs (default `FUNCTOR_BIN`; inside `functor`, itself).
  */
 export function startServer(
   port = 0,
-  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, fakeReview, token, deviceLink = false, adb = "/nonexistent/adb", functor = FUNCTOR } = {},
+  { dir = ROOT, cwd, gpu = false, home = tempHome(), fakeAgent, fakeReview, token, deviceLink = false, adb = "/nonexistent/adb", functor = IN_FUNCTOR ? null : FUNCTOR } = {},
 ) {
   const args = ["--headless", "--port", String(port)];
   // No LAN listener or mDNS advert unless a test pairs a stub device.
@@ -139,7 +167,7 @@ export function startServer(
   else delete env.FUNCTOR_APP_FAKE_REVIEW;
   if (token) env.FUNCTOR_APP_TOKEN = token;
   else delete env.FUNCTOR_APP_TOKEN;
-  const child = spawn(APP, args, { stdio: ["ignore", "ignore", "pipe"], env, cwd });
+  const child = spawn(APP, [...APP_ARGS, ...args], { stdio: ["ignore", "ignore", "pipe"], env, cwd });
   let err = "";
   return new Promise((resolve, reject) => {
     child.stderr.on("data", (d) => {
@@ -231,7 +259,7 @@ process.on("exit", () => stubs.forEach((c) => c.exitCode === null && c.kill()));
 
 /** A `device-stub` headset on `link`; `line(prefix)` waits for its next line starting so. */
 export function stub(link, store, name, extra = []) {
-  const child = spawn(APP, ["device-stub", "--desktop", link, "--name", name, "--store", store, ...extra], {
+  const child = spawn(APP, [...APP_ARGS, "device-stub", "--desktop", link, "--name", name, "--store", store, ...extra], {
     stdio: ["ignore", "pipe", "ignore"],
   });
   stubs.push(child);
@@ -259,6 +287,8 @@ export function stub(link, store, name, extra = []) {
         .toBe(true);
       return found;
     },
+    /** How many lines so far start with `prefix`. */
+    count: (prefix) => lines.filter((l) => l.startsWith(prefix)).length,
     stop: () => stopServer({ child }),
   };
 }

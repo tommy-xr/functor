@@ -362,3 +362,45 @@ fn pipelined_scripted_captures_are_byte_identical() {
         println!("scripted {sample} @{frame}: identical ({} bytes)", inline.len());
     }
 }
+
+/// A mirror (`--mirror`) drawing a recorded `GET /mirror` snapshot of
+/// `primitives` at t = 2 (`tests/fixtures/primitives-t2.mirror.json`, taken
+/// from `run native --fixed-time 2.0 --capture-size 1600x1200`) renders the
+/// game's own golden.
+#[test]
+#[ignore = "needs a GL display; run with --ignored"]
+fn a_mirrored_frame_matches_its_source_golden() {
+    use std::io::{Read, Write};
+
+    let snapshot = std::fs::read(
+        repo_root().join("runtime/functor-runtime-desktop/tests/fixtures/primitives-t2.mirror.json"),
+    )
+    .expect("read the recorded snapshot");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let source = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let _ = stream.read(&mut [0u8; 1024]);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                snapshot.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&snapshot);
+        }
+    });
+
+    let sample = repo_root().join("examples/primitives");
+    let out = std::env::temp_dir().join("functor-golden-mirror-primitives-t2.png");
+    let _ = std::fs::remove_file(&out);
+    let output = Command::new(functor_bin())
+        .args(["-d", sample.to_str().unwrap(), "run", "native", "--"])
+        .args(["--mirror", &source, "--capture-frame", out.to_str().unwrap()])
+        .args(["--capture-size", GOLDEN_CAPTURE_SIZE])
+        .output()
+        .expect("spawn functor");
+    print!("{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "functor exited with {}", output.status);
+    images_match(&out, &sample.join("golden/primitives-t2.png")).unwrap();
+}

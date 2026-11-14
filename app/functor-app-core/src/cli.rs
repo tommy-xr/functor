@@ -22,6 +22,10 @@ pub struct CliProblem {
     pub cause: CliCause,
     /// It is the one inside `Functor.app`, so the bundle is damaged.
     pub bundled: bool,
+    /// How to build a current one where this app looks first, when it runs
+    /// from a checkout's build (`npm run build:cli:debug, into
+    /// target/debug/functor`); `None` when that would not help.
+    pub build: Option<String>,
 }
 
 impl CliProblem {
@@ -31,27 +35,34 @@ impl CliProblem {
             Some(v) => format!("{} ({v})", self.path),
             None => self.path.clone(),
         };
-        let what = match &self.cause {
-            CliCause::Missing => "is missing".to_string(),
-            CliCause::TooOld => "is older than this app".to_string(),
-            CliCause::Unusable(why) => format!("cannot be used: {why}"),
+        let what = match (&self.cause, &self.version) {
+            (CliCause::Missing, _) => "is missing".to_string(),
+            (CliCause::TooOld, Some(_)) => "is older than this app".to_string(),
+            (CliCause::TooOld, None) => "was built before this app".to_string(),
+            (CliCause::Unusable(why), _) => format!("cannot be used: {why}"),
         };
         let stopped = "so games and the agent's tools cannot start";
+        // `npm run app` opens the window, which is macOS-only for now.
+        let app = match cfg!(target_os = "macos") {
+            true => "; npm run app builds and opens the app with its own",
+            false => "",
+        };
+        let fix = match &self.build {
+            Some(build) => format!("Build a current one ({build}), or pass --functor <path>{app}."),
+            None => "Pass --functor <path> to a current one.".to_string(),
+        };
         match (&self.cause, self.bundled) {
             (_, true) => format!(
                 "This Functor.app is damaged: its functor CLI at {named} {what}, {stopped}. \
 Reinstall Functor.app."
             ),
-            (CliCause::Missing, false) => format!(
-                "No functor CLI was found next to this app or on PATH, {stopped}. {}",
-                FIX
-            ),
-            (_, false) => format!("The functor CLI at {named} {what}, {stopped}. {FIX}"),
+            (CliCause::Missing, false) => {
+                format!("No functor CLI was found next to this app or on PATH, {stopped}. {fix}")
+            }
+            (_, false) => format!("The functor CLI at {named} {what}, {stopped}. {fix}"),
         }
     }
 }
-
-const FIX: &str = "Build it in this checkout (npm run build:cli), or pass --functor <path>.";
 
 /// `path` with `home` (when it starts with it) as `~`.
 pub fn abbreviate(path: &str, home: Option<&str>) -> String {
@@ -74,22 +85,42 @@ mod tests {
             version: version.map(str::to_string),
             cause,
             bundled,
+            build: Some("npm run build, into target/release/functor".to_string()),
         }
     }
 
     #[test]
     fn says_which_binary_what_is_wrong_and_the_fix() {
+        // The window, and so `npm run app`, is macOS-only for now.
+        let app = match cfg!(target_os = "macos") {
+            true => "; npm run app builds and opens the app with its own",
+            false => "",
+        };
         assert_eq!(
             problem(CliCause::TooOld, Some("0.1.2"), false).message(),
-            "The functor CLI at ~/.functor/bin/functor (0.1.2) is older than this app, so games \
-and the agent's tools cannot start. Build it in this checkout (npm run build:cli), or pass \
---functor <path>."
+            format!(
+                "The functor CLI at ~/.functor/bin/functor (0.1.2) is older than this app, so \
+games and the agent's tools cannot start. Build a current one (npm run build, into \
+target/release/functor), or pass --functor <path>{app}."
+            )
         );
         assert_eq!(
             problem(CliCause::Unusable("Permission denied".into()), None, false).message(),
-            "The functor CLI at ~/.functor/bin/functor cannot be used: Permission denied, so \
-games and the agent's tools cannot start. Build it in this checkout (npm run build:cli), or \
-pass --functor <path>."
+            format!(
+                "The functor CLI at ~/.functor/bin/functor cannot be used: Permission denied, so \
+games and the agent's tools cannot start. Build a current one (npm run build, into \
+target/release/functor), or pass --functor <path>{app}."
+            )
+        );
+        // A development build has no version to compare: when it was built is what differs.
+        let dev = CliProblem {
+            build: None,
+            ..problem(CliCause::TooOld, None, false)
+        };
+        assert_eq!(
+            dev.message(),
+            "The functor CLI at ~/.functor/bin/functor was built before this app, so games and \
+the agent's tools cannot start. Pass --functor <path> to a current one."
         );
         assert!(problem(CliCause::Missing, None, false)
             .message()

@@ -30,6 +30,8 @@ pub struct Cli {
     exe: Option<PathBuf>,
     /// The last check's binary, or its problem's message.
     found: Mutex<Result<PathBuf, String>>,
+    /// `found` is this executable, inside `functor`: never checked.
+    own: bool,
 }
 
 impl Cli {
@@ -39,6 +41,7 @@ impl Cli {
             env,
             exe,
             found: Mutex::new(Err("the functor CLI has not been checked yet".to_string())),
+            own: false,
         }
     }
 
@@ -51,6 +54,22 @@ impl Cli {
         }
     }
 
+    /// This executable, inside `functor`: the CLI cannot differ from the
+    /// app, so it is neither looked up nor checked. Inside `Functor.app` it
+    /// is run by `Contents/Helpers/functor`, a link to it: started from
+    /// `Contents/MacOS`, a game would take the app's bundle id, and a quit
+    /// sent to that id could reach the game instead of the app.
+    pub fn own(exe: PathBuf) -> Self {
+        let cli = Self::new(None, None, Some(exe.clone()));
+        let link = cli.contents().map(|c| c.join("Helpers").join(exe.file_name().unwrap_or_default()));
+        let path = link.filter(|l| l.exists()).unwrap_or(exe);
+        Self {
+            found: Mutex::new(Ok(path)),
+            own: true,
+            ..cli
+        }
+    }
+
     /// The `functor` to start, or why nothing may be started with it.
     pub fn path(&self) -> Result<PathBuf, String> {
         self.found.lock().unwrap().clone()
@@ -59,14 +78,19 @@ impl Cli {
     /// Finds the `functor` anew (one may have been built meanwhile), checks
     /// it, and keeps the verdict for [`Cli::path`].
     pub async fn check(&self) -> Option<CliProblem> {
+        if self.own {
+            return None;
+        }
         let path = self.find();
         let problem = match probe(&path, CHECK_TIMEOUT).await {
             Ok(()) => None,
             Err((cause, version)) => Some(CliProblem {
                 path: shown(&path),
-                version,
+                // A development build's (`0.0.0-dev`) says nothing about its age.
+                version: version.filter(|v| !v.ends_with("-dev")),
                 cause,
                 bundled: self.bundled(&path),
+                build: self.build(),
             }),
         };
         *self.found.lock().unwrap() = match &problem {
@@ -85,8 +109,7 @@ impl Cli {
         if path.components().count() > 1 {
             return std::path::absolute(&path).unwrap_or(path);
         }
-        let named = self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty());
-        if let (Some(contents), false) = (self.contents(), named) {
+        if let (Some(contents), false) = (self.contents(), self.named()) {
             return contents.join("Helpers").join(path);
         }
         let dirs = std::env::var_os("PATH").unwrap_or_default();
@@ -96,10 +119,31 @@ impl Cli {
         on_path.unwrap_or(path)
     }
 
+    /// A `functor` was named (`--functor`, `FUNCTOR_BIN`): it is used, wherever it is.
+    fn named(&self) -> bool {
+        self.flag.is_some() || self.env.as_ref().is_some_and(|e| !e.is_empty())
+    }
+
     /// The `Contents` of the `Functor.app` this app runs from, if it does.
     fn contents(&self) -> Option<&Path> {
         let dir = self.exe.as_deref().and_then(Path::parent)?;
         dir.ends_with("Contents/MacOS").then(|| dir.parent()).flatten()
+    }
+
+    /// How to build a current `functor` where this app looks first: next to
+    /// it, when it runs from a checkout's `target/debug` or `target/release`.
+    /// `None` when one is named (`--functor`, `FUNCTOR_BIN`): that wins.
+    fn build(&self) -> Option<String> {
+        let dir = self.exe.as_deref().and_then(Path::parent).filter(|_| !self.named())?;
+        let script = if dir.ends_with("target/debug") {
+            "npm run build:cli:debug"
+        } else if dir.ends_with("target/release") {
+            "npm run build"
+        } else {
+            return None;
+        };
+        let into = dir.join(format!("functor{}", std::env::consts::EXE_SUFFIX));
+        Some(format!("{script}, into {}", shown(&into)))
     }
 
     /// `path` is inside the `Functor.app` this app runs from.
@@ -217,7 +261,8 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    const SHORT: Duration = Duration::from_millis(500);
+    // Room for a loaded machine to start `sh`; the hang test still ends well within 5 s.
+    const SHORT: Duration = Duration::from_secs(2);
 
     use crate::creation::tests::fake_functor as fake;
 
@@ -311,6 +356,31 @@ esac"#;
         assert_eq!(cli.path(), Ok(path));
     }
 
+    #[tokio::test]
+    async fn inside_functor_the_cli_is_this_executable_unchecked() {
+        // It would fail the check: it is never run for one.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake(dir.path(), OLD);
+        let cli = Cli::own(exe.clone());
+        assert_eq!(cli.path(), Ok(exe.clone()));
+        assert_eq!(cli.check().await, None);
+        assert_eq!(cli.path(), Ok(exe));
+    }
+
+    #[test]
+    fn inside_the_bundle_children_run_by_its_helpers_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = dir.path().join("Functor.app/Contents");
+        let exe = contents.join("MacOS/functor");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        // An older bundle without the link: the executable itself.
+        assert_eq!(Cli::own(exe.clone()).path(), Ok(exe.clone()));
+        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
+        std::os::unix::fs::symlink("../MacOS/functor", contents.join("Helpers/functor")).unwrap();
+        assert_eq!(Cli::own(exe).path(), Ok(contents.join("Helpers/functor")));
+    }
+
     #[test]
     fn a_bundle_without_its_cli_never_takes_one_from_path() {
         let exe = PathBuf::from("/nonexistent/Functor.app/Contents/MacOS/functor-app");
@@ -321,6 +391,36 @@ esac"#;
         // Named, it is the user's choice.
         let named = Cli::new(None, Some("/opt/functor".into()), Some(exe));
         assert_eq!(named.find(), Path::new("/opt/functor"));
+    }
+
+    #[test]
+    fn the_fix_builds_where_this_app_looks() {
+        let at = |exe: &str, flag: Option<&str>| {
+            Cli::new(flag.map(PathBuf::from), None, Some(PathBuf::from(exe))).build()
+        };
+        assert_eq!(
+            at("/src/target/debug/functor-app", None).as_deref(),
+            Some("npm run build:cli:debug, into /src/target/debug/functor")
+        );
+        assert_eq!(
+            at("/src/target/release/functor-app", None).as_deref(),
+            Some("npm run build, into /src/target/release/functor")
+        );
+        // Named, or not run from a checkout's build: building there would not help.
+        assert_eq!(at("/src/target/debug/functor-app", Some("/old/functor")), None);
+        assert_eq!(at("/usr/local/bin/functor-app", None), None);
+    }
+
+    #[tokio::test]
+    async fn a_development_build_says_no_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = r#"case "$1" in
+  --version) echo 'functor-cli 0.0.0-dev' ;;
+  *) exit 2 ;;
+esac"#;
+        let cli = Cli::new(Some(fake(dir.path(), dev)), None, None);
+        let problem = cli.check().await.expect("too old");
+        assert_eq!((problem.cause, problem.version), (CliCause::TooOld, None));
     }
 
     #[test]

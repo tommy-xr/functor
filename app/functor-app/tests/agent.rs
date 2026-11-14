@@ -466,8 +466,7 @@ fn cli_task_with_a_too_old_functor_says_so() {
     assert_eq!(
         stdout,
         "you: hi\nfailed: The functor CLI at ~/functor (0.1.2) is older than this app, so games \
-and the agent's tools cannot start. Build it in this checkout (npm run build:cli), or pass \
---functor <path>.\n"
+and the agent's tools cannot start. Pass --functor <path> to a current one.\n"
     );
     // Asked only what it offers: never `mcp`.
     let ran = std::fs::read_to_string(&log).unwrap();

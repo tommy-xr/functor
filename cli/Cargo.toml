@@ -15,6 +15,14 @@ path = "src/main.rs"
 # wasm bundle — `run wasm` then errors with a rebuild hint.
 default = ["web"]
 web = []
+# `app` links the desktop app (`app/functor-app`) in: bare `functor` and
+# `functor app …` open it in-process, and every child it starts is this same
+# executable (D40). Off by default, so the workspace build and CI's CLI build
+# stay as they are; `npm run build:cli` turns it on on macOS. Embeds the UI
+# bundle when it exists (`npm run build:app-ui`).
+app = ["dep:functor-app"]
+# The app's local speech-to-text (whisper.cpp; implies `app`).
+whisper = ["app", "functor-app/whisper"]
 
 [dependencies]
 # The Functor Lang language, for `language: "functor-lang"` projects (docs/functor-lang.md Track C4).
@@ -61,3 +69,5 @@ zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2
 schemars = "1.2"
 # `functor fuzz`'s scratch save store.
 tempfile = "3"
+# The desktop app, in-process (feature `app`).
+functor-app = { path = "../app/functor-app", optional = true }

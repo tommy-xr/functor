@@ -53,6 +53,9 @@ mod assets {
     include!(concat!(env!("OUT_DIR"), "/ui_assets.rs"));
 }
 
+/// The built-in UI was built before its source last changed.
+pub use assets::UI_STALE;
+
 /// Messages queued for one client. A client this far behind is dropped
 /// rather than buffered without bound; its page reconnects for a fresh state.
 const CLIENT_QUEUE: usize = 32;

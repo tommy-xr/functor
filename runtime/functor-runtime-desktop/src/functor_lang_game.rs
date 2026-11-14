@@ -2153,7 +2153,7 @@ fn empty_soundscape_json() -> String {
     "{\"sources\":[]}".to_string()
 }
 
-fn empty_frame() -> Frame {
+pub(crate) fn empty_frame() -> Frame {
     use cgmath::{Matrix4, SquareMatrix};
     Frame::new(
         functor_runtime_common::Camera::default(),
