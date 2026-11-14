@@ -65,6 +65,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// This app turns speech into text, so the composer has a mic.
     pub speech: bool,
+    /// A spoken request is answered aloud (D47).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub speak: bool,
     /// Opening a project starts its game, paused on frame 0 (D37). Off for
     /// `--print` and `task`, which start one only when asked.
     #[serde(skip)]
@@ -253,6 +257,7 @@ impl AppState {
             session: None,
             no_gpu: false,
             speech: false,
+            speak: false,
             start_on_open: false,
             auto_start: false,
             tasks: Vec::new(),
@@ -1474,6 +1479,7 @@ fn opened(
         panel_tasks: _,
         voice: _,
         speech: _,
+        speak: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -2468,7 +2474,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         .expect("a known task");
     task.updated_at = now.or(task.updated_at);
     let run = task.transcript.len() as u64 - 1;
-    let prompt = queue::prompt(task);
+    let prompt = queue::prompt(task, state.speak);
     task.run = Some(Run {
         id: run,
         ..Default::default()
@@ -8559,6 +8565,84 @@ mod tests {
         assert_eq!(stages(&commands), gone);
     }
 
+    /// What the commands say aloud.
+    fn said_aloud<'a>(commands: &'a [Command]) -> Vec<&'a str> {
+        let text = |c: &'a Command| match c {
+            Command::Link(LinkCommand::Say { text, .. }) => Some(text.as_str()),
+            _ => None,
+        };
+        commands.iter().filter_map(text).collect()
+    }
+
+    /// With replies on (D47), a spoken request's prompt asks for a line to
+    /// say, and its outcome is said: the agent's line, that its change is
+    /// ready to look at, or the failure. A typed request is not.
+    #[test]
+    fn a_spoken_requests_outcome_is_said_aloud() {
+        let mut ready = voice_ready();
+        ready.speak = true;
+        ready.tracks_changes = true;
+        let (s, commands) = update(ready.clone(), said("go", 1));
+        let Some(Command::ReserveTask { voice, .. }) =
+            commands.into_iter().find(|c| matches!(c, Command::ReserveTask { .. }))
+        else {
+            panic!("reserved");
+        };
+        let reserved = Event::NewTask {
+            id: Ok(4),
+            message: "go".to_string(),
+            harness: Harness::Claude,
+            voice,
+            scope: Default::default(),
+        };
+        let (s, commands) = update(s, reserved);
+        assert!(spec(&commands).message.ends_with(crate::reply::ASK));
+        let baseline = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Baseline {
+                tree: "t0".to_string(),
+            },
+        };
+        let (s, _) = update(s, baseline);
+        let reply = AgentEvent::Text {
+            text: "Edited `game.fun`.\n\nSpoken: The ball is red now.".to_string(),
+        };
+        let (working, _) = update(s, agent(4, 0, reply));
+        let (s, _) = update(working.clone(), agent(4, 0, finished()));
+        let change = |change| Event::Change {
+            task: 4,
+            baseline: "t0".to_string(),
+            change,
+        };
+        // It changed the game and the game reloaded: ready to look at.
+        let (changed, _) = update(s.clone(), change(one_file(1)));
+        let (changed, _) = update(changed, ended(4, 0));
+        let (_, commands) = polled_revision(changed, 6);
+        assert_eq!(stages(&commands), [(1, Stage::Reloaded)]);
+        assert_eq!(
+            said_aloud(&commands),
+            ["The ball is red now. It's ready for you to look at."]
+        );
+        // An answer: its line alone.
+        let (answered, _) = update(s.clone(), change(Change::default()));
+        let (_, commands) = update(answered, ended(4, 0));
+        assert_eq!(said_aloud(&commands), ["The ball is red now."]);
+        // A failure.
+        let error = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Ended {
+                error: Some("boom".to_string()),
+            },
+        };
+        let (_, commands) = update(working, error);
+        assert_eq!(said_aloud(&commands), ["That did not work: boom"]);
+        // Typed: no line asked for.
+        let (_, commands) = update(ready, nth_task(1, "go"));
+        assert!(!spec(&commands).message.contains("Spoken:"));
+    }
+
     /// A task whose review is preparing has no run of its own to steer:
     /// what is said starts a new task.
     #[test]
@@ -8610,6 +8694,7 @@ mod tests {
             stages(&commands),
             [(1, Stage::Answered("The ball is red already.".to_string()))]
         );
+        assert_eq!(said_aloud(&commands), [] as [&str; 0], "replies are off");
 
         let mut s = voice_ready();
         s.tracks_changes = true;

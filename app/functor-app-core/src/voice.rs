@@ -181,7 +181,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     jobs.retain_mut(|job| {
         let mut end = |stage: Stage| {
             status(commands, &job.device, job.utterance, stage.clone());
-            ended.push((job.device.clone(), job.utterance, stage));
+            ended.push((job.device.clone(), job.utterance, stage, job.task, job.run));
             false
         };
         let revision = match on_headset(state, &job.device) {
@@ -257,9 +257,24 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
     });
     state.voice = jobs;
-    for (device, utterance, stage) in ended {
+    for (device, utterance, stage, task, run) in ended {
         crate::progress::voice_ended(state, &device, utterance, &stage);
+        // Its reply, aloud (D47).
+        let said = state.speak.then(|| said(state, task, run, &stage)).flatten();
+        if let Some(text) = said {
+            commands.push(Command::Link(LinkCommand::Say { device, text }));
+        }
     }
+}
+
+/// What is said aloud as `task`'s run ends as `stage`.
+fn said(state: &AppState, task: u64, run: Option<u64>, stage: &Stage) -> Option<String> {
+    let task = state.tasks.iter().find(|t| t.id == task);
+    let items = task.map_or(&[][..], |t| &t.transcript[..]);
+    let review = task.is_some_and(|t| state.tracks_changes && crate::tasks::has_change(t));
+    // A run that never started has no replies: past the end.
+    let run = run.unwrap_or(items.len() as u64);
+    crate::reply::spoken(items, run, stage, review)
 }
 
 /// Run `run`'s answer, as a headset's toast says it: its last reply's

@@ -20,6 +20,7 @@ pub mod progress;
 pub mod projects;
 pub mod protocol;
 pub mod queue;
+pub mod reply;
 pub mod route;
 pub mod review;
 pub mod session;
