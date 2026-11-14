@@ -876,6 +876,60 @@ worth having.
 To try first on the desktop: the chat's default recipient becomes the
 manager, over the existing router, queue and tasks (S8).
 
+### D46 — the code city, for Functor Lang
+
+The code map (D33, D44) is a city of **definitions**, built for `.fun` only.
+The principles, the architecture and the plan are in
+[`docs/code-city.md`](../../code-city.md).
+
+**Geometry carries slow facts; light and motion carry live ones.** The city
+does not reshuffle: a mode, a frame or an agent never moves a building.
+
+- **Footprint** is the size of the definition's code.
+- **Height** is history as strata: one slab per change that touched the
+  definition, coloured by the task or agent that made it. A fork's
+  uncommitted work floats above the stack until kept.
+- **Inside a file:** functions are buildings; types are low, wide foundations
+  with a segment per field or variant; constants are kiosks; inline modules
+  are terraces.
+- **The loop is the landmark.** The game loop's entry points are towers at
+  the district's gate; the model is a central plaza.
+- **Execution light** comes from the runtime's coverage: what ran on this
+  frame is lit, what can run but did not stays dark, and scrubbing replays
+  the city. Exact while paused today (per expression); full speed needs a
+  cheaper signal (S10).
+- **Traffic is minimal:** no drawn roads. A dot travels from caller to callee
+  when the call happens — one per pair per frame, between files from afar and
+  between definitions up close. Static references are a later, optional
+  overlay.
+- **Files may draw themselves.** A file or inline module may define an
+  optional, pure `diagram = (model, tts) => Scene.t` (working name
+  `ide_render`), drawn above its plate in the plate's own unit box: a jump
+  arc, a state machine with the current state lit, a minimap. The game loop
+  never calls it; it is bounded in time and size, and a fault shows as a
+  mark on the plate. An agent may write one to explain a change.
+
+**Built in layers:** an analyzer on the language crate emits a versioned,
+source-neutral snapshot; history, execution, agents and forks are separate
+layers keyed by definition id; one model lays it out and turns it into marks;
+the workshop scene and a flat skyline in a desktop pane draw the same marks.
+A tour is the existing walkthrough (`present`, D25/D31), not a second format.
+
+**To reconsider:**
+
+- *Slab colour by agent rather than by task.* Tasks outnumber the six or so
+  hues that can be told apart; an agent's hue with the selected task outlined
+  stays readable.
+- *Types do not grow with history.* A much-edited type would become a tower
+  and read as a function; show its changes as bands on the foundation's edge.
+- *What one slab is.* A kept task (or an outside commit) that changed the
+  definition's meaning, so formatting and moves add nothing.
+
+**What the engine needs to draw it well** (the list and the reasons are in
+the document): text as a scene primitive, per-instance attribute buffers, a
+box ray query; a district of up to about 150 buildings draws with today's
+prelude.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
