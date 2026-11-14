@@ -678,7 +678,11 @@ model: string | null, state: ReviewState,
 /**
  * The latest (cumulative) usage it reported.
  */
-usage: Usage | null, };
+usage: Usage | null, 
+/**
+ * The latest usage split it reported, when the harness gives one.
+ */
+detail?: UsageDetail, };
 
 /**
  * How a project's changes are reviewed; stored per project.
@@ -972,7 +976,7 @@ total: TokenUsage,
  */
 last: TokenUsage | null, 
 /**
- * API round trips.
+ * Claude Code's `num_turns`: not exactly its API requests.
  */
 turns: number | null, cost_usd: Usd | null, 
 /**

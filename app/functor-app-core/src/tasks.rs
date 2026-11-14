@@ -181,7 +181,7 @@ pub struct UsageDetail {
     /// context is now.
     #[serde(default)]
     pub last: Option<TokenUsage>,
-    /// API round trips.
+    /// Claude Code's `num_turns`: not exactly its API requests.
     #[serde(default)]
     pub turns: Option<u64>,
     #[serde(default)]

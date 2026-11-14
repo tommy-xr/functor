@@ -2421,6 +2421,7 @@ fn start_review(state: &mut AppState, id: u64, run: u64, commands: &mut Vec<Comm
         model,
         state: review_state,
         usage: None,
+        detail: None,
         staged: None,
     });
     commands.push(save(&root, task));
@@ -2451,6 +2452,10 @@ fn on_review(
         // Kept with the task, sent with the next change.
         ReviewEvent::Agent(AgentEvent::Usage { input, output }) => {
             review.usage = Some(Usage { input, output });
+            false
+        }
+        ReviewEvent::Agent(AgentEvent::UsageDetail(detail)) => {
+            review.detail = Some(detail);
             false
         }
         ReviewEvent::Agent(_) => false,
@@ -6920,6 +6925,7 @@ mod tests {
             model: None,
             state: ReviewState::Preparing,
             usage: None,
+            detail: None,
             staged: None,
         });
         assert_eq!(voice::route(&s, "aa", "and blue"), Route::New);
