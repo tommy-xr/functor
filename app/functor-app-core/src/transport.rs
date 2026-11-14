@@ -141,6 +141,8 @@ pub struct Timeline {
     log_generation: Option<u64>,
     /// The last program revision polled: a new one is a hot reload.
     revision: Option<u64>,
+    /// A resume was posted and no poll has shown it running yet.
+    resuming: bool,
 }
 
 impl Timeline {
@@ -167,6 +169,7 @@ impl Timeline {
             _ => frame,
         };
         self.revision = Some(clock.program_revision);
+        self.resuming &= clock.paused;
         self.clock = Some(Transport {
             clock: true,
             paused: clock.paused,
@@ -188,6 +191,13 @@ impl Timeline {
     /// is posted as the switch the runtime should follow meanwhile.
     pub fn call(&mut self, call: TransportCall) -> Option<TransportCall> {
         let clock = self.clock.as_mut().filter(|c| c.clock)?;
+        match call {
+            TransportCall::Resume => self.resuming = true,
+            TransportCall::Pause | TransportCall::Step | TransportCall::Seek { .. } => {
+                self.resuming = false
+            }
+            _ => {}
+        }
         let (frame, id) = match call {
             TransportCall::Seek { frame, id } => (frame, id),
             TransportCall::Extrapolate { on } => {
@@ -209,6 +219,12 @@ impl Timeline {
             frame: clock.frame,
             id,
         })
+    }
+
+    /// Time runs, or was just asked to: what a pause by an agent's tools
+    /// is undone to.
+    pub fn playing(&self) -> bool {
+        self.clock.is_some_and(|c| c.clock && (!c.paused || self.resuming))
     }
 
     /// Where the next input-log read starts.
