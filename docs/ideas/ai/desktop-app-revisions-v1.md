@@ -714,7 +714,10 @@ stands. A question is a card it holds out; a change to decide is the two
 miniatures set down in front of the user; an approval shows what it would
 run. The user answers in place, by voice to that figure or with a pinch.
 Several that need the user wait in order at the desk's edge, and the tasks
-panel shows the same order. Sent away, it waits visibly and does not nag.
+panel shows the same order. Sent away, it waits visibly and does not nag: one chime, then quiet.
+Everything waiting on the user is also one list, in order — who, what they
+need, how long they have waited — at the top of the tasks panel and on the
+palm-up glance; choosing a row brings that agent and its thing forward.
 
 **The code map.** A shelf of blocks, one per file, floors for its
 definitions; changed blocks glow; pointing at one opens its change. It grows
