@@ -262,7 +262,7 @@ newest 8 in `GET /spikes` with up to 4 frames either side. At most one line
 is logged per second; the next notes how many went unlogged.
 
 A frame over 250 ms is a **stall**: the view froze. It always logs —
-`STALL frame 2194: 7274.4 ms (shell.other 7260.1 ms) during POST /capture` —
+`STALL frame 2194: 1274.4 ms (sim.other 1260.1 ms) during POST /reload-source` —
 naming the debug requests served in that frame and the one before, and
 `GET /spikes` keeps the newest 16 in `stalls` for the life of the process, so
 one is still there after the spikes around it have cycled out.

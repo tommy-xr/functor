@@ -2077,6 +2077,7 @@ pub fn android_main(app: AndroidApp) {
             // A doze is not frame time.
             last_rendered = Instant::now();
             last_display_ns = None;
+            debug.telemetry.idle();
             continue;
         }
 
@@ -2129,6 +2130,7 @@ pub fn android_main(app: AndroidApp) {
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
             last_display_ns = None;
+            debug.telemetry.idle();
             last_rendered = Instant::now();
             continue;
         }
@@ -2244,6 +2246,7 @@ pub fn android_main(app: AndroidApp) {
             last_rendered = Instant::now();
             // A declined frame is the compositor's choice, not a miss.
             last_display_ns = None;
+            debug.telemetry.idle();
             continue;
         }
 

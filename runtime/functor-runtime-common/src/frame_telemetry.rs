@@ -401,6 +401,7 @@ pub struct SpikesReport {
     pub spikes: Vec<SpikeRecord>,
     /// Frames over [`STALL_US`] since launch, oldest first; the newest
     /// [`STALLS`]. `default` because a pre-v48 runtime omits it.
+    #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default)]
     pub stalls: Vec<StallRecord>,
 }
@@ -476,7 +477,9 @@ pub struct FrameTelemetry {
     /// What the shell noted this frame, and in the one before.
     during: Vec<&'static str>,
     during_last: Vec<&'static str>,
-    stalls: std::collections::VecDeque<(FrameRecord, &'static str, u32, Vec<&'static str>)>,
+    /// The shell skipped frames since the last push ([`Self::idle`]).
+    idled: bool,
+    stalls: std::collections::VecDeque<StallRecord>,
 }
 
 impl Default for FrameTelemetry {
@@ -507,6 +510,7 @@ impl FrameTelemetry {
             unlogged: 0,
             during: Vec::new(),
             during_last: Vec::new(),
+            idled: false,
             stalls: std::collections::VecDeque::new(),
         };
         match pinned {
@@ -543,20 +547,37 @@ impl FrameTelemetry {
         }
     }
 
+    /// The shell rendered no frame this turn (a dozing headset): what it
+    /// served meanwhile belongs to no frame, and the next frame's wait for
+    /// the display is not a stall.
+    pub fn idle(&mut self) {
+        self.during.clear();
+        self.during_last.clear();
+        self.idled = true;
+    }
+
     /// Record one frame. Returns a note when it is a spike, for the shell to
     /// log, at most once per [`LOG_EVERY`] (a stall always).
     pub fn push(&mut self, record: FrameRecord) -> Option<SpikeNote> {
-        let during = std::mem::take(&mut self.during);
-        let before = std::mem::replace(&mut self.during_last, during.clone());
-        let stalled = (record.frame_us > STALL_US).then(|| {
-            let mut all = before;
-            all.extend(during.into_iter().filter(|what| !all.contains(what)).collect::<Vec<_>>());
+        let mut all = std::mem::replace(&mut self.during_last, std::mem::take(&mut self.during));
+        let resumed = std::mem::take(&mut self.idled);
+        let stalled = (record.frame_us > STALL_US && !resumed).then(|| {
+            for what in &self.during_last {
+                if !all.contains(what) {
+                    all.push(what);
+                }
+            }
             let (stage, stage_us) = dominant(&record);
             if self.stalls.len() == STALLS {
                 self.stalls.pop_front();
             }
-            self.stalls.push_back((record, stage, stage_us, all.clone()));
-            all
+            self.stalls.push_back(StallRecord {
+                frame: record,
+                stage: stage.to_string(),
+                stage_us,
+                during: all.iter().map(|what| what.to_string()).collect(),
+            });
+            (stage, stage_us, all)
         });
         for spike in self.spikes.iter_mut().take(self.spikes_total.min(SPIKES as u64) as usize) {
             if spike.len < WINDOW && spike.len - spike.at <= SPIKE_CONTEXT {
@@ -592,8 +613,19 @@ impl FrameTelemetry {
         self.ring[self.next] = record;
         self.next = (self.next + 1) % RING_FRAMES;
         self.len = (self.len + 1).min(RING_FRAMES);
-        let mut note = spiked?;
-        note.stalled = stalled;
+        // A stall logs even under a spike threshold pinned above it.
+        let mut note = match (spiked, stalled) {
+            (Some(note), stalled) => SpikeNote { stalled: stalled.map(|(.., during)| during), ..note },
+            (None, Some((stage, stage_us, during))) => SpikeNote {
+                frame: record.frame,
+                frame_us: record.frame_us,
+                stage,
+                stage_us,
+                unlogged: 0,
+                stalled: Some(during),
+            },
+            (None, None) => return None,
+        };
         let now = std::time::Instant::now();
         if note.stalled.is_none() && self.last_note.is_some_and(|last| now - last < LOG_EVERY) {
             self.unlogged += 1;
@@ -665,21 +697,11 @@ impl FrameTelemetry {
                 }
             })
             .collect();
-        let stalls = self
-            .stalls
-            .iter()
-            .map(|(frame, stage, stage_us, during)| StallRecord {
-                frame: *frame,
-                stage: stage.to_string(),
-                stage_us: *stage_us,
-                during: during.iter().map(|what| what.to_string()).collect(),
-            })
-            .collect();
         SpikesReport {
             threshold_us: self.threshold_us,
             total: self.spikes_total,
             spikes,
-            stalls,
+            stalls: self.stalls.iter().cloned().collect(),
         }
     }
 }
@@ -825,6 +847,17 @@ mod tests {
         assert_eq!(stalls.len(), STALLS);
         assert_eq!(stalls[0].frame.frame, 102);
         assert!(stalls[0].during.is_empty());
+        // A stall under a pinned spike threshold still logs.
+        t.threshold_us = 1_000_000;
+        assert!(t.push(record(200, 300_000)).is_some_and(|note| note.stalled.is_some()));
+        // The first frame after the headset dozed is not one, and what was
+        // served during the doze is not pinned on it.
+        t.note("GET /state");
+        t.idle();
+        assert_eq!(t.push(record(201, 900_000)), None);
+        assert_eq!(t.spikes().stalls.last().unwrap().frame.frame, 200);
+        let note = t.push(record(202, 300_000)).expect("a stall");
+        assert_eq!(note.stalled, Some(vec![]));
     }
 
     #[test]
