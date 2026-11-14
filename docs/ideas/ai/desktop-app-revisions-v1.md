@@ -642,6 +642,239 @@ panel shows the current task's conversation as a page of its own.
   show inline, above the conversation.
 - **With the panel closed,** the status toast also shows the agent's first
   reply and the final result, so the loop is visible without opening anything.
+### D43 — every request shows where it is
+
+A principle, from using the headset for real: after the user says or types
+something, there is never a silent wait. One small progress line shows which
+step the request has reached, and it is the same line on the desktop and in
+the headset.
+
+The steps, in order:
+
+1. **Received** — the words or the clip arrived. Shown at once.
+2. **Transcribed** — for speech: the text, as heard. It stays long enough to
+   read, also when the next step follows at once.
+3. **Processing** — where it went (steers a task, a new task, queued), and
+   the agent is starting.
+4. **The agent's status** — thinking, or working with what it is doing now
+   (D34), then its reply.
+5. **The outcome** — answered, changed and reloaded, needs you, or failed
+   with the reason in a few words.
+
+Rules:
+
+- **One element that moves through the steps,** not a stack of messages; each
+  step shows how long it took once it is done.
+- **A step that takes long says so** rather than disappearing: after a couple
+  of seconds the current step shows it is still going.
+- **A late step brings the line back** if it had faded, and a step is never
+  skipped on screen because the next arrived quickly.
+- **The same state feeds every surface:** the chat, the headset toast and the
+  headset panel read one progress record held by the app, so they cannot
+  disagree.
+- **A failure names its step** ("Could not transcribe", "The headset is
+  away"), so the user knows what to try again.
+
+### D44 — the workshop: a zoomed-out place to work from
+
+A direction, not yet a plan. Today the headset shows the game with our
+interface laid over it. The workshop turns that round: the workspace is where
+the user is, and the game is one object in it.
+
+**Two scales.**
+
+- **Workshop (zoomed out).** Passthrough, seated at the real desk. The game is
+  a live miniature on the desk, which can be grabbed, moved and scaled. Around
+  it: the tasks, the conversation, the agents and a map of the code. Status is
+  in the room; nothing has to be opened to see it.
+- **Inside (1:1).** The user is in the game, as today. Pointing at a spot in
+  the miniature and pressing goes in at that spot; one gesture comes back out.
+  The game's state is the same on both sides.
+
+**The miniature.** Pause and scrub it with a dial; point at something in it
+and say "this"; put the old and the new version side by side to decide
+(D36); a game with no 1:1 inside (a 2D platformer) is simply viewed this way.
+
+**The agents (D34, in the room).** A figure per agent, standing at what it
+is working on: at a file when it reads or edits, at the miniature when it
+drives the game, at the desk's edge with a hand up when it needs the user. A
+tool call is a visible link from the figure to its target (a file, the
+miniature, the network). A subagent splits off as a smaller figure. Context
+is something the figure carries, and it fills.
+
+**Several agents, in a hierarchy.** An orchestrator hands work to subagents:
+it stands by the tasks, passes a piece of work along a visible link, and the
+subagent goes to its target and comes back with the result. Who works for
+whom is readable at a glance (tethers, or a faint tree on the floor), two
+levels shown and deeper ones folded into a count. The tasks panel shows the
+same tree.
+
+**Forks that converge.** Parallel subagents each work in their own copy of
+the code, so their changes stay apart. The room shows it: each fork is a layer
+over the city in its agent's colour, showing only what that fork changed,
+with its own miniature running that version. When a subagent finishes, its
+layer settles into the base. Where two forks
+changed the same block, a clean merge interleaves and a conflict holds the
+two versions apart for the orchestrator, or the user, to settle. The user can
+keep one fork, several, or send one back, and sees the combined result as one
+more miniature before the final Keep — two forks that each work but not
+together show up there.
+
+**Drafts are drawn by the desktop.** A fork's miniature need not be a game
+running in the headset. The desktop already runs each fork's game hidden; it
+renders the miniature from where the user is looking and sends the picture,
+which the headset shows as a draft — semi-transparent, at a low rate. Only
+the one the user reaches for becomes a live game in the headset. So the
+headset's cost stays that of one game however many forks there are.
+
+**What watching them is for — all three.** Progress in real time (position,
+link, bubble, context). Steering: an agent can be addressed — look or point
+at a figure and talk to that one; talking to the orchestrator redirects the
+whole effort, talking to a subagent only its piece; stop is on the figure,
+and stopping an orchestrator stops what is under it. And delight: the
+figures have some character, never at the cost of reading them.
+
+**When an agent needs the user.** It comes to the user and brings the thing:
+it walks to the desk's edge with a hand up, and a sound comes from where it
+stands. A question is a card it holds out; a change to decide is the two
+miniatures set down in front of the user; an approval shows what it would
+run. The user answers in place, by voice to that figure or with a pinch.
+Several that need the user wait in order at the desk's edge, and the tasks
+panel shows the same order. Sent away, it waits visibly and does not nag: one chime, then quiet.
+Everything waiting on the user is also one list, in order — who, what they
+need, how long they have waited — at the top of the tasks panel and on the
+palm-up glance; choosing a row brings that agent and its thing forward.
+
+**The code map is a code city** (D33, D46): folders are
+districts, files are blocks, and every definition is a building, on the desk
+beside the miniature. It is the place the agents are seen working, several at
+once in the same codebase:
+
+- **Agents stand in the city.** A worker is at the building it is reading or
+  editing, with its link going into it; where two agents touch the same file
+  the block shows it.
+- **What is changing shows as construction.** Uncommitted work paints the
+  city: changed buildings by how much was
+  added and removed, new ones rising, deleted ones as empty lots. Each fork
+  is such a layer, so forks are seen diverging and converging on one city
+  rather than as copies of it.
+- **It is where a change is explained.** A tour of the city — a few stops
+  with the reason for each — is the walkthrough of a finished change (D25,
+  D31), and pointing at a building opens its change.
+- **It scales both ways.** A small game is one district of a few blocks and
+  is drawn simply; a large project is a real city, and zooming in is going
+  down a level.
+- **The same model draws flat** as a skyline in the desktop pane.
+
+**Seated and standing, hands busy or free.** The workshop must work at a
+desk and while walking about — the aim is to keep working on a game while
+doing chores, headset on.
+
+- **At the desk:** the full layout, anchored to the desk.
+- **About the house:** a compact form that comes along — the miniature small
+  and near a hand or parked on a surface, the request-progress line and one
+  agent status in the edge of view, everything else folded away. Passthrough
+  always; nothing may cover where the user is walking or what the hands are
+  doing.
+- **Hands, not controllers.** Hand tracking drives it: a pinch-and-hold to
+  talk, a pinch to pick, a grab to move the miniature, a palm-up glance for
+  status (the wrist light's successor). Going in is a pinch on a spot pulled
+  back while a ring fills; coming out is both palms pushed away; "later" is a
+  brush aside; reset is both fists together. Controllers stay supported for
+  playing the game itself.
+- **Or a wake phrase.** When hands are wet or full, a phrase of the user's
+  choosing ("Computer, …") starts a request. It is off until turned on,
+  because it means the microphone listens all the time: a mark in view shows
+  when it does, one gesture or word mutes it, and what it hears goes nowhere
+  but the paired desktop, which keeps nothing that did not begin with the
+  phrase.
+- **Voice first, and sound back.** With eyes and hands elsewhere, a request
+  is spoken and its progress is heard as well as shown: a short sound per
+  step, the outcome spoken briefly ("Changed. Ready to look at."), a question
+  from the agent read out and answered by voice.
+
+**The workshop is itself a Functor project — a scene about a scene.** It is
+a `.fun` program like any game: its model is the workspace (where things
+stand, what is open), and it draws the miniature by containing the running
+game's frame, as the mirror does (4.5). So:
+
+- **The user can change their workspace by asking.** "Put the code city on
+  my left", "make the conversation bigger", "give the agents hats" is a task
+  like any other: an agent edits the workshop's own `.fun`, it hot-reloads
+  with its state kept, and the change is kept or reverted the usual way.
+- **It ships as a default the user's copy is forked from,** so updates to the
+  default converge with the user's changes rather than replacing them.
+- **The data model is an external contract.** What a workspace may read
+  (the state: tasks and their tree, agents with stance, activity, context and
+  parent, request progress, what waits on the user, forks, the code map,
+  devices, the running games) and what it may ask for (the actions: talk to
+  this agent, keep, revert, stop, move a request, go in) is one versioned
+  schema that belongs to the app, not to any one interface. The desktop page,
+  the headset panel and the workshop scene are three clients of it; types for
+  each are generated from it (TypeScript, and a typed Functor Lang module).
+  The rules live behind the contract: confirmation for Keep, Revert and Stop,
+  who may be steered, and what an agent may run are enforced where an action
+  lands, so no workspace, however edited, can remove them. A workspace can be
+  developed and tested against recorded state with no app running.
+- **It cannot lock the user out.** A workshop that fails to load, or loads
+  and misbehaves, falls back to the built-in default, with "reset my
+  workspace" always reachable by voice and by a gesture the scene does not
+  own.
+- **The same scene draws on the desktop,** where it is the agents' view in a
+  pane (D34).
+
+**Themes.** Because the workshop is a scene over a contract, it can look like
+something else entirely while meaning the same: a plain office (the manager
+at the front desk, workers at theirs, the code city as an architect's model,
+what waits for the user in an in-tray), a starship's bridge and engineering
+(the game on the main screen, forks on side screens, workers at stations by
+what they do, the code city as the ship's systems display, "needs you" as an
+alert, going in through a door to the simulation). A theme is a scene and a
+mapping of roles; the data, the actions and the rules do not change, and the
+gestures, the progress line and where "waiting for you" appears stay the
+same so habit carries over. A theme has a passthrough form (furniture and
+figures in the real room) and may have an immersive one, for when the user is
+still. The user gets one by asking for it.
+
+What the engine must gain: a scene that holds another game (and answers for
+things tied to the player's view — sky, fog, post-effects — and the world's
+bounds), text and panels drawn in the world, hands as input, and the time to
+run two programs in one headset frame.
+
+**Order to try it in:** the miniature with teleport in and out; the tasks and
+the conversation beside it; the agents; the code city; two miniatures for a
+decision.
+
+### D45 — a project manager is the point of contact
+
+A direction, with D44. One agent, the project manager, is who the user talks
+to by default — in the chat and in the headset. It does not do the work; it
+takes requests, hands them out, and reports back.
+
+- **It replaces the router's guess with a colleague.** What the router decides
+  silently (D29: steer, new task, queue) the manager decides and says: "That
+  is for the jump task — I have told it", "New piece of work; it starts after
+  the current one." The decision is still shown and still movable with one
+  tap.
+- **It hands out the work** to worker agents (D44: the hierarchy, the forks),
+  keeps the queue (D30), and knows who is doing what.
+- **It gathers what needs the user.** Workers' questions and finished changes
+  come through it: it brings one summary rather than five interruptions, and
+  the pending list is its list.
+- **It reports.** "Two of three are done; the third wants a decision." The
+  voice the user hears back is the manager's.
+- **Workers can still be addressed directly.** Looking at one and talking
+  steers that worker; the manager is told.
+
+What it must be to work: quick and cheap. It answers within a second or two
+("Got it") before any work starts, so it runs lean — a small model, its own
+few tools (start, steer, queue, ask, summarise, switch project), none of the
+user's own setup, and a short memory of the effort rather than the code. An
+always-on agent that costs what a worker costs per sentence would not be
+worth having.
+
+To try first on the desktop: the chat's default recipient becomes the
+manager, over the existing router, queue and tasks (S8).
 
 ### D46 — the code city, for Functor Lang
 

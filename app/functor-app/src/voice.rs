@@ -264,7 +264,16 @@ impl Speech {
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
         use functor_stt::Transcriber;
         let model: Arc<dyn Transcriber> = match self {
-            Speech::Fake(fake) => fake.clone(),
+            Speech::Fake(fake) => {
+                // `FUNCTOR_APP_FAKE_TRANSCRIPT_MS`: as slow as a real model.
+                if let Some(ms) = std::env::var("FUNCTOR_APP_FAKE_TRANSCRIPT_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse().ok())
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+                fake.clone()
+            }
             #[cfg(feature = "whisper")]
             Speech::Whisper(cell) => cell
                 .get_or_try_init(|| async {

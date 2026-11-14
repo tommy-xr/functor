@@ -258,7 +258,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 46 adds the conversation to `link.panel` ([`PanelState`]: `conversation`,
 /// `following`, `said`, `question`).
-pub const DEBUG_PROTOCOL_VERSION: u32 = 46;
+///
+/// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
+/// and the toast's `waiting` seconds.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -810,6 +813,11 @@ pub struct VoiceToast {
     #[serde(flatten)]
     pub stage: VoiceStage,
     pub transcript: Option<String>,
+    /// Seconds the current step has been going, once it is long enough to
+    /// say so (v46).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,6 +828,10 @@ pub enum VoiceStage {
     NotConnected,
     /// The microphone permission was asked for.
     AllowMicrophone,
+    /// Allowed after asking: the next hold talks.
+    MicrophoneAllowed,
+    /// Asked before and still not allowed.
+    MicrophoneDenied,
     /// Recording: `level` 0–[`crate::link_overlay::METER`];
     /// `seconds_left` in the last few seconds before it sends by itself.
     Listening {
