@@ -98,6 +98,14 @@ impl SessionStatus {
     pub fn is_live(&self) -> bool {
         matches!(self, Self::Starting | Self::Running { .. })
     }
+
+    /// The game's hot reloads so far, as last polled.
+    pub fn revision(&self) -> Option<u64> {
+        match self {
+            Self::Running { timeline, .. } => timeline.clock.as_ref().map(|c| c.revision),
+            _ => None,
+        }
+    }
 }
 
 /// What the shell observed about session `id`'s child.

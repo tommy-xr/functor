@@ -292,6 +292,14 @@ pub enum LinkEvent {
         conn: u64,
         action: PanelAction,
     },
+    /// `conn`'s headset said `text` (transcribed), as its utterance
+    /// `utterance`; `context` is its capsule, rendered.
+    Utterance {
+        conn: u64,
+        utterance: u64,
+        text: String,
+        context: Option<String>,
+    },
 }
 
 /// To the shell's device link.
@@ -322,6 +330,12 @@ pub enum LinkCommand {
     Panel { conn: u64, panel: Box<Panel> },
     /// Tell the panel on `conn` its last action was refused.
     PanelRefused { conn: u64, reason: String },
+    /// Tell `device` how its utterance is going.
+    Voice {
+        device: String,
+        utterance: u64,
+        stage: crate::voice::Stage,
+    },
 }
 
 impl Devices {
@@ -662,6 +676,8 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
         }
         // The core turns these into client messages before they get here.
         LinkEvent::Panel { .. } => {}
+        // The core's to act on (`voice::heard`): no device changes.
+        LinkEvent::Utterance { .. } => {}
     }
     refresh(devices);
     (*devices != before, commands)

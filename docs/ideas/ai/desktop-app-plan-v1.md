@@ -98,7 +98,7 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 1.14 ∥ | Templates in the CLI (D24): a template manifest (name, description, tags, preview), `functor init --list` (text and JSON) and `--from <template>`; add blank, 2D and VR starters; ship chosen examples as templates. | CLI tests: every listed template creates a project that passes `functor build`. |
 | 1.15 | New-project modal (D24): name, folder with a native folder picker, optional git init, the template gallery with search and tags, optional description that becomes the first task; creates, switches to and starts the project. | Playwright with a fake template list; an end-to-end create in a temp folder. |
 | 1.16 | Agent-driven view (D25), after 1.9b: view tools on the agent's tool server that call back into the core (open/focus, arrange, highlight, game moment), the walkthrough card in the chat with its first step applied automatically when a run ends (a setting turns that off), the "never takes the wheel" rules and "restore my layout". | Core unit tests for the rules; Playwright with a fake-agent fixture that issues view calls; focus and cursor unchanged. |
-| 1.17 | Agent activity (D34), core: classify each call into the fixed kinds (shell commands by what they touch), a stance per task, context fill, and subagent calls tied to their parent. The last two need more from the agent runner's event stream. | Core unit tests on recorded event logs; a classifier table test. |
+| 1.17 | Agent activity (D34), core: classify each call into the fixed kinds (shell commands by what they touch), a stance per task, context fill, and subagent calls tied to their parent. The last two use the runner's usage split and call ids: the window comes only as a Claude run ends, so it is remembered per harness and model (no bar on a model's first run until it ends); Codex reports no per-message usage, so it has no bar. | Core unit tests on recorded event logs; a classifier table test. |
 | 1.18 | Agent cards (D34), desktop: avatar, thought bubble and context bar per running task in the Tasks pane and the chat dock; engines and subagents told apart by shape. | Playwright with `FakeAgent`; stills of every stance. |
 | 1.22 | The game opens paused (D37): opening a project starts its game hidden and paused on frame 0 (`functor run native --paused`); the game view's Start prompt goes; Stop game / Start game beside the placement control; the agent is told the game starts paused. | Clock and core unit tests; Playwright: opening shows a frame and a paused clock at frame 0 with no click, and Play advances it. |
 | 1.19 | Agent-run metrics: a fixed set of scenarios run through `functor-app task`, recording turns, tokens, time and outcome per scenario to a file, so prompt and settings changes can be compared and regressions seen. | The scenarios run against `FakeAgent` in CI; one opt-in live run with its numbers recorded here. |
@@ -254,6 +254,29 @@ by default; `FUNCTOR_APP_LIVE=1 … --live` for the real agent, capped at 600k
 input tokens and 5 minutes a scenario. `--compare a.jsonl b.jsonl` prints the
 deltas.
 
+The columns:
+
+- **wall s**: the run, from the task's start to its end. **first event s**:
+  to the harness's first event (its startup).
+- **messages**, **tool calls**, **by kind**: text blocks, and tool calls by
+  the D34 kind.
+- **input tokens**, **output tokens**: the harness's running total at the
+  end. Input counts every prompt token, cached or not. Claude's is the main
+  agent only (a subagent's tokens are not in it).
+- From here on, only where the harness reports them (a dash where a record
+  has none; the column is left out when no record has it). Cumulative for
+  the run, subagents included:
+  - **uncached in**: prompt tokens neither read from nor written to the
+    cache, so billed at full price.
+  - **cache read**: prompt tokens read from the cache (on Claude, a tenth of
+    the price).
+  - **cache write**: prompt tokens written to the cache (Claude; Codex
+    reports none).
+  - **cached %**: cache read of the whole prompt (uncached + read + write).
+  - **turns**: Claude Code's `num_turns`, not exactly its API requests.
+  - **cost $**: the run's cost as Claude Code reports it.
+  - **API s**: time spent waiting on the API (Claude).
+
 ### Live run (2026-11-12, rev `c22a0b3d`, Claude `claude-fable-5-2`, the user's own settings)
 
 | scenario | outcome | wall s | first event s | tool calls | by kind | input tokens | output tokens |
@@ -363,3 +386,129 @@ pass (changes 1–3 without `api_reference` up front or the no-game note) gave
   tokens a turn); the per-tool `_meta` mark the server sets is the finer
   control and needs no change there. Its `Usage` event still lacks the split
   listed above, so cached input cannot be told apart.
+
+### Reviews (4.6a, 2026-11-13, rev `c4436f3c`, the review on `sonnet`)
+
+When a run ends with a change for the user (ready for review, tracked), a
+separate review run prepares the decision page's report (D31):
+
+- **Read-only by the harness, not by asking.** Claude: `mis-agent`'s
+  read-only mode (`dontAsk`: what no rule allows is denied; the only rule is
+  the review's tool server; the user's settings are not loaded, as their
+  rules could allow writes, so reviews are isolated from D19). Checked live:
+  `Edit`, `Write` and a `sed -i` through `Bash` were each denied, the file
+  unchanged. **Claude only:** the pinned `mis-agent` cannot force Codex's
+  sandbox read-only (its config may choose another, or approve other MCP
+  servers), so a Codex task's review runs on Claude and a setting naming
+  Codex is refused. The tool server runs `--review`: the language and API
+  tools and its own two, no game (launching one can rewrite a stale
+  `assets.fun`) and never the user's (`--attach` is refused). The report is
+  held until the review ends and the files are measured: a change since it
+  started (an edit anyway, or the user's) voids it.
+- **Tools:** `task_change` (the app's brief: request, the run's calls and
+  last words, files, evidence so far, the agent's report, the diff up to
+  48 KB) and `report` (summary, notes, evidence, highlights when the agent
+  gave none), both loaded up front.
+- **Setting per project** (`review.json`; the composer's "Review" panel): on
+  by default; model `sonnet` (cheaper and faster than the task's); optional
+  instructions. Off: the agent's own report is shown.
+- **Precedence:** the review's report replaces the agent's and is labelled
+  "Prepared by a separate review"; the agent's checks (as they ran) and the
+  app's own path evidence stay; a review that fails or is cut publishes
+  nothing. While it prepares, the page stands on what it
+  has, with "Preparing the summary…"; Keep and Revert work at once and stop
+  it. A failed or cut review leaves the page as it was and says why. A new
+  run, Keep, Revert or a different change ends it.
+- **Bounds:** one per change; cut at 300k input tokens or 180 s.
+- **Style check:** sentences over 20 words, over 120 words, or more than one
+  paragraph are flagged on the page and in `report`'s answer; never blocked.
+
+The working runs, then the reviews of the three that changed a file:
+
+| scenario | outcome | wall s | tool calls | by kind | input tokens | output tokens |
+| --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 5.9 | 1 | game 1 | 76,393 | 58 |
+| no-tools | pass | 7.5 | 0 | none | 37,709 | 4 |
+| weak-jump | pass | 27.5 | 13 | files 4, game 9 | 213,217 | 1,686 |
+| spawn-in-chasm | pass | 22.1 | 6 | files 3, game 3 | 171,132 | 1,126 |
+| two-step | pass | 25.3 | 12 | files 4, game 5, shell 3 | 215,616 | 1,629 |
+
+| review of | outcome | wall s | input tokens | output tokens | style flags |
+| --- | --- | --- | --- | --- | --- |
+| weak-jump | prepared | 25.7 | 111,990 | 974 | 0 |
+| spawn-in-chasm | prepared | 18.3 | 112,336 | 939 | 0 |
+| two-step | prepared | 9.5 | 82,944 | 838 | 0 |
+
+- **A review costs about half its run:** 83–112k input (52% of the run's on
+  average), 9.5–25.7 s, all well under the bounds. Its turns are cheaper
+  (no user settings), but it still reads the brief and the files.
+- **Every report was concrete:** 4–5 notes each, naming what nobody ran
+  (`functor test`, the jump from the new spawn), and only checks that ran,
+  credited to the agent. None launched a game.
+- One run each, at `c4436f3c`. Since then the report waits for the
+  review's end and the game tools are gone; neither changes what these
+  reviews did. Not measured: a review cut by its bounds.
+
+### The usage split (2026-11-13, rev `b7571978`, Claude `claude-fable-5-2`, the user's own settings)
+
+`mis-agent` now reports the split (its `UsageDetail`), so the cached part of
+each turn is measured rather than guessed:
+
+| scenario | outcome | wall s | tool calls | input tokens | uncached in | cache read | cache write | cached % | turns | cost $ | API s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 3.7 | 1 | 74,663 | 4 | 35,834 | 38,825 | 48 | 2 | 0.631 | 1.6 |
+| no-tools | pass | 2.1 | 0 | 35,826 | 2 | 14,366 | 21,458 | 40 | 1 | 0.346 | 0.8 |
+| weak-jump | pass | 16.2 | 12 | 211,969 | 10 | 177,460 | 34,499 | 84 | 13 | 0.651 | 14.6 |
+| spawn-in-chasm | pass | 19.1 | 13 | 215,663 | 10 | 180,001 | 35,652 | 83 | 14 | 0.676 | 16.9 |
+| two-step | pass | 19.4 | 11 | 249,323 | 12 | 218,834 | 30,477 | 88 | 12 | 0.611 | 17.4 |
+
+| review of | outcome | wall s | input tokens | uncached in | cache read | cache write | cached % | turns | cost $ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| weak-jump | prepared | 10.3 | 76,781 | 6 | 49,949 | 26,826 | 65 | 3 | 0.122 |
+| spawn-in-chasm | prepared | 9.2 | 107,446 | 8 | 92,335 | 15,103 | 86 | 4 | 0.078 |
+| two-step | prepared | 11.9 | 106,288 | 8 | 91,588 | 14,692 | 86 | 4 | 0.079 |
+
+- **The one first turn measured was 40% cached.** `no-tools` is one turn of
+  35.8k: 14.4k read from the cache, 21.5k written to it, 2 tokens uncached.
+  Almost nothing is sent uncached: what is not read from the cache is
+  written to it. One sample: `state-question` (two turns) read 35.8k and
+  wrote 38.8k, so a first turn's split varies from run to run.
+- **Over a whole edit run, 83–88% of the prompt is cache reads.** Its later
+  turns alone are about 93%, if its first turn is like `no-tools`' (an
+  estimate: weak-jump's first turn was not measured apart).
+- **Writes are a large part of the cost.** Every run wrote 21–39k tokens
+  to the cache; `no-tools` (one turn, 4 output tokens) cost $0.35, an edit
+  run $0.61–0.68. The price of a write is not in these tables.
+- **Why a first turn misses (likely, not checked):** every scenario runs in
+  a fresh folder, and the run's first request carries its folder and the
+  user's setup, so little past Claude Code's own prefix matches an earlier
+  run's cache. Two runs back to back in one project should read more; not
+  measured here.
+- **Turns** are Claude Code's `num_turns`, not its API requests: weak-jump's
+  13 turns average 16k, less than the 36k one request starts with. Why
+  (parallel calls counted apart, or a total that counts less) is not
+  checked.
+- The reviews (on `sonnet`, isolated) cost $0.08–0.12, a ninth to a fifth
+  of their run.
+- One run each.
+
+### Instruction scope (D39, 2026-11-13, rev `53f616ec`, Claude `claude-fable-5-2`)
+
+`state-question` at each level (`--scope`), back to back:
+
+| scope | outcome | wall s | tool calls | input tokens | per turn | uncached in | cache read | cache write | cached % | turns | cost $ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| yours and the project's | pass | 3.8 | 1 | 76,405 | 38.2k | 4 | 52,076 | 24,325 | 68 | 2 | 0.402 |
+| the project's only | pass | 2.5 | 1 | 51,599 | 25.8k | 4 | 25,328 | 26,267 | 49 | 2 | 0.428 |
+| isolated | pass | 2.4 | 1 | 51,316 | 25.7k | 4 | 42,146 | 9,166 | 82 | 2 | 0.157 |
+
+- **The user's own setup is about 12.5k tokens a turn**: 38.2k against
+  25.8k, a third of each turn. The project's own setup here is a few
+  hundred tokens (a scenario's folder holds one skill and no instructions).
+- **Every level worked**: the opening instructions and the app's tool server
+  are passed by the app, so the game call (`get_state`) and the answer were
+  the same at each.
+- **Cost here follows what each run found in the cache**, not the level
+  alone: the project level wrote 26k (more than the full level), isolated
+  read 42k of its 51k. Comparing costs needs repeated runs.
+- One run each.

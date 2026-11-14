@@ -6,13 +6,14 @@ import type { AppState, Change, Item, Task, TaskStatus } from "./generated/proto
 import { firstLine, initialTask } from "./chat-model.ts";
 import { hasChange, plural, totals } from "./diff-model.ts";
 
-export type Group = "waiting" | "review" | "progress" | "done";
+export type Group = "waiting" | "review" | "progress" | "queued" | "done";
 
 /** The groups in the order the pane lists them; Done starts collapsed. */
 export const GROUPS: readonly { group: Group; label: string }[] = [
   { group: "waiting", label: "Waiting on you" },
   { group: "review", label: "Ready for review" },
   { group: "progress", label: "In progress" },
+  { group: "queued", label: "Queued" },
   { group: "done", label: "Done" },
 ];
 
@@ -30,6 +31,8 @@ export function taskGroup(status: TaskStatus): Group {
       return "review";
     case "in_progress":
       return "progress";
+    case "queued":
+      return "queued";
     case "done":
     case "kept":
     case "reverted":
@@ -45,9 +48,14 @@ export function newestFirst(a: Task, b: Task): number {
   return (b.updated_at ?? 0) - (a.updated_at ?? 0) || b.id - a.id;
 }
 
+/** Queued tasks in their order in line (the core's `queue::order`). */
+function inLine(a: Task, b: Task): number {
+  return (a.queued ?? 0) - (b.queued ?? 0) || a.id - b.id;
+}
+
 /**
  * `project`'s tasks whose title contains `query` (any case), by group in
- * `GROUPS` order, empty groups left out.
+ * `GROUPS` order, empty groups left out; queued ones in line, the rest newest first.
  */
 export function groupTasks(tasks: readonly Task[], project: string | null, query = "") {
   const q = query.trim().toLowerCase();
@@ -55,7 +63,7 @@ export function groupTasks(tasks: readonly Task[], project: string | null, query
   return GROUPS.map(({ group, label }) => ({
     group,
     label,
-    tasks: mine.filter((t) => taskGroup(t.status) === group).sort(newestFirst),
+    tasks: mine.filter((t) => taskGroup(t.status) === group).sort(group === "queued" ? inLine : newestFirst),
   })).filter((g) => g.tasks.length > 0);
 }
 

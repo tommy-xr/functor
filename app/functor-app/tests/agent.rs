@@ -360,6 +360,67 @@ finished: ok
     assert_eq!(files(repo.path()), ["a/functor.json", "a/game.fun"]);
 }
 
+/// The runner's ids reach the core through the fake agent: a subagent's
+/// read answers while its `Agent` call is out, and each gets its own result.
+#[cfg(unix)]
+#[test]
+fn cli_task_pairs_results_by_id_while_a_subagent_runs() {
+    let repo = tree();
+    let home = tempfile::tempdir().unwrap();
+    let (functor, _requests) = stub::functor(home.path());
+    let fixture = fixture("claude-subagent.jsonl");
+    let out = task_command(repo.path(), home.path(), &functor, &fixture, "Do the steps")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success(), "{stdout}");
+    let tools: Vec<&str> = stdout.lines().filter(|l| l.starts_with("tool: ")).collect();
+    assert_eq!(tools.len(), 4, "{stdout}");
+    assert!(
+        tools[0].starts_with("tool: Agent ") && tools[0].contains("<tools-used-before-summary>"),
+        "{}",
+        tools[0]
+    );
+    assert!(
+        tools[1].contains("-> 1\tfirst line\\n2\tsecond"),
+        "{}",
+        tools[1]
+    );
+}
+
+/// D39: each level reaches the runner, with the app's tool server and its
+/// context still there; Codex reads all of the user's setup whatever is
+/// asked; the metrics record the level.
+#[cfg(unix)]
+#[test]
+fn cli_task_each_scope_reaches_the_runner_with_the_tool_server() {
+    let fixture = fixture("claude-game-tool.jsonl");
+    for (harness, scope, setup) in [
+        ("claude", "user_and_project", "UserAndProject"),
+        ("claude", "project", "Project"),
+        ("claude", "isolated", "Isolated"),
+        ("codex", "isolated", "UserAndProject"),
+    ] {
+        let repo = tree();
+        let home = tempfile::tempdir().unwrap();
+        let (functor, requests) = stub::functor(home.path());
+        let metrics = home.path().join("metrics.json");
+        let out = task_command(repo.path(), home.path(), &functor, &fixture, "What is the count?")
+            .args(["--harness", harness, "--scope", scope, "--metrics"])
+            .arg(&metrics)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(out.status.success(), "{scope}: {stderr}");
+        assert!(stderr.contains(&format!("[fake agent] setup: {setup}\n")), "{scope}: {stderr}");
+        let put = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(put.head.starts_with("PUT /app-context "), "{}", put.head);
+        let record: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+        let recorded = if harness == "codex" { "user_and_project" } else { scope };
+        assert_eq!(record["scope"], recorded, "{record}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn cli_task_with_a_failed_run_exits_1() {
@@ -675,7 +736,7 @@ async fn tasks_over_the_websocket() {
     assert_eq!(task["session_id"], "fake-session-1");
     assert_gone(&[&server, &agent]);
 
-    // A follow-up continues the stored session; meanwhile more messages are refused.
+    // A follow-up continues the stored session.
     send(
         &mut ws,
         json!({"type": "send_message", "task": 1, "message": "And now?"}),
@@ -690,20 +751,6 @@ async fn tasks_over_the_websocket() {
             .any(|a| a == "--replay-resume=fake-session-1"),
         "{agent:?}"
     );
-    for (msg, reason) in [
-        (
-            json!({"type": "send_message", "task": 1, "message": "more"}),
-            "task 1 is still running: wait for it to finish or stop it",
-        ),
-        (
-            json!({"type": "new_task", "message": "other", "harness": "codex"}),
-            "task 1 is running in a: one run per project at a time",
-        ),
-    ] {
-        send(&mut ws, msg).await;
-        let (rejected, _) = until(&mut ws, |m| m["type"] == "rejected").await;
-        assert_eq!(rejected["reason"], reason);
-    }
     until(&mut ws, status_is("done")).await;
     assert_gone(&[&server, &agent]);
 
@@ -1294,4 +1341,80 @@ async fn views_through_the_real_tool_server() {
         serde_json::from_value(state["state"]["layouts"]["a"].clone()).unwrap();
     assert_eq!(functor_app_core::print_layout(&layout), ">#1[*game]");
     assert!(!layout.agent.arranges);
+}
+
+/// A review's fake run: it reads the change and reports through the real
+/// tool server, after `extra` lines (an edit, say).
+#[cfg(unix)]
+fn review_fixture(dir: &Path, extra: &[&str]) -> PathBuf {
+    let path = dir.join("review.jsonl");
+    let mut lines = vec![
+        r#"{"ms":0,"event":{"type":"started","session":"fake-review-1","model":"claude-review-model"}}"#,
+        r#"{"ms":0,"mcp":{"tool":"task_change","arguments":{}}}"#,
+    ];
+    lines.extend(extra);
+    lines.extend([
+        r#"{"ms":0,"mcp":{"tool":"report","arguments":{"summary":"The agent renamed `x` to `xx` in game.fun. Check the places that use `x`.","notes":["Nobody ran the game after the change."],"evidence":[]}}}"#,
+        r#"{"ms":0,"event":{"type":"usage","input":21000,"output":300}}"#,
+        r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Reported."}}"#,
+    ]);
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
+/// `task --review` under the fake agent with the real tool server: a run
+/// that changes a file is reviewed after it, and the review's report and
+/// numbers go in the metrics. A review that edits anyway (the fake agent
+/// can; a real one is denied by its permissions) has its report voided.
+#[cfg(unix)]
+#[test]
+fn a_change_is_reviewed_through_the_real_tool_server() {
+    let Some(functor) = std::env::var_os("FUNCTOR_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    else {
+        eprintln!("SKIPPED: set FUNCTOR_BIN to a built `functor` to use the real tool server");
+        return;
+    };
+    let edit = r#"{"ms":0,"edit":{"path":"game.fun","old":"xx","new":"xxx"}}"#;
+    for (extra, ended) in [
+        (&[][..], "prepared"),
+        (&[edit][..], "failed: the files changed while the review ran"),
+    ] {
+        let repo = git_tree();
+        let home = tempfile::tempdir().unwrap();
+        let metrics = home.path().join("metrics.json");
+        let run = edit_fixture(home.path());
+        let out = task_command(repo.path(), home.path(), &functor, &run, "Rename x")
+            .arg("--review")
+            .arg("--metrics")
+            .arg(&metrics)
+            .env("FUNCTOR_APP_FAKE_REVIEW", review_fixture(home.path(), extra))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let m: Value = serde_json::from_str(&std::fs::read_to_string(&metrics).unwrap()).unwrap();
+        let review = &m["review"];
+        assert_eq!(review["ended"], ended, "{m}");
+        assert_eq!(review["model"], "claude-review-model");
+        assert_eq!(review["input_tokens"], 21000);
+        assert!(review["wall_ms"].as_u64().is_some(), "{m}");
+        // The working run's numbers are its own.
+        assert_eq!(m["ended"], "ok");
+        assert_eq!(m["input_tokens"], Value::Null);
+        match ended {
+            "prepared" => {
+                assert!(review["summary"].as_str().unwrap().starts_with("The agent renamed"));
+                assert_eq!(review["notes"][0], "Nobody ran the game after the change.");
+                assert_eq!(review["style"], serde_json::json!([]));
+            }
+            _ => assert_eq!(review["summary"], Value::Null, "voided: {m}"),
+        }
+        // No brief is left behind.
+        assert!(
+            !files(home.path()).iter().any(|f| f.starts_with("reviews/")),
+            "{:?}",
+            files(home.path())
+        );
+    }
 }

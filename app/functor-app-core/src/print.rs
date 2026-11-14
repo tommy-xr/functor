@@ -249,6 +249,7 @@ pub fn print_layout(layout: &Layout) -> String {
 
 fn task(t: &Task) -> String {
     let status = match &t.status {
+        TaskStatus::Queued => "queued".to_string(),
         TaskStatus::InProgress => "in_progress".to_string(),
         TaskStatus::WaitingOnYou => "waiting_on_you".to_string(),
         TaskStatus::ReadyForReview => "ready_for_review".to_string(),
@@ -289,17 +290,22 @@ fn task(t: &Task) -> String {
 /// ```
 pub fn print_item(item: &Item) -> String {
     match item {
-        Item::User { text } => format!("you: {text}"),
+        Item::User { text, spoken: None } => format!("you: {text}"),
+        Item::User {
+            text,
+            spoken: Some(s),
+        } => format!("you (in {}): {text}", s.headset),
         Item::Agent { text, .. } => format!("agent: {text}"),
         Item::Tool {
             name,
             input,
             result,
+            ..
         } => {
             let result = result.as_deref().map_or("(no result)".to_string(), clip);
             format!("tool: {name} {} -> {result}", clip(&input.to_string()))
         }
-        Item::Usage { input, output } => format!("usage: {input} in, {output} out"),
+        Item::Usage { input, output, .. } => format!("usage: {input} in, {output} out"),
         Item::Finished { ok: true, .. } => "finished: ok".to_string(),
         Item::Finished { ok: false, summary } => {
             format!("failed: {}", summary.as_deref().unwrap_or("no summary"))
@@ -353,10 +359,14 @@ const CLIP_CHARS: usize = 200;
 
 /// `text` on one line, cut to [`CLIP_CHARS`] with `…`.
 fn clip(text: &str) -> String {
-    let line = text.replace('\n', "\\n");
-    match line.char_indices().nth(CLIP_CHARS) {
-        Some((at, _)) => format!("{}…", &line[..at]),
-        None => line,
+    cut(&text.replace('\n', "\\n"), CLIP_CHARS)
+}
+
+/// `text`'s first `max` characters, `…` marking a cut.
+pub(crate) fn cut(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
     }
 }
 
@@ -422,6 +432,13 @@ mod tests {
     use crate::changes::FileChange;
     use crate::projects::{Project, Role};
     use crate::Session;
+
+    #[test]
+    fn cuts_mark_themselves() {
+        assert_eq!(cut("abcdef", 3), "abc…");
+        assert_eq!(cut("abc", 3), "abc");
+        assert_eq!(cut("ééé", 2), "éé…");
+    }
 
     /// A timeline polled once at `frame`.
     fn polled_at(frame: u64) -> crate::transport::Timeline {
@@ -708,11 +725,15 @@ recents: 2
         let transcript = vec![
             Item::User {
                 text: "What is the count?".into(),
+                spoken: None,
             },
             Item::Tool {
                 name: "mcp__mis__get_state".into(),
                 input: serde_json::json!({"session": "s1"}),
                 result: Some("{\"frame\":180,\n\"count\":3}".into()),
+                id: None,
+                parent_id: None,
+                is_error: None,
             },
             Item::Agent {
                 text: "It is 3.".into(),
@@ -721,6 +742,7 @@ recents: 2
             Item::Usage {
                 input: 2400,
                 output: 75,
+                detail: None,
             },
             Item::Finished {
                 ok: false,
@@ -747,6 +769,7 @@ recents: 2
                 model: Some("claude-model".into()),
                 session_id: None,
                 run: None,
+                queued: None,
                 baseline: Some("tree".into()),
                 change: Some(Change::from_files(
                     vec![FileChange {
@@ -763,9 +786,11 @@ recents: 2
                 moment: None,
                 evidence: None,
                 report: None,
+                review: None,
                 created_at: None,
                 updated_at: None,
                 transcript: transcript.clone(),
+                scope: Default::default(),
             }],
             harnesses: vec![],
             harness_choice: Default::default(),

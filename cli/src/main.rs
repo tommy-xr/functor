@@ -348,6 +348,12 @@ enum Command {
         /// `FUNCTOR_MCP_APP_TOKEN`.
         #[arg(long, value_name = "URL", requires = "http")]
         app_url: Option<String>,
+
+        /// Serve a review's tools instead: read-only ones, `task_change`
+        /// returning this file (the change to present), and `report`
+        /// forwarding to `--app-url`. No game can be attached.
+        #[arg(long, value_name = "BRIEF", requires = "app_url", conflicts_with = "attach")]
+        review: Option<std::path::PathBuf>,
     },
     /// Open the desktop app (preview) on the project: runs the `functor-app`
     /// next to this `functor`, else `FUNCTOR_APP_BIN`, else on PATH, with this
@@ -448,10 +454,12 @@ async fn main() -> tokio::io::Result<()> {
         attach,
         no_unsafe_code,
         app_url,
+        review,
     } = &args.command
     {
-        let app_url = app_url.as_deref();
-        return finish_inspect(commands::mcp::execute(*http, attach, *no_unsafe_code, app_url).await);
+        let (app_url, review) = (app_url.as_deref(), review.clone());
+        let serve = commands::mcp::execute(*http, attach, *no_unsafe_code, app_url, review);
+        return finish_inspect(serve.await);
     }
     // `app` hands the terminal to another process: no output stream here.
     if let Command::App { app_args } = &args.command {

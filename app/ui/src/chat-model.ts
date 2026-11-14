@@ -4,6 +4,7 @@
 import type { AppState, Harness, Item, JsonValue, SessionStatus, Task, TaskStatus, Usage, ViewTarget } from "./generated/protocol";
 
 export const STATUS_WORDS: Record<TaskStatus["kind"], string> = {
+  queued: "Queued",
   in_progress: "In progress",
   waiting_on_you: "Waiting on you",
   ready_for_review: "Ready for review",

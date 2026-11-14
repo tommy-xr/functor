@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 // Agent-run metrics (plan 1.19): runs each scenario in scenarios.json through
-// `functor-app task` on a fresh copy of its example, judges the outcome by
-// its checks, and records turns, tokens, time and outcome per scenario.
+// `functor-app task --review` on a fresh copy of its example, judges the
+// outcome by its checks, and records turns, tokens, time and outcome per
+// scenario, and the review of a change (D31) as its own `review`.
 //
 //   node app/metrics/run.mjs                 FakeAgent, replaying fixtures/<id>.jsonl
 //   FUNCTOR_APP_LIVE=1 node app/metrics/run.mjs --live
 //                                            the real agent (spends tokens)
 //   node app/metrics/run.mjs --compare a.jsonl b.jsonl
 //
-// Options: --only id,id  --out file.jsonl (default results/<stamp>-<mode>.jsonl,
-// with a .md table beside it)  --keep (leave each scenario's temp dir, with
+// Options: --only id,id  --scope user_and_project|project|isolated (how much
+// of the user's own setup each run reads, D39; default all of it)  --out
+// file.jsonl (default results/<stamp>-<mode>.jsonl, with a .md table beside
+// it)  --keep (leave each scenario's temp dir, with
 // its workspace and the app home holding the task transcript; its path is
 // the record's `kept`). Binaries: FUNCTOR_APP_BIN, FUNCTOR_BIN (default
 // target/debug/functor-app and target/debug/functor).
@@ -25,9 +28,10 @@ const repo = path.resolve(here, "../..");
 const exe = process.platform === "win32" ? ".exe" : "";
 
 // Live limits per scenario: past either, the run is stopped and no further
-// scenario starts.
+// scenario starts. The time covers the run and its review (D31), which the
+// app itself cuts at 300k input tokens or 180 s.
 const MAX_INPUT = 600_000;
-const LIVE_TIMEOUT_S = 300;
+const LIVE_TIMEOUT_S = 300 + 180;
 const FAKE_TIMEOUT_S = 60;
 
 // Git that reads no user or system config.
@@ -114,18 +118,23 @@ function checkOne(check, ws, metrics, functor) {
 }
 
 /** Runs `functor-app task` for `scenario`; its metrics record. */
-async function runScenario(scenario, { live, keep, app, functor, rev }) {
+async function runScenario(scenario, { live, keep, app, functor, rev, scope }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `functor-metrics-${scenario.id}-`));
   try {
     const ws = workspace(scenario, tmp);
     const metricsFile = path.join(tmp, "metrics.json");
     const env = { ...process.env, FUNCTOR_APP_HOME: path.join(tmp, "home"), FUNCTOR_BIN: functor };
     delete env.FUNCTOR_APP_FAKE_AGENT;
-    if (!live) env.FUNCTOR_APP_FAKE_AGENT = path.join(here, "fixtures", `${scenario.id}.jsonl`);
+    delete env.FUNCTOR_APP_FAKE_REVIEW;
+    if (!live) {
+      env.FUNCTOR_APP_FAKE_AGENT = path.join(here, "fixtures", `${scenario.id}.jsonl`);
+      env.FUNCTOR_APP_FAKE_REVIEW = path.join(here, "fixtures", "review.jsonl");
+    }
     const args = ["--headless", "--no-device-link", "-d", ws];
     // Live sessions get a GPU, as in the app, so captures work.
     if (!live) args.push("--no-gpu");
-    args.push("task", scenario.prompt, "--harness", "claude", "--start-session");
+    args.push("task", scenario.prompt, "--harness", "claude", "--start-session", "--review");
+    if (scope) args.push("--scope", scope);
     args.push("--metrics", metricsFile, "--max-input", String(MAX_INPUT));
     const timeout = live ? LIVE_TIMEOUT_S : FAKE_TIMEOUT_S;
     const { code, timedOut } = await run(app, args, env, timeout);
@@ -141,6 +150,7 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       rev,
       date: new Date().toISOString(),
       harness: m.harness,
+      scope: m.scope,
       model: m.model,
       wall_ms: m.wall_ms,
       first_event_ms: m.first_event_ms,
@@ -150,12 +160,15 @@ async function runScenario(scenario, { live, keep, app, functor, rev }) {
       tools: m.tools,
       input_tokens: m.input_tokens,
       output_tokens: m.output_tokens,
+      ...pick(m, SPLIT),
       ended: m.ended,
       cut: m.cut,
       pass: failures.length === 0,
       reason: failures.length ? failures.join("; ") : `${scenario.checks.length} checks pass`,
       exit: code,
       answer: m.answer,
+      // The review of its change (D31), when it left one: its own numbers.
+      review: m.review,
       kept: keep ? tmp : undefined,
     };
   } catch (e) {
@@ -197,22 +210,70 @@ const kinds = (calls) =>
     .map(([k, n]) => `${k} ${n}`)
     .join(", ") || "none";
 
+/** The usage split `functor-app task --metrics` records when the harness gives it. */
+const SPLIT = ["uncached_input", "cache_read", "cache_creation", "reasoning_output", "turns", "cost_usd", "api_ms"];
+const pick = (m, keys) => Object.fromEntries(keys.filter((k) => m?.[k] != null).map((k) => [k, m[k]]));
+
+/** The split's columns: [heading, value]; one shows only when some record has its value. */
+const SPLIT_COLUMNS = [
+  ["uncached in", (r) => r.uncached_input],
+  ["cache read", (r) => r.cache_read],
+  ["cache write", (r) => r.cache_creation],
+  ["cached %", (r) => cachedShare(r)],
+  ["turns", (r) => r.turns],
+  ["cost $", (r) => (r.cost_usd == null ? null : r.cost_usd.toFixed(3))],
+  ["API s", (r) => (r.api_ms == null ? null : secs(r.api_ms))],
+];
+
+/** The share of the prompt read from the cache, in percent. */
+function cachedShare(r) {
+  if ([r.uncached_input, r.cache_read, r.cache_creation].some((n) => typeof n !== "number")) return null;
+  const prompt = r.uncached_input + r.cache_read + r.cache_creation;
+  return prompt ? Math.round((r.cache_read / prompt) * 100) : null;
+}
+
+/** `rows` as a Markdown table under `heads`, then the split's columns any of `splits` has. */
+function grid(heads, rows, splits) {
+  const columns = SPLIT_COLUMNS.filter(([, value]) => splits.some((s) => value(s) != null));
+  const lines = [
+    `| ${[...heads, ...columns.map(([h]) => h)].join(" | ")} |`,
+    `| ${[...heads, ...columns].map(() => "---").join(" | ")} |`,
+  ];
+  rows.forEach((row, i) => {
+    const more = columns.map(([, value]) => value(splits[i]) ?? "–");
+    lines.push(`| ${[...row, ...more].join(" | ")} |`);
+  });
+  return lines;
+}
+
+/** What the runs read of the user's own setup (D39), as the header says it. */
+function scopeWords(records) {
+  const scopes = [...new Set(records.map((r) => r.scope).filter(Boolean))];
+  return scopes.length ? `setup: ${scopes.join(", ")}` : "setup unknown";
+}
+
 /** The records as a Markdown table. */
 export function table(records) {
   const head = records[0] ?? {};
   const lines = [
-    `${head.mode} run, ${head.date?.slice(0, 10)}, rev ${head.rev}, ${head.harness} (${head.model ?? "model unknown"})`,
+    `${head.mode} run, ${head.date?.slice(0, 10)}, rev ${head.rev}, ${head.harness} (${head.model ?? "model unknown"}), ${scopeWords(records)}`,
     "",
-    "| scenario | outcome | wall s | first event s | messages | tool calls | by kind | input tokens | output tokens |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
-  for (const r of records) {
+  const heads = ["scenario", "outcome", "wall s", "first event s", "messages", "tool calls", "by kind", "input tokens", "output tokens"];
+  const rows = records.map((r) => {
     const outcome = r.pass ? "pass" : `FAIL: ${r.reason}`;
     const cut = r.cut ? ` (cut: ${r.cut})` : "";
-    lines.push(
-      `| ${r.scenario} | ${outcome}${cut} | ${secs(r.wall_ms)} | ${secs(r.first_event_ms)} | ${r.messages} | ` +
-        `${r.tool_calls} | ${kinds(r.calls)} | ${r.input_tokens ?? "–"} | ${r.output_tokens ?? "–"} |`,
-    );
+    return [r.scenario, `${outcome}${cut}`, secs(r.wall_ms), secs(r.first_event_ms), r.messages, r.tool_calls,
+      kinds(r.calls), r.input_tokens ?? "–", r.output_tokens ?? "–"];
+  });
+  lines.push(...grid(heads, rows, records));
+  const reviewed = records.filter((r) => r.review);
+  if (reviewed.length) {
+    lines.push("", "Reviews (D31), apart from the runs above:", "");
+    const heads = ["scenario", "review", "model", "wall s", "input tokens", "output tokens", "style flags"];
+    const rows = reviewed.map(({ scenario, review: v }) => [scenario, v.ended, v.model ?? "–", secs(v.wall_ms),
+      v.input_tokens ?? "–", v.output_tokens ?? "–", v.style?.length ?? 0]);
+    lines.push(...grid(heads, rows, reviewed.map((r) => r.review)));
   }
   return lines.join("\n") + "\n";
 }
@@ -294,7 +355,7 @@ async function main(argv) {
     console.error(`[metrics] ${scenario.id}`);
     let record;
     try {
-      record = await runScenario(scenario, { live, keep, app, functor, rev });
+      record = await runScenario(scenario, { live, keep, app, functor, rev, scope: opt("--scope") });
     } catch (e) {
       const mode = live ? "live" : "fake";
       record = { scenario: scenario.id, mode, rev, pass: false, reason: String(e), cut: "error", kept: e.kept };

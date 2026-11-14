@@ -4,7 +4,11 @@ import { AgentStrip } from "./AgentCard";
 import { TaskBadge } from "./DiffView";
 import { Icon } from "./Icon";
 import type { Notice, Send } from "./socket";
+import { placeLine, waitLine } from "./queue-model";
 import { deleteBlock, groupTasks, relativeTime, secondaryLine, untitled, type Group } from "./tasks-model";
+
+/** A queued row's place and what the user may do with it. */
+type InLine = { index: number; count: number; startNow: boolean };
 
 /** The wall clock, ticking every `ms` (30 s: relative times move on). */
 export function useNow(ms = 30_000): number {
@@ -104,6 +108,12 @@ export function TasksPane({
     focusRow(rows[to]!.id);
   };
 
+  const queue = active ? state?.queues[active] : undefined;
+  // The user may start one beside a change waiting for a decision, not beside a run.
+  const startNow = queue?.wait?.kind === "decision" || queue?.wait?.kind === "measuring";
+  // Places in the whole line, whatever the search shows.
+  const line = queue?.tasks ?? [];
+
   let empty: string | null = null;
   if (state && all.length === 0) empty = "No tasks yet. Ask the agent for a change and it is tracked here until you keep or revert it.";
   else if (groups.length === 0) empty = `No task titles match “${query.trim()}”.`;
@@ -156,12 +166,18 @@ export function TasksPane({
                   {g.label} · {g.tasks.length}
                 </h3>
               )}
+              {g.group === "queued" && state && (
+                <p className="tasks-wait" data-testid="queue-wait">
+                  {waitLine(state, queue?.wait ?? null)}
+                </p>
+              )}
               {shown(g.group) && (
                 <ul className="tasks-rows" aria-labelledby={id}>
                   {g.tasks.map((t) => (
                     <TaskRow
                       key={t.id}
                       task={t}
+                      inLine={g.group === "queued" ? { index: line.indexOf(t.id), count: line.length, startNow } : null}
                       items={transcripts.get(t.id)}
                       now={now}
                       selected={t.id === selected}
@@ -186,6 +202,7 @@ export function TasksPane({
 
 function TaskRow({
   task,
+  inLine,
   items,
   now,
   selected,
@@ -198,6 +215,8 @@ function TaskRow({
   onOpen,
 }: {
   task: Task;
+  /** Its place in line, when queued. */
+  inLine: InLine | null;
   items: Item[] | undefined;
   now: number;
   selected: boolean;
@@ -216,7 +235,8 @@ function TaskRow({
   const main = useRef<HTMLButtonElement>(null);
   const title = untitled(task);
   const block = deleteBlock(task, tracks);
-  const second = secondaryLine(task, items);
+  const second = inLine ? placeLine(inLine.index) : secondaryLine(task, items);
+  const move = (to: number) => send({ type: "move_queued", task: task.id, to });
   const when = relativeTime(task.updated_at, now);
   const refusal = notice && notice.seq > since ? notice.reason : null;
   const back = () => setTimeout(() => main.current?.focus());
@@ -273,6 +293,48 @@ function TaskRow({
           </button>
         )}
         <span className="task-actions">
+          {inLine && (
+            <>
+              {inLine.startNow && (
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`Start ${title} now`}
+                  title="Start now, beside the change waiting for your decision"
+                  tabIndex={tabStop ? 0 : -1}
+                  disabled={!online}
+                  onClick={() => {
+                    setSince(notice?.seq ?? 0);
+                    send({ type: "start_queued", task: task.id });
+                  }}
+                >
+                  <Icon name="play" />
+                </button>
+              )}
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Move ${title} up`}
+                title="Move up in line"
+                tabIndex={tabStop ? 0 : -1}
+                disabled={!online || inLine.index === 0}
+                onClick={() => move(inLine.index - 1)}
+              >
+                <Icon name="chevron-up" />
+              </button>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`Move ${title} down`}
+                title="Move down in line"
+                tabIndex={tabStop ? 0 : -1}
+                disabled={!online || inLine.index === inLine.count - 1}
+                onClick={() => move(inLine.index + 1)}
+              >
+                <Icon name="chevron" />
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="icon-button"

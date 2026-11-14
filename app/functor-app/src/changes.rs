@@ -259,15 +259,31 @@ impl Git {
         }
         let (patch, truncated) = match args.last() == Some(&"--") {
             true => (String::new(), false),
-            false => self.capped(&args).await?,
+            false => self.capped(&args, PATCH_BYTES).await?,
         };
         let diffs = file_diffs(shown, &planned, &patch, truncated);
         let more = (files.len() - shown.len()) as u32;
         Ok((Change::from_files(files, now), diffs, more))
     }
 
-    /// Git's stdout up to [`PATCH_BYTES`], and whether it was cut there.
-    async fn capped(&self, args: &[&str]) -> Result<(String, bool), String> {
+    /// The unified diff from snapshot `base` to snapshot `tree`, up to
+    /// `max` bytes, and whether it was cut there.
+    pub async fn patch(&self, base: &str, tree: &str, max: u64) -> Result<(String, bool), String> {
+        let (base, tree) = (oid(base)?, oid(tree)?);
+        let args = [
+            "diff",
+            "-M",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            base,
+            tree,
+        ];
+        self.capped(&args, max).await
+    }
+
+    /// Git's stdout up to `max` bytes, and whether it was cut there.
+    async fn capped(&self, args: &[&str], max: u64) -> Result<(String, bool), String> {
         let mut child = self
             .command(args, None)
             .stderr(Stdio::null())
@@ -276,13 +292,13 @@ impl Git {
         let mut out = Vec::new();
         let stdout = child.stdout.take().expect("piped");
         stdout
-            .take(PATCH_BYTES + 1)
+            .take(max + 1)
             .read_to_end(&mut out)
             .await
             .map_err(|e| format!("git diff: {e}"))?;
-        let truncated = out.len() as u64 > PATCH_BYTES;
+        let truncated = out.len() as u64 > max;
         if truncated {
-            out.truncate(PATCH_BYTES as usize);
+            out.truncate(max as usize);
             let _ = child.kill().await;
         } else {
             let status = child.wait().await.map_err(|e| format!("git diff: {e}"))?;

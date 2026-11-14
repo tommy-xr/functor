@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Decision, Harness, Item, Task, Usage } from "./generated/protocol";
+import type { AppState, Change, Decision, Destination, Harness, Item, Routed, Scope, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -35,9 +35,15 @@ import { Counts, ReviewActions, TaskBadge } from "./DiffView";
 import { PathCard } from "./PathEvidence";
 import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
+import { ReviewSettings } from "./ReviewSettings";
+import { ScopeSettings } from "./ScopeSettings";
+import { projectScope, taskScope } from "./scope-model";
 import type { Accepted, Conn, Notice, Send } from "./socket";
+import { transcribe } from "./socket";
+import { record, type Recording } from "./mic";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
+import { destinations } from "./queue-model";
 
 
 const RECENT = 8;
@@ -79,6 +85,71 @@ type Walk = {
 /** A line the dock shows for a connection or session change, at the conversation's length when it happened. */
 type Line = { id: number; project: string | null; task: number | null; at: number; text: string };
 
+const MIC_LABEL = {
+  idle: "Speak a message",
+  starting: "Starting the mic…",
+  recording: "Stop and transcribe",
+  transcribing: "Transcribing…",
+} as const;
+
+type MicStage = keyof typeof MIC_LABEL;
+
+/**
+ * The composer's mic (D15): a click records, the next one transcribes it on
+ * this machine and adds the words to the draft, for the user to send.
+ */
+function useMic(draft: string, onDraft: (d: string) => void, onNotice: (reason: string) => void) {
+  const [stage, setStage] = useState<MicStage>("idle");
+  // The stage as clicks see it: set at once, so a second click cannot start twice.
+  const now = useRef<MicStage>("idle");
+  const go = (s: MicStage) => {
+    now.current = s;
+    setStage(s);
+  };
+  const recording = useRef<Recording | null>(null);
+  const mounted = useRef(true);
+  // The draft as it is when the words arrive, not when recording began.
+  const latest = useRef(draft);
+  latest.current = draft;
+  useEffect(
+    () => () => {
+      mounted.current = false;
+      recording.current?.cancel();
+    },
+    [],
+  );
+  const failed = (e: unknown) => onNotice(`The mic did not work: ${e instanceof Error ? e.message : String(e)}`);
+  const toggle = async () => {
+    if (now.current === "idle") {
+      go("starting");
+      try {
+        const r = await record();
+        // Gone while the microphone was being granted: free it.
+        if (!mounted.current) return r.cancel();
+        recording.current = r;
+        go("recording");
+      } catch (e) {
+        failed(e);
+        go("idle");
+      }
+      return;
+    }
+    if (now.current !== "recording") return;
+    const r = recording.current!;
+    recording.current = null;
+    go("transcribing");
+    try {
+      const text = (await transcribe(await r.stop())).trim();
+      if (!text) onNotice("Heard no words.");
+      else onDraft(latest.current.trim() ? `${latest.current.trimEnd()} ${text}` : text);
+    } catch (e) {
+      failed(e);
+    }
+    if (mounted.current) go("idle");
+  };
+  return { stage, toggle };
+}
+
 /** The chat dock: one task's conversation (the current task) and the composer. */
 export function ChatDock({
   state,
@@ -112,6 +183,9 @@ export function ChatDock({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<{ task: number | null; text: string } | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
+  // The level picked for a new task (D39), until it is sent or another task is shown.
+  const [scopePick, setScopePick] = useState<Scope | null>(null);
+  useEffect(() => setScopePick(null), [current?.id]);
   useEffect(() => {
     if (!pending || !accepted || accepted.text !== pending.text) return;
     // A new task becomes the current one in the core as it starts.
@@ -148,15 +222,30 @@ export function ChatDock({
   );
   const agent = dockTask(state, current?.id ?? null);
   const harness: Harness = current?.harness ?? pickHarness(state);
+  const scope = taskScope(scopePick, current, state, harness);
   const running = current?.run != null;
+  // Where the message goes, and the one-click switch to the other place (a new task ↔ a task).
+  const [switched, setSwitched] = useState(false);
+  useEffect(() => setSwitched(false), [current?.id]);
+  const places = destinations(state, current);
+  const place = places && (switched && places[1] ? places[1] : places[0]);
+  const other = places && (switched ? places[0] : places[1]);
 
   const submit = () => {
     const text = draft;
-    if (!text.trim() || pending || !online) return;
-    const sent = current
-      ? send({ type: "send_message", task: current.id, message: text })
-      : send({ type: "new_task", message: text, harness });
-    if (sent) setPending({ task: current?.id ?? null, text });
+    if (!text.trim() || pending || !online || !place) return;
+    // The level picked applies to a task started from a new one; a new task
+    // switched to from a task takes the project's.
+    const sent =
+      place.kind === "task"
+        ? send({ type: "send_message", task: place.task, message: text })
+        : send({ type: "new_task", message: text, harness, ...(current === null && { scope }) });
+    if (!sent) return;
+    setPending({ task: place.kind === "task" ? place.task : null, text });
+    setScopePick(null);
+    setSwitched(false);
+    // Steering the running task from a new one shows that task.
+    if (place.kind === "task" && place.task !== current?.id) setSelected(place.task);
   };
   const stop = () => current && send({ type: "stop_task", task: current.id });
   const select = (task: number | null) => {
@@ -176,6 +265,9 @@ export function ChatDock({
         key={current?.id ?? "new"}
         task={current}
         items={items}
+        routes={(state?.routes ?? []).filter((r) => r.task === current?.id)}
+        online={online}
+        onMove={(id, to) => send({ type: "move_utterance", id, to })}
         lines={lines.filter((l) => l.project === active && l.task === (current?.id ?? null))}
         onOpenGame={onOpenGame}
         onViewDiff={onViewDiff}
@@ -216,12 +308,31 @@ export function ChatDock({
           // A task keeps the agent it started with.
           pickable={current === null}
           onHarness={(h) => send({ type: "set_harness", harness: h })}
+          review={
+            <>
+              <ScopeSettings
+                scope={scope}
+                pickable={current === null}
+                projectDefault={projectScope(state)}
+                harness={harness}
+                online={online}
+                disabled={!state?.active}
+                onPick={setScopePick}
+                onDefault={(s) => send({ type: "set_scope", scope: s })}
+              />
+              <ReviewSettings state={state} online={online} onChange={(setting) => send({ type: "set_review", setting })} />
+            </>
+          }
           running={running}
+          place={place?.line ?? null}
+          switchTo={other?.switchTo ?? null}
+          onSwitch={() => setSwitched((s) => !s)}
           busy={pending !== null}
           onSubmit={submit}
           onStop={stop}
+          onNotice={setShownNotice}
           canvasWord={canvasWord}
-          placeholder={current ? "Reply in this task" : "Ask for a change, or about the running game"}
+          placeholder={running ? "Steer this task" : current ? "Reply in this task" : "Ask for a change, or about the running game"}
         />
       </div>
     </section>
@@ -366,6 +477,9 @@ function ReviewCard({
 function Conversation({
   task,
   items,
+  routes,
+  online,
+  onMove,
   lines,
   onOpenGame,
   onViewDiff,
@@ -376,6 +490,10 @@ function Conversation({
 }: {
   task: Task | null;
   items: Item[] | undefined;
+  /** The task's decisions on where speech went that can still move (D29). */
+  routes: Routed[];
+  online: boolean;
+  onMove: (id: number, to: Destination) => void;
   lines: Line[];
   onOpenGame: () => void;
   onViewDiff: (path: string | null) => void;
@@ -420,6 +538,9 @@ function Conversation({
           repoRoot={repoRoot}
           project={project}
         />
+        {item.kind === "user" && item.spoken?.route && (
+          <RouteLine line={item.spoken.route} routed={routes.find((r) => r.item === i)} online={online} onMove={onMove} />
+        )}
         {linesAt(i + 1)}
       </Fragment>
     ));
@@ -461,6 +582,31 @@ function Conversation({
   );
 }
 
+/** Where the router put a spoken message (D29), and while it can be undone, the moves to elsewhere. */
+function RouteLine({
+  line,
+  routed,
+  online,
+  onMove,
+}: {
+  line: string;
+  routed: Routed | undefined;
+  online: boolean;
+  onMove: (id: number, to: Destination) => void;
+}) {
+  const by = routed?.by === "model" ? "Placed by the model router" : routed?.by === "you" ? "Moved by you" : "Placed by the rule: steer the running task, else a new task";
+  return (
+    <div className="route-line" data-testid="route-line">
+      <span title={routed ? by : undefined}>{line}</span>
+      {routed?.moves.map((m) => (
+        <button key={JSON.stringify(m.to)} type="button" className="link-button" disabled={!online} onClick={() => onMove(routed.id, m.to)}>
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /** One transcript item. Memoised: an `Item` update replaces only its own object, so a streamed reply re-renders alone. */
 const Row = memo(function Row({
   item,
@@ -488,7 +634,17 @@ const Row = memo(function Row({
 }) {
   switch (item.kind) {
     case "user":
-      return <div className="msg msg-user">{item.text}</div>;
+      if (!item.spoken) return <div className="msg msg-user">{item.text}</div>;
+      // Said in a headset: where, and (on hover) what the user was looking at.
+      return (
+        <div className="msg msg-user" data-testid="spoken">
+          <div className="spoken-from" title={item.spoken.context}>
+            <Icon name="mic" />
+            Said in {item.spoken.headset}
+          </div>
+          {item.text}
+        </div>
+      );
     case "agent":
       return <AgentText text={item.text} partial={item.partial} />;
     case "tool":
@@ -740,10 +896,15 @@ function Composer({
   harness,
   pickable,
   onHarness,
+  review,
   running,
+  place,
+  switchTo,
+  onSwitch,
   busy,
   onSubmit,
   onStop,
+  onNotice,
   canvasWord,
   placeholder,
 }: {
@@ -754,14 +915,22 @@ function Composer({
   harness: Harness;
   pickable: boolean;
   onHarness: (h: Harness) => void;
+  /** The review setting's control, beside the agent picker. */
+  review: ReactNode;
   running: boolean;
+  /** Where the message goes ("Steers “…”"), and the switch to the other place. */
+  place: string | null;
+  switchTo: string | null;
+  onSwitch: () => void;
   busy: boolean;
   onSubmit: () => void;
   onStop: () => void;
+  onNotice: (reason: string) => void;
   canvasWord: string;
   placeholder: string;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
+  const mic = useMic(draft, onDraft, onNotice);
   // Grows with its text up to MAX_INPUT_PX.
   useLayoutEffect(() => {
     const el = input.current;
@@ -782,6 +951,16 @@ function Composer({
   const project = state?.projects.find((p) => p.path === state.active);
   return (
     <div className="composer">
+      {place && (
+        <p className="composer-place" data-testid="composer-place">
+          <span>{place}</span>
+          {switchTo && (
+            <button type="button" className="link-button" disabled={!online} onClick={onSwitch}>
+              {switchTo}
+            </button>
+          )}
+        </p>
+      )}
       <ul className="chips" aria-label="What the agent will see">
         {project && <li className="chip mono">{project.path === "." ? project.name : project.path}</li>}
         <li className="chip">{session === "running" ? "Game running" : "No game running"}</li>
@@ -823,21 +1002,28 @@ function Composer({
           </select>
           <Icon name="chevron" />
         </span>
+        {review}
         <span className="spacer" />
-        <button
-          type="button"
-          className="round round-plain"
-          aria-label="Hold to talk (coming later)"
-          title="Voice input comes later"
-          aria-disabled="true"
-        >
-          <Icon name="mic" />
-        </button>
-        {running ? (
+        {state?.speech && (
+          <button
+            type="button"
+            className={`round round-plain${mic.stage === "recording" ? " recording" : ""}`}
+            aria-label={MIC_LABEL[mic.stage]}
+            title={MIC_LABEL[mic.stage]}
+            aria-pressed={mic.stage === "recording"}
+            disabled={mic.stage === "starting" || mic.stage === "transcribing"}
+            onClick={mic.toggle}
+          >
+            <Icon name="mic" />
+          </button>
+        )}
+        {running && (
           <button type="button" className="round round-stop" aria-label="Stop" disabled={!online} onClick={onStop}>
             <Icon name="stop" />
           </button>
-        ) : (
+        )}
+        {/* While it runs, an empty draft leaves only Stop. */}
+        {(!running || draft.trim()) && (
           <button
             type="button"
             className="round round-send"

@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="../../favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="../../favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="../../favicon-32.png" />
+    <link rel="apple-touch-icon" href="../../apple-touch-icon.png" />
+    <title>functor manual — the desktop app</title>
+    <meta
+      name="description"
+      content="The Functor desktop app: your running game beside a coding agent that can see it. Open a project, ask for a change, rewind, and keep or revert."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&family=JetBrains+Mono:ital,wght@0,400;0,600;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="../../styles.css" />
+  </head>
+  <body class="docs-page" data-sandbox-href="../../sandbox.html">
+    <!--@header prefix="../../" suffix="MANUAL" active="manual"-->
+    <!--/@header-->
+
+    <div class="docs-layout">
+      <!-- Grouped as a session goes: get it open, work in it, take it to the
+           headset, then what to know about running it. -->
+      <nav class="docs-nav docs-nav-grouped" aria-label="Desktop app sections">
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-manual">
+          <div class="docs-nav-group-label" id="nav-manual">Manual</div>
+          <a class="docs-nav-out" href="../"><span aria-hidden="true">←</span> All chapters</a>
+        </div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-start">
+          <div class="docs-nav-group-label" id="nav-start">Start</div>
+          <a href="#install">Build and open it</a>
+          <a href="#projects">Open a project</a>
+        </div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-work">
+          <div class="docs-nav-group-label" id="nav-work">Work</div>
+          <a href="#workbench">The workbench</a>
+          <a href="#ask">Ask for a change</a>
+          <a href="#time">Time</a>
+          <a href="#decide">Decide</a>
+        </div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-headset">
+          <div class="docs-nav-group-label" id="nav-headset">Headset</div>
+          <a href="#headset">Meta Quest</a>
+        </div>
+        <div class="docs-nav-group" role="group" aria-labelledby="nav-know">
+          <div class="docs-nav-group-label" id="nav-know">Good to know</div>
+          <a href="#privacy">Privacy and safety</a>
+          <a href="#cost">Cost</a>
+          <a href="#troubleshooting">Troubleshooting</a>
+        </div>
+      </nav>
+
+      <main class="docs-main">
+        <h1>The desktop app</h1>
+        <p>
+          Run <code>functor</code> in a project and it opens a workbench: your game on one side, a
+          coding agent on the other. The agent reads the running game, edits the code, and the
+          game reloads in place. You rewind to check, then keep the change or revert it.
+        </p>
+        <p class="docs-callout">
+          <strong>A preview.</strong> macOS first, built from source, and not in the prebuilt
+          download. This page documents what is on <code>main</code> today; parts marked
+          <span class="tag tag-new">New</span> are merged but have not been lived in yet.
+          <a href="https://github.com/tommy-xr/functor/issues">Tell us what breaks.</a>
+        </p>
+
+        <figure class="docs-figure">
+          <picture>
+            <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-loop.png" />
+            <img
+              src="../../media/app-loop.gif"
+              width="1200"
+              height="675"
+              alt="The desktop app on the platformer: the hero's jump falls into the gap, the game is paused and dragged back to before the run, and its predicted path falls into the gap; a request is typed, the agent edits jumpVelocity in game.fun, the paused game reloads and the predicted path now clears the gap; played again, the jump clears it, and the change is kept"
+            />
+          </picture>
+          <figcaption>One task, start to finish: ask, reload, rewind, keep.</figcaption>
+        </figure>
+
+        <section id="install">
+          <h2>Build and open it</h2>
+          <p>
+            You need the same tools as the <a href="../#get-started">CLI build</a> (Rust, Node 22,
+            <code>wasm-pack</code>), plus an agent on your <code>PATH</code>: Claude Code (<code>claude</code>) or Codex
+            (<code>codex</code>). From a checkout of the repository:
+          </p>
+          <pre class="shell">npm run build:app          # the UI bundle, then target/release/functor-app
+npm run build:cli          # target/release/functor, built separately</pre>
+          <p>
+            Then open a project. Once the app is built, bare <code>functor</code> opens it; so
+            does <code>functor app</code>:
+          </p>
+          <pre class="shell">./target/release/functor -d examples/primitives</pre>
+          <p>
+            <code>functor</code> looks for <code>functor-app</code> next to itself, then in
+            <code>FUNCTOR_APP_BIN</code>, then on <code>PATH</code>. The window is macOS only for
+            now. Anywhere else, or over SSH, run it without one and open the printed URL in a
+            browser:
+          </p>
+          <pre class="shell">./target/release/functor app -d examples/primitives -- --headless
+# [functor-app] listening on http://127.0.0.1:&lt;port&gt;/#token=…</pre>
+          <p>
+            The token is new on every launch, so open that exact URL. Arguments after
+            <code>--</code> go to the app.
+          </p>
+        </section>
+
+        <section id="projects">
+          <h2>Open a project</h2>
+          <p>
+            With no <code>-d</code>, the app opens the current directory if it is in or holds a
+            project, else your most recent project.
+          </p>
+          <ul>
+            <li>
+              <strong>Any folder.</strong> The project picker at the top of the Explorer has
+              <em>Open folder…</em> (also File → Open Folder, ⌘O). A folder, or the git
+              repository around it, can hold several projects (each a directory with a
+              <code>functor.json</code>); the picker switches between them.
+            </li>
+            <li>
+              <strong>Recent.</strong> The picker and File → Open Recent list recent projects. A
+              project whose folder is gone shows as missing; clicking it removes it from the
+              list.
+            </li>
+            <li>
+              <strong>New project.</strong> <em>New project…</em> (⇧⌘N) asks for a name, a parent
+              folder and a template: the ones <code>functor init --list</code> prints. Outside a
+              git repository it offers <em>Track changes with git</em>. Describe the game and
+              that text becomes the project's first task.
+            </li>
+          </ul>
+          <p>
+            Keep and Revert need git. In a folder that is not a git repository the app still
+            runs the game and the agent, but changes are not tracked.
+          </p>
+        </section>
+
+        <section id="workbench">
+          <h2>The workbench</h2>
+          <p>
+            A rail on the left switches the side pane between <strong>Explorer</strong>,
+            <strong>Tasks</strong> and <strong>Devices</strong>. The canvas in the middle holds
+            panes of tabs. The chat dock on the right is the conversation with the agent.
+          </p>
+
+          <h3>The game view</h3>
+          <p>
+            Opening a project starts its game <strong>paused on the first frame</strong>. Press
+            Play on the <a href="#time">transport bar</a> to run it, then click the view to play:
+            keys and mouse go to the game until you press Esc. While paused, input is not
+            forwarded. <em>Stop game</em> ends the process; <em>Start game</em> brings it back,
+            paused on its first frame again.
+          </p>
+          <p>The control beside Start/Stop chooses where the game shows:</p>
+          <table>
+            <tr><th>Placement</th><th>What it does</th></tr>
+            <tr><td>Pane</td><td>A Game tab in a pane, beside your code.</td></tr>
+            <tr>
+              <td>Mini</td>
+              <td>
+                A card floating over the canvas. Drag it to a corner, resize it from its
+                handle, or dock it back. It is the same running game as Pane.
+              </td>
+            </tr>
+            <tr>
+              <td>Own window</td>
+              <td>
+                The game in its own OS window. It has no transport bar there, so it runs at
+                once instead of opening paused. Switching to or from it restarts a running game.
+              </td>
+            </tr>
+            <tr>
+              <td>Headset</td>
+              <td>
+                Offered while a paired headset is connected. Runs the game
+                <a href="#headset-run">on the headset</a>.
+              </td>
+            </tr>
+          </table>
+          <p>
+            The view never forwards Esc, so a game that uses Esc needs its own window.
+          </p>
+
+          <h3>Panes and tabs</h3>
+          <p>
+            A tab is the Game, a file, a task's Changes, or a task's page. Drag tabs between
+            panes; the buttons at the end of a tab bar open a view, split right, and split down.
+            <em>Open a view here</em> also holds <em>Reset layout</em>. The layout is saved per
+            project.
+          </p>
+          <table>
+            <tr><th>Key</th><th>Does</th></tr>
+            <tr><td>⌥W</td><td>Close tab</td></tr>
+            <tr><td>⌥] / ⌥[</td><td>Next / previous tab</td></tr>
+            <tr><td>⌥\</td><td>Split right</td></tr>
+            <tr><td>⌥O</td><td>Next pane</td></tr>
+          </table>
+          <p>
+            The shortcuts are off while you type in a field and while the game has your input.
+          </p>
+
+          <h3>The Explorer and files</h3>
+          <p>
+            Under the project picker, the Explorer lists the project's files. Click one to open
+            it in the focused pane; Alt-click (or the side button) opens it beside. Files open
+            <strong>read-only</strong>, with line numbers and syntax highlighting for
+            <code>.fun</code>, <code>.funi</code> and <code>.json</code>, and re-read every couple
+            of seconds so the agent's edits appear. Edit in your own editor: the game hot-reloads
+            on save either way.
+          </p>
+        </section>
+
+        <section id="ask">
+          <h2>Ask for a change</h2>
+          <p>
+            Type in the composer and press Enter (Shift+Enter for a new line). The first message
+            starts a <strong>task</strong>: one conversation, and at most one change you keep or
+            revert. Later messages continue it; <em>New task</em> starts another. The Stop button
+            ends a run.
+          </p>
+          <ul>
+            <li>
+              <strong>Agent picker.</strong> Lists the agents found on your <code>PATH</code>
+              (<code>claude</code>, <code>codex</code>). A task keeps the agent it started with.
+            </li>
+            <li>
+              <strong>Chips.</strong> Above the text: the project, whether a game is running, and
+              the tab you have focused. They show what the agent can see: it starts in your
+              project, is told whether the game is running, and can look up which tab you have
+              focused.
+            </li>
+            <li>
+              <strong>Mic.</strong> <span class="tag tag-new">New</span> Shown when the app was
+              built with speech-to-text (<code>npm run build:app</code> is). Click to record,
+              click again to transcribe on this machine. The words land in the draft; nothing is
+              sent until you send it. Not yet checked with a real microphone in the window.
+            </li>
+          </ul>
+
+          <h3>What the agent can see and do</h3>
+          <p>
+            Each run gets a tool server attached to <em>your</em> running game. It can:
+          </p>
+          <ul>
+            <li>read the live model and clock, the scene, and a paused trace;</li>
+            <li>press keys, move and click the mouse, send UI events;</li>
+            <li>step frames, resume, and rewind;</li>
+            <li>capture a frame as a picture;</li>
+            <li>read which tab, file and session you are looking at;</li>
+            <li>read the language guide and search the API reference;</li>
+            <li>
+              edit files in the git repository that holds the open folder (or the folder itself,
+              outside git);
+            </li>
+            <li>
+              open a file range, a diff or the game beside your work, and step you through its
+              change when it finishes.
+            </li>
+          </ul>
+          <p>
+            These are the <a href="../#agents">same tools</a> <code>functor mcp</code> serves,
+            minus the one that runs arbitrary JavaScript. The agent never moves your cursor or
+            closes your tabs. While it has arranged views, a bar offers
+            <em>Restore my layout</em> and <em>Close agent tabs</em>; turn the behaviour off with
+            <em>Let the agent arrange views</em> in the <em>Open a view here</em> menu.
+          </p>
+
+          <figure class="docs-figure">
+            <picture>
+              <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-review.png" />
+              <img
+                src="../../media/app-review.gif"
+                width="963"
+                height="821"
+                loading="lazy"
+                alt="After a run, the walkthrough card steps through the changed line of game.fun, opened beside the game, then the diff, then the game, and Keep change is clicked"
+              />
+            </picture>
+            <figcaption>The walkthrough card: the changed lines, the diff, then the game.</figcaption>
+          </figure>
+
+          <h3>Agent cards and the Tasks pane</h3>
+          <p>
+            Each working task has a card, in the Tasks pane and in the chat dock: a small
+            character (round for Claude, angular for Codex), what it is doing right now
+            (<q>reading weapons.fun</q>), and a stance: Thinking, Working, Waiting for you, or
+            Failed. Click a card to open its task.
+          </p>
+          <p>
+            The Tasks pane groups tasks as <em>Waiting on you</em>, <em>Ready for review</em> and
+            <em>In progress</em>. A task's page shows what the agent was given, its steps, its
+            change and its token usage per run.
+          </p>
+        </section>
+
+        <section id="time">
+          <h2>Time</h2>
+          <p>The transport bar sits under the game. It is the web player's timeline, on your native game.</p>
+
+          <figure class="docs-figure">
+            <picture>
+              <source media="(prefers-reduced-motion: reduce)" srcset="../../media/app-transport.png" />
+              <img
+                src="../../media/app-transport.gif"
+                width="561"
+                height="440"
+                loading="lazy"
+                alt="The game pane's transport bar: the game is paused mid-jump, walked back and forward a frame at a time, dragged back along the rail past its key marks to before the run, and resumed"
+              />
+            </picture>
+            <figcaption>Pause, step, drag back past the marks, resume.</figcaption>
+          </figure>
+
+          <ul>
+            <li><strong>Pause / Play</strong> and <strong>Step one frame</strong>.</li>
+            <li>
+              <strong>Drag back.</strong> Drag along the rail, or focus the playhead and use the
+              arrow keys, to show an earlier recorded frame. Playing or stepping from there
+              carries on from that frame.
+            </li>
+            <li>
+              <strong>Marks.</strong> Ticks on the rail mark where a key or button went down or
+              up and where the code hot-reloaded. Hover one to read it; click to jump there.
+            </li>
+            <li>
+              <strong>Extrapolate</strong> (🔮). Draws where the game goes next, and where it
+              came from, into the game's picture.
+            </li>
+            <li>
+              <strong>The peek.</strong> When an edit lands while the game is paused and
+              Extrapolate is off, the path shows by itself for a moment, so you see what the
+              new code does without pressing anything.
+            </li>
+          </ul>
+        </section>
+
+        <section id="decide">
+          <h2>Decide</h2>
+          <p>
+            When a run leaves a change, the task is <em>Ready for review</em>. The chat ends in a
+            card with the short version and Keep / Revert; <em>Open the decision page</em> opens
+            the full one as a tab.
+          </p>
+
+          <h3>The decision page</h3>
+          <table>
+            <tr><th>Part</th><th>What it shows</th></tr>
+            <tr><td>Size of the change</td><td>Lines added and removed, files, and the kinds of file touched.</td></tr>
+            <tr>
+              <td>The verdict</td>
+              <td><em>Approve at a glance</em> or <em>Look into this</em>, with the reason.</td>
+            </tr>
+            <tr>
+              <td>Before and after</td>
+              <td>The <a href="#predicted-path">predicted path</a> under the old code and the new.</td>
+            </tr>
+            <tr><td>Summary</td><td>One short paragraph in plain, simple English.</td></tr>
+            <tr>
+              <td>Evidence</td>
+              <td>The checks that were run, each passed or failed, and the predicted path.</td>
+            </tr>
+            <tr>
+              <td>Things to note</td>
+              <td>What was not verified, what was assumed, side effects.</td>
+            </tr>
+          </table>
+          <p>
+            Tabs go deeper: <strong>Highlights</strong> (the walkthrough),
+            <strong>Captures</strong> (the path pair, large) and <strong>Changes</strong> (the
+            diff).
+          </p>
+
+          <h3>The verdict rule</h3>
+          <p>
+            The app decides the verdict, not the agent, and the rule is fixed.
+            <em>Approve at a glance</em> needs all of:
+          </p>
+          <ul>
+            <li>no check failed, and the report says there is nothing to note;</li>
+            <li>only game logic changed: one file, at most 20 changed lines;</li>
+            <li>some evidence: a check that passed, or the predicted path shown.</li>
+          </ul>
+          <p>
+            Anything else is <em>Look into this</em>, with the first rule it missed as the
+            reason. It is advice on how deep to read. Keep and Revert work either way.
+          </p>
+
+          <h3>The separate review</h3>
+          <p>
+            By default the report is not written by the agent that made the change. When a
+            change waits for you, a second, <strong>read-only</strong> agent run reads the diff
+            and writes the summary, evidence and notes. The page says
+            <q>Prepared by a separate review</q> when it did, and
+            <q>Preparing the summary…</q> while it works; you can Keep or Revert without waiting.
+          </p>
+          <p>
+            <em>Review on / off</em>, beside the agent picker, controls it per project, with an
+            optional model and extra instructions. Off, the working agent's own report is shown.
+            Reviews always run on Claude Code, whichever agent made the change, on a cheaper
+            model unless you name one, and stop at 300,000 input tokens or three minutes.
+          </p>
+
+          <h3 id="predicted-path">The predicted path</h3>
+          <p>
+            When a task starts, the app keeps the game's moment: its frame and recorded inputs.
+            When the change is ready, the old and the new version of the project are copied to a
+            temporary folder and each replays that moment in its own hidden game session; the
+            page shows both with the path drawn. Your running game is only read, and your
+            working files are not changed by it.
+          </p>
+          <p>
+            A change that touches none of the project's top-level <code>.fun</code>,
+            <code>.funi</code> or <code>functor.json</code> files gets no path at all. Otherwise
+            it shows nothing, and says why, when:
+          </p>
+          <ul>
+            <li>the change moves nothing on the path;</li>
+            <li>no game was running when the task started;</li>
+            <li>the game had run longer than its recorded inputs reach back (about 15 s);</li>
+            <li>the game made network requests, which a replay would send again;</li>
+            <li>the camera differs between the old and new code at that moment.</li>
+          </ul>
+
+          <h3>Keep or Revert</h3>
+          <p>
+            <strong>Keep change</strong> leaves your files as they are and closes the review.
+            <strong>Revert</strong> puts every file the task changed back as it was before the
+            task started, <em>undoing any other edits made to those files since</em>; it asks
+            first. Neither commits, stages or touches your branches.
+          </p>
+        </section>
+
+        <section id="headset">
+          <h2>Headset (Meta Quest) <span class="tag tag-new">New</span></h2>
+          <p class="docs-callout">
+            Everything in this section is merged and passes automated tests against a Quest 3
+            that drive its controllers. Nobody has used it day to day with the headset on yet.
+            <a href="https://github.com/tommy-xr/functor/issues">Tell us what breaks.</a>
+          </p>
+          <p>
+            The headset needs the Functor runtime app (<code>functor_runtime_oculus.apk</code>,
+            built from this repository) and the same Wi-Fi as your computer.
+          </p>
+
+          <h3>Pair</h3>
+          <p>Two ways. Both end with the headset connecting over Wi-Fi by itself.</p>
+          <ul>
+            <li>
+              <strong>By matching code.</strong> In the headset, open Functor and hold the left
+              menu button for a second. It finds your computer and shows a six-digit code. The
+              desktop shows a prompt with the same code. Press A in the headset if they match,
+              then <em>Allow</em> on the desktop. Nothing to type.
+            </li>
+            <li>
+              <strong>Over the cable.</strong> Plug the headset in with USB (needs
+              <code>adb</code>, USB debugging allowed, and a debug build of the headset app,
+              which <code>npm run build:oculus:apk</code> makes). Its card in Devices offers
+              <em>Pair over the cable</em>: one click, no code.
+            </li>
+          </ul>
+          <p>
+            <em>Forget this headset</em> on its card removes the pairing.
+          </p>
+
+          <h3>Connection states</h3>
+          <p>The pill in the title bar and the card in Devices use the same words.</p>
+          <table>
+            <tr><th>State</th><th>The fix</th></tr>
+            <tr><td>Not paired</td><td>Pair, as above.</td></tr>
+            <tr><td>Wants to pair</td><td>Check the code matches, then Allow (or <em>Not mine</em>).</td></tr>
+            <tr><td>Away</td><td>Put the headset on and open Functor. It reconnects by itself.</td></tr>
+            <tr><td>Connected</td><td>Nothing. The card shows link, latency, battery and what is running.</td></tr>
+            <tr>
+              <td>Out of date</td>
+              <td>Update whichever side the card names: the headset's app, or Functor on the computer.</td>
+            </tr>
+            <tr><td>Unreachable</td><td>Paired but not answering. Check both are on the same Wi-Fi.</td></tr>
+          </table>
+
+          <h3 id="headset-run">Run the game on the headset</h3>
+          <p>
+            While a headset is connected, the placement control gains <strong>Headset</strong>.
+            Choosing it moves the game there over Wi-Fi: no cable, no <code>adb forward</code>.
+            Saving a file reloads it in the headset. The Game tab shows the frame and clock; the
+            transport bar pauses, steps and seeks it. The agent's tools reach the game on the
+            headset too. <em>Run it on this computer</em> brings it back, paused on the first
+            frame.
+          </p>
+          <p>
+            There is no live picture of the headset on the desktop yet, and no Extrapolate.
+          </p>
+
+          <h3>Talk to the agent from the headset</h3>
+          <p>
+            With the game placed on the headset, <strong>hold the right thumbstick click</strong>
+            and speak; release to send, or press B to cancel. A short click still goes to the
+            game. The clip is transcribed on your computer. It steers the task that is running,
+            or starts a new one.
+          </p>
+          <p>A toast in the headset follows it:</p>
+          <table>
+            <tr><th>Toast</th><th>Means</th></tr>
+            <tr><td>Microphone</td><td>Allow the microphone in the headset, then hold again.</td></tr>
+            <tr><td>Listening…</td><td>Recording, with a level meter. Clips stop at one minute.</td></tr>
+            <tr><td>Sending… / Heard</td><td>The clip reached the desktop; the words it heard appear.</td></tr>
+            <tr><td>Working…</td><td>The agent is on it.</td></tr>
+            <tr><td>Reloaded</td><td>The game in the headset reloaded with the agent's edit.</td></tr>
+            <tr><td>Failed / Not sent</td><td>With the reason on the second line.</td></tr>
+            <tr><td>Not connected</td><td>The headset is paired but the link is down. See the states above.</td></tr>
+          </table>
+          <p>
+            Voice needs an app built with speech-to-text. It has been tested with a tone in
+            place of the microphone, not yet with a person speaking.
+          </p>
+        </section>
+
+        <section id="privacy">
+          <h2>Privacy and safety</h2>
+          <ul>
+            <li>
+              <strong>It runs on your machine.</strong> The app, the game and the tool server
+              are local processes. There is no Functor account and no Functor server.
+            </li>
+            <li>
+              <strong>The agent is your own.</strong> The app starts the Claude Code or Codex
+              you already have installed. Whatever that sends to its provider in a terminal, it
+              sends here.
+            </li>
+            <li>
+              <strong>It uses your own agent settings</strong>, today: your instructions, hooks,
+              MCP servers and allow rules load as they do in your terminal. The app adds two
+              things: edits inside the repository are accepted without asking, and anything
+              else that no rule allows is denied rather than asked. Shell commands differ by
+              agent: Claude Code runs only the ones your own rules allow; Codex runs any, inside
+              its sandbox on the repository. The separate review is the exception: it loads
+              none of your settings and cannot write.
+            </li>
+            <li>
+              <strong>The UI listens on loopback only</strong> (<code>127.0.0.1</code>), and the
+              socket that drives the app needs a random token made fresh on each launch.
+            </li>
+            <li>
+              <strong>Headset pairing listens on your network.</strong> A second listener on a
+              free port, announced by mDNS, speaks only the pairing and link protocol. A device
+              that has not paired can do nothing but ask, which shows you a prompt. Turn it off
+              with <code>--no-device-link</code>:
+              <pre class="shell">functor app -d &lt;project&gt; -- --no-device-link</pre>
+            </li>
+            <li>
+              <strong>Speech-to-text is local.</strong> Audio is transcribed on this machine
+              (whisper.cpp) and dropped; headset clips are kept, under
+              <code>~/.functor/app/voice</code>, only if you set
+              <code>FUNCTOR_APP_KEEP_AUDIO</code>. The only download is the model itself, once,
+              on first use: about 148 MB, checked against its hash.
+            </li>
+            <li>
+              <strong>Where data lives.</strong> Tasks, transcripts, layouts, pairings and the
+              snapshots behind Revert are in <code>~/.functor/app</code>
+              (<code>FUNCTOR_APP_HOME</code> overrides). Speech models are in
+              <code>~/.functor/models</code> (<code>FUNCTOR_MODELS</code> overrides). The app
+              keeps none of its own files in your repository, and your git history, index and
+              stash are only read. What does change there: the agent's edits, and whatever
+              running the game writes anyway (<code>functor run</code> regenerates
+              <code>assets.fun</code> when assets change).
+            </li>
+          </ul>
+        </section>
+
+        <section id="cost">
+          <h2>Cost</h2>
+          <p>
+            The app adds no charge of its own; a run spends your agent's tokens. What sets the
+            bill is <strong>turns</strong>: every time the agent calls a tool and reads the
+            result, the conversation so far is sent again. In our measurements with Claude a
+            turn is about 35,000 input tokens (cached tokens included).
+          </p>
+          <table>
+            <tr><th>Run</th><th>Tool calls</th><th>Input tokens</th></tr>
+            <tr><td>A question about the game's state</td><td>1</td><td>about 75k</td></tr>
+            <tr><td>A small edit, checked by playing</td><td>6 to 13</td><td>170k to 260k</td></tr>
+            <tr><td>The separate review of that edit</td><td>—</td><td>80k to 115k</td></tr>
+          </table>
+          <p>
+            Output is small beside it: one to two thousand tokens per edit. These are single
+            runs on the repository's own scenarios with one user's settings, so read them as a
+            scale, not a quote. A task's page lists tokens in and out for each of its runs.
+          </p>
+          <p>
+            Measure it yourself from a checkout (it runs the debug builds of
+            <code>functor</code> and <code>functor-app</code>):
+          </p>
+          <pre class="shell">npm run metrics:app                              # replays recorded runs; spends nothing
+FUNCTOR_APP_LIVE=1 npm run metrics:app -- --live # the real agent; spends tokens</pre>
+        </section>
+
+        <section id="troubleshooting">
+          <h2>Troubleshooting</h2>
+          <table>
+            <tr><th>You see</th><th>Do this</th></tr>
+            <tr>
+              <td><code>functor-app not found (looked for …)</code>, or bare <code>functor</code> prints help</td>
+              <td>
+                Build it (<code>npm run build:app</code>), or point
+                <code>FUNCTOR_APP_BIN</code> at the binary.
+              </td>
+            </tr>
+            <tr>
+              <td><code>the window is macOS-only for now; run with --headless</code></td>
+              <td><code>functor app -d &lt;project&gt; -- --headless</code>, then open the printed URL.</td>
+            </tr>
+            <tr>
+              <td>No session token — open the URL functor-app printed</td>
+              <td>
+                The page was opened without its <code>#token=…</code>. Use the full URL from the
+                terminal; it changes on every launch.
+              </td>
+            </tr>
+            <tr>
+              <td>claude is not available on this machine (or codex)</td>
+              <td>
+                Install that agent so its command is on <code>PATH</code>, then open the app
+                again. Reviews need Claude Code: with only Codex installed, turn
+                <em>Review</em> off.
+              </td>
+            </tr>
+            <tr>
+              <td>This folder is not a git repository, so changes are not tracked.</td>
+              <td>Run <code>git init</code> in it (or tick <em>Track changes with git</em> on a new project) to get Keep / Revert.</td>
+            </tr>
+            <tr>
+              <td>No predicted path: …</td>
+              <td>
+                Expected in the <a href="#predicted-path">cases above</a>. For the next task,
+                have the game running, near its start, when you ask.
+              </td>
+            </tr>
+            <tr>
+              <td>The separate review did not finish: …</td>
+              <td>The page falls back to what it had. Keep and Revert still work; turn reviews off under <em>Review on</em> if it repeats.</td>
+            </tr>
+            <tr>
+              <td><code>speech-to-text is not in this build of the app</code></td>
+              <td>Rebuild with <code>npm run build:app</code>, which turns it on.</td>
+            </tr>
+            <tr>
+              <td>The device link is off, so headsets cannot find this computer.</td>
+              <td>Start the app without <code>--no-device-link</code>.</td>
+            </tr>
+            <tr>
+              <td>Plugged in, USB debugging not allowed</td>
+              <td>Put the headset on and choose Allow on its USB debugging prompt.</td>
+            </tr>
+            <tr>
+              <td>Plugged in, no Functor app</td>
+              <td>Install it over the cable: <code>adb install functor_runtime_oculus.apk</code>.</td>
+            </tr>
+            <tr>
+              <td>This headset is not running a game from the Functor app, so there is nothing to change.</td>
+              <td>Spoken into a headset the game is not on. Choose <strong>Headset</strong> as the game's placement first.</td>
+            </tr>
+          </table>
+
+          <p class="docs-footnote">
+            What is next: the design notes are in the repository, as
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/ideas/ai/desktop-app-revisions-v1.md">decisions</a>
+            and a
+            <a href="https://github.com/tommy-xr/functor/blob/main/docs/ideas/ai/desktop-app-plan-v1.md">plan</a>.
+            Building and testing the app itself is in
+            <a href="https://github.com/tommy-xr/functor/blob/main/DEVELOPMENT.md#desktop-app-preview">DEVELOPMENT.md</a>.
+          </p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-room-2", "model": "claude-model"}}
+{"ms": 300, "event": {"type": "usage_detail", "total": {"input": 2, "cache_read": 750000, "cache_creation": 0, "output": 10}, "last": {"input": 2, "cache_read": 750000, "cache_creation": 0, "output": 10}}}
+{"ms": 3500, "event": {"type": "usage_detail", "total": {"input": 4, "cache_read": 1670000, "cache_creation": 0, "output": 20}, "last": {"input": 2, "cache_read": 920000, "cache_creation": 0, "output": 10}}}
+{"ms": 6500, "event": {"type": "text", "text": "Done."}}
+{"ms": 6600, "event": {"type": "usage", "input": 1670004, "output": 20}}
+{"ms": 6700, "event": {"type": "finished", "ok": true, "summary": "Done."}}

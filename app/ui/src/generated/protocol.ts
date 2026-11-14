@@ -3,14 +3,25 @@
 
 export type Activity = { stance: Stance, 
 /**
- * The run's calls still waiting on their results, oldest first.
+ * The main agent's calls still waiting on their results, oldest first.
  */
 calls: Array<Call>, 
 /**
  * The last run's error or refusal, one short line; cleared by the
  * user's next message.
  */
-error: string | null, };
+error: string | null, 
+/**
+ * The subagents running, oldest first: while the call that started
+ * them is out, or (one started in the background, whose call returns
+ * at once; its end is not reported) while a call of its own is.
+ */
+subagents: Array<Subagent>, 
+/**
+ * How full the main agent's context is, once both its use and its
+ * model's window are known.
+ */
+context: ContextFill | null, };
 
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -77,6 +88,10 @@ session: Session | null,
  */
 no_gpu: boolean, 
 /**
+ * This app turns speech into text, so the composer has a mic.
+ */
+speech: boolean, 
+/**
  * Every project's tasks, by id; their transcripts travel separately.
  */
 tasks: Array<Task>, 
@@ -89,6 +104,16 @@ activity: { [key in number]: Activity },
  * (D35), refreshed after every event.
  */
 decisions: { [key in number]: Decision }, 
+/**
+ * Per project path with queued tasks or a reason a new one would
+ * wait, its queue (D30), refreshed after every event.
+ */
+queues: { [key in string]: Queue }, 
+/**
+ * Decisions on where speech went that can still be moved (D29), with
+ * their lines and moves, refreshed after every event.
+ */
+routes: Array<Routed>, 
 /**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
@@ -103,6 +128,21 @@ harnesses: Array<Harness>,
  * Per project path, the agent last picked for its new tasks.
  */
 harness_choice: { [key in string]: Harness }, 
+/**
+ * Per project path, how much of the user's own setup its runs read
+ * (D39); absent: all of it.
+ */
+scope_choice: { [key in string]: Scope }, 
+/**
+ * Per project path, how its changes are reviewed (D31); absent: the
+ * default.
+ */
+review_settings: { [key in string]: ReviewSetting }, 
+/**
+ * Project paths whose speech the model router places (D29; off by
+ * default: it adds 2–3 s and sometimes times out to the fixed rule).
+ */
+model_routes: Array<string>, 
 /**
  * Per project path, its canvas layout; every project has one.
  */
@@ -138,7 +178,11 @@ highlight: Highlight | null,
 /**
  * Headsets, app-wide.
  */
-devices: Devices, };
+devices: Devices, 
+/**
+ * The shell can ask a model where speech goes (D29); else the fixed rule decides.
+ */
+router: boolean, };
 
 /**
  * A headset on a USB cable (task 2.4). Pairing over it needs no code: the
@@ -157,6 +201,11 @@ pairing: boolean,
  * "Pair over the cable" is offered ([`cable_pairable`]).
  */
 pairable: boolean, };
+
+/**
+ * How a decision was made.
+ */
+export type By = "rule" | "model" | "you";
 
 export type CableState = { "state": "unauthorized" } | { "state": "offline" } | { "state": "no_app" } | { "state": "not_debuggable" } | { "state": "ready", device: string | null, paired: HeadsetPairing, };
 
@@ -202,7 +251,12 @@ result: string, ok: boolean, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, scope?: Scope, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "move_queued", task: number, to: number, } | { "type": "start_queued", task: number, } | { "type": "move_utterance", id: number, to: Destination, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_model_route", on: boolean, } | { "type": "set_scope", scope: Scope, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+
+/**
+ * Tokens of context in use, of the model's `window`.
+ */
+export type ContextFill = { used: number, window: number, };
 
 export type Corner = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 
@@ -213,9 +267,18 @@ export type Decision = { size: Size, depth: Depth,
 /**
  * One or two short sentences.
  */
-reason: string, };
+reason: string, 
+/**
+ * The report's summary against the rules [`style_flags`] counts.
+ */
+style: Array<string>, };
 
 export type Depth = "glance" | "look";
+
+/**
+ * A place an utterance can be moved to.
+ */
+export type Destination = { "kind": "steer", task: number, } | { "kind": "new" } | { "kind": "queued", task: number, };
 
 export type Device = { 
 /**
@@ -403,7 +466,23 @@ seq: number, };
 /**
  * One transcript entry, in the order the UI shows them.
  */
-export type Item = { "kind": "user", text: string, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
+export type Item = { "kind": "user", text: string, 
+/**
+ * Said aloud in a headset, not typed.
+ */
+spoken?: Spoken, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, 
+/**
+ * The harness's id for the call, when it gives one.
+ */
+id?: string, 
+/**
+ * The call that started the subagent making this one.
+ */
+parent_id?: string, 
+/**
+ * Whether the result is an error, when the harness says.
+ */
+is_error?: boolean, } | { "kind": "usage", input: number, output: number, detail?: UsageDetail, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -465,6 +544,15 @@ export type Mini = { corner: Corner, width: number, };
 export type Moment = { "kind": "taken", frame: number, steps: number, } | { "kind": "missing", reason: string, };
 
 export type MouseButton = "left" | "right" | "middle";
+
+/**
+ * A one-tap move of a decision.
+ */
+export type Move = { to: Destination, 
+/**
+ * "Make it a new task", "Steer “…” instead".
+ */
+label: string, };
 
 /**
  * The new-project modal, while it is open.
@@ -579,6 +667,23 @@ name: string,
  */
 path: string, entries: Entries, };
 
+/**
+ * A project's queue, derived after every event.
+ */
+export type Queue = { 
+/**
+ * Its queued tasks, the next to start first.
+ */
+tasks: Array<number>, 
+/**
+ * Why a task cannot start in the project now; `None`: it would start at once.
+ */
+wait: Wait | null, 
+/**
+ * A task the user starts now would queue ([`holds`]).
+ */
+holds: boolean, };
+
 export type Recent = { 
 /**
  * The project directory's name.
@@ -594,9 +699,9 @@ path: string,
 missing: boolean, };
 
 /**
- * The agent's account of its change (`present`), stored with the task: a
- * presentation agent fills the same fields. A new run, a later edit to the
- * files or the end of the review clears it.
+ * The agent's account of its change (`present`), stored with the task; a
+ * separate review's (`report`, D31) replaces it. A new run, a later edit to
+ * the files or the end of the review clears it.
  */
 export type Report = { 
 /**
@@ -611,13 +716,72 @@ notes: Array<string> | null,
 /**
  * What was run, and the result.
  */
-evidence: Array<Check>, };
+evidence: Array<Check>, 
+/**
+ * Written by a separate review, not the agent that made the change.
+ */
+reviewed: boolean, };
+
+/**
+ * A task's review of its waiting change, kept until the change is decided,
+ * replaced or measured again differently.
+ */
+export type Review = { 
+/**
+ * The run whose change it reviews; its events carry it.
+ */
+run: number, harness: Harness, 
+/**
+ * As asked, until the agent reports its own.
+ */
+model: string | null, state: ReviewState, 
+/**
+ * The latest (cumulative) usage it reported.
+ */
+usage: Usage | null, 
+/**
+ * The latest usage split it reported, when the harness gives one.
+ */
+detail?: UsageDetail, };
+
+/**
+ * How a project's changes are reviewed; stored per project.
+ */
+export type ReviewSetting = { 
+/**
+ * Prepare the report in a separate run; off, the agent's own is shown.
+ */
+on: boolean, 
+/**
+ * `None`: the task's own.
+ */
+harness: Harness | null, 
+/**
+ * `None`: [`default_model`] for the harness.
+ */
+model: string | null, 
+/**
+ * Added to the review's instructions, e.g. a skill to follow.
+ */
+instructions: string | null, };
+
+export type ReviewState = { "kind": "preparing" } | { "kind": "prepared" } | { "kind": "failed", reason: string, };
 
 /**
  * One `"entries"` role: `"client.fun"`, or `{ "file", "module" | "prefix" }`
  * for roles sharing a file.
  */
 export type Role = { name: string, file: string, module?: string, prefix?: string, };
+
+/**
+ * A decision still open to a move, derived after every event: the
+ * message's place (task and transcript index), its line, and the moves.
+ */
+export type Routed = { id: number, task: number, item: number, 
+/**
+ * As shown on the message: "Steered “…”".
+ */
+line: string, by: By, moves: Array<Move>, };
 
 export type Run = { 
 /**
@@ -632,7 +796,23 @@ usage: Usage | null,
 /**
  * View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
  */
-views: number, };
+views: number, 
+/**
+ * The latest usage split, when the harness gives one; added to the
+ * usage item when the run ends.
+ */
+detail?: UsageDetail, 
+/**
+ * The agent reported its start, so it has the run's messages.
+ */
+started: boolean, };
+
+/**
+ * How much of the user's own setup an agent run reads (D39): instructions,
+ * skills, memory and settings. The app's permissions apply at every level;
+ * the allow rules and hooks in the user's settings come only with them.
+ */
+export type Scope = "user_and_project" | "project" | "isolated";
 
 /**
  * Core → UI.
@@ -671,12 +851,43 @@ export type Size = { added: number, removed: number, files: number,
  */
 kinds: Array<Kind>, };
 
+/**
+ * Where a spoken message came from (plan 4.1/4.3): the headset, and what
+ * the user was looking at when they spoke, as text.
+ */
+export type Spoken = { 
+/**
+ * The headset's name.
+ */
+headset: string, 
+/**
+ * The capsule, rendered: "at frame 1234 (20.5 s), head at …".
+ */
+context?: string, 
+/**
+ * Where the router put it (D29): "Steered “…”", "Queued behind “…”".
+ */
+route?: string, };
+
 export type Stance = "thinking" | "working" | "waiting" | "done" | "failed";
 
 /**
  * Where creating a project is.
  */
 export type Step = { "kind": "editing" } | { "kind": "creating", path: string, } | { "kind": "opening", path: string, } | { "kind": "failed", reason: string, done: Array<string>, not_done: Array<string>, };
+
+/**
+ * A subagent at work, under the call that started it.
+ */
+export type Subagent = { 
+/**
+ * What it was asked to do: its call's description.
+ */
+label: string, 
+/**
+ * Its own calls still waiting on their results, oldest first.
+ */
+calls: Array<Call>, };
 
 /**
  * Where [`LayoutOp::Open`] puts a view. One already open moves only to a
@@ -702,6 +913,13 @@ title: string,
  */
 status: TaskStatus, harness: Harness, 
 /**
+ * What its runs read of the user's setup (D39), fixed when it starts:
+ * its follow-ups resume a conversation that holds the instructions it
+ * read. Tasks saved
+ * before it was kept read all of it.
+ */
+scope: Scope, 
+/**
  * As the agent reported it.
  */
 model: string | null, 
@@ -713,6 +931,11 @@ session_id: string | null,
  * The run in flight.
  */
 run: Run | null, 
+/**
+ * Waiting its turn in its project's queue (D30): lower goes first. A
+ * queued task has never run; its transcript is the user's messages.
+ */
+queued: number | null, 
 /**
  * The snapshot (a git tree in the app's store) the task's change is
  * measured from: taken as its first run, or the first after a keep or
@@ -736,9 +959,14 @@ moment: Moment | null,
  */
 evidence: Evidence | null, 
 /**
- * The last run's account of the change (D35), from its `present`.
+ * The last run's account of the change (D35), from its `present`, or
+ * its review's (`Report::reviewed`), which replaces it.
  */
 report: Report | null, 
+/**
+ * The separate run preparing the report on the waiting change (D31).
+ */
+review: Review | null, 
 /**
  * When it was started: the shell's wall clock, ms since the Unix
  * epoch. Last active: a message, a run's event or a review. Both absent
@@ -750,7 +978,7 @@ created_at: number | null,
  */
 updated_at: number | null, };
 
-export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
+export type TaskStatus = { "kind": "queued" } | { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
 /**
  * One of `functor init --list --json`'s entries.
@@ -762,6 +990,19 @@ export type Template = {
 name: string, description: string, tags: Array<string>, kind: TemplateKind, };
 
 export type TemplateKind = "starter" | "example";
+
+/**
+ * Tokens split by how the prompt side was billed (`mis-agent`'s).
+ */
+export type TokenUsage = { 
+/**
+ * Prompt tokens neither read from nor written to the cache.
+ */
+input: number, cache_read: number, cache_creation: number, output: number, 
+/**
+ * The part of `output` spent reasoning, if the harness says.
+ */
+reasoning_output: number | null, };
 
 /**
  * What the bar shows: `GET /state`'s `frame` and `clock`, with the bar's
@@ -818,6 +1059,38 @@ export type Usage = {
 input: number, output: number, };
 
 /**
+ * A run's usage as the harness splits it. Claude sends one after each API
+ * message, with the end-of-run fields last; Codex sends `total` at the end.
+ */
+export type UsageDetail = { 
+/**
+ * Cumulative for the run, subagents included.
+ */
+total: TokenUsage, 
+/**
+ * The main agent's latest API message: its `prompt()` is how full the
+ * context is now.
+ */
+last: TokenUsage | null, 
+/**
+ * Claude Code's `num_turns`: not exactly its API requests.
+ */
+turns: number | null, cost_usd: Usd | null, 
+/**
+ * Time spent in API calls.
+ */
+api_ms: number | null, 
+/**
+ * The main model's context window, in tokens.
+ */
+context_window: number | null, };
+
+/**
+ * US dollars. Read from JSON, which has no NaN, so equality is total.
+ */
+export type Usd = number;
+
+/**
  * What a tab shows. New view types need no layout work.
  */
 export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "kind": "changes", task: number, } | { "kind": "task", task: number, };
@@ -828,5 +1101,10 @@ export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "k
  * (scrolled to `path`), or the game. Paths are relative to the project.
  */
 export type ViewTarget = { "kind": "file", path: string, lines: [number, number] | null, } | { "kind": "changes", path: string | null, } | { "kind": "game" };
+
+/**
+ * Why a project's next task cannot start now.
+ */
+export type Wait = { "kind": "running", task: number, } | { "kind": "reverting", task: number, } | { "kind": "decision", task: number, } | { "kind": "measuring", task: number, };
 
 export type WalkthroughStep = { title: string, note: string | null, view: ViewTarget, };

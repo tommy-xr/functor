@@ -1,0 +1,21 @@
+[package]
+name = "functor-stt"
+version = "0.1.0"
+edition = "2021"
+
+# Local speech-to-text for the desktop app: 16 kHz mono PCM in, text out.
+# Without `whisper` only the fake transcriber and the WAV reader build, so
+# tests and CI never compile whisper.cpp or fetch a model.
+
+[features]
+# whisper.cpp (`whisper-rs`) and the first-use model download.
+whisper = ["dep:whisper-rs", "dep:reqwest", "dep:sha2"]
+
+[dependencies]
+# Same version/TLS as the CLI's, so cargo unifies.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"], optional = true }
+sha2 = { version = "0.10", optional = true }
+whisper-rs = { version = "0.16", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

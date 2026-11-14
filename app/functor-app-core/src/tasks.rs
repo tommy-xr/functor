@@ -9,6 +9,7 @@ use crate::agent_view::WalkthroughStep;
 use crate::changes::Change;
 use crate::decision::Report;
 use crate::evidence::{Evidence, Moment};
+use crate::review::Review;
 use crate::session::loopback_url;
 
 /// The persisted format's version; a file with any other is skipped.
@@ -35,6 +36,36 @@ impl Harness {
     }
 }
 
+/// How much of the user's own setup an agent run reads (D39): instructions,
+/// skills, memory and settings. The app's permissions apply at every level;
+/// the allow rules and hooks in the user's settings come only with them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// The user's own and the project's, as in their terminal.
+    #[default]
+    UserAndProject,
+    /// The project's: what it has checked in, and the user's local
+    /// settings for it (`.claude/settings.local.json`), nothing from their
+    /// home.
+    Project,
+    /// Neither: only what the app gives the run.
+    Isolated,
+}
+
+impl Scope {
+    /// The level `harness` runs at when asked for this one: Codex cannot
+    /// leave out the user's own instructions and skills, so it always reads
+    /// them (and the app never offers it less).
+    pub fn for_harness(self, harness: Harness) -> Self {
+        match harness {
+            Harness::Claude => self,
+            Harness::Codex => Self::UserAndProject,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Task {
@@ -47,12 +78,22 @@ pub struct Task {
     /// From [`derive_status`], after every change.
     pub status: TaskStatus,
     pub harness: Harness,
+    /// What its runs read of the user's setup (D39), fixed when it starts:
+    /// its follow-ups resume a conversation that holds the instructions it
+    /// read. Tasks saved
+    /// before it was kept read all of it.
+    #[serde(default)]
+    pub scope: Scope,
     /// As the agent reported it.
     pub model: Option<String>,
     /// The agent's session, from its `started`; a follow-up resumes it.
     pub session_id: Option<String>,
     /// The run in flight.
     pub run: Option<Run>,
+    /// Waiting its turn in its project's queue (D30): lower goes first. A
+    /// queued task has never run; its transcript is the user's messages.
+    #[serde(default)]
+    pub queued: Option<u64>,
     /// The snapshot (a git tree in the app's store) the task's change is
     /// measured from: taken as its first run, or the first after a keep or
     /// revert, started. `None` outside git.
@@ -70,9 +111,13 @@ pub struct Task {
     /// The predicted paths before and after `change` (D38).
     #[serde(default)]
     pub evidence: Option<Evidence>,
-    /// The last run's account of the change (D35), from its `present`.
+    /// The last run's account of the change (D35), from its `present`, or
+    /// its review's (`Report::reviewed`), which replaces it.
     #[serde(default)]
     pub report: Option<Report>,
+    /// The separate run preparing the report on the waiting change (D31).
+    #[serde(default)]
+    pub review: Option<Review>,
     /// When it was started: the shell's wall clock, ms since the Unix
     /// epoch. Last active: a message, a run's event or a review. Both absent
     /// from tasks saved before they were kept.
@@ -91,6 +136,8 @@ pub struct Task {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Waiting its turn in its project's queue (D30).
+    Queued,
     InProgress,
     /// The last run ended and the next move is the user's.
     WaitingOnYou,
@@ -107,7 +154,7 @@ pub enum TaskStatus {
     Reverted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Run {
     /// The index of the user message that started it; events for another
@@ -118,6 +165,18 @@ pub struct Run {
     /// View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
     #[serde(default)]
     pub views: u32,
+    /// The latest usage split, when the harness gives one; added to the
+    /// usage item when the run ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub detail: Option<UsageDetail>,
+    /// A result waiting for its call's id, which the next event carries.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub held: Option<String>,
+    /// The agent reported its start, so it has the run's messages.
+    #[serde(default)]
+    pub started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +187,75 @@ pub struct Usage {
     pub output: u64,
 }
 
+/// Tokens split by how the prompt side was billed (`mis-agent`'s).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(default)]
+pub struct TokenUsage {
+    /// Prompt tokens neither read from nor written to the cache.
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_creation: u64,
+    pub output: u64,
+    /// The part of `output` spent reasoning, if the harness says.
+    pub reasoning_output: Option<u64>,
+}
+
+impl TokenUsage {
+    /// The whole prompt: for one API message, how much context it filled.
+    pub fn prompt(&self) -> u64 {
+        self.input + self.cache_read + self.cache_creation
+    }
+}
+
+/// US dollars. Read from JSON, which has no NaN, so equality is total.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Usd(pub f64);
+
+impl Eq for Usd {}
+
+/// A run's usage as the harness splits it. Claude sends one after each API
+/// message, with the end-of-run fields last; Codex sends `total` at the end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct UsageDetail {
+    /// Cumulative for the run, subagents included.
+    pub total: TokenUsage,
+    /// The main agent's latest API message: its `prompt()` is how full the
+    /// context is now.
+    #[serde(default)]
+    pub last: Option<TokenUsage>,
+    /// Claude Code's `num_turns`: not exactly its API requests.
+    #[serde(default)]
+    pub turns: Option<u64>,
+    #[serde(default)]
+    pub cost_usd: Option<Usd>,
+    /// Time spent in API calls.
+    #[serde(default)]
+    pub api_ms: Option<u64>,
+    /// The main model's context window, in tokens.
+    #[serde(default)]
+    pub context_window: Option<u64>,
+}
+
+/// Where a spoken message came from (plan 4.1/4.3): the headset, and what
+/// the user was looking at when they spoke, as text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Spoken {
+    /// The headset's name.
+    pub headset: String,
+    /// The capsule, rendered: "at frame 1234 (20.5 s), head at …".
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Where the router put it (D29): "Steered “…”", "Queued behind “…”".
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+}
+
 /// One transcript entry, in the order the UI shows them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -135,6 +263,10 @@ pub struct Usage {
 pub enum Item {
     User {
         text: String,
+        /// Said aloud in a headset, not typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        spoken: Option<Spoken>,
     },
     /// `partial` while its text is still streaming in.
     Agent {
@@ -146,10 +278,25 @@ pub enum Item {
         name: String,
         input: Value,
         result: Option<String>,
+        /// The harness's id for the call, when it gives one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        id: Option<String>,
+        /// The call that started the subagent making this one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        parent_id: Option<String>,
+        /// Whether the result is an error, when the harness says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        is_error: Option<bool>,
     },
     Usage {
         input: u64,
         output: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts", ts(optional))]
+        detail: Option<UsageDetail>,
     },
     Finished {
         ok: bool,
@@ -191,15 +338,31 @@ pub enum AgentEvent {
         name: String,
         input: Value,
     },
-    /// Carries no id: it answers the oldest unanswered call.
+    /// Carries no id: the `ToolResultMeta` right after it names its call,
+    /// else it answers the oldest unanswered one.
     ToolResult {
         content: String,
+    },
+    /// The id of the `ToolUse` just before it, and the call that started
+    /// the subagent making it (`None`: the main agent).
+    ToolUseMeta {
+        id: String,
+        #[serde(default)]
+        parent_id: Option<String>,
+    },
+    /// The call the `ToolResult` just before it answers, and whether it
+    /// failed (`None`: the harness did not say).
+    ToolResultMeta {
+        id: String,
+        #[serde(default)]
+        is_error: Option<bool>,
     },
     /// Cumulative for the run.
     Usage {
         input: u64,
         output: u64,
     },
+    UsageDetail(UsageDetail),
     Finished {
         ok: bool,
         summary: Option<String>,
@@ -230,9 +393,29 @@ pub fn apply(task: &mut Task, event: AgentEvent) -> Vec<usize> {
     let Some(run) = task.run.as_mut() else {
         return vec![];
     };
+    // A held result is paired by the id that follows it, else by order.
+    let start = run.id as usize + 1;
+    let mut changed = match (run.held.take(), &event) {
+        (Some(content), AgentEvent::ToolResultMeta { id, is_error }) => {
+            return answer(&mut task.transcript, start, Some(id), *is_error, content);
+        }
+        (Some(content), _) => answer(&mut task.transcript, start, None, None, content),
+        (None, _) => vec![],
+    };
+    changed.extend(apply_event(task, event));
+    changed
+}
+
+/// [`apply`], with no result held.
+fn apply_event(task: &mut Task, event: AgentEvent) -> Vec<usize> {
+    let Some(run) = task.run.as_mut() else {
+        return vec![];
+    };
     let items = &mut task.transcript;
+    let start = run.id as usize + 1;
     match event {
         AgentEvent::Started { session, model } => {
+            run.started = true;
             task.session_id = session.or(task.session_id.take());
             task.model = model.or(task.model.take());
             vec![]
@@ -276,26 +459,49 @@ pub fn apply(task: &mut Task, event: AgentEvent) -> Vec<usize> {
                 name,
                 input,
                 result: None,
+                id: None,
+                parent_id: None,
+                is_error: None,
             },
         ),
-        AgentEvent::ToolResult { content } => {
-            // The oldest call of this run without a result; a stray result is dropped.
-            let start = run.id as usize + 1;
-            let call = items
-                .iter_mut()
-                .enumerate()
-                .skip(start)
-                .find(|(_, item)| matches!(item, Item::Tool { result: None, .. }));
-            match call {
-                Some((i, Item::Tool { result, .. })) => {
-                    *result = Some(content);
+        // Names the run's latest call, sent just before it.
+        AgentEvent::ToolUseMeta {
+            id: meta,
+            parent_id: parent,
+        } => {
+            let last =
+                (items.iter_mut().enumerate().skip(start).rev()).find_map(|(i, item)| match item {
+                    Item::Tool { id, parent_id, .. } => Some((i, id, parent_id)),
+                    _ => None,
+                });
+            match last {
+                Some((i, id @ None, parent_id)) => {
+                    *id = Some(meta);
+                    *parent_id = parent;
                     vec![i]
                 }
                 _ => vec![],
             }
         }
+        // Held for the `ToolResultMeta` that names its call, once this run's
+        // calls carry ids; old logs and harnesses without ids pair by order.
+        AgentEvent::ToolResult { content } => {
+            let ids =
+                (items.iter().skip(start)).any(|i| matches!(i, Item::Tool { id: Some(_), .. }));
+            if ids {
+                run.held = Some(content);
+                return vec![];
+            }
+            answer(items, start, None, None, content)
+        }
+        // Nothing held: its result was paired already, or never came.
+        AgentEvent::ToolResultMeta { .. } => vec![],
         AgentEvent::Usage { input, output } => {
             run.usage = Some(Usage { input, output });
+            vec![]
+        }
+        AgentEvent::UsageDetail(detail) => {
+            run.detail = Some(detail);
             vec![]
         }
         AgentEvent::Finished { ok, summary } => {
@@ -313,7 +519,7 @@ pub fn end_run(task: &mut Task, error: Option<String>) -> Vec<usize> {
         return vec![];
     };
     let items = &mut task.transcript;
-    let mut changed = settle(items, &run);
+    let mut changed = settle(items, &mut run);
     if run_outcome(items).is_none() {
         changed.extend(flush_usage(items, &mut run));
         let summary = error.unwrap_or_else(|| "the agent ended without finishing".to_string());
@@ -334,7 +540,7 @@ pub fn stop_run(task: &mut Task) -> Vec<usize> {
     let Some(mut run) = task.run.take() else {
         return vec![];
     };
-    let mut changed = settle(&mut task.transcript, &run);
+    let mut changed = settle(&mut task.transcript, &mut run);
     changed.extend(flush_usage(&mut task.transcript, &mut run));
     changed.extend(push(&mut task.transcript, Item::Stopped));
     task.status = derive_status(task);
@@ -346,6 +552,9 @@ pub fn stop_run(task: &mut Task) -> Vec<usize> {
 pub fn derive_status(task: &Task) -> TaskStatus {
     if task.run.is_some() {
         return TaskStatus::InProgress;
+    }
+    if task.queued.is_some() {
+        return TaskStatus::Queued;
     }
     match task.transcript.last() {
         Some(Item::Kept) => return TaskStatus::Kept,
@@ -381,10 +590,47 @@ fn run_outcome(items: &[Item]) -> Option<&Item> {
         .find(|i| matches!(i, Item::Finished { .. } | Item::Stopped))
 }
 
-/// Ends any text of `run` still streaming, as no more of it will come.
-fn settle(items: &mut [Item], run: &Run) -> Vec<usize> {
+/// Pairs result `content` with the run's (from `start`) unanswered call
+/// `id`, or without an id its oldest unanswered call; a stray result (a
+/// repeat, an unknown id) is dropped.
+fn answer(
+    items: &mut [Item],
+    start: usize,
+    id: Option<&str>,
+    flag: Option<bool>,
+    content: String,
+) -> Vec<usize> {
+    let call = (items.iter_mut().enumerate().skip(start)).find(|(_, item)| match item {
+        Item::Tool {
+            result: None,
+            id: own,
+            ..
+        } => id.is_none() || own.as_deref() == id,
+        _ => false,
+    });
+    match call {
+        Some((
+            i,
+            Item::Tool {
+                result, is_error, ..
+            },
+        )) => {
+            *result = Some(content);
+            *is_error = flag;
+            vec![i]
+        }
+        _ => vec![],
+    }
+}
+
+/// Pairs a result still held, and ends any text of `run` still streaming,
+/// as no more of either will come.
+fn settle(items: &mut [Item], run: &mut Run) -> Vec<usize> {
     let start = run.id as usize + 1;
-    let mut changed = vec![];
+    let mut changed = match run.held.take() {
+        Some(content) => answer(items, start, None, None, content),
+        None => vec![],
+    };
     for (i, item) in items.iter_mut().enumerate().skip(start) {
         if let Item::Agent { partial, .. } = item {
             if *partial {
@@ -403,7 +649,17 @@ fn push(items: &mut Vec<Item>, item: Item) -> Vec<usize> {
 
 fn flush_usage(items: &mut Vec<Item>, run: &mut Run) -> Vec<usize> {
     match run.usage.take() {
-        Some(Usage { input, output }) => push(items, Item::Usage { input, output }),
+        Some(Usage { input, output }) => {
+            let detail = run.detail.take();
+            push(
+                items,
+                Item::Usage {
+                    input,
+                    output,
+                    detail,
+                },
+            )
+        }
         None => vec![],
     }
 }
@@ -527,20 +783,23 @@ mod tests {
             session_id: None,
             run: Some(Run {
                 id: 0,
-                usage: None,
-                views: 0,
+                ..Default::default()
             }),
+            queued: None,
             baseline: None,
             change: None,
             reverting: false,
             moment: None,
             evidence: None,
             report: None,
+            review: None,
             created_at: None,
             updated_at: None,
             transcript: vec![Item::User {
                 text: message.to_string(),
+                spoken: None,
             }],
+            scope: Default::default(),
         }
     }
 
@@ -571,11 +830,15 @@ mod tests {
                     name: "mcp__mis__get_state".to_string(),
                     input: json!({"session": "s1"}),
                     result: Some(r#"{"frame":180,"model":{"count":3}}"#.to_string()),
+                    id: None,
+                    parent_id: None,
+                    is_error: None,
                 },
                 agent(answer),
                 Item::Usage {
                     input: 2400,
-                    output: 75
+                    output: 75,
+                    detail: None,
                 },
                 Item::Finished {
                     ok: true,
@@ -646,11 +909,11 @@ mod tests {
         stop_run(&mut task);
         task.transcript.push(Item::User {
             text: "two".to_string(),
+            spoken: None,
         });
         task.run = Some(Run {
             id: task.transcript.len() as u64 - 1,
-            usage: None,
-            views: 0,
+            ..Default::default()
         });
         let result = AgentEvent::ToolResult {
             content: "late".to_string(),
@@ -658,6 +921,209 @@ mod tests {
         let before = task.transcript.clone();
         assert_eq!(apply(&mut task, result), Vec::<usize>::new());
         assert_eq!(task.transcript, before);
+    }
+
+    const CLAUDE_SUBAGENT: &str = include_str!("../fixtures/agent/claude-subagent.jsonl");
+    const CODEX_EXIT: &str = include_str!("../fixtures/agent/codex-exit.jsonl");
+
+    /// A call as (name, id, parent, first line of its result, is_error).
+    type Call<'a> = (String, Option<&'a str>, Option<&'a str>, Option<&'a str>, Option<bool>);
+
+    fn calls(task: &Task) -> Vec<Call<'_>> {
+        (task.transcript.iter())
+            .filter_map(|i| match i {
+                Item::Tool {
+                    name,
+                    result,
+                    id,
+                    parent_id,
+                    is_error,
+                    ..
+                } => Some((
+                    name.clone(),
+                    id.as_deref(),
+                    parent_id.as_deref(),
+                    result.as_deref().and_then(|r| r.trim().lines().next()),
+                    *is_error,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A live run: a subagent's `Read` answers while its `Agent` call is
+    /// still out, so order alone would give the read to the `Agent` call.
+    #[test]
+    fn results_pair_by_id_while_a_subagent_runs() {
+        let mut task = running("Do the steps");
+        let events = fixture(CLAUDE_SUBAGENT);
+        // Right after the subagent's read is answered, its parent still runs.
+        let at = events
+            .iter()
+            .position(|e| matches!(e, AgentEvent::ToolResultMeta { is_error: None, .. }))
+            .unwrap();
+        replay(&mut task, events[..=at].to_vec());
+        let agent = "toolu_01UxGpkNjBiyL1tcQdh4i6Hp";
+        let read = "toolu_017MJBY63mdaPYDFN9Pwp5Jo";
+        assert_eq!(
+            calls(&task),
+            [
+                ("Agent".into(), Some(agent), None, None, None),
+                (
+                    "Read".into(),
+                    Some(read),
+                    Some(agent),
+                    Some("1\tfirst line"),
+                    None
+                ),
+            ]
+        );
+        replay(&mut task, events[at + 1..].to_vec());
+        let shell = |id, result, failed| {
+            (
+                "Bash".to_string(),
+                Some(id),
+                None,
+                Some(result),
+                Some(failed),
+            )
+        };
+        assert_eq!(
+            calls(&task),
+            [
+                (
+                    "Agent".into(),
+                    Some(agent),
+                    None,
+                    Some("<tools-used-before-summary>Read</tools-used-before-summary>"),
+                    None
+                ),
+                (
+                    "Read".into(),
+                    Some(read),
+                    Some(agent),
+                    Some("1\tfirst line"),
+                    None
+                ),
+                shell("toolu_01WAVrGecnzAet2haKrUPwYM", "Exit code 1", true),
+                shell("toolu_01Y1uuzp8N4okv7ZdGaxfdME", "notes.txt", false),
+            ]
+        );
+        // The end-of-run split goes in the usage item.
+        let detail = task.transcript.iter().find_map(|i| match i {
+            Item::Usage { detail, .. } => *detail,
+            _ => None,
+        });
+        let detail = detail.expect("a usage split");
+        assert_eq!(detail.context_window, Some(1_000_000));
+        assert_eq!(detail.turns, Some(4));
+        assert_eq!(detail.last.map(|l| l.prompt()), Some(2 + 21_222 + 108));
+        assert_eq!(
+            (
+                detail.total.input,
+                detail.total.cache_read,
+                detail.total.cache_creation
+            ),
+            (12, 88_830, 24_844)
+        );
+        assert!(task.run.as_ref().unwrap().held.is_none());
+    }
+
+    #[test]
+    fn codex_calls_carry_ids_and_failures() {
+        let mut task = running("Run them");
+        replay(&mut task, fixture(CODEX_EXIT));
+        let shell =
+            |id, result, failed| ("shell".to_string(), Some(id), None, result, Some(failed));
+        assert_eq!(
+            calls(&task),
+            [
+                shell("item_3", Some("first line"), false),
+                shell("item_4", None, true),
+            ]
+        );
+        let usage = task
+            .transcript
+            .iter()
+            .find(|i| matches!(i, Item::Usage { .. }));
+        let Some(Item::Usage {
+            input,
+            detail: Some(detail),
+            ..
+        }) = usage
+        else {
+            panic!("{usage:?}");
+        };
+        assert_eq!(*input, detail.total.prompt());
+        assert_eq!((detail.last, detail.context_window), (None, None));
+    }
+
+    /// A held result whose id never comes pairs by order, one whose id names
+    /// no unanswered call is dropped, and a run that ends while one is held
+    /// keeps it.
+    #[test]
+    fn a_held_result_without_its_id_pairs_by_order() {
+        let use_ = |name: &str, id: &str| {
+            [
+                AgentEvent::ToolUse {
+                    name: name.into(),
+                    input: json!({}),
+                },
+                AgentEvent::ToolUseMeta {
+                    id: id.into(),
+                    parent_id: None,
+                },
+            ]
+        };
+        let result = |content: &str| AgentEvent::ToolResult {
+            content: content.into(),
+        };
+        let mut task = running("hi");
+        let mut events: Vec<AgentEvent> = [use_("Read", "a"), use_("Grep", "b")].concat();
+        events.extend([result("first"), AgentEvent::Text { text: "t".into() }]);
+        replay(&mut task, events);
+        assert_eq!(calls(&task)[0].3, Some("first"));
+        // A result naming no unanswered call (unknown, or a repeat) is dropped.
+        let meta = |id: &str| AgentEvent::ToolResultMeta {
+            id: id.into(),
+            is_error: Some(true),
+        };
+        let before = task.transcript.clone();
+        replay(&mut task, vec![result("x"), meta("zz"), result("again"), meta("a")]);
+        assert_eq!(task.transcript, before);
+        replay(&mut task, vec![result("second"), meta("b")]);
+        assert_eq!(calls(&task)[1].3, Some("second"));
+        assert_eq!(calls(&task)[1].4, Some(true));
+        // Ended with a result held: it is paired, not lost.
+        let mut task = running("hi");
+        replay(
+            &mut task,
+            [use_("Read", "a").to_vec(), vec![result("kept")]].concat(),
+        );
+        stop_run(&mut task);
+        assert_eq!(calls(&task)[0].3, Some("kept"));
+    }
+
+    /// Task files written before calls carried ids still load.
+    #[test]
+    fn old_transcripts_load_without_ids_or_a_split() {
+        let old = r#"{"version": 1, "task": {"id": 1, "project": "p", "title": "t",
+            "status": {"kind": "done"}, "harness": "claude", "model": null,
+            "session_id": null, "run": null},
+            "transcript": [{"kind": "tool", "name": "Read", "input": {}, "result": "r"},
+                {"kind": "usage", "input": 5, "output": 1}]}"#;
+        let task = from_stored(old).unwrap();
+        assert_eq!(calls(&task), [("Read".into(), None, None, Some("r"), None)]);
+        assert!(matches!(
+            task.transcript[1],
+            Item::Usage { detail: None, .. }
+        ));
+        // And the new fields stay out of a file when absent.
+        let text = to_stored(&task);
+        assert!(
+            !text.contains("parent_id") && !text.contains("detail"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -672,11 +1138,15 @@ mod tests {
                     name: "mcp__mis__get_state".to_string(),
                     input: json!({"session": "s1"}),
                     result: Some(r#"{"frame":403,"model":{"count":0}}"#.to_string()),
+                    id: None,
+                    parent_id: None,
+                    is_error: None,
                 },
                 agent("Frame 403; the count is 0."),
                 Item::Usage {
                     input: 5000,
-                    output: 90
+                    output: 90,
+                    detail: None,
                 },
                 Item::Finished {
                     ok: true,
@@ -726,7 +1196,8 @@ mod tests {
             [
                 Item::Usage {
                     input: 1,
-                    output: 2
+                    output: 2,
+                    detail: None,
                 },
                 Item::Stopped
             ]
