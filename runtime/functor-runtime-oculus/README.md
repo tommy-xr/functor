@@ -159,15 +159,21 @@ game does not see it (nor B while talking); a click shorter than 250 ms
 reaches the game on release. Unpaired, the click is the game's alone; paired
 but not linked, holding shows "Not connected to a desktop".
 
-- The microphone (AAudio, `RECORD_AUDIO`, asked for on the first hold) is
-  open only while talking and linked. Audio goes only onto the link; nothing
-  is stored. A link that cannot keep up cancels the clip, and a dropped link
-  resends nothing.
+- The microphone (AAudio, `RECORD_AUDIO`) is open only while talking and
+  linked. Audio goes only onto the link; nothing is stored. A link that
+  cannot keep up cancels the clip, and a dropped link resends nothing.
+- The first hold shows the system's microphone prompt; once it is allowed the
+  toast says so and the next hold talks (no restart). Still not allowed, a
+  hold says how to allow it in Settings. A microphone failure names the step
+  and AAudio's result (`Microphone read: AAUDIO_ERROR_DISCONNECTED`).
 - `/state.link.voice` reports the toast. `npm run test:quest-voice` drives it
   on an attached Quest against a stub desktop, with injected presses (under
-  `debug.functor.pair_input`) and, instead of the microphone, a 440 Hz test
-  tone: `adb shell setprop debug.functor.voice_tone 1`, honoured by debug
-  builds only.
+  `debug.functor.pair_input`): first with a 440 Hz test tone instead of the
+  microphone (`adb shell setprop debug.functor.voice_tone 1`, honoured by
+  debug builds only), then with the real microphone (room sound), then
+  through the permission prompt (it revokes and grants `RECORD_AUDIO`, and
+  puts it back as found). Run it only when nobody is using the headset: it
+  reinstalls nothing, but restarts the app.
 
 ## Benchmark on the actual headset
 
