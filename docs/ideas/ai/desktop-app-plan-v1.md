@@ -254,6 +254,29 @@ by default; `FUNCTOR_APP_LIVE=1 … --live` for the real agent, capped at 600k
 input tokens and 5 minutes a scenario. `--compare a.jsonl b.jsonl` prints the
 deltas.
 
+The columns:
+
+- **wall s**: the run, from the task's start to its end. **first event s**:
+  to the harness's first event (its startup).
+- **messages**, **tool calls**, **by kind**: text blocks, and tool calls by
+  the D34 kind.
+- **input tokens**, **output tokens**: the harness's running total at the
+  end. Input counts every prompt token, cached or not. Claude's is the main
+  agent only (a subagent's tokens are not in it).
+- From here on, only where the harness reports them (a dash where a record
+  has none; the column is left out when no record has it). Cumulative for
+  the run, subagents included:
+  - **uncached in**: prompt tokens neither read from nor written to the
+    cache, so billed at full price.
+  - **cache read**: prompt tokens read from the cache (on Claude, a tenth of
+    the price).
+  - **cache write**: prompt tokens written to the cache (Claude; Codex
+    reports none).
+  - **cached %**: cache read of the whole prompt (uncached + read + write).
+  - **turns**: API round trips (Claude).
+  - **cost $**: the run's cost as Claude Code reports it.
+  - **API s**: time spent waiting on the API (Claude).
+
 ### Live run (2026-11-12, rev `c22a0b3d`, Claude `claude-fable-5-2`, the user's own settings)
 
 | scenario | outcome | wall s | first event s | tool calls | by kind | input tokens | output tokens |
@@ -425,3 +448,40 @@ The working runs, then the reviews of the three that changed a file:
 - One run each, at `c4436f3c`. Since then the report waits for the
   review's end and the game tools are gone; neither changes what these
   reviews did. Not measured: a review cut by its bounds.
+
+### The usage split (2026-11-13, rev `b7571978`, Claude `claude-fable-5-2`, the user's own settings)
+
+`mis-agent` now reports the split (its `UsageDetail`), so the cached part of
+each turn is measured rather than guessed:
+
+| scenario | outcome | wall s | tool calls | input tokens | uncached in | cache read | cache write | cached % | turns | cost $ | API s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| state-question | pass | 3.7 | 1 | 74,663 | 4 | 35,834 | 38,825 | 48 | 2 | 0.631 | 1.6 |
+| no-tools | pass | 2.1 | 0 | 35,826 | 2 | 14,366 | 21,458 | 40 | 1 | 0.346 | 0.8 |
+| weak-jump | pass | 16.2 | 12 | 211,969 | 10 | 177,460 | 34,499 | 84 | 13 | 0.651 | 14.6 |
+| spawn-in-chasm | pass | 19.1 | 13 | 215,663 | 10 | 180,001 | 35,652 | 83 | 14 | 0.676 | 16.9 |
+| two-step | pass | 19.4 | 11 | 249,323 | 12 | 218,834 | 30,477 | 88 | 12 | 0.611 | 17.4 |
+
+| review of | outcome | wall s | input tokens | uncached in | cache read | cache write | cached % | turns | cost $ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| weak-jump | prepared | 10.3 | 76,781 | 6 | 49,949 | 26,826 | 65 | 3 | 0.122 |
+| spawn-in-chasm | prepared | 9.2 | 107,446 | 8 | 92,335 | 15,103 | 86 | 4 | 0.078 |
+| two-step | prepared | 11.9 | 106,288 | 8 | 91,588 | 14,692 | 86 | 4 | 0.079 |
+
+- **A first turn is 40% cached.** `no-tools` is one turn of 35.8k: 14.4k
+  read from the cache, 21.5k written to it, 2 tokens uncached. Nothing is
+  sent uncached; the part not read is written, at 1.25 times the price.
+- **Later turns are almost all cache reads:** 83–88% of an edit run's prompt
+  is read, and its writes (30–36k) are about one first turn's worth plus the
+  tool results. So of a run's cost, the first turn's write is the largest
+  single part: `no-tools` costs $0.35, a whole edit run $0.61–0.68.
+- **Why the first turn misses (likely, not checked):** every scenario runs in a fresh folder,
+  and the run's first request carries its folder and the user's setup, so
+  little past Claude Code's own prefix matches an earlier run's cache. Two
+  runs back to back in one project should read more; not measured here.
+- **Turns** are Claude Code's `num_turns`, which counts more than API
+  requests when calls run in parallel (weak-jump: 13 turns averaging 16k,
+  less than the 36k one request starts with).
+- The reviews (`sonnet`, isolated) cost $0.08–0.12, an eighth to a fifth of
+  their run.
+- One run each.
