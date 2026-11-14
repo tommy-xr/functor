@@ -209,7 +209,9 @@ mod mac {
         use super::*;
 
         /// The real system voice: a sentence comes back as seconds of sound.
+        /// Not on CI, whose runners have no voice: `cargo test -- --ignored`.
         #[test]
+        #[ignore = "needs a system voice"]
         fn the_system_voice_speaks_a_sentence() {
             let pcm = Say.synth("The ball is red now.").unwrap();
             let seconds = pcm.len() as f32 / functor_stt::SAMPLE_RATE as f32;
