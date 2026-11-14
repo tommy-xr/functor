@@ -308,8 +308,6 @@ impl Voice {
             Stage::Transcribed { text } => Progress::Transcript(text),
             Stage::Working => Progress::Stage(VoiceStage::Working),
             Stage::Reloaded => Progress::Stage(VoiceStage::Reloaded),
-            Stage::Answered => Progress::Stage(VoiceStage::Answered),
-            Stage::NeedsYou => Progress::Stage(VoiceStage::NeedsYou),
             Stage::Failed { reason } => Progress::Stage(VoiceStage::Failed { reason }),
             Stage::Idle => Progress::Idle,
         };

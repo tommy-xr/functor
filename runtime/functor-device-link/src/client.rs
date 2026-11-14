@@ -65,8 +65,8 @@ fn admit(inbox: &mut VecDeque<(u16, Vec<u8>)>, channel: u16, data: Vec<u8>) {
             .iter()
             .map(|(c, _)| *c)
             .max_by_key(|c| count(*c))
-            .unwrap_or(channel);
-        let oldest = inbox.iter().position(|(c, _)| *c == busiest).unwrap_or(0);
+            .expect("full");
+        let oldest = inbox.iter().position(|(c, _)| *c == busiest).expect("there");
         inbox.remove(oldest);
     }
     inbox.push_back((channel, data));

@@ -289,9 +289,11 @@ const FADE: Duration = Duration::from_millis(500);
 const HOLD_STAGE: Duration = Duration::from_millis(1500);
 const HOLD_TRANSCRIPT: Duration = Duration::from_secs(4);
 /// A step still going says for how long after this; one that never ends
-/// stops showing after `STALE`.
+/// stops showing after `STALE`. Sent and never heard (a desktop without
+/// voice) says so after `UNHEARD`.
 const STILL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(120);
+const UNHEARD: Duration = Duration::from_secs(15);
 /// Transcript characters per line, and its most lines.
 const WRAP: usize = 34;
 const WRAP_LINES: usize = 3;
@@ -320,7 +322,7 @@ pub struct Toast {
     queue: std::collections::VecDeque<(Progress, Instant)>,
     /// Until when the step on screen holds off the next.
     hold_until: Option<Instant>,
-    /// When the step on screen began.
+    /// When the step on screen arrived (its "going for" clock).
     since: Option<Instant>,
 }
 
@@ -329,7 +331,7 @@ impl Toast {
     pub fn show(&mut self, stage: VoiceStage, now: Instant) {
         self.queue.clear();
         self.hold_until = None;
-        self.set(stage, now);
+        self.set(stage, now, now);
     }
 
     /// The desktop's next step: shown once the one on screen has held.
@@ -338,13 +340,14 @@ impl Toast {
         self.advance(now);
     }
 
-    fn set(&mut self, stage: VoiceStage, now: Instant) {
+    /// Shows `stage` from `now`; it arrived at `arrived`.
+    fn set(&mut self, stage: VoiceStage, now: Instant, arrived: Instant) {
         self.fade_at = match stage {
             VoiceStage::Listening { .. } => None,
             ref s if in_flight(s) => Some(now + STALE),
             _ => Some(now + OUTCOME),
         };
-        self.since = Some(now);
+        self.since = Some(arrived);
         // A new utterance starts clean.
         let transcript = self
             .shown
@@ -360,7 +363,8 @@ impl Toast {
 
     /// Applies queued steps whose turn has come by `now`, each from when
     /// its turn came (not when this is called), so unseen frames add no
-    /// delay.
+    /// delay. (A step that comes and goes while the pairing card or panel
+    /// covers the toast is not seen; those show the link's own state.)
     fn advance(&mut self, now: Instant) {
         while let Some(&(_, arrived)) = self.queue.front() {
             let at = self.hold_until.map_or(arrived, |until| until.max(arrived));
@@ -370,12 +374,12 @@ impl Toast {
             let (step, _) = self.queue.pop_front().expect("a front");
             self.hold_until = match step {
                 Progress::Stage(stage) => {
-                    self.set(stage, at);
+                    self.set(stage, at, arrived);
                     Some(at + HOLD_STAGE)
                 }
                 Progress::Transcript(text) => {
                     if self.shown.is_none() {
-                        self.set(VoiceStage::Heard, at);
+                        self.set(VoiceStage::Heard, at, arrived);
                     }
                     if let Some(shown) = &mut self.shown {
                         shown.transcript = Some(text);
@@ -391,24 +395,34 @@ impl Toast {
     }
 
     /// Fades out from `now`.
-    pub fn hide(&mut self, now: Instant) {
+    fn hide(&mut self, now: Instant) {
         if self.shown.is_some() {
             self.fade_at = Some(self.fade_at.map_or(now, |at| at.min(now)));
         }
     }
 
-    pub fn stage(&self) -> Option<&VoiceStage> {
-        self.shown.as_ref().map(|t| &t.stage)
-    }
-
     /// What shows at `now`, and its opacity.
     pub fn look(&mut self, now: Instant) -> Option<(&VoiceToast, f32)> {
         self.advance(now);
+        // Sent, never heard: say so rather than wait out `STALE`.
+        let unheard = self.since.is_some_and(|since| now >= since + UNHEARD);
+        if unheard && self.queue.is_empty() {
+            if let Some(VoiceToast {
+                stage: VoiceStage::Sending,
+                ..
+            }) = self.shown
+            {
+                let reason = "The desktop did not answer".to_string();
+                self.set(VoiceStage::NotSent { reason }, now, now);
+            }
+        }
         let alpha = match self.fade_at {
-            // Faded, unless the desktop has more to say.
-            Some(at) if now >= at + FADE && self.queue.is_empty() => {
-                self.shown = None;
-                self.hold_until = None;
+            // Faded: gone, unless the desktop has more to say.
+            Some(at) if now >= at + FADE => {
+                if self.queue.is_empty() {
+                    self.shown = None;
+                    self.hold_until = None;
+                }
                 return None;
             }
             Some(at) if now > at => {
@@ -485,14 +499,6 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         VoiceStage::Heard => vec![line(&going("HEARD"), HEADING, CYAN)],
         VoiceStage::Working => vec![line(&going("WORKING..."), HEADING, CYAN)],
         VoiceStage::Reloaded => vec![line("RELOADED", HEADING, CYAN)],
-        VoiceStage::Answered => vec![
-            line("ANSWERED", HEADING, CYAN),
-            line("No change: the reply is on the desktop", BODY, WHITE),
-        ],
-        VoiceStage::NeedsYou => vec![
-            line("NEEDS YOU", HEADING, PINK),
-            line("Open the panel to decide", BODY, WHITE),
-        ],
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
         }
@@ -1165,7 +1171,7 @@ mod tests {
         let lines = toast_lines(toast.look(t + Duration::from_secs(10)).unwrap().0);
         assert_eq!(
             lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
-            ["WORKING... 4s", "\"make the ball red\""],
+            ["WORKING... 10s", "\"make the ball red\""],
             "the words stay under the stages that follow, which count their seconds"
         );
 
@@ -1175,7 +1181,7 @@ mod tests {
         let fading = toast.look(done + OUTCOME + FADE / 2).unwrap().1;
         assert!((fading - 0.5).abs() < 0.01, "{fading}");
         assert!(toast.look(done + OUTCOME + FADE).is_none());
-        assert!(toast.stage().is_none(), "hidden holds nothing");
+        assert!(toast.shown.is_none(), "hidden holds nothing");
 
         // Idle from the desktop fades it now.
         toast.show(VoiceStage::Working, t);
@@ -1227,15 +1233,19 @@ mod tests {
 
         // A step that arrives after the toast faded shows it again.
         toast.show(VoiceStage::Sending, at(50.0));
-        assert_eq!(seen(&mut toast, 171.0), None, "never answered: faded");
-        toast.progress(Progress::Transcript("late".into()), at(180.0));
+        let unanswered = VoiceStage::NotSent {
+            reason: "The desktop did not answer".into(),
+        };
+        assert_eq!(seen(&mut toast, 65.0), Some((unanswered, None)));
+        assert_eq!(seen(&mut toast, 70.0), None, "then it fades");
+        toast.progress(Progress::Transcript("late".into()), at(80.0));
         assert_eq!(
-            seen(&mut toast, 180.0),
+            seen(&mut toast, 80.0),
             Some((VoiceStage::Heard, Some("late".into())))
         );
-        toast.progress(Progress::Stage(VoiceStage::Reloaded), at(180.1));
+        toast.progress(Progress::Stage(VoiceStage::Reloaded), at(80.1));
         assert_eq!(
-            seen(&mut toast, 184.1),
+            seen(&mut toast, 84.1),
             Some((VoiceStage::Reloaded, Some("late".into())))
         );
     }
