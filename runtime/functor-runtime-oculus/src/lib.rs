@@ -2791,16 +2791,22 @@ images cannot be posed"
                     eyes[0].width, eyes[0].height, eyes[1].width, eyes[1].height
                 )))
             } else {
-                let captured = captured_eyes.expect("two captured views checked above");
-                functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
-                    eyes[0].width,
-                    eyes[0].height,
-                    &captured[0],
-                    &captured[1],
-                )
-                .map_err(CaptureError::Failed)
+                Ok((eyes[0].width, eyes[0].height, captured_eyes.expect("two captured views checked above")))
             };
-            let _ = response.send(result);
+            // The PNG encodes off the frame: 140 ms for two eyes (seconds in
+            // a debug build), which froze the view.
+            std::thread::spawn(move || {
+                let png = result.and_then(|(width, height, captured)| {
+                    functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
+                        width,
+                        height,
+                        &captured[0],
+                        &captured[1],
+                    )
+                    .map_err(CaptureError::Failed)
+                });
+                let _ = response.send(png);
+            });
         }
     }
 
