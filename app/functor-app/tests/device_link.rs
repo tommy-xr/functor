@@ -2266,18 +2266,17 @@ async fn quest_mirrors_the_game_in_the_headset_placement() {
     assert!(rate >= 5.0, "the mirror runs at {rate} fps");
     assert_eq!(mirrored("error"), Value::Null);
 
-    // The headset's clock pinned, then moved: the mirror shows its new frame.
-    let pin = |tts: f64| {
-        let (status, body) = post(
-            &tunnel,
-            "/time",
-            &json!({"type": "set", "tts": tts}).to_string(),
-        )
-        .unwrap();
+    // The headset's clock pinned, then stepped (the cubes turn half a
+    // radian a second): the mirror shows each new frame.
+    let time = |command: Value| {
+        let (status, body) = post(&tunnel, "/time", &command.to_string()).unwrap();
         assert_eq!(status, 200, "{body}");
     };
-    for tts in [10.0, 12.5] {
-        pin(tts);
+    time(json!({"type": "set", "tts": 10.0}));
+    for (step, tts) in [(0, 10.0), (1, 12.0)] {
+        if step > 0 {
+            time(json!({"type": "advance", "dts": 0.5, "frames": 4}));
+        }
         until("the mirror follows the clock", || {
             ((mirrored("source_tts").as_f64()? - tts).abs() < 1e-3).then_some(())
         })
@@ -2287,8 +2286,8 @@ async fn quest_mirrors_the_game_in_the_headset_placement() {
             (scene(&mirror) == scene(&tunnel)).then_some(())
         })
         .await;
-        capture_to(&mirror, &format!("mirror-t{tts}.png"));
-        capture_to(&tunnel, &format!("headset-t{tts}.png"));
+        capture_to(&mirror, &format!("mirror-{step}.png"));
+        capture_to(&tunnel, &format!("headset-{step}.png"));
     }
     let (_, body) = post(&tunnel, "/time", r#"{"type":"resume"}"#).unwrap();
     eprintln!("resumed: {body}");
