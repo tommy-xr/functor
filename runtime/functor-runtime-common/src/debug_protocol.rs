@@ -263,7 +263,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// and the toast's `waiting` seconds.
 ///
 /// 48 adds `load_status` on `GET /state`: the lines of the headset's load
-/// status card ([`crate::load_status`]) while it shows.
+/// status card ([`crate::load_status`]) while it shows. `POST /reload-asset` takes
+/// `push_files` and `push_bytes` in its query: what the push in flight will
+/// send in all, for that card's count; an older runtime ignores them.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
 
 /// The well-known localhost port `functor develop` serves this protocol on

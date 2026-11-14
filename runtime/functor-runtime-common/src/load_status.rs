@@ -38,6 +38,8 @@ pub struct Facts {
     /// Project files and bytes received since the process started.
     pub files: u64,
     pub bytes: u64,
+    /// The files and bytes the push in flight said it will send.
+    pub announced: Option<(u64, u64)>,
     /// A `/load-project` is in flight.
     pub loading: bool,
     /// A pushed reload is in flight.
@@ -54,8 +56,8 @@ pub enum Step {
     Waiting,
     /// Linked, with nothing pushed yet.
     Connected(Option<String>),
-    /// Files of this push so far.
-    Receiving { files: u64, bytes: u64 },
+    /// Files of this push so far, and of how many when the sender said.
+    Receiving { files: u64, bytes: u64, of: Option<(u64, u64)> },
     Checking,
     Assets { settled: usize, total: usize },
     Running,
@@ -146,7 +148,7 @@ impl LoadStatus {
         }
         if let Some(burst) = self.burst.as_ref().filter(|burst| !facts.game || since(burst.began) >= SYNC) {
             let (files, bytes) = (facts.files - burst.files, facts.bytes - burst.bytes);
-            return Some((Step::Receiving { files, bytes }, 1.0));
+            return Some((Step::Receiving { files, bytes, of: facts.announced }, 1.0));
         }
         if let Some((message, at)) = &self.failed {
             if !facts.game || since(*at) < FAILED {
@@ -198,12 +200,19 @@ pub fn lines(step: &Step) -> Vec<Line> {
         Step::Waiting => card("WAITING FOR A DESKTOP", "Open Functor on your computer"),
         Step::Connected(Some(desktop)) => card("CONNECTED", &format!("to {desktop}. Run a project to see it here")),
         Step::Connected(None) => card("CONNECTED", "Run a project to see it here"),
-        Step::Receiving { files, bytes } => {
-            let files = match files {
-                1 => "1 file".to_string(),
-                n => format!("{n} files"),
+        Step::Receiving { files, bytes, of } => {
+            let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+            let count = |n: u64| if n == 1 { "1 file".to_string() } else { format!("{n} files") };
+            let body = match of {
+                // Envelope framing counts a little over the files' own bytes.
+                Some((all, total)) if *total > 0 => {
+                    let bytes = (*bytes).min(*total);
+                    let percent = bytes * 100 / total;
+                    format!("{:.1} of {:.1} MB ({percent}%), {} of {}", mb(bytes), mb(*total), (*files).min(*all), count(*all))
+                }
+                _ => format!("{}, {:.1} MB", count(*files), mb(*bytes)),
             };
-            card("RECEIVING PROJECT", &format!("{files}, {:.1} MB", *bytes as f64 / (1024.0 * 1024.0)))
+            card("RECEIVING PROJECT", &body)
         }
         Step::Checking => card("STARTING", "Checking code"),
         Step::Assets { settled, total } => card("LOADING ASSETS", &format!("{settled} of {total}")),
@@ -256,7 +265,7 @@ mod tests {
         status.launched(start + Duration::from_millis(55));
         let frames = [(60, landed), (70, asking), (900, some), (1000, all.clone()), (2000, all.clone()), (2600, all)];
         shown.extend(run(&mut status, start, &frames));
-        let receiving = |files, mb: u64| Some(Step::Receiving { files, bytes: mb << 20 });
+        let receiving = |files, mb: u64| Some(Step::Receiving { files, bytes: mb << 20, of: None });
         assert_eq!(
             shown,
             vec![
@@ -307,7 +316,7 @@ mod tests {
         assert_eq!(run(&mut status, start, &[(80, game(2, 200)), (800, game(2, 200))]), vec![None; 2]);
         // Files that take a while to arrive say so.
         let shown = run(&mut status, start, &[(1000, game(3, 9 << 20)), (1400, game(3, 9 << 20)), (1500, game(3, 9 << 20))]);
-        assert_eq!(shown, vec![None, None, Some(Step::Receiving { files: 1, bytes: (9 << 20) - 200 })]);
+        assert_eq!(shown, vec![None, None, Some(Step::Receiving { files: 1, bytes: (9 << 20) - 200, of: None })]);
         status.succeeded();
         // So does a slow reload, then it stops.
         let (idle, reloading) = (game(3, 9 << 20), Facts { reloading: true, ..game(3, 9 << 20) });
@@ -349,7 +358,7 @@ mod tests {
         let got = Facts { files: 1, bytes: 10, ..Facts::default() };
         let mut status = LoadStatus::default();
         let shown = run(&mut status, start, &[(0, Facts::default()), (10, got.clone()), (19_000, got.clone()), (20_100, got)]);
-        let receiving = Some(Step::Receiving { files: 1, bytes: 10 });
+        let receiving = Some(Step::Receiving { files: 1, bytes: 10, of: None });
         assert_eq!(shown, vec![Some(Step::Waiting), receiving.clone(), receiving, Some(Step::Waiting)]);
     }
 
@@ -375,7 +384,14 @@ mod tests {
         let card = lines(&Step::Failed(long.into()));
         assert_eq!(card[0].text, "LOAD FAILED");
         assert!(card.len() > 2 && card[1..].iter().all(|line| line.text.chars().count() <= WRAP));
-        assert_eq!(lines(&Step::Receiving { files: 3, bytes: 5 << 19 })[1].text, "3 files, 2.5 MB");
+        assert_eq!(lines(&Step::Receiving { files: 3, bytes: 5 << 19, of: None })[1].text, "3 files, 2.5 MB");
+        // A sender that says what it will send gets a count against it.
+        let of = Some((40, 71 << 20));
+        let line = |files, bytes| lines(&Step::Receiving { files, bytes, of })[1].text.clone();
+        assert_eq!(line(12, 23 << 20), "23.0 of 71.0 MB (32%), 12 of 40 files");
+        assert_eq!(line(40, (71 << 20) + 900), "71.0 of 71.0 MB (100%), 40 of 40 files");
+        let none = lines(&Step::Receiving { files: 1, bytes: 10, of: Some((0, 0)) })[1].text.clone();
+        assert_eq!(none, "1 file, 0.0 MB");
 
         let start = Instant::now();
         let mut status = LoadStatus::default();

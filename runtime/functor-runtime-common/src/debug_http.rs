@@ -709,6 +709,11 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 }
             };
             ASSET_BYTES.fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            if let (Ok(Some(files)), Ok(Some(bytes))) =
+                (query_number::<u64>(query, "push_files"), query_number::<u64>(query, "push_bytes"))
+            {
+                *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((files, bytes));
+            }
             let body = match upload_part(query, body, max) {
                 Ok(Some(whole)) => whole,
                 Ok(None) => {
@@ -819,6 +824,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
         }
         ("POST", "/sync-assets") => {
             *UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
                 content_length,
@@ -944,6 +950,16 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
 }
 
 static ASSET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The files and bytes the push in flight said it will send
+/// (`/reload-asset?push_files=…&push_bytes=…`), until its `/sync-assets`.
+static PUSH: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+/// What the push in flight announced it will send, as `(files, bytes)`;
+/// `None` between pushes and from a sender that announces nothing.
+pub fn push_announced() -> Option<(u64, u64)> {
+    *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Bytes `POST /reload-asset` has received in this process, parts of an
 /// unfinished upload included: a shell's "receiving" progress.

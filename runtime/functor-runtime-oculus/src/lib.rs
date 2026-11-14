@@ -2615,6 +2615,7 @@ images cannot be posed"
                 game: debug.game,
                 files: debug.received_files,
                 bytes: functor_runtime_common::debug_http::asset_bytes_received(),
+                announced: functor_runtime_common::debug_http::push_announced(),
                 loading: debug.pending_load.is_some() && debug.loading_game,
                 reloading: debug.reload.in_progress(),
                 assets: assets_settled,
