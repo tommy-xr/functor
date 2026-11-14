@@ -17,7 +17,9 @@ use crate::wire::{Frame, Reader, Writer};
 use crate::Error;
 
 /// The first byte of every panel message.
-pub const VERSION: u8 = 1;
+/// 2 adds the conversation (D41). A peer of the other version refuses the
+/// message (`Malformed("panel version")`) and shows no panel content.
+pub const VERSION: u8 = 2;
 
 /// Desktop → headset: [`Update`] messages.
 pub const UPDATE_CHANNEL: u16 = 3;
@@ -42,6 +44,9 @@ pub const MAX_LINE: usize = 192;
 pub const MAX_LABEL: usize = 96;
 /// Most moves offered for a route.
 pub const MAX_MOVES: usize = 3;
+/// The conversation's most items, and most bytes of each one's text.
+pub const MAX_SAID: usize = 12;
+pub const MAX_SAID_TEXT: usize = 600;
 
 /// What an agent is doing, as its character shows it (D34).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +79,42 @@ pub struct Panel {
     pub waiting: String,
     /// Where this headset's latest utterance went, while it can be moved.
     pub route: Option<Route>,
+    /// The current task's recent conversation (D41).
+    pub conversation: Option<Conversation>,
+}
+
+/// A task's recent conversation, as text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conversation {
+    pub task: u64,
+    pub title: String,
+    pub stance: Stance,
+    /// What it is doing now, or empty.
+    pub activity: String,
+    /// The agent waits on a question it asked.
+    pub question: bool,
+    /// Older items than these exist.
+    pub earlier: bool,
+    /// Oldest first; at most [`MAX_SAID`].
+    pub items: Vec<Said>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Said {
+    pub role: Role,
+    /// Said aloud in a headset.
+    pub spoken: bool,
+    /// The desktop cut it.
+    pub cut: bool,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    You,
+    Agent,
+    /// The app: the router's line, steps, the result.
+    App,
 }
 
 /// The router's decision on an utterance (D29).
@@ -251,6 +292,30 @@ impl Update {
                     }
                     None => w.u8(0),
                 }
+                match &p.conversation {
+                    Some(c) => {
+                        w.u8(1);
+                        w.u64(c.task);
+                        w.str16(&tidy(&c.title, MAX_TITLE));
+                        w.u8(c.stance.code());
+                        w.str16(&tidy(&c.activity, MAX_ACTIVITY));
+                        w.u8(c.question.into());
+                        w.u8(c.earlier.into());
+                        let items = &c.items[c.items.len().saturating_sub(MAX_SAID)..];
+                        w.u8(items.len() as u8);
+                        for i in items {
+                            w.u8(match i.role {
+                                Role::You => 1,
+                                Role::Agent => 2,
+                                Role::App => 3,
+                            });
+                            w.u8(i.spoken.into());
+                            w.u8(i.cut.into());
+                            w.str16(&tidy(&i.text, MAX_SAID_TEXT));
+                        }
+                    }
+                    None => w.u8(0),
+                }
             }
             Update::Refused { reason } => {
                 w.u8(2);
@@ -321,6 +386,32 @@ impl Update {
                     }),
                     false => None,
                 };
+                let conversation = match r.flag()? {
+                    true => Some(Conversation {
+                        task: r.u64()?,
+                        title: r.text16(MAX_TITLE)?,
+                        stance: Stance::from_code(r.u8()?)?,
+                        activity: r.text16(MAX_ACTIVITY)?,
+                        question: r.flag()?,
+                        earlier: r.flag()?,
+                        items: (0..count(&mut r, MAX_SAID)?)
+                            .map(|_| {
+                                Ok(Said {
+                                    role: match r.u8()? {
+                                        1 => Role::You,
+                                        2 => Role::Agent,
+                                        3 => Role::App,
+                                        _ => return Err(Error::Malformed("panel role")),
+                                    },
+                                    spoken: r.flag()?,
+                                    cut: r.flag()?,
+                                    text: r.text16(MAX_SAID_TEXT)?,
+                                })
+                            })
+                            .collect::<Result<_, Error>>()?,
+                    }),
+                    false => None,
+                };
                 Update::Panel(Panel {
                     project,
                     placed,
@@ -328,6 +419,7 @@ impl Update {
                     tasks,
                     waiting,
                     route,
+                    conversation,
                 })
             }
             2 => Update::Refused {
@@ -485,6 +577,34 @@ mod tests {
                         },
                     ],
                 }),
+                conversation: Some(Conversation {
+                    task: 7,
+                    title: "Make the ball red".into(),
+                    stance: Stance::Waiting,
+                    activity: String::new(),
+                    question: true,
+                    earlier: false,
+                    items: vec![
+                        Said {
+                            role: Role::You,
+                            spoken: true,
+                            cut: false,
+                            text: "make the ball red".into(),
+                        },
+                        Said {
+                            role: Role::App,
+                            spoken: false,
+                            cut: false,
+                            text: "Steered \"Make the ball red\"".into(),
+                        },
+                        Said {
+                            role: Role::Agent,
+                            spoken: false,
+                            cut: true,
+                            text: "Which red?".into(),
+                        },
+                    ],
+                }),
             }),
             Update::Refused {
                 reason: "task 7 is still running".into(),
@@ -547,6 +667,22 @@ mod tests {
                 line: long(1000),
                 moves,
             }),
+            conversation: Some(Conversation {
+                task: 1,
+                title: long(1000),
+                stance: Stance::Working,
+                activity: long(1000),
+                question: false,
+                earlier: true,
+                items: (0..40)
+                    .map(|i| Said {
+                        role: Role::Agent,
+                        spoken: false,
+                        cut: false,
+                        text: format!("{i} {}", long(1000)),
+                    })
+                    .collect(),
+            }),
         };
         let bytes = Update::Panel(panel).encode();
         // Noise adds a 16-byte tag; leave room for it and the frame.
@@ -556,6 +692,10 @@ mod tests {
         };
         assert_eq!(back.tasks.len(), MAX_TASKS);
         assert_eq!(back.route.unwrap().moves.len(), MAX_MOVES);
+        let c = back.conversation.unwrap();
+        assert_eq!(c.items.len(), MAX_SAID);
+        assert!(c.items[0].text.starts_with("28 ") && c.items[11].text.starts_with("39 "));
+        assert!(c.items.iter().all(|i| i.text.len() <= MAX_SAID_TEXT));
         let d = back.tasks[0].decision.as_ref().unwrap();
         assert_eq!(d.notes.len(), MAX_NOTES);
         assert!(d.summary.len() <= MAX_SUMMARY && back.tasks[0].title.len() <= MAX_TITLE);
@@ -564,12 +704,21 @@ mod tests {
 
     #[test]
     fn decoding_refuses_versions_kinds_lists_and_trailing_bytes() {
-        let mut bytes = Action::Keep { task: 1 }.encode();
-        bytes[0] = 2;
-        assert_eq!(
-            Action::decode(&bytes),
-            Err(Error::Malformed("panel version"))
-        );
+        // An older or newer peer's message is refused as this channel's.
+        for other in [VERSION - 1, VERSION + 1] {
+            let mut bytes = Action::Keep { task: 1 }.encode();
+            bytes[0] = other;
+            assert_eq!(
+                Action::decode(&bytes),
+                Err(Error::Malformed("panel version"))
+            );
+            let mut bytes = Update::Panel(Panel::default()).encode();
+            bytes[0] = other;
+            assert_eq!(
+                Update::decode(&bytes),
+                Err(Error::Malformed("panel version"))
+            );
+        }
         assert!(Action::decode(&[VERSION, 9]).is_err());
         assert!(Update::decode(&[VERSION, 9]).is_err());
         assert!(Update::decode(&[]).is_err());
@@ -581,7 +730,7 @@ mod tests {
         );
         // A forged task count over the limit.
         let mut many = Update::Panel(Panel::default()).encode();
-        let at = many.len() - 4;
+        let at = many.len() - 5;
         many[at] = MAX_TASKS as u8 + 1;
         assert_eq!(Update::decode(&many), Err(Error::TooLarge));
         // A forged stance.
@@ -590,7 +739,7 @@ mod tests {
             ..Panel::default()
         })
         .encode();
-        let stance = bytes.len() - 3 - 1 - 2 - "reading game.fun".len() - 1;
+        let stance = bytes.len() - 4 - 1 - 2 - "reading game.fun".len() - 1;
         bytes[stance] = 9;
         assert_eq!(
             Update::decode(&bytes),

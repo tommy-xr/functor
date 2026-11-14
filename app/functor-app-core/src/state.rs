@@ -186,10 +186,11 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub headset_waits: Option<u64>,
-    /// Per connected headset, the connection and panel it was last sent.
+    /// Per connected headset, the connection, panel and clock it was last
+    /// sent on.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
-    pub panels: BTreeMap<String, (u64, Panel)>,
+    pub panels: BTreeMap<String, (u64, Panel, u64)>,
     /// Utterances from headsets whose runs are followed until the game
     /// reloads ([`voice::progress`]).
     #[serde(skip)]
@@ -8364,8 +8365,15 @@ mod tests {
         // Nothing changed: nothing sent.
         let (s, commands) = update(s, Event::Link(LinkEvent::Tick));
         assert!(panels(&commands).is_empty());
-        // Kept on the desktop: the panel follows.
+        // Kept on the desktop: the panel follows, once the last send is
+        // RESEND_MS old (the link's tick brings it).
         let (s, commands) = update(s, keep(1));
+        assert!(panels(&commands).is_empty(), "too soon after the last");
+        let later = AppState {
+            clock: crate::panel::RESEND_MS,
+            ..s
+        };
+        let (s, commands) = update(later, Event::Link(LinkEvent::Tick));
         let t = &panels(&commands)[0].tasks[0];
         assert_eq!((t.stance, t.decision.is_none()), (Stance::Done, true));
         // Gone and back: sent again.
@@ -8472,5 +8480,62 @@ mod tests {
             c,
             Command::Link(LinkCommand::PanelRefused { conn: 0, .. })
         )));
+    }
+
+    /// The conversation a panel carries: the latest items as text, spoken
+    /// lines marked with their route, a run of steps as one line, long text
+    /// cut, a question flagged; never a tool's input or a file's contents.
+    #[test]
+    fn the_panel_carries_the_conversation_bounded_and_without_code() {
+        use crate::panel::{panel, Role, SAID, SAID_BYTES};
+        use crate::tasks::Spoken;
+        use serde_json::json;
+        let (mut s, _) = update(state(), new_task("Make it spin"));
+        let tool = |name: &str, input| agent(1, 0, AgentEvent::ToolUse { name: name.into(), input });
+        let text = |t: &str| agent(1, 0, AgentEvent::Text { text: t.into() });
+        let result = agent(1, 0, AgentEvent::ToolResult { content: "SECRET_RESULT".into() });
+        for event in [
+            agent(1, 0, started("sess-1")),
+            text(&"é".repeat(SAID_BYTES)),
+            tool("Read", json!({"file_path": "a/game.fun"})),
+            result.clone(),
+            tool("Write", json!({"file_path": "a/game.fun", "content": "SECRET_FILE"})),
+            result.clone(),
+            tool("Bash", json!({"command": "cargo test"})),
+            result,
+            text("Which hip?"),
+            tool("AskUserQuestion", json!({"questions": [{"question": "Left or right hip?"}]})),
+        ] {
+            s = update(s, event).0;
+        }
+        let Item::User { spoken, .. } = &mut s.tasks[0].transcript[0] else {
+            panic!("the first message");
+        };
+        *spoken = Some(Spoken {
+            headset: "Quest 3".into(),
+            context: Some("at frame 7".into()),
+            route: Some("Steered “Make it spin”".into()),
+        });
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!((c.task, c.title.as_str(), c.question), (1, "Make it spin", true));
+        let lines: Vec<(Role, bool, &str)> =
+            c.items.iter().map(|i| (i.role, i.spoken, i.text.as_str())).collect();
+        assert_eq!(lines[0], (Role::You, true, "Make it spin"));
+        assert_eq!(lines[1], (Role::App, false, "Steered “Make it spin”"));
+        assert_eq!(lines[2].0, Role::Agent);
+        assert!(c.items[2].cut && c.items[2].text.len() <= SAID_BYTES);
+        assert_eq!(lines[3], (Role::App, false, "3 steps, last: running cargo test"));
+        assert_eq!(lines[4..], [(Role::Agent, false, "Which hip?"), (Role::Agent, false, "Left or right hip?")]);
+        let all = format!("{c:?}");
+        assert!(!all.contains("SECRET") && !all.contains("at frame"), "{all}");
+
+        // Only the latest SAID items, and the panel says there were more.
+        for i in 0..SAID {
+            s = update(s, text(&format!("line {i}"))).0;
+        }
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!(c.items.len(), SAID);
+        assert!(c.earlier);
+        assert_eq!(c.items.last().unwrap().text, format!("line {}", SAID - 1));
     }
 }

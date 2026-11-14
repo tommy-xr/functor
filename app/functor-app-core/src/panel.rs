@@ -3,7 +3,7 @@
 //! which become the client messages the desktop UI sends for the same
 //! choices.
 
-use crate::activity::Stance;
+use crate::activity::{classify, CallKind, Stance};
 use crate::decision::{count, Depth, Kind};
 use crate::devices::{DeviceState, LinkCommand};
 use crate::layout::Placement;
@@ -11,11 +11,19 @@ use crate::protocol::ClientMsg;
 use crate::queue::Wait;
 use crate::route::{Destination, Move};
 use crate::state::{AppState, Command};
-use crate::tasks::{Task, TaskStatus};
+use crate::tasks::{Item, Task, TaskStatus};
 
 /// Most tasks a panel lists; notes on its decision page.
 pub const TASKS: usize = 6;
 pub const NOTES: usize = 3;
+/// The conversation's latest items a panel carries, and bytes of each
+/// one's text (longer is cut, and marked).
+pub const SAID: usize = 12;
+pub const SAID_BYTES: usize = 600;
+/// Least time between two panels sent to one headset (streaming agent text
+/// changes it many times a second); a newer one waits for the next update
+/// past it (the link's tick comes every second), and the latest wins.
+pub const RESEND_MS: u64 = 500;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Panel {
@@ -33,6 +41,44 @@ pub struct Panel {
     pub waiting: Option<String>,
     /// This headset's latest utterance's route, while it can be moved.
     pub route: Option<PanelRoute>,
+    /// The current task's conversation (D41): the desktop chat's current
+    /// task, else `now`.
+    pub conversation: Option<Conversation>,
+}
+
+/// A task's recent conversation as text: no file contents, diffs or tool
+/// inputs, only the step labels the chat shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conversation {
+    pub task: u64,
+    pub title: String,
+    pub stance: Stance,
+    /// Its running call's label, or empty.
+    pub activity: String,
+    /// The agent asked a question it waits on.
+    pub question: bool,
+    /// Older items than these exist.
+    pub earlier: bool,
+    /// Oldest first, at most [`SAID`].
+    pub items: Vec<Said>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Said {
+    pub role: Role,
+    /// Said aloud in a headset.
+    pub spoken: bool,
+    /// Cut to [`SAID_BYTES`].
+    pub cut: bool,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    You,
+    Agent,
+    /// The app: the router's line, steps, the result.
+    App,
 }
 
 /// Where the router put an utterance (D29), and where it can go instead.
@@ -167,6 +213,16 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
             line: r.line.clone(),
             moves: r.moves.clone(),
         });
+    let current = state.current_task.get(&project).copied().flatten();
+    let conversation = current
+        .or(now)
+        .and_then(|id| {
+            state
+                .tasks
+                .iter()
+                .find(|t| t.id == id && t.project == project)
+        })
+        .map(|t| conversation(state, t));
     Panel {
         project: Some(project),
         placed,
@@ -174,6 +230,95 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
         tasks,
         waiting,
         route,
+        conversation,
+    }
+}
+
+/// `task`'s latest [`SAID`] items. Each run of tool calls is one step line
+/// ("3 steps, last: reading game.fun"); a question the agent asks is its
+/// own line.
+fn conversation(state: &AppState, task: &Task) -> Conversation {
+    let activity = state.activity.get(&task.id);
+    let mut items: Vec<Said> = Vec::new();
+    let mut steps = 0;
+    let mut push = |items: &mut Vec<Said>, role, spoken, text: &str| {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let (text, cut) = match text.len() > SAID_BYTES {
+            true => {
+                let mut end = SAID_BYTES;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (&text[..end], true)
+            }
+            false => (text, false),
+        };
+        items.push(Said {
+            role,
+            spoken,
+            cut,
+            text: text.to_string(),
+        });
+    };
+    for item in &task.transcript {
+        let step = matches!(item, Item::Tool { name, .. } if name != "AskUserQuestion");
+        if !step {
+            steps = 0;
+        }
+        match item {
+            Item::User { text, spoken } => {
+                push(&mut items, Role::You, spoken.is_some(), text);
+                if let Some(line) = spoken.as_ref().and_then(|s| s.route.as_deref()) {
+                    push(&mut items, Role::App, false, line);
+                }
+            }
+            Item::Agent { text, .. } => push(&mut items, Role::Agent, false, text),
+            Item::Tool { name, input, .. } if name == "AskUserQuestion" => {
+                let question = input["questions"][0]["question"].as_str().unwrap_or("");
+                push(&mut items, Role::Agent, false, question);
+            }
+            Item::Tool { name, input, .. } => {
+                let label = classify(name, input).label;
+                steps += 1;
+                if steps > 1 {
+                    items.pop();
+                }
+                let text = match steps {
+                    1 => label,
+                    n => format!("{n} steps, last: {label}"),
+                };
+                push(&mut items, Role::App, false, &text);
+            }
+            Item::Finished { ok, summary } => {
+                let head = if *ok { "Done" } else { "Failed" };
+                let text = match summary.as_deref().map(str::trim) {
+                    Some(s) if !s.is_empty() => format!("{head}: {s}"),
+                    _ => head.to_string(),
+                };
+                push(&mut items, Role::App, false, &text);
+            }
+            Item::Stopped => push(&mut items, Role::App, false, "Stopped"),
+            Item::Kept => push(&mut items, Role::App, false, "Kept the change"),
+            Item::Reverted => push(&mut items, Role::App, false, "Reverted the change"),
+            Item::Usage { .. } | Item::Walkthrough { .. } => {}
+        }
+    }
+    let earlier = items.len() > SAID;
+    items.drain(..items.len().saturating_sub(SAID));
+    Conversation {
+        task: task.id,
+        title: task.title.clone(),
+        stance: activity.map_or(Stance::Done, |a| a.stance),
+        activity: activity
+            .and_then(|a| a.calls.first())
+            .map(|c| c.label.clone())
+            .unwrap_or_default(),
+        question: activity.is_some_and(|a| a.calls.iter().any(|c| c.kind == CallKind::Ask)),
+        earlier,
+        items,
     }
 }
 
@@ -204,9 +349,9 @@ fn decision(state: &AppState, task: &Task) -> Option<PanelDecision> {
     })
 }
 
-/// For each connected headset whose panel changed since it was last sent,
-/// or whose link is new (a relink may come before the old one drops), a
-/// `LinkCommand::Panel`; forgets the rest.
+/// For each connected headset whose link is new (a relink may come before
+/// the old one drops), or whose panel changed and was last sent at least
+/// [`RESEND_MS`] ago, a `LinkCommand::Panel`; forgets the rest.
 pub(crate) fn refresh_panels(state: &mut AppState, commands: &mut Vec<Command>) {
     let connected: Vec<(String, u64)> = state
         .devices
@@ -221,8 +366,13 @@ pub(crate) fn refresh_panels(state: &mut AppState, commands: &mut Vec<Command>) 
     for (device, conn) in connected {
         let panel = panel(state, &device);
         let sent = state.panels.get(&device);
-        if sent.is_none_or(|(c, p)| *c != conn || *p != panel) {
-            state.panels.insert(device.clone(), (conn, panel.clone()));
+        let relinked = sent.is_none_or(|(c, ..)| *c != conn);
+        let due = sent.is_none_or(|(_, p, at)| *p != panel && state.clock >= at + RESEND_MS);
+        if relinked || due {
+            let at = state.clock;
+            state
+                .panels
+                .insert(device.clone(), (conn, panel.clone(), at));
             commands.push(Command::Link(LinkCommand::Panel {
                 conn,
                 panel: Box::new(panel),

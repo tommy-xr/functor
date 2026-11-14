@@ -36,7 +36,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
-use functor_app_core::panel::{Panel as CorePanel, PanelAction};
+use functor_app_core::panel::{Panel as CorePanel, PanelAction, Role};
 use functor_app_core::route::Destination;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
@@ -1106,6 +1106,16 @@ impl Connection {
     }
 }
 
+fn wire_stance(s: Stance) -> panel::Stance {
+    match s {
+        Stance::Thinking => panel::Stance::Thinking,
+        Stance::Working => panel::Stance::Working,
+        Stance::Waiting => panel::Stance::Waiting,
+        Stance::Done => panel::Stance::Done,
+        Stance::Failed => panel::Stance::Failed,
+    }
+}
+
 fn wire_panel(p: &CorePanel) -> panel::Panel {
     panel::Panel {
         project: p.project.clone(),
@@ -1117,13 +1127,9 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
             .map(|t| panel::Task {
                 id: t.id,
                 title: t.title.clone(),
-                stance: match t.stance {
-                    _ if t.queued => panel::Stance::Queued,
-                    Stance::Thinking => panel::Stance::Thinking,
-                    Stance::Working => panel::Stance::Working,
-                    Stance::Waiting => panel::Stance::Waiting,
-                    Stance::Done => panel::Stance::Done,
-                    Stance::Failed => panel::Stance::Failed,
+                stance: match t.queued {
+                    true => panel::Stance::Queued,
+                    false => wire_stance(t.stance),
                 },
                 activity: t.activity.clone(),
                 decision: t.decision.as_ref().map(|d| panel::Decision {
@@ -1148,6 +1154,26 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                         Destination::New => panel::Destination::New,
                         Destination::Queued { task } => panel::Destination::Queued { task },
                     },
+                })
+                .collect(),
+        }),
+        conversation: p.conversation.as_ref().map(|c| panel::Conversation {
+            task: c.task,
+            title: c.title.clone(),
+            stance: wire_stance(c.stance),
+            activity: c.activity.clone(),
+            question: c.question,
+            earlier: c.earlier,
+            items: (c.items.iter())
+                .map(|i| panel::Said {
+                    role: match i.role {
+                        Role::You => panel::Role::You,
+                        Role::Agent => panel::Role::Agent,
+                        Role::App => panel::Role::App,
+                    },
+                    spoken: i.spoken,
+                    cut: i.cut,
+                    text: i.text.clone(),
                 })
                 .collect(),
         }),
