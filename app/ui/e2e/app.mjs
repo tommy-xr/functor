@@ -20,10 +20,18 @@ export const APP = IN_FUNCTOR ? FUNCTOR : `${ROOT}target/debug/functor-app${EXE}
 export const APP_ARGS = IN_FUNCTOR ? ["app"] : [];
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
+/** The game view's banner while it has input without a pointer lock: ⌘Esc releases it. */
+export const RELEASE_HINT = /^(⌘|Meta\+)Esc to release$/;
+
 /** A session's own clock (`/state`'s `frame` and `clock`), without the model. */
 export async function clock(debugUrl) {
   const state = await (await fetch(`${debugUrl}/state?model=0`)).json();
   return { frame: state.frame, ...state.clock };
+}
+
+/** The session's `/state.input`, read by the test (the page never talks to it). */
+export async function sessionInput(debugUrl) {
+  return (await (await fetch(`${debugUrl}/state?model=0`)).json()).input;
 }
 
 /** Exits unless functor-app and the built UI exist. */

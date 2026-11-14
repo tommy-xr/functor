@@ -1570,6 +1570,10 @@ mod tests {
         assert_eq!(Key::Space as i32, 31);
         assert_eq!(Key::Enter as i32, 32);
         assert_eq!(Key::Escape as i32, 33);
+        assert_eq!(Key::Num9 as i32, 43);
+        assert_eq!(Key::Tab as i32, 44);
+        assert_eq!(Key::F1 as i32, 48);
+        assert_eq!(Key::Slash as i32, 69);
         // Serde uses the names (the debug server's held_keys), pinned too.
         assert_wire(&Key::W, r#""W""#);
         assert_wire(&Key::Escape, r#""Escape""#);

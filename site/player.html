@@ -283,9 +283,30 @@
           case "Space": return 31;
           case "Enter": return 32;
           case "Escape": return 33;
-          default: return 0;
+          case "Tab": return 44;
+          case "ShiftLeft": case "ShiftRight": return 45;
+          case "ControlLeft": case "ControlRight": return 46;
+          case "AltLeft": case "AltRight": return 47;
+          case "Minus": return 60;
+          case "Equal": return 61;
+          case "BracketLeft": return 62;
+          case "BracketRight": return 63;
+          case "Backslash": return 64;
+          case "Semicolon": return 65;
+          case "Quote": return 66;
+          case "Comma": return 67;
+          case "Period": return 68;
+          case "Slash": return 69;
+          default: {
+            // "F1".."F12" -> 48..59.
+            const f = /^F([1-9]|1[0-2])$/.exec(code);
+            return f ? 47 + Number(f[1]) : 0;
+          }
         }
       };
+      // Keys the game hears that keep their browser action too: Tab moves
+      // focus and the function keys reload, go full screen or open devtools.
+      const browserKey = (code) => code === "Tab" || /^F([1-9]|1[0-2])$/.test(code);
 
       const setupInput = () => {
         const canvas = document.getElementById("canvas");
@@ -383,7 +404,7 @@
             return;
           }
           if (code === 0) return;
-          e.preventDefault();
+          if (!browserKey(e.code)) e.preventDefault();
           if (!e.repeat) {
             functor_lang_key_event(code, true);
             gameHeld.add(code);

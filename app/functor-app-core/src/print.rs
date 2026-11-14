@@ -533,6 +533,7 @@ mod tests {
                 status: SessionStatus::Running {
                     debug_url: "http://127.0.0.1:52011".into(),
                     surface: Some([800, 600]),
+                    pointer: crate::session::Pointer::Visible,
                     timeline: Box::new(polled_at(30)),
                 },
                 mirror: None,
@@ -713,6 +714,7 @@ recents: 2
                 SessionStatus::Running {
                     debug_url: "http://127.0.0.1:1".into(),
                     surface: None,
+                    pointer: crate::session::Pointer::Visible,
                     timeline: Default::default(),
                 }
             ),

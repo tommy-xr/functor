@@ -13,16 +13,17 @@ use std::time::{Duration, Instant};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tao::dpi::{LogicalPosition, LogicalSize};
-use tao::event::{Event, StartCause, WindowEvent};
+use tao::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
 use tao::platform::macos::{EventLoopExtMacOS, WindowBuilderExtMacOS};
 use tao::platform::run_return::EventLoopExtRunReturn;
 use tao::window::{Theme, Window, WindowBuilder};
-use wry::{NewWindowResponse, WebView, WebViewBuilder};
+use wry::{NewWindowResponse, PageLoadEvent, WebView, WebViewBuilder};
 
 use functor_app_core::folders::MAX_RECENTS;
 use functor_app_core::Recent;
 
+use crate::pointer::PointerLock;
 use crate::server::Token;
 use crate::WindowLink;
 
@@ -65,6 +66,8 @@ enum UserEvent {
     Zoom,
     /// The title bar's left padding, which `--window-smoke` asks for.
     Inset(f64),
+    /// The game view locking or unlocking the pointer (`pointer.rs`).
+    Pointer(bool),
     /// The runtime thread has finished.
     Done,
 }
@@ -129,6 +132,7 @@ pub fn run(
     let (mut inset, mut dragged) = (None, false);
     let mut fullscreen = false;
     let mut probed = false;
+    let mut pointer = PointerLock::default();
     event_loop.run_return(|event, _, flow| {
         match event {
             Event::NewEvents(StartCause::Init) => menu.init_for_nsapp(),
@@ -188,6 +192,31 @@ pub fn run(
                 window.set_maximized(!window.is_maximized())
             }
             Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
+            // Never held for a window another app is in front of.
+            Event::UserEvent(UserEvent::Pointer(lock)) if !lock || window.is_focused() => {
+                if let Some(grab) = pointer.set(lock) {
+                    grab_cursor(&window, grab);
+                }
+            }
+            Event::DeviceEvent {
+                event: DeviceEvent::MouseMotion { delta, .. },
+                ..
+            } => pointer.motion(delta),
+            Event::MainEventsCleared => {
+                if let Some(script) = pointer.flush() {
+                    let _ = webview.evaluate_script(&script);
+                }
+            }
+            // Another app in front: the cursor is the user's again.
+            Event::WindowEvent {
+                event: WindowEvent::Focused(false),
+                ..
+            } => {
+                if let Some(script) = pointer.lose() {
+                    grab_cursor(&window, false);
+                    let _ = webview.evaluate_script(script);
+                }
+            }
             // The page acts on its own menu commands, as on its buttons.
             Event::UserEvent(UserEvent::Menu(id)) => {
                 if let Some(script) = menu_script(id.as_ref(), &recents) {
@@ -240,6 +269,9 @@ pub fn run(
             };
         }
     });
+    if pointer.set(false).is_some() {
+        grab_cursor(&window, false);
+    }
     drop(webview);
     match (smoke_failed, result) {
         (false, Some(result)) => result,
@@ -292,6 +324,7 @@ fn open(
 
     let title = event_loop.create_proxy();
     let ipc = event_loop.create_proxy();
+    let loaded = event_loop.create_proxy();
     let nav_origin = origin.to_string();
     let ipc_origin = origin.to_string();
     let webview = WebViewBuilder::new()
@@ -302,11 +335,17 @@ fn open(
         .with_accept_first_mouse(true)
         // Only on our own page; `server` describes the token's model.
         .with_initialization_script(format!(
-            "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; }}",
+            "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; window.functorNativePointer = true; }}",
             serde_json::to_string(origin).expect("a string"),
             serde_json::to_string(token.reveal()).expect("a string"),
         ))
         .with_navigation_handler(move |url| navigate(&url, &nav_origin))
+        // A new page has no game view holding the pointer.
+        .with_on_page_load_handler(move |event, _| {
+            if matches!(event, PageLoadEvent::Started) {
+                let _ = loaded.send_event(UserEvent::Pointer(false));
+            }
+        })
         .with_new_window_req_handler(|url, _| {
             if outside(&url) {
                 open_outside(&url);
@@ -431,7 +470,8 @@ fn fill_recent(menu: &Submenu, recents: &[Recent]) {
 }
 
 /// The page's messages: `{"recents": [{"name", "path"}, …]}` (at most
-/// [`MAX_RECENTS`]), `{"titlebar": "drag" | "zoom"}`, or `{"inset": px}`.
+/// [`MAX_RECENTS`]), `{"titlebar": "drag" | "zoom"}`, `{"inset": px}`, or
+/// `{"pointer": "lock" | "unlock"}`.
 fn parse_ipc(body: &str) -> Option<UserEvent> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -439,6 +479,13 @@ fn parse_ipc(body: &str) -> Option<UserEvent> {
         Recents(Vec<Recent>),
         Titlebar(Press),
         Inset(f64),
+        Pointer(Lock),
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Lock {
+        Lock,
+        Unlock,
     }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "lowercase")]
@@ -454,7 +501,17 @@ fn parse_ipc(body: &str) -> Option<UserEvent> {
         Msg::Titlebar(Press::Drag) => UserEvent::Drag,
         Msg::Titlebar(Press::Zoom) => UserEvent::Zoom,
         Msg::Inset(px) => UserEvent::Inset(px),
+        Msg::Pointer(lock) => UserEvent::Pointer(matches!(lock, Lock::Lock)),
     })
+}
+
+/// Holds the cursor still (its moves then arrive only as motion deltas), or
+/// lets it go.
+fn grab_cursor(window: &Window, grab: bool) {
+    if let Err(e) = window.set_cursor_grab(grab) {
+        let what = if grab { "hold" } else { "release" };
+        eprintln!("functor-app: cannot {what} the cursor: {e}");
+    }
 }
 
 /// The script that tells the page whether the window is in fullscreen.
@@ -664,7 +721,14 @@ mod tests {
         assert!(matches!(press(r#"{"titlebar":"drag"}"#), Some(UserEvent::Drag)));
         assert!(matches!(press(r#"{"titlebar":"zoom"}"#), Some(UserEvent::Zoom)));
         assert!(matches!(press(r#"{"inset":84}"#), Some(UserEvent::Inset(px)) if px == 84.0));
-        for bad in [r#"{"titlebar":"close"}"#, r#"{"titlebar":1}"#, r#"{"inset":"84px"}"#] {
+        assert!(matches!(press(r#"{"pointer":"lock"}"#), Some(UserEvent::Pointer(true))));
+        assert!(matches!(press(r#"{"pointer":"unlock"}"#), Some(UserEvent::Pointer(false))));
+        for bad in [
+            r#"{"titlebar":"close"}"#,
+            r#"{"titlebar":1}"#,
+            r#"{"inset":"84px"}"#,
+            r#"{"pointer":true}"#,
+        ] {
             assert!(press(bad).is_none(), "{bad}");
         }
     }

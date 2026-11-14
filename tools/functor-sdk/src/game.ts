@@ -20,14 +20,10 @@ import type {
 /** Default per-step delta time (seconds), ~one frame at 60 Hz. */
 export const DEFAULT_STEP_DT = 1 / 60;
 
-/** Canonicalize a key name to the runtime's form (e.g. "up" -> "Up", "w" -> "W").
- * Digit input uses bare `"0"`…`"9"`, while runtime state serializes those
- * enum variants as `"Num0"`…`"Num9"`. */
-function canonicalKeyName(key: string): string {
-  if (/^[0-9]$/.test(key)) return `Num${key}`;
-  return key.length === 0
-    ? key
-    : key[0].toUpperCase() + key.slice(1).toLowerCase();
+/** A key name in a comparable form: lower case, a bare digit as its runtime
+ * variant (`"0"` -> `"num0"`), so `"leftbracket"` matches `"LeftBracket"`. */
+function keyId(key: string): string {
+  return (/^[0-9]$/.test(key) ? `Num${key}` : key).toLowerCase();
 }
 
 /** A high-level client for a single running game (one debug port).
@@ -63,8 +59,8 @@ export class FunctorClient {
   /** Whether a given key is currently held. Case-insensitive: accepts either the
    * canonical name ("Up") or the lowercase form taken by keyDown/keyUp ("up"). */
   async isKeyDown(key: KeyName): Promise<boolean> {
-    const want = canonicalKeyName(key);
-    return (await this.heldKeys()).some((k) => k === want);
+    const want = keyId(key);
+    return (await this.heldKeys()).some((k) => keyId(k) === want);
   }
 
   /** Latest rig-local XR head/controller snapshot, or undefined on non-XR

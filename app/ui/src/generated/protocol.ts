@@ -672,6 +672,11 @@ git_init: boolean,
  */
 steps: Array<string>, };
 
+/**
+ * How a game takes the mouse (debug protocol v45's `/state.pointer`).
+ */
+export type Pointer = "captured" | "visible";
+
 export type Project = { 
 /**
  * The directory's name (`hello`).
@@ -854,7 +859,11 @@ export type SessionStatus = { "kind": "stopped" } | { "kind": "starting" } | { "
  * The game's pointer surface (`/state.input.mouse.surface_width`,
  * `surface_height`): the space `/input` mouse coordinates are in.
  */
-surface: [number, number] | null, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
+surface: [number, number] | null, 
+/**
+ * How the game takes the mouse (`/state.pointer`), from the same poll.
+ */
+pointer: Pointer, } | { "kind": "exited", reason: string, } | { "kind": "failed", reason: string, };
 
 /**
  * Which app needs the update.
