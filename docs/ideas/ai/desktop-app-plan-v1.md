@@ -313,6 +313,34 @@ APK over adb.
   headset shell draws itself (passthrough feed, fused room mesh, the link
   panel and toasts).
 
+### S9 — the workspace contract (2026-11-14)
+
+The document is [`docs/workspace-contract.md`](../../workspace-contract.md): a
+proposal (v0) to review before anything is built on it. No code changed.
+
+- **Three contracts today, one a projection of another.** The page
+  (`AppState`, `ClientMsg` / `ServerMsg`), the headset (link channels 1–4)
+  and the agent's app tools (`/agent/view`, `app_context`). Every panel
+  action already becomes a `ClientMsg` and the panel is a pure function of
+  `AppState`; the contract makes that the rule for every client.
+- **The same concept is typed more than once:** stance (three enums),
+  destination (two), the decision (structured on the page, worded for the
+  panel), refusal (three shapes), request stages (three lists).
+- **Confirmation is in the clients,** not the app: the panel's second press
+  and the page's revert dialog. The core holds only the revert's `tree`
+  witness. The proposal moves it behind the contract, collected by a host
+  surface a scene cannot draw.
+- **The page's state holds what a forked scene must not get:** absolute
+  paths, the debug URL, tunnel URLs, pairing codes, tool inputs, file text.
+- **Missing for D44 / D45, in order:** one reply shape with confirmation,
+  request progress, the pending list, agents with ids and targets, the task
+  tree and the manager, game handles, forks, the code map, voice out,
+  project switching outside the page.
+- **Migration in six PRs,** the page and panel working after each: a shared
+  contract crate; `Workspace` as a projection of `AppState`; replies and
+  confirmation; requests, pending and version negotiation; agents and the
+  tree; the scene transport.
+
 ## Agent-run metrics
 
 `npm run metrics:app` (task 1.19; `app/metrics/`) runs each scenario in
