@@ -37,7 +37,7 @@ pub use print::{print, print_change, print_item, print_layout};
 pub use projects::discover;
 pub use review::{ReviewEvent, ReviewSetting, ReviewSpec};
 pub use session::{
-    listening_url, Display, Pointer, Polled, PolledClock, Session, SessionEvent, SessionMode,
+    listening_url, Display, Mirror, Pointer, Polled, PolledClock, Session, SessionEvent, SessionMode,
     SessionStatus,
 };
 pub use state::{update, AppState, Command, Event, GitInfo, RunSpec};

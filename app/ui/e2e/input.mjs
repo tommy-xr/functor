@@ -363,6 +363,32 @@ async function agentBeside(browser) {
   }
 }
 
+/**
+ * Moving the game away from the view (here to its own window; a headset
+ * goes the same way) lets go of what is held first, and the core then sends
+ * the page's input nowhere: the game takes it where it now runs.
+ */
+async function placedAway(browser) {
+  const tag = "placed away";
+  const { server, page, app, errors, inputs } = await open(browser, tempProject("examples/counter"), 1440, 900);
+  try {
+    const view = page.getByTestId("game-view");
+    await view.click();
+    await page.keyboard.down("KeyW");
+    await expect.poll(async () => (await sessionInput(app.state.session.status.debug_url)).held_keys).toEqual(["W"]);
+    const id = app.state.session.id;
+    await page.locator(".pane-bar").getByRole("group", { name: "Where the game shows" }).getByRole("button", { name: "Own window" }).click();
+    await expect.poll(() => app.state.session.id).toBe(id + 1);
+    await page.keyboard.up("KeyW");
+    expect(await inputs.take(), tag).toEqual([key("w", true), key("w", false)]);
+    expect(errors, tag).toEqual([]);
+    console.log(`ok: ${tag}`);
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
 /** The session's model (`/state`). */
 async function model(app) {
   return (await (await fetch(`${app.state.session.status.debug_url}/state`)).json()).model;
@@ -459,6 +485,7 @@ try {
   }
   await browserLock(browser);
   await agentBeside(browser);
+  await placedAway(browser);
   await gpu(browser);
 } finally {
   await browser.close();

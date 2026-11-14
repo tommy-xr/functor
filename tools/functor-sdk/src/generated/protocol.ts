@@ -508,6 +508,47 @@ export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in
 export type Key = "Unknown" | "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" | "Up" | "Down" | "Left" | "Right" | "Space" | "Enter" | "Escape" | "Num0" | "Num1" | "Num2" | "Num3" | "Num4" | "Num5" | "Num6" | "Num7" | "Num8" | "Num9" | "Tab" | "Shift" | "Control" | "Alt" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8" | "F9" | "F10" | "F11" | "F12" | "Minus" | "Equal" | "LeftBracket" | "RightBracket" | "Backslash" | "Semicolon" | "Quote" | "Comma" | "Period" | "Slash";
 
 /**
+ * `/state.mirror`: how a `--mirror` session follows its source.
+ */
+export type MirrorState = { 
+/**
+ * The debug server mirrored.
+ */
+source: string, 
+/**
+ * Whether a client streams this session, so it polls the source.
+ */
+watched: boolean, 
+/**
+ * Snapshots received since launch.
+ */
+frames: number, 
+/**
+ * Snapshots received in the last second.
+ */
+fps: number, 
+/**
+ * The last poll's round trip, in ms.
+ */
+latency_ms: number | null, 
+/**
+ * The source's `rendered_frames` in the snapshot shown.
+ */
+source_frame: number | null, 
+/**
+ * The source's `tts` in the snapshot shown.
+ */
+source_tts: number | null, 
+/**
+ * The view the snapshot was drawn from.
+ */
+view: Camera | null, 
+/**
+ * Why the last poll failed, until one succeeds.
+ */
+error: string | null, };
+
+/**
  * A fixed set of modeled mouse buttons.
  *
  * A record rather than a `Vec<MouseButton>`: buttons are a tiny fixed set,
@@ -608,7 +649,7 @@ warning?: string,
 camera?: SensorStreamState, };
 
 /**
- * `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
+ * `GET /state`'s `pointer` (v45): whether the game takes the mouse captured
  * (`"mouseCapture"` on, the cursor policy not `visible`, and the game has a
  * mouse hook) or with a visible cursor.
  */
@@ -756,7 +797,7 @@ model_debug: string, input: InputSnapshot,
  */
 sim_thread?: string, 
 /**
- * How the game's own window treats the mouse (v44): `captured` when a
+ * How the game's own window treats the mouse (v45): `captured` when a
  * click would capture it for relative free-look, `visible` when the
  * cursor stays and moves are absolute. Omitted by runtimes without a
  * desktop pointer (the headset).
@@ -849,7 +890,11 @@ frame_stats?: FrameStats,
  * The headset's device link to a desktop app (v38). Omitted by runtimes
  * without one, such as desktop.
  */
-link?: DeviceLinkState, };
+link?: DeviceLinkState, 
+/**
+ * The session this one mirrors (`--mirror`, v44). Omitted otherwise.
+ */
+mirror?: MirrorState, };
 
 /**
  * One rendered view. Desktop reports one `main` view; stereo XR reports one

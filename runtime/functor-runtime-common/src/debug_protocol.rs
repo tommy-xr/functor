@@ -246,10 +246,16 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// panel's navigation and the wrist light. Task ids only: titles and
 /// summaries stay on the link.
 ///
-/// 44 adds `pointer` on `GET /state` ([`PointerMode`]) and the keys Tab,
+/// 44 adds `GET /mirror` ([`MirrorSnapshot`]): the frame on screen and the
+/// view it was drawn from, compact and serialized off the render thread, for
+/// a desktop mirror; and `mirror` on `GET /state` ([`MirrorState`]) from a
+/// session that mirrors one (`--mirror`). A pre-v44 runtime answers 404 and
+/// omits `mirror`.
+///
+/// 45 adds `pointer` on `GET /state` ([`PointerMode`]) and the keys Tab,
 /// Shift, Control, Alt, F1–F12 and punctuation (`crate::Key`) to `POST
 /// /input` and the reported key sets.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 44;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 45;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -324,6 +330,11 @@ pub const DEBUG_ROUTES: &[DebugRoute] = &[
         method: "GET",
         path: "/scene",
         description: "current frame as JSON: camera + scene + lights",
+    },
+    DebugRoute {
+        method: "GET",
+        path: "/mirror",
+        description: "what a mirror draws, compact: {rendered_frames, tts, view (the camera the frame on screen was viewed from: the head on a headset), scene (that frame, as /scene)}; serialized off the render thread. 503 before the first frame, 413 past 8 MiB",
     },
     DebugRoute {
         method: "GET",
@@ -436,7 +447,7 @@ pub fn discovery_json() -> String {
     .to_string()
 }
 
-/// `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
+/// `GET /state`'s `pointer` (v45): whether the game takes the mouse captured
 /// (`"mouseCapture"` on, the cursor policy not `visible`, and the game has a
 /// mouse hook) or with a visible cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -578,7 +589,7 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim_thread: Option<String>,
-    /// How the game's own window treats the mouse (v44): `captured` when a
+    /// How the game's own window treats the mouse (v45): `captured` when a
     /// click would capture it for relative free-look, `visible` when the
     /// cursor stays and moves are absolute. Omitted by runtimes without a
     /// desktop pointer (the headset).
@@ -668,6 +679,50 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<DeviceLinkState>,
+    /// The session this one mirrors (`--mirror`, v44). Omitted otherwise.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<MirrorState>,
+}
+
+/// `GET /mirror`: the frame on screen and the view it was drawn from.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MirrorSnapshot {
+    /// As `/state` numbers `rendered_frames`.
+    pub rendered_frames: u64,
+    pub tts: f32,
+    /// The camera the frame was viewed from: on a headset, `scene.camera`
+    /// composed with the head; on desktop, the camera on screen. `None`
+    /// before a headset tracks the head.
+    pub view: Option<crate::Camera>,
+    pub scene: std::sync::Arc<crate::Frame>,
+}
+
+/// Largest `GET /mirror` body: a device link frame carries 16 MiB.
+pub const MAX_MIRROR_BYTES: usize = 8 * 1024 * 1024;
+
+/// `/state.mirror`: how a `--mirror` session follows its source.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct MirrorState {
+    /// The debug server mirrored.
+    pub source: String,
+    /// Whether a client streams this session, so it polls the source.
+    pub watched: bool,
+    /// Snapshots received since launch.
+    pub frames: u64,
+    /// Snapshots received in the last second.
+    pub fps: f32,
+    /// The last poll's round trip, in ms.
+    pub latency_ms: Option<f32>,
+    /// The source's `rendered_frames` in the snapshot shown.
+    pub source_frame: Option<u64>,
+    /// The source's `tts` in the snapshot shown.
+    pub source_tts: Option<f32>,
+    /// The view the snapshot was drawn from.
+    pub view: Option<crate::Camera>,
+    /// Why the last poll failed, until one succeeds.
+    pub error: Option<String>,
 }
 
 /// `/state.link`: the headset's device link.
@@ -1574,6 +1629,8 @@ pub enum DebugRequest {
     /// `GET /state`; `false` (`?model=0`) leaves the model out.
     State(bool, Sender<RuntimeState>),
     Scene(Sender<String>),
+    /// `GET /mirror`; `None` before the first frame.
+    Mirror(Sender<Option<MirrorSnapshot>>),
     Trace(Sender<String>),
     /// `GET /frames`: the newest `last` frames (all when `None`).
     Frames(Option<usize>, Sender<crate::frame_telemetry::FramesReport>),
@@ -1932,6 +1989,7 @@ mod tests {
             }),
             frame_stats: None,
             link: None,
+            mirror: None,
         };
 
         let actual: Value = serde_json::from_str(&state.to_json()).unwrap();
@@ -2344,6 +2402,7 @@ mod tests {
             "GET /spikes",
             "GET /input-log",
             "GET /scene",
+            "GET /mirror",
             "GET /trace",
             "GET /project",
             "POST /input",

@@ -31,7 +31,8 @@ use functor_runtime_common::frame_telemetry::{us, FrameRecord, FrameTelemetry};
 use functor_runtime_common::reload_indicator::{ReloadIndicator, ReloadIndicatorPainter};
 use functor_runtime_common::sim_driver::{FrameRequest, SimDriver, SimSnapshot};
 use crate::{
-    asset_watch, audio, debug_server, functor_lang_game, net_dispatch, replay_game, ws_host, xreal,
+    asset_watch, audio, debug_server, functor_lang_game, mirror_game, net_dispatch, replay_game,
+    ws_host, xreal,
 };
 
 /// Parse `--xr-eye-height`: a positive, finite number of metres.
@@ -793,6 +794,19 @@ pub struct Args {
     #[arg(long, conflicts_with_all = ["functor_lang"])]
     replay: bool,
 
+    /// Draw another session's frames instead of running the game: poll the
+    /// debug server at this URL (`http://host:port`, e.g. a headset's
+    /// device-link tunnel) for `GET /mirror` while a client streams this
+    /// session's `/stream`, and draw each frame from the view it was drawn
+    /// from (the head, on a headset). Input is ignored; `POST /camera` moves
+    /// only this session's view. The project's files still load its assets.
+    #[arg(long, value_name = "URL", conflicts_with_all = ["replay", "headless"])]
+    mirror: Option<String>,
+
+    /// With --mirror: at most this many polls per second.
+    #[arg(long, default_value_t = 20.0, requires = "mirror")]
+    mirror_fps: f32,
+
     /// Run without a GL window: drive the game loop + debug server headlessly
     /// (no GLFW/OpenGL). `/state`, `/scene`, `/input`, `/time` work; `/capture`
     /// is unavailable (no rendering), and audio isn't played (so `Audio.playThen`
@@ -1226,6 +1240,7 @@ fn leaves_picture(req: &debug_server::DebugRequest) -> bool {
             | Stream(_)
             | State(..)
             | Scene(_)
+            | Mirror(_)
             | Trace(_)
             | Frames(..)
             | Spikes(_)
@@ -1460,6 +1475,7 @@ fn service_debug_request(
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link: None,
+                    mirror: g.mirror_state(),
                 });
             });
         }
@@ -1467,6 +1483,15 @@ fn service_debug_request(
             let json = serde_json::to_string_pretty(frame)
                 .unwrap_or_else(|e| format!("{{\"error\":{:?}}}", e.to_string()));
             let _ = resp.send(json);
+        }
+        // The windowed loop answers this itself, with the camera on screen.
+        debug_server::DebugRequest::Mirror(resp) => {
+            let _ = resp.send(Some(debug_server::MirrorSnapshot {
+                rendered_frames,
+                tts,
+                view: Some(frame.camera.clone()),
+                scene: std::sync::Arc::new(frame.clone()),
+            }));
         }
         debug_server::DebugRequest::Trace(resp) => {
             // The paused-inspector trace (visual-debugger PR2). Paused-ness is a
@@ -2027,7 +2052,7 @@ pub fn run(args: Args) {
 
     let game_path = args.game_path.clone();
 
-    if !args.replay && !args.functor_lang {
+    if !args.replay && args.mirror.is_none() && !args.functor_lang {
         // Functor Lang is the only game producer now (the F#/dylib path was removed in
         // E3). The CLI and SDK always pass --functor-lang; a bare invocation has no
         // producer to load.
@@ -2038,6 +2063,7 @@ pub fn run(args: Args) {
         std::process::exit(1);
     }
     let replay = args.replay;
+    let mirror = args.mirror.clone().map(|url| (url, args.mirror_fps));
     let role = functor_runtime_common::functor_lang_producer::EntryRole::from_parts(
         &args.entry_module,
         &args.entry_prefix,
@@ -2058,7 +2084,9 @@ pub fn run(args: Args) {
     // The producer is created where it runs: under --pipelined that is the
     // sim thread, which it never leaves.
     let make_game = move || -> Box<dyn Game> {
-        if replay {
+        if let Some((url, fps)) = &mirror {
+            Box::new(mirror_game::MirrorGame::create(url, *fps))
+        } else if replay {
             Box::new(replay_game::ReplayGame::create(game_path.as_str()))
         } else if load_first {
             Box::new(
@@ -2579,6 +2607,10 @@ Escape releases while captured"
         let mut rendered_frames: u64 = 0;
         // `GET /stream`'s frame tap, made by the first stream request.
         let mut stream_tap: Option<FrameTapOwner> = None;
+        // Whether the producer was last told it is watched (`set_watched`):
+        // always in a visible window or a capture run, else while streamed.
+        let always_watched = !args.hidden || args.capture_frame.is_some();
+        let mut watched = false;
         // Hidden live sessions pace (see `hidden_pace_hz`); the other
         // unsynced runs keep their fixed sleep below.
         let scripted =
@@ -4379,7 +4411,8 @@ Escape again to quit"
             loop {
                 if let Some(rx) = &debug_requests {
                     while let Some(req) = woken.take().or_else(|| rx.try_recv().ok()) {
-                        debug_active = true;
+                        // A mirror's snapshot is self-contained: no lockstep for it.
+                        debug_active |= !matches!(req, debug_server::DebugRequest::Mirror(_));
                         picture_request |= !leaves_picture(&req);
                         // `POST /camera`: shell state, like the timeline's Debug
                         // camera, but it never captures the cursor. Requests after
@@ -4409,6 +4442,15 @@ Escape again to quit"
                                 let on = if extrapolate_on { "on" } else { "off" };
                                 let _ = resp.send(Ok(format!("extrapolate {on}")));
                                 break;
+                            }
+                            debug_server::DebugRequest::Mirror(resp) => {
+                                let _ = resp.send(Some(debug_server::MirrorSnapshot {
+                                    rendered_frames,
+                                    tts: frame_time.tts,
+                                    view: Some(view_camera.clone()),
+                                    scene: frame.clone(),
+                                }));
+                                continue;
                             }
                             debug_server::DebugRequest::Stream(resp) => {
                                 // A new client gets this frame, even from a
@@ -4525,6 +4567,10 @@ Escape again to quit"
                 // The last client left: drop the tap and its held frame.
                 if stream_tap.as_ref().is_some_and(FrameTapOwner::unshared) {
                     stream_tap = None;
+                }
+                if watched != (always_watched || stream_tap.is_some()) {
+                    watched = !watched;
+                    sim.post(move |g| g.set_watched(watched));
                 }
                 // A quiet session's frame stays here, unswapped, and answers
                 // what arrives (reads, captures, stream clients) until

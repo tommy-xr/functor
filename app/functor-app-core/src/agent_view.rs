@@ -1453,6 +1453,7 @@ mod tests {
                 pointer: crate::session::Pointer::Visible,
                 timeline: Default::default(),
             },
+            mirror: None,
         });
         s
     }

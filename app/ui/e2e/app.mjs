@@ -273,6 +273,8 @@ export function stub(link, store, name, extra = []) {
         .toBe(true);
       return found;
     },
+    /** How many lines so far start with `prefix`. */
+    count: (prefix) => lines.filter((l) => l.startsWith(prefix)).length,
     stop: () => stopServer({ child }),
   };
 }

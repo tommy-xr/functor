@@ -29,7 +29,7 @@ use crate::review::{
     brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
     ReviewState,
 };
-use crate::session::{Display, Pointer, Session, SessionEvent, SessionMode, SessionStatus};
+use crate::session::{Display, Mirror, Pointer, Session, SessionEvent, SessionMode, SessionStatus};
 use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
@@ -444,11 +444,13 @@ pub enum Command {
     /// Spawn `functor -d <dir> run vr --device-url <tunnel>`: the game on a
     /// paired headset, pushed through its tunnel, which is then the
     /// session's debug server. Stopping it returns the headset to its boot
-    /// scene.
+    /// scene. With `mirror`, also a hidden `functor run native --mirror
+    /// <tunnel>` drawing the headset's frames here, which ends with it.
     StartHeadset {
         id: u64,
         dir: PathBuf,
         tunnel: String,
+        mirror: bool,
     },
     /// Kill session `id`'s child.
     StopSession { id: u64 },
@@ -671,12 +673,21 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (switch, true)
         }
         // Input arrives at pointer rate, so it is never answered with the state.
+        // Only to a hidden session the game view shows: never to a game in
+        // its own window or on a headset (whose mirror is view-only).
         Event::Client(ClientMsg::Input { input }) => {
-            if let Some(Session {
-                id,
-                status: SessionStatus::Running { debug_url, .. },
-                ..
-            }) = &state.session
+            let shown = state
+                .active
+                .as_deref()
+                .is_some_and(|p| placement(&state, p).session_mode() == SessionMode::Hidden);
+            if let (
+                true,
+                Some(Session {
+                    id,
+                    status: SessionStatus::Running { debug_url, .. },
+                    ..
+                }),
+            ) = (shown, &state.session)
             {
                 commands.push(Command::Call {
                     id: *id,
@@ -1718,6 +1729,7 @@ fn start(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
         id,
         pid: None,
         status: SessionStatus::Starting,
+        mirror: None,
     });
     match Display::new(placement.session_mode(), state.no_gpu) {
         Some(display) => commands.push(Command::StartSession { id, dir, display }),
@@ -1761,11 +1773,16 @@ the game here."
         return false;
     };
     match outcome {
-        Ok(tunnel) => commands.push(Command::StartHeadset {
-            id,
-            dir: project_dir(Path::new(&state.repo_root), &path),
-            tunnel,
-        }),
+        Ok(tunnel) => {
+            let mirror = !state.no_gpu;
+            session.mirror = mirror.then_some(Mirror::Starting);
+            commands.push(Command::StartHeadset {
+                id,
+                dir: project_dir(Path::new(&state.repo_root), &path),
+                tunnel,
+                mirror,
+            })
+        }
         Err(reason) => session.status = SessionStatus::Failed { reason },
     }
     true
@@ -1785,6 +1802,7 @@ fn stop(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
     state.headset_waits = None;
     session.status = SessionStatus::Stopped;
     session.pid = None;
+    session.mirror = None;
     true
 }
 
@@ -3285,6 +3303,12 @@ fn on_session(
         return false;
     };
     match (event, &mut session.status) {
+        (SessionEvent::MirrorListening { debug_url }, _) if session.mirror.is_some() => {
+            session.mirror = Some(Mirror::Running { debug_url });
+        }
+        (SessionEvent::MirrorFailed { reason }, _) if session.mirror.is_some() => {
+            session.mirror = Some(Mirror::Failed { reason });
+        }
         (SessionEvent::Spawned { pid }, SessionStatus::Starting) => {
             session.pid = Some(pid);
         }
@@ -3401,7 +3425,12 @@ mod tests {
 
     fn with_session(id: u64, pid: Option<u32>, status: SessionStatus) -> AppState {
         AppState {
-            session: Some(Session { id, pid, status }),
+            session: Some(Session {
+                id,
+                pid,
+                status,
+                mirror: None,
+            }),
             ..state()
         }
     }
@@ -3844,7 +3873,8 @@ mod tests {
             Some(Session {
                 id: 2,
                 pid: None,
-                status: SessionStatus::Starting
+                status: SessionStatus::Starting,
+                mirror: None,
             })
         );
         assert_eq!(
@@ -3874,6 +3904,7 @@ mod tests {
                 id: 1,
                 pid: None,
                 status: SessionStatus::Stopped,
+                mirror: None,
             });
             assert_eq!(next.session, expected);
             assert_eq!(commands, vec![list_b(), recents_b(), broadcast(&next)]);
@@ -4171,7 +4202,8 @@ mod tests {
                     Some(Session {
                         id: 2,
                         pid: None,
-                        status: SessionStatus::Starting
+                        status: SessionStatus::Starting,
+                        mirror: None,
                     })
                 );
                 let expected = vec![
@@ -4314,15 +4346,27 @@ mod tests {
         let failed = SessionStatus::Failed {
             reason: "x".to_string(),
         };
+        // A game in its own window or on a headset takes its input there.
+        let elsewhere = |placement| {
+            let mut s = before.clone();
+            let project = s.active.clone().unwrap();
+            s.layouts.entry(project).or_default().game.placement = placement;
+            s
+        };
         for before in [
             state(),
             with_session(3, Some(9), SessionStatus::Starting),
             with_session(3, None, SessionStatus::Stopped),
             with_session(3, None, failed),
+            elsewhere(Placement::Headset),
+            elsewhere(Placement::Window),
         ] {
             let (next, commands) = update(before.clone(), input());
             assert_eq!((next, commands), (before, vec![]));
         }
+        // Mini is the same hidden session.
+        let (_, commands) = update(elsewhere(Placement::Mini), input());
+        assert_eq!(commands.len(), 1);
     }
 
     #[test]
@@ -4967,6 +5011,7 @@ mod tests {
             id: 7,
             pid: None,
             status: SessionStatus::Starting,
+            mirror: None,
         });
         let (waiting, commands) = update(waiting, client(ClientMsg::GetState));
         assert!(!commands.iter().any(|c| matches!(c, Command::StartRun(_))));
@@ -6778,6 +6823,7 @@ mod tests {
                 id: 1,
                 pid: None,
                 status: SessionStatus::Stopped,
+                mirror: None,
             }),
             no_gpu: true,
             auto_start: true,
@@ -7441,6 +7487,7 @@ mod tests {
             id,
             dir: PathBuf::from("/repo/examples/a"),
             tunnel: tunnel.into(),
+            mirror: true,
         }
     }
 
@@ -7515,7 +7562,44 @@ mod tests {
             SessionStatus::Running { debug_url, .. } if debug_url == "http://127.0.0.1:6000"
         ));
 
+        // Its mirror here (D5): starting with the session, then its own
+        // debug server, or why it stopped; an older session's is ignored.
+        let mirror = |s: &AppState| s.session.as_ref().unwrap().mirror.clone();
+        assert_eq!(mirror(&there), Some(Mirror::Starting));
+        let up = |url: &str| SessionEvent::MirrorListening {
+            debug_url: url.into(),
+        };
+        let (stale, changed) = update(there.clone(), session(1, up("http://127.0.0.1:7001")));
+        assert_eq!((mirror(&stale), changed.is_empty()), (Some(Mirror::Starting), true));
+        let (there, _) = update(there, session(2, up("http://127.0.0.1:7000")));
+        let shown = Mirror::Running {
+            debug_url: "http://127.0.0.1:7000".into(),
+        };
+        assert_eq!(mirror(&there), Some(shown));
+        let gone = SessionEvent::MirrorFailed {
+            reason: "the mirror stopped (exit status: 1)".into(),
+        };
+        let (failed, _) = update(there.clone(), session(2, gone));
+        assert!(matches!(mirror(&failed), Some(Mirror::Failed { .. })));
+
+        // Without a GPU there is nothing to draw it with.
+        let mut headless = with_headsets(
+            with_session(1, Some(42), running(Some(3))),
+            &["aa"],
+            &["aa"],
+        );
+        headless.no_gpu = true;
+        let (headless, commands) = update(headless, on_headset("aa"));
+        assert!(commands.contains(&Command::StartHeadset {
+            id: 2,
+            dir: PathBuf::from("/repo/examples/a"),
+            tunnel: "http://127.0.0.1:6000".into(),
+            mirror: false,
+        }));
+        assert_eq!(mirror(&headless), None);
+
         let (back, commands) = update(there, place(Placement::Pane));
+        assert_eq!(back.session.as_ref().unwrap().mirror, None, "it ends with the session");
         assert_eq!(back.layouts["examples/a"].game.headset, None);
         let starts: Vec<_> = commands
             .iter()

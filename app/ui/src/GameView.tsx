@@ -8,9 +8,23 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
-import type { AppState, Device, GameInput, MouseButton, Pointer } from "./generated/protocol";
+import type { AppState, Device, GameInput, Mirror, MouseButton, Pointer } from "./generated/protocol";
 import { Held, keyDown, LockedCursor, wireKey } from "./game-input";
-import { fitRect, headsetNote, streamUrl, toSurface, type Rect, type Size } from "./game-view";
+import {
+  fitRect,
+  headsetNote,
+  MIRROR_CAMERAS,
+  mirrorCamera,
+  mirrorProblem,
+  mirrorRate,
+  streamUrl,
+  toSurface,
+  type HeadsetNote,
+  type MirrorCamera,
+  type MirrorStats,
+  type Rect,
+  type Size,
+} from "./game-view";
 import { placementOf } from "./layout-model";
 import type { Send } from "./socket";
 import { TransportBar, useTransport } from "./TransportBar";
@@ -68,6 +82,18 @@ function HeadsetGame({ state, device, online, send }: { state: AppState; device:
   const visible = usePageVisible();
   const note = headsetNote(device, state.session, transport);
   const running = state.session?.status.kind === "running" && device?.state.state === "connected";
+  const mirror = running ? (state.session?.mirror ?? null) : null;
+  const bar = running && transport?.clock && visible && (
+    <TransportBar transport={transport} marks={marks} online={online} send={send} compact={false} extrapolates={false} hideExtrapolate />
+  );
+  if (mirror) {
+    return (
+      <div className="game-stack">
+        <MirrorGame mirror={mirror} note={note} visible={visible} online={online} send={send} />
+        {bar}
+      </div>
+    );
+  }
   return (
     <div className="game-stack">
       <div className="game game-headset" data-testid="game-view">
@@ -88,9 +114,147 @@ function HeadsetGame({ state, device, online, send }: { state: AppState; device:
           On the headset
         </span>
       </div>
-      {running && transport?.clock && visible && (
-        <TransportBar transport={transport} marks={marks} online={online} send={send} compact={false} extrapolates={false} hideExtrapolate />
-      )}
+      {bar}
+    </div>
+  );
+}
+
+/** Between reads of the mirror's `/state.mirror`. */
+const MIRROR_POLL_MS = 1000;
+
+/**
+ * The headset's game drawn here from its frames (D5): the mirror session's
+ * `/stream`, with where it runs, the camera it is seen from (D18: the head,
+ * or one parked near it), the rate it arrives at, and why it does not when
+ * it does not. View-only: the game's input stays in the headset.
+ */
+function MirrorGame({
+  mirror,
+  note,
+  visible,
+  online,
+  send,
+}: {
+  mirror: Mirror;
+  note: HeadsetNote;
+  visible: boolean;
+  online: boolean;
+  send: Send;
+}) {
+  const debugUrl = mirror.kind === "running" ? mirror.debug_url : null;
+  const area = useRef<HTMLDivElement>(null);
+  const img = useRef<HTMLImageElement>(null);
+  const box = useBoxSize(area);
+  const request = useDebounced(box, RESIZE_DEBOUNCE_MS);
+  const [frame, setFrame] = useState<Size | null>(null);
+  const [stats, setStats] = useState<MirrorStats | null>(null);
+  const [camera, setCamera] = useState<MirrorCamera>("head");
+  const dpr = window.devicePixelRatio || 1;
+  const url = debugUrl && visible && request ? streamUrl(debugUrl, { w: request.w * dpr, h: request.h * dpr }) : null;
+
+  useEffect(() => {
+    const el = img.current!;
+    if (!url) return;
+    el.src = url;
+    return () => el.removeAttribute("src");
+  }, [url]);
+
+  // The rate and the view to park cameras from, read while the view shows.
+  useEffect(() => {
+    if (!debugUrl || !visible) return;
+    let stop = false;
+    const read = async () => {
+      try {
+        const res = await fetch(new URL("/state?model=0", debugUrl));
+        const next = ((await res.json()) as { mirror?: MirrorStats }).mirror ?? null;
+        if (!stop) setStats(next);
+      } catch {
+        if (!stop) setStats({ frames: 0, fps: 0, latency_ms: null, view: null, error: "the mirror does not answer" });
+      }
+    };
+    void read();
+    const timer = setInterval(read, MIRROR_POLL_MS);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+  }, [debugUrl, visible]);
+
+  // The mirror keeps its camera across pages; each starts on the head.
+  useEffect(() => {
+    if (!debugUrl) return;
+    setCamera("head");
+    void fetch(new URL("/camera", debugUrl), { method: "POST", body: JSON.stringify({ type: "attach" }) }).catch(() => {});
+  }, [debugUrl]);
+
+  const choose = (next: MirrorCamera) => {
+    const body = debugUrl && mirrorCamera(next, stats?.view ?? null);
+    if (!body) return;
+    setCamera(next);
+    void fetch(new URL("/camera", debugUrl), { method: "POST", body: JSON.stringify(body) }).catch(() => {});
+  };
+
+  const rect = box && frame ? fitRect(box, frame, { w: frame.w / dpr, h: frame.h / dpr }) : null;
+  const problem = mirrorProblem(mirror, stats);
+  const rate = mirrorRate(stats);
+  return (
+    <div className="mirror" data-testid="game-view">
+      <div className="mirror-bar">
+        <div className="mirror-where">
+          <p className="headset-title">{note.title}</p>
+          {note.detail && <p className="headset-detail">{note.detail}</p>}
+        </div>
+        <button
+          type="button"
+          className="button button-compact"
+          disabled={!online}
+          onClick={() => send({ type: "layout", op: { type: "place", placement: "pane" } })}
+        >
+          Run it on this computer
+        </button>
+        <div className="mirror-view">
+          {rate && (
+            <span className="mirror-rate" title="Frames from the headset per second, and one's round trip over the link">
+              {rate}
+            </span>
+          )}
+          <div className="segmented" role="group" aria-label="Camera">
+            {MIRROR_CAMERAS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={camera === c.id}
+                disabled={!debugUrl || (c.id !== "head" && !stats?.view)}
+                onClick={() => choose(c.id)}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div ref={area} className="game game-mirror" aria-label="Game, mirrored from the headset">
+        <img
+          ref={img}
+          alt=""
+          draggable={false}
+          hidden={!url || !rect}
+          className={problem ? "mirror-stale" : undefined}
+          style={rect ? { left: rect.x, top: rect.y, width: rect.w, height: rect.h } : undefined}
+          onLoad={(e) => {
+            const { naturalWidth: w, naturalHeight: h } = e.currentTarget;
+            setFrame((f) => (f?.w === w && f.h === h ? f : { w, h }));
+          }}
+        />
+        {problem && (
+          <div className="game-message">
+            <p className="reason">{problem}</p>
+          </div>
+        )}
+        <span className="game-banner" role="status">
+          Mirrored from headset
+        </span>
+      </div>
     </div>
   );
 }
