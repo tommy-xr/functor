@@ -2211,6 +2211,11 @@ sockets)."
     unsafe {
         let (gl, shader_version, mut window, mut glfw, events) = {
             use glfw::Context;
+            // No Dock tile, and Quit stays the app's, when it starts this run.
+            #[cfg(target_os = "macos")]
+            if hidden {
+                crate::background::become_background();
+            }
             let mut glfw = glfw::init(glfw::fail_on_errors).unwrap();
             // TODO: Figure out ANGLE
             // glfw.window_hint(glfw::WindowHint::ClientApi(glfw::OpenGlEs));

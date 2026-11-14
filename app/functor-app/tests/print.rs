@@ -64,7 +64,7 @@ fn print_says_the_functor_is_too_old() {
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        text.contains("\ncli: The functor CLI at ~/functor is older than this app, "),
+        text.contains("\ncli: The functor CLI at ~/functor was built before this app, "),
         "{text}"
     );
 }
