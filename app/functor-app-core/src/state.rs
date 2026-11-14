@@ -3441,7 +3441,7 @@ fn on_session(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::projects::Entries;
     use crate::protocol::GameInput;
@@ -3458,7 +3458,7 @@ mod tests {
         }
     }
 
-    fn state() -> AppState {
+    pub(crate) fn state() -> AppState {
         AppState {
             repo_root: "/repo".to_string(),
             projects: vec![project("examples/a"), project("examples/b")],
@@ -3553,7 +3553,7 @@ mod tests {
 
     const URL: &str = "http://127.0.0.1:52011";
 
-    fn client(msg: ClientMsg) -> Event {
+    pub(crate) fn client(msg: ClientMsg) -> Event {
         Event::Client(msg)
     }
 
@@ -4530,7 +4530,7 @@ mod tests {
         })
     }
 
-    fn agent(task: u64, run: u64, event: AgentEvent) -> Event {
+    pub(crate) fn agent(task: u64, run: u64, event: AgentEvent) -> Event {
         Event::Run {
             task,
             run,
@@ -4538,7 +4538,7 @@ mod tests {
         }
     }
 
-    fn ended(task: u64, run: u64) -> Event {
+    pub(crate) fn ended(task: u64, run: u64) -> Event {
         Event::Run {
             task,
             run,
@@ -4553,7 +4553,7 @@ mod tests {
         }
     }
 
-    fn finished() -> AgentEvent {
+    pub(crate) fn finished() -> AgentEvent {
         AgentEvent::Finished {
             ok: true,
             summary: Some("done".to_string()),
@@ -4566,7 +4566,7 @@ mod tests {
         })]
     }
 
-    fn task(state: &AppState, id: u64) -> &Task {
+    pub(crate) fn task(state: &AppState, id: u64) -> &Task {
         state.tasks.iter().find(|t| t.id == id).unwrap()
     }
 
@@ -7501,7 +7501,7 @@ mod tests {
 
     /// `s` with headsets `ids` paired, their tunnels open at
     /// `http://127.0.0.1:600<i>` and those in `linked` connected.
-    fn with_headsets(s: AppState, ids: &[&str], linked: &[&str]) -> AppState {
+    pub(crate) fn with_headsets(s: AppState, ids: &[&str], linked: &[&str]) -> AppState {
         use crate::devices::{LinkEvent, LinkKind, Paired};
         let paired = ids
             .iter()
@@ -7771,7 +7771,7 @@ mod tests {
 
     /// Examples/a's game on headset "aa" (conn 0), polled at program
     /// revision 4.
-    fn voice_ready() -> AppState {
+    pub(crate) fn voice_ready() -> AppState {
         let live = with_session(1, Some(42), running(Some(3)));
         let s = with_headsets(live, &["aa"], &["aa"]);
         let (s, _) = update(s, on_headset("aa"));
@@ -7802,7 +7802,7 @@ mod tests {
         })
     }
 
-    fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
+    pub(crate) fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
         commands
             .iter()
             .filter_map(|c| match c {
@@ -7825,7 +7825,7 @@ mod tests {
     }
 
     /// `s` after utterance 1, "go", started task 4.
-    fn voice_task_running() -> AppState {
+    pub(crate) fn voice_task_running() -> AppState {
         let (s, commands) = update(voice_ready(), said("go", 1));
         let Some(Command::ReserveTask { voice, .. }) = commands
             .into_iter()
