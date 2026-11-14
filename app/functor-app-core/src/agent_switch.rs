@@ -183,9 +183,11 @@ mod tests {
     fn asking() -> AppState {
         let mut s = state();
         s.start_on_open = true;
-        s.recents = [("/repo/examples/a", false), ("/other/kart", false), ("/gone", true)]
+        // A's as this platform spells it, so it is known as this folder's.
+        let a = recent_dir(&s, A);
+        s.recents = [(a.as_str(), false), ("/other/kart", false), ("/gone", true)]
             .map(|(path, missing)| Recent {
-                name: path.rsplit('/').next().unwrap().to_string(),
+                name: String::new(),
                 path: path.to_string(),
                 missing,
             })
