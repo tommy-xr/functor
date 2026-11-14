@@ -239,9 +239,12 @@ async function captured(browser, width, height, where) {
   }
 }
 
-/** In a browser, a refused lock (headless Chromium refuses it) leaves moves absolute. */
-async function refusedLock(browser) {
-  const tag = "refused lock";
+/**
+ * In a browser: a lock taken makes moves relative; a refused one (headless
+ * Chromium on macOS refuses it, on Linux it grants it) leaves them absolute.
+ */
+async function browserLock(browser) {
+  const tag = "browser lock";
   const { server, page, app, errors, inputs } = await open(browser, `${ROOT}examples/hello`, 1440, 900);
   try {
     const view = page.getByTestId("game-view");
@@ -249,13 +252,26 @@ async function refusedLock(browser) {
     const box = await view.boundingBox();
     await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     await expect(view.getByRole("status")).toHaveText(RELEASE_HINT);
-    await expect(view).not.toHaveClass(/game-locked/);
     await inputs.settle();
     await inputs.take();
+    const locked = await page.evaluate(() => document.pointerLockElement !== null);
     const [x, y] = [Math.round(box.x + box.width * 0.25), Math.round(box.y + box.height * 0.75)];
     await page.mouse.move(x, y);
     await inputs.settle();
-    expect(await inputs.take(), tag).toEqual([{ type: "mouse_move", ...(await surfacePoint(view, app, x, y)) }]);
+    const moves = await inputs.take();
+    if (locked) {
+      // Synthetic movement under a headless lock is the browser's own: one move went.
+      await expect(view).toHaveClass(/game-locked/);
+      expect(moves.map((m) => m.type), tag).toEqual(["mouse_move"]);
+      // The browser ending the lock (its Esc) leaves the capture on, absolute.
+      await page.evaluate(() => document.exitPointerLock());
+      await expect(view).not.toHaveClass(/game-locked/);
+      await expect(view.getByRole("status")).toHaveText(RELEASE_HINT);
+    } else {
+      await expect(view).not.toHaveClass(/game-locked/);
+      expect(moves, tag).toEqual([{ type: "mouse_move", ...(await surfacePoint(view, app, x, y)) }]);
+    }
+    console.log(`${tag}: ${locked ? "granted" : "refused"}`);
     expect(errors, tag).toEqual([]);
     console.log(`ok: ${tag}`);
   } finally {
@@ -441,7 +457,7 @@ try {
       await visible(browser, w, h, where);
     }
   }
-  await refusedLock(browser);
+  await browserLock(browser);
   await agentBeside(browser);
   await gpu(browser);
 } finally {
