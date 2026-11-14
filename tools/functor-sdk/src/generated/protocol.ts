@@ -625,7 +625,20 @@ now: number | null, tasks: number,
 /**
  * While closed and linked with a task.
  */
-wrist: WristLight | null, };
+wrist: WristLight | null, 
+/**
+ * The task whose conversation page shows (v46).
+ */
+conversation: number | null, 
+/**
+ * That page shows the newest text (not scrolled up).
+ */
+following: boolean, 
+/**
+ * Items in the conversation the desktop sent, and whether the agent
+ * waits on a question.
+ */
+said: number, question: boolean, };
 
 /**
  * How a shell is showing the real world behind `Frame.withPassthrough`

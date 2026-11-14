@@ -186,10 +186,15 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub headset_waits: Option<u64>,
-    /// Per connected headset, the connection and panel it was last sent.
+    /// Per connected headset, the connection, panel and clock it was last
+    /// sent on.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
-    pub panels: BTreeMap<String, (u64, Panel)>,
+    pub panels: BTreeMap<String, (u64, Panel, u64)>,
+    /// Per headset, the task it last opened in its panel: its conversation.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub panel_tasks: BTreeMap<String, u64>,
     /// Utterances from headsets whose runs are followed until the game
     /// reloads ([`voice::progress`]).
     #[serde(skip)]
@@ -279,6 +284,7 @@ impl AppState {
             devices: Devices::default(),
             headset_waits: None,
             panels: BTreeMap::new(),
+            panel_tasks: BTreeMap::new(),
             voice: Vec::new(),
             router: false,
             routing: Vec::new(),
@@ -629,7 +635,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     // A headset panel's action is the client message for the same choice.
     let (event, panel) = match event {
         Event::Link(LinkEvent::Panel { conn, action }) => match client_msg(&state, conn, action) {
-            Ok(msg) => (Event::Client(msg), Some(conn)),
+            Ok(msg) => {
+                if let ClientMsg::SelectTask { task: Some(id), .. } = &msg {
+                    let device = state.devices.list.iter().find(|d| d.conn == Some(conn));
+                    if let Some(d) = device {
+                        state.panel_tasks.insert(d.id.clone(), *id);
+                    }
+                }
+                (Event::Client(msg), Some(conn))
+            }
             Err(refused) => {
                 commands.extend(refused.map(|reason| {
                     Command::Link(LinkCommand::PanelRefused { conn, reason })
@@ -1405,6 +1419,7 @@ fn opened(
         devices: _,
         headset_waits: _,
         panels: _,
+        panel_tasks: _,
         voice: _,
         speech: _,
     } = *new;
@@ -8364,8 +8379,15 @@ mod tests {
         // Nothing changed: nothing sent.
         let (s, commands) = update(s, Event::Link(LinkEvent::Tick));
         assert!(panels(&commands).is_empty());
-        // Kept on the desktop: the panel follows.
+        // Kept on the desktop: the panel follows, once the last send is
+        // RESEND_MS old (the link's tick brings it).
         let (s, commands) = update(s, keep(1));
+        assert!(panels(&commands).is_empty(), "too soon after the last");
+        let later = AppState {
+            clock: crate::panel::RESEND_MS,
+            ..s
+        };
+        let (s, commands) = update(later, Event::Link(LinkEvent::Tick));
         let t = &panels(&commands)[0].tasks[0];
         assert_eq!((t.stance, t.decision.is_none()), (Stance::Done, true));
         // Gone and back: sent again.
@@ -8454,6 +8476,10 @@ mod tests {
         assert_eq!(route.line, s.routes[0].line);
         assert_eq!(route.moves, s.routes[0].moves);
         assert!(panel(&s, "bb").route.is_none(), "another headset's speech");
+        // The request in flight (D43): steered, its agent at work.
+        let progress = panel(&s, "aa").progress.unwrap();
+        assert_eq!(progress.step, crate::panel::Step::Agent);
+        assert!(panel(&s, "bb").progress.is_none());
 
         let to = route.moves[0].to.clone();
         let (by_panel, commands) = update(s.clone(), from_panel(0, PanelAction::Move { id: route.id, to: to.clone() }));
@@ -8472,5 +8498,78 @@ mod tests {
             c,
             Command::Link(LinkCommand::PanelRefused { conn: 0, .. })
         )));
+    }
+
+    /// The conversation a panel carries: the latest items as text, spoken
+    /// lines marked with their route, a run of steps as one line, long text
+    /// cut, a question flagged; never a tool's input or a file's contents.
+    #[test]
+    fn the_panel_carries_the_conversation_bounded_and_without_code() {
+        use crate::panel::{panel, Role, SAID, SAID_BYTES};
+        use crate::tasks::Spoken;
+        use serde_json::json;
+        let (mut s, _) = update(state(), new_task("Make it spin"));
+        let tool = |name: &str, input| agent(1, 0, AgentEvent::ToolUse { name: name.into(), input });
+        let text = |t: &str| agent(1, 0, AgentEvent::Text { text: t.into() });
+        let result = agent(1, 0, AgentEvent::ToolResult { content: "SECRET_RESULT".into() });
+        for event in [
+            agent(1, 0, started("sess-1")),
+            text(&"é".repeat(SAID_BYTES)),
+            tool("Read", json!({"file_path": "a/game.fun"})),
+            result.clone(),
+            tool("Write", json!({"file_path": "a/game.fun", "content": "SECRET_FILE"})),
+            result.clone(),
+            tool("Bash", json!({"command": "cargo test"})),
+            result,
+            text("Which hip?\n```rust\nlet secret = SECRET_CODE;\n```\nOr the other?"),
+            tool("AskUserQuestion", json!({"questions": [{"question": "Left or right hip?"}]})),
+        ] {
+            s = update(s, event).0;
+        }
+        let Item::User { spoken, .. } = &mut s.tasks[0].transcript[0] else {
+            panic!("the first message");
+        };
+        *spoken = Some(Spoken {
+            headset: "Quest 3".into(),
+            context: Some("at frame 7".into()),
+            route: Some("Steered “Make it spin”".into()),
+        });
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!((c.task, c.title.as_str(), c.question), (1, "Make it spin", true));
+        let lines: Vec<(Role, bool, &str)> =
+            c.items.iter().map(|i| (i.role, i.spoken, i.text.as_str())).collect();
+        assert_eq!(lines[0], (Role::You, true, "Make it spin"));
+        assert_eq!(lines[1], (Role::App, false, "Steered “Make it spin”"));
+        assert_eq!(lines[2].0, Role::Agent);
+        assert!(c.items[2].cut && c.items[2].text.len() <= SAID_BYTES);
+        assert_eq!(lines[3], (Role::App, false, "3 steps, last: running cargo test"));
+        assert_eq!(lines[4..], [(Role::Agent, false, "Which hip?\n[code on the desktop]\nOr the other?"), (Role::Agent, false, "Left or right hip?")]);
+        let all = format!("{c:?}");
+        assert!(!all.contains("SECRET") && !all.contains("at frame"), "{all}");
+
+        // Only the latest SAID items, and the panel says there were more.
+        for i in 0..SAID {
+            s = update(s, text(&format!("line {i}"))).0;
+        }
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!(c.items.len(), SAID);
+        assert!(c.first > 0);
+        assert_eq!(c.items.last().unwrap().text, format!("line {}", SAID - 1));
+    }
+
+    /// A headset's conversation is the task it opened, else the one in
+    /// front; another headset's choice is its own.
+    #[test]
+    fn each_headset_reads_the_conversation_it_opened() {
+        use crate::panel::panel;
+        let (s, _) = update(state(), nth_task(1, "one"));
+        let (s, _) = update(s, ended(1, 0));
+        let (mut s, _) = update(s, nth_task(2, "two"));
+        let now = panel(&s, "aa").now.unwrap();
+        assert_eq!(panel(&s, "aa").conversation.unwrap().task, now);
+        let other = if now == 1 { 2 } else { 1 };
+        s.panel_tasks.insert("aa".into(), other);
+        assert_eq!(panel(&s, "aa").conversation.unwrap().task, other);
+        assert_eq!(panel(&s, "bb").conversation.unwrap().task, now);
     }
 }

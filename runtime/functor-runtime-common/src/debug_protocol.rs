@@ -256,9 +256,12 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// Shift, Control, Alt, F1–F12 and punctuation (`crate::Key`) to `POST
 /// /input` and the reported key sets.
 ///
-/// 46 adds the `microphone_allowed` and `microphone_denied` voice stages,
+/// 46 adds the conversation to `link.panel` ([`PanelState`]: `conversation`,
+/// `following`, `said`, `question`).
+///
+/// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 46;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -766,6 +769,18 @@ pub struct PanelState {
     pub tasks: usize,
     /// While closed and linked with a task.
     pub wrist: Option<WristLight>,
+    /// The task whose conversation page shows (v46).
+    #[serde(default)]
+    pub conversation: Option<u64>,
+    /// That page shows the newest text (not scrolled up).
+    #[serde(default)]
+    pub following: bool,
+    /// Items in the conversation the desktop sent, and whether the agent
+    /// waits on a question.
+    #[serde(default)]
+    pub said: usize,
+    #[serde(default)]
+    pub question: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
