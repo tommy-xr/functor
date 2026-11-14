@@ -36,8 +36,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
-use functor_app_core::panel::{Panel as CorePanel, PanelAction};
+use functor_app_core::panel::{Panel as CorePanel, PanelAction, Role, Step};
 use functor_app_core::route::Destination;
+use functor_app_core::voice::HearingStage;
 use functor_app_core::voice_timing::VoiceTiming;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
@@ -140,6 +141,9 @@ struct HubState {
     next_conn: u64,
     /// What adb last showed on the cable.
     attached: Vec<Attached>,
+    /// Per device, the latest voice status sent while it had no link: sent
+    /// when it relinks, so its panel shows where things are.
+    unsent: HashMap<String, voice::Status>,
 }
 
 struct Conn {
@@ -420,14 +424,21 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
+                    // No stage of its own on the wire (an older headset could
+                    // not read one): the toast clears. The answer is in the
+                    // request's record (`AppState::requests`) for the panel.
+                    Core::Answered(_) => voice::Stage::Idle,
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {
                     utterance: Some(utterance),
                     stage,
                 };
-                if let Some(link) = self.link_of(&device) {
-                    let _ = link.send(ConnCmd::Send(status.frame()));
+                let sent = self
+                    .link_of(&device)
+                    .is_some_and(|link| link.send(ConnCmd::Send(status.frame())).is_ok());
+                if !sent {
+                    self.0.state.lock().unwrap().unsent.insert(device, status);
                 }
             }
         }
@@ -487,6 +498,7 @@ impl Hub {
         if let Some((_, task)) = s.tunnels.remove(device) {
             task.abort();
         }
+        s.unsent.remove(device);
         Ok(gone)
     }
 
@@ -950,6 +962,9 @@ impl Connection {
                 }
                 self.unpend();
                 hub.seen(&device);
+                if let Some(status) = hub.0.state.lock().unwrap().unsent.remove(&device) {
+                    self.outgoing.push(status.frame());
+                }
                 self.linked = Some(device.clone());
                 hub.send(LinkEvent::Connected {
                     conn: self.id,
@@ -981,7 +996,12 @@ impl Connection {
                 channel: voice::CLIP_CHANNEL,
                 data,
             } => {
-                if let Some(heard) = self.voice.receive(&data, now_ms()) {
+                let before = self.voice.arriving();
+                let heard = self.voice.receive(&data, now_ms());
+                if let Some(utterance) = self.voice.arriving().filter(|u| before != Some(*u)) {
+                    self.hearing(utterance, HearingStage::Arriving);
+                }
+                if let Some(heard) = heard {
                     self.heard(heard);
                 }
             }
@@ -1013,7 +1033,7 @@ impl Connection {
     /// `ConnCmd::Transcribed`).
     fn heard(&mut self, heard: Heard) {
         let (utterance, pcm, capsule, arrived) = match heard {
-            Heard::Status(status) => return self.outgoing.push(status.frame()),
+            Heard::Status(status) => return self.tell(status),
             Heard::Clip {
                 utterance,
                 pcm,
@@ -1095,11 +1115,35 @@ impl Connection {
     }
 
     fn say(&mut self, utterance: u64, stage: voice::Stage) {
-        let status = voice::Status {
+        self.tell(voice::Status {
             utterance: Some(utterance),
             stage,
+        });
+    }
+
+    /// `status` to the headset, and to the core while its request has no
+    /// text yet (the chat's line for it).
+    fn tell(&mut self, status: voice::Status) {
+        let stage = match &status.stage {
+            voice::Stage::Heard => Some(HearingStage::Transcribing),
+            voice::Stage::Idle => Some(HearingStage::Cancelled),
+            voice::Stage::Failed { reason } => Some(HearingStage::Failed {
+                reason: reason.clone(),
+            }),
+            _ => None,
         };
+        if let (Some(utterance), Some(stage)) = (status.utterance, stage) {
+            self.hearing(utterance, stage);
+        }
         self.outgoing.push(status.frame());
+    }
+
+    fn hearing(&self, utterance: u64, stage: HearingStage) {
+        self.hub.send(LinkEvent::Hearing {
+            conn: self.id,
+            utterance,
+            stage,
+        });
     }
 
     fn unpend(&mut self) {
@@ -1139,6 +1183,16 @@ impl Connection {
     }
 }
 
+fn wire_stance(s: Stance) -> panel::Stance {
+    match s {
+        Stance::Thinking => panel::Stance::Thinking,
+        Stance::Working => panel::Stance::Working,
+        Stance::Waiting => panel::Stance::Waiting,
+        Stance::Done => panel::Stance::Done,
+        Stance::Failed => panel::Stance::Failed,
+    }
+}
+
 fn wire_panel(p: &CorePanel) -> panel::Panel {
     panel::Panel {
         project: p.project.clone(),
@@ -1150,13 +1204,9 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
             .map(|t| panel::Task {
                 id: t.id,
                 title: t.title.clone(),
-                stance: match t.stance {
-                    _ if t.queued => panel::Stance::Queued,
-                    Stance::Thinking => panel::Stance::Thinking,
-                    Stance::Working => panel::Stance::Working,
-                    Stance::Waiting => panel::Stance::Waiting,
-                    Stance::Done => panel::Stance::Done,
-                    Stance::Failed => panel::Stance::Failed,
+                stance: match t.queued {
+                    true => panel::Stance::Queued,
+                    false => wire_stance(t.stance),
                 },
                 activity: t.activity.clone(),
                 decision: t.decision.as_ref().map(|d| panel::Decision {
@@ -1183,6 +1233,37 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                     },
                 })
                 .collect(),
+        }),
+        conversation: p.conversation.as_ref().map(|c| panel::Conversation {
+            task: c.task,
+            title: c.title.clone(),
+            stance: wire_stance(c.stance),
+            activity: c.activity.clone(),
+            question: c.question,
+            first: c.first,
+            items: (c.items.iter())
+                .map(|i| panel::Said {
+                    role: match i.role {
+                        Role::You => panel::Role::You,
+                        Role::Agent => panel::Role::Agent,
+                        Role::App => panel::Role::App,
+                    },
+                    spoken: i.spoken,
+                    cut: i.cut,
+                    text: i.text.clone(),
+                })
+                .collect(),
+        }),
+        progress: p.progress.as_ref().map(|g| panel::Progress {
+            step: match g.step {
+                Step::Received => panel::Step::Received,
+                Step::Transcribed => panel::Step::Transcribed,
+                Step::Processing => panel::Step::Processing,
+                Step::Agent => panel::Step::Agent,
+                Step::Outcome => panel::Step::Outcome,
+            },
+            detail: g.detail.clone(),
+            failed: g.failed,
         }),
     }
 }
@@ -1281,7 +1362,7 @@ async fn tunnel(State(t): State<Arc<Tunnel>>, request: axum::extract::Request) -
     let Some(link) = t.hub.link_of(&t.device) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            "the headset is not connected",
+            "the headset is away; try again when it is back",
         );
     };
     let request = wire::Request {

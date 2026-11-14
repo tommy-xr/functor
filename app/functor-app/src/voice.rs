@@ -75,6 +75,11 @@ fn failed(utterance: Option<u64>, reason: &str) -> Heard {
 }
 
 impl Assembler {
+    /// The utterance whose clip is arriving.
+    pub fn arriving(&self) -> Option<u64> {
+        self.clip.as_ref().map(|c| c.utterance)
+    }
+
     /// Takes one message from the voice channel at `now` (ms).
     pub fn receive(&mut self, data: &[u8], now: u64) -> Option<Heard> {
         let msg = match Clip::decode(data) {
@@ -300,7 +305,16 @@ impl Speech {
         use functor_stt::Transcriber;
         let started = std::time::Instant::now();
         let (model, warm): (Arc<dyn Transcriber>, bool) = match self {
-            Speech::Fake(fake) => (fake.clone(), true),
+            Speech::Fake(fake) => {
+                // `FUNCTOR_APP_FAKE_TRANSCRIPT_MS`: as slow as a real model.
+                if let Some(ms) = std::env::var("FUNCTOR_APP_FAKE_TRANSCRIPT_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse().ok())
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+                (fake.clone(), true)
+            }
             #[cfg(feature = "whisper")]
             Speech::Whisper(cell) => {
                 let warm = cell.initialized();

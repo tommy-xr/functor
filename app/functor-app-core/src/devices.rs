@@ -302,6 +302,12 @@ pub enum LinkEvent {
         context: Option<String>,
         timing: crate::voice_timing::VoiceTiming,
     },
+    /// Connection `conn`'s request `utterance` before it has text.
+    Hearing {
+        conn: u64,
+        utterance: u64,
+        stage: crate::voice::HearingStage,
+    },
 }
 
 /// To the shell's device link.
@@ -679,7 +685,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
         // The core turns these into client messages before they get here.
         LinkEvent::Panel { .. } => {}
         // The core's to act on (`voice::heard`): no device changes.
-        LinkEvent::Utterance { .. } => {}
+        LinkEvent::Utterance { .. } | LinkEvent::Hearing { .. } => {}
     }
     refresh(devices);
     (*devices != before, commands)

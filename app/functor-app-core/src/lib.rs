@@ -16,6 +16,7 @@ pub mod layout;
 pub mod metrics;
 pub mod panel;
 pub mod print;
+pub mod progress;
 pub mod projects;
 pub mod protocol;
 pub mod queue;

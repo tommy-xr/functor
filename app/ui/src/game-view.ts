@@ -58,6 +58,21 @@ export type HeadsetNote = {
   fix: string | null;
 };
 
+/**
+ * The title bar's session pill: where the session runs and one word for
+ * it. A live session on a headset that is not linked takes the headset's
+ * word (`Headset session · away`), as the Game tab does (D27).
+ */
+export function sessionPill(headset: Device | null | undefined, onHeadset: boolean, session: Session | null | undefined): { text: string; word: string } {
+  const kind = session?.status.kind ?? "stopped";
+  const where = onHeadset ? "Headset session" : "Local session";
+  const state = headset?.state.state;
+  if (onHeadset && (kind === "running" || kind === "starting") && state && state !== "connected") {
+    return { text: `${where} · ${WORDS[state].toLowerCase()}`, word: state };
+  }
+  return { text: `${where} · ${kind}`, word: kind };
+}
+
 export function headsetNote(device: Device | null, session: Session | null, transport: Transport | null): HeadsetNote {
   const status = session?.status ?? { kind: "stopped" };
   if (!device) {
@@ -79,7 +94,9 @@ export function headsetNote(device: Device | null, session: Session | null, tran
       title: `${name}: ${WORDS[device.state.state]}`,
       detail:
         status.kind === "running"
-          ? "The game goes on there; this view follows it again when the headset reconnects."
+          ? `The game goes on there; this view follows it again when the headset reconnects.${
+              device.state.state === "away" ? " An edit saved meanwhile loads there once it is back." : ""
+            }`
           : "The game starts there when the headset reconnects.",
       fix: fixFor(device),
     };
