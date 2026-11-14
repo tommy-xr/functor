@@ -295,7 +295,12 @@ APK over adb.
 - **No pushed channel.** The desktop polls `/mirror` through the tunnel, one
   request at a time, at most 20 Hz, and only while a page streams the
   mirror, so a closed mirror costs the headset nothing and the link carries
-  ≤0.8 MB/s for vr-lab.
+  ≤0.8 MB/s for vr-lab. Measured through the Wi-Fi link
+  (`npm run test:quest-mirror`, hello-cubes, Quest 3 at 80 Hz, dev APK, 4 s
+  each): 17–18 fps mirrored, a poll's round trip 115–146 ms; headset
+  frames closed vs open 323–329 vs 324, frame p99 13.5–13.8 vs 13.8 ms, 0
+  vs 0 missed refreshes. Not measured: `/mirror` with vr-lab's 38 KB frame
+  on the headset (the run was cut short), and a release APK.
 - **No capture fallback.** A frame has no closure or host-handle failure
   mode; the mirror fails only past 8 MiB of JSON (413) or against an older
   APK (404), and says so. Not in the frame, so not mirrored: what the
