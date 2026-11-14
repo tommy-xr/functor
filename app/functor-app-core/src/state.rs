@@ -2301,6 +2301,7 @@ fn steer(
     match task.run.take() {
         Some(run) if !run.started => {
             commands.push(Command::StopRun { task: id, run: run.id });
+            voice_ended(task, run.id, stamp(state.now), commands);
             // What it left (a snapshot only) is measured as the next run ends.
             task.change = None;
         }
@@ -2397,7 +2398,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     // A spoken request that waited its turn: timed from here.
     if let Some(timing) = task.voice.as_mut().filter(|t| t.run.is_none()) {
         timing.run = Some(run);
-        timing.reach(|t| &mut t.run_started, state.now);
+        timing.reach(|t| &mut t.run_started, stamp(state.now));
     }
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
@@ -2434,6 +2435,7 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     };
     commands.push(Command::StopRun { task: id, run });
     task.updated_at = stamp(state.now).or(task.updated_at);
+    voice_ended(task, run, stamp(state.now), commands);
     let changed = stop_run(task);
     // A stopped run reports no change of its own: what it left is measured
     // now, and unknown until then.
@@ -2635,12 +2637,24 @@ fn time_utterance(state: &mut AppState, id: u64, u: &Utterance) {
     let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
         return;
     };
-    timing.reach(|t| &mut t.routed, now);
+    timing.reach(|t| &mut t.routed, stamp(now));
     if let Some(run) = &task.run {
         timing.run = Some(run.id);
-        timing.reach(|t| &mut t.run_started, now);
+        timing.reach(|t| &mut t.run_started, stamp(now));
     }
     task.voice = Some(timing);
+}
+
+/// Run `run` of `task` ended, stopped or was cut: its spoken request's
+/// last stage, logged once.
+fn voice_ended(task: &mut Task, run: u64, now: Option<u64>, commands: &mut Vec<Command>) {
+    let id = task.id;
+    let Some(t) = task.voice.as_mut().filter(|t| t.run == Some(run)) else {
+        return;
+    };
+    if t.reach(|t| &mut t.finished, now) {
+        commands.push(Command::LogVoice { line: t.log_line(id) });
+    }
 }
 
 /// Said to a task whose run was cut by a steer that is moved away before
@@ -2668,6 +2682,12 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         return reject(commands, "that message cannot go there now".to_string());
     }
     state.routed.retain(|o| o.id != id);
+    // Its stage times go with it (untimed), not stay on the task it left.
+    if let Some(t) = state.tasks.iter_mut().find(|t| t.id == open.task) {
+        if t.voice.as_ref().is_some_and(|v| v.utterance == open.utterance) {
+            t.voice = None;
+        }
+    }
     // Followed again where it lands, not failed where it was.
     (state.voice).retain(|j| !(j.device == open.device && j.utterance == open.utterance));
     let root = PathBuf::from(&state.repo_root);
@@ -3244,20 +3264,13 @@ fn on_run(
     // Its spoken request's stages, when this is the run it started.
     let timed = (task.voice.as_mut()).filter(|t| t.run == Some(run));
     let stamped = timed.is_some_and(|t| match &event {
-        RunEvent::Spawned => t.reach(|t| &mut t.agent_spawned, state.now),
+        RunEvent::Spawned => t.reach(|t| &mut t.agent_spawned, now),
         RunEvent::Agent(e) => {
-            let first = t.reach(|t| &mut t.agent_event, state.now);
+            let first = t.reach(|t| &mut t.agent_event, now);
             let text = matches!(e, AgentEvent::Text { .. } | AgentEvent::TextDelta { .. });
-            first | (text && t.reach(|t| &mut t.first_text, state.now))
+            first | (text && t.reach(|t| &mut t.first_text, now))
         }
-        RunEvent::Ended { .. } => {
-            let done = t.reach(|t| &mut t.finished, state.now);
-            if done {
-                commands.push(Command::LogVoice { line: t.log_line(id) });
-            }
-            done
-        }
-        RunEvent::Baseline { .. } | RunEvent::Moment(_) => false,
+        RunEvent::Ended { .. } | RunEvent::Baseline { .. } | RunEvent::Moment(_) => false,
     });
     match event {
         RunEvent::Spawned => stamped,
@@ -3291,6 +3304,7 @@ fn on_run(
             summary || stamped
         }
         RunEvent::Ended { error } => {
+            voice_ended(task, run, now, commands);
             task.updated_at = now.or(task.updated_at);
             let changed = end_run(task, error);
             commands.push(save(&root, task));
@@ -7809,12 +7823,6 @@ mod tests {
         })
     }
 
-    /// `event` stepped with the shell's wall clock at `now`.
-    fn step_at(mut s: AppState, now: u64, event: Event) -> (AppState, Vec<Command>) {
-        s.now = now;
-        update(s, event)
-    }
-
     fn logged(commands: &[Command]) -> usize {
         (commands.iter())
             .filter(|c| matches!(c, Command::LogVoice { .. }))
@@ -7831,11 +7839,11 @@ mod tests {
         assert_eq!((v.utterance, v.run, v.transcribe_end), (1, Some(0), 5_000));
         assert_eq!((v.routed, v.run_started), (Some(5_500), Some(5_500)));
         let spawned = Event::Run { task: 4, run: 0, event: RunEvent::Spawned };
-        let (s, _) = step_at(s, 6_000, spawned);
-        let (s, _) = step_at(s, 7_000, agent(4, 0, started("sess")));
-        let (s, _) = step_at(s, 8_000, agent(4, 0, AgentEvent::Text { text: "Hi".into() }));
-        let (s, _) = step_at(s, 9_000, agent(4, 0, AgentEvent::Text { text: "again".into() }));
-        let (s, commands) = step_at(s, 20_000, ended(4, 0));
+        let (s, _) = update(at(6_000, s), spawned);
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, _) = update(at(8_000, s), agent(4, 0, AgentEvent::Text { text: "Hi".into() }));
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "again".into() }));
+        let (s, commands) = update(at(20_000, s), ended(4, 0));
         assert_eq!(logged(&commands), 1);
         let v = task(&s, 4).voice.clone().unwrap();
         assert_eq!(
@@ -7848,24 +7856,31 @@ mod tests {
         );
         // A typed follow-up's run is not the spoken one's: nothing changes.
         let typed = client(ClientMsg::SendMessage { task: 4, message: "more".into() });
-        let (s, _) = step_at(s, 21_000, typed);
-        let (s, commands) = step_at(s, 30_000, ended(4, 2));
+        let (s, _) = update(at(21_000, s), typed);
+        let (s, commands) = update(at(30_000, s), ended(4, 2));
         assert_eq!(logged(&commands), 0);
         assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(20_000));
     }
 
-    /// A steer times the new utterance from the run it starts; the old
-    /// run's late events land on nothing.
+    /// A steer ends the old utterance's stages (logged, as cut) and times
+    /// the new one from the run it starts; the old run's late events land
+    /// on nothing. A stop ends them too.
     #[test]
     fn a_steer_times_the_new_utterance() {
         let s = voice_task_running_at(5_500);
-        let (s, _) = step_at(s, 7_000, agent(4, 0, started("sess")));
-        let (s, _) = step_at(s, 8_000, said("bigger", 2));
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, commands) = update(at(8_000, s), said("bigger", 2));
+        assert_eq!(logged(&commands), 1);
         let v = task(&s, 4).voice.clone().unwrap();
         assert_eq!((v.utterance, v.run, v.routed), (2, Some(2), Some(8_000)));
         assert_eq!(v.agent_event, None);
-        let (s, _) = step_at(s, 9_000, agent(4, 0, AgentEvent::Text { text: "late".into() }));
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "late".into() }));
         assert_eq!(task(&s, 4).voice.as_ref().unwrap().first_text, None);
+        let (s, commands) = update(at(10_000, s), client(ClientMsg::StopTask { task: 4 }));
+        assert_eq!(logged(&commands), 1);
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(10_000));
+        let (_, commands) = update(at(11_000, s), ended(4, 2));
+        assert_eq!(logged(&commands), 0, "once");
     }
 
     fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
@@ -7897,8 +7912,8 @@ mod tests {
 
     /// [`voice_task_running`], its task started at wall clock `now`.
     fn voice_task_running_at(now: u64) -> AppState {
-        let (mut s, commands) = update(voice_ready(), said("go", 1));
-        s.now = now;
+        let (s, commands) = update(voice_ready(), said("go", 1));
+        let s = at(now, s);
         let Some(Command::ReserveTask { voice, .. }) = commands
             .into_iter()
             .find(|c| matches!(c, Command::ReserveTask { .. }))

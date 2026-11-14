@@ -1067,7 +1067,7 @@ impl Connection {
         utterance: u64,
         text: Result<String, String>,
         capsule: &str,
-        mut timing: VoiceTiming,
+        timing: VoiceTiming,
     ) {
         if !self.voice.transcribed(utterance) {
             return;
@@ -1076,7 +1076,6 @@ impl Connection {
             Ok(text) if !text.is_empty() => {
                 let stage = voice::Stage::Transcribed { text: text.clone() };
                 self.say(utterance, stage);
-                timing.line = timing.summary();
                 self.hub.send(LinkEvent::Utterance {
                     conn: self.id,
                     utterance,

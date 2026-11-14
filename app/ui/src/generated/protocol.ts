@@ -1033,7 +1033,8 @@ created_at: number | null,
  */
 updated_at: number | null, 
 /**
- * Its latest spoken request's stage times, while it was the last.
+ * Its latest spoken request's stage times (a typed message after it
+ * leaves them).
  */
 voice?: VoiceTiming, };
 

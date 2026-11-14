@@ -610,8 +610,8 @@ Speech-to-text, `cargo run --release -p functor-stt --features whisper
 
 The first use also paid, before: the model's SHA-256 check (0.4–1.9 s
 release; 7–13 s in a debug build, now ~1 s) and its load (0.1–0.4 s).
-Metal's first load ever compiles its shaders: 13 s once under load, then
-0.2–0.6 s. Both now happen in the background when the app starts (if the
+Metal compiles its shaders on the first load of each new build (7–13 s
+here), then loads in 0.2–0.6 s. Both now happen in the background when the app starts (if the
 model is on disk), with a second of silence transcribed to warm it, so
 the first clip waits only if it comes within a second or two of the start.
 

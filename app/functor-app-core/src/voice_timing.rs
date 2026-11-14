@@ -79,14 +79,14 @@ impl VoiceTiming {
         parts.join(" · ")
     }
 
-    /// Sets `stage` to `now` unless already set (0: an unknown clock);
+    /// Sets `stage` to `now` unless already set (or the clock is unknown);
     /// whether it changed.
-    pub fn reach(&mut self, stage: fn(&mut VoiceTiming) -> &mut Option<u64>, now: u64) -> bool {
+    pub fn reach(&mut self, stage: fn(&mut VoiceTiming) -> &mut Option<u64>, now: Option<u64>) -> bool {
         let slot = stage(self);
-        if slot.is_some() || now == 0 {
+        if slot.is_some() || now.is_none() {
             return false;
         }
-        *slot = Some(now);
+        *slot = now;
         self.line = self.summary();
         true
     }
@@ -126,10 +126,10 @@ mod tests {
         let mut t = heard();
         // Released at 12_880 (start + length), whole at 13_000.
         assert_eq!(t.line, "heard 0.1 s · transcribed 1.2 s (model load 0.4 s)");
-        assert!(t.reach(|t| &mut t.routed, 14_120));
-        assert!(t.reach(|t| &mut t.agent_event, 16_000));
-        assert!(t.reach(|t| &mut t.first_text, 19_000));
-        assert!(t.reach(|t| &mut t.finished, 45_000));
+        assert!(t.reach(|t| &mut t.routed, Some(14_120)));
+        assert!(t.reach(|t| &mut t.agent_event, Some(16_000)));
+        assert!(t.reach(|t| &mut t.first_text, Some(19_000)));
+        assert!(t.reach(|t| &mut t.finished, Some(45_000)));
         assert_eq!(
             t.line,
             "heard 0.1 s · transcribed 1.2 s (model load 0.4 s) · agent started 3.1 s · \
@@ -140,9 +140,9 @@ first reply 6.1 s · done 32.1 s"
     #[test]
     fn a_stage_is_stamped_once_and_never_by_an_unknown_clock() {
         let mut t = heard();
-        assert!(!t.reach(|t| &mut t.finished, 0));
-        assert!(t.reach(|t| &mut t.finished, 20_000));
-        assert!(!t.reach(|t| &mut t.finished, 30_000));
+        assert!(!t.reach(|t| &mut t.finished, None));
+        assert!(t.reach(|t| &mut t.finished, Some(20_000)));
+        assert!(!t.reach(|t| &mut t.finished, Some(30_000)));
         assert_eq!(t.finished, Some(20_000));
     }
 

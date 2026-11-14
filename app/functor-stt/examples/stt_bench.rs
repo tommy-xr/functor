@@ -87,10 +87,12 @@ fn main() -> Result<(), String> {
         let warm = times[1..].iter().copied().fold(f64::INFINITY, f64::min);
         let wrong = word_errors(expected, &text);
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        println!(
-            "{}",
-            serde_json_line(&name, audio_s, check_ms, load_ms, first, warm, wrong, &text)
-        );
+        let line = serde_json::json!({
+            "clip": name, "audio_s": audio_s, "check_ms": check_ms.round(),
+            "load_ms": load_ms.round(), "first_ms": first.round(), "warm_ms": warm.round(),
+            "words_wrong": wrong, "text": text,
+        });
+        println!("{line}");
         rows.push((name, audio_s, first, warm, wrong, text));
     }
     println!("\n| clip | audio s | first ms | warm ms (best of {repeat}) | words wrong | text |");
@@ -125,21 +127,4 @@ fn word_errors(expected: &str, got: &str) -> usize {
         }
     }
     row[b.len()]
-}
-
-#[allow(clippy::too_many_arguments)]
-fn serde_json_line(
-    clip: &str,
-    audio_s: f64,
-    check_ms: f64,
-    load_ms: f64,
-    first_ms: f64,
-    warm_ms: f64,
-    wrong: usize,
-    text: &str,
-) -> String {
-    format!(
-        "{{\"clip\":{clip:?},\"audio_s\":{audio_s:.2},\"check_ms\":{check_ms:.0},\"load_ms\":{load_ms:.0},\
-\"first_ms\":{first_ms:.0},\"warm_ms\":{warm_ms:.0},\"words_wrong\":{wrong},\"text\":{text:?}}}"
-    )
 }

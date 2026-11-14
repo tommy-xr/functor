@@ -25,7 +25,7 @@ impl Default for Tuning {
         Tuning {
             gpu: true,
             // More than the performance cores only waits on the slowest.
-            threads: 4,
+            threads: std::thread::available_parallelism().map_or(4, |n| n.get().min(4)),
         }
     }
 }
@@ -56,7 +56,8 @@ impl Whisper {
             state: Mutex::new(state),
             tuning,
         };
-        whisper.transcribe(&[0; SAMPLE_RATE as usize])?;
+        // Only a head start: a failure shows on the first real clip.
+        let _ = whisper.transcribe(&[0; SAMPLE_RATE as usize]);
         Ok(whisper)
     }
 }
@@ -77,7 +78,8 @@ impl Transcriber for Whisper {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
-        let mut state = self.state.lock().map_err(|_| "a transcription panicked")?;
+        // `full` starts each clip afresh, so a panic mid-clip leaves nothing behind.
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.full(params, &audio).map_err(|e| e.to_string())?;
         let text: String = state.as_iter().map(|s| s.to_string()).collect();
         Ok(words(&text))

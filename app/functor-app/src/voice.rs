@@ -281,13 +281,14 @@ impl Speech {
     }
 
     /// Loads the model in the background when it is already on disk, so the
-    /// first clip does not wait for it (a missing one is still fetched on
-    /// first use). A failure is left for that use to report.
+    /// first clip does not wait for it (a missing or partial one is still
+    /// fetched on first use). A failure is left for that use to report.
     pub fn preload(&self) {
         #[cfg(feature = "whisper")]
         if let Speech::Whisper(cell) = self {
-            let file = model_dir().map(|d| d.join(functor_stt::DEFAULT_MODEL.file));
-            if file.is_ok_and(|f| f.is_file()) {
+            let model = functor_stt::DEFAULT_MODEL;
+            let file = model_dir().and_then(|d| std::fs::metadata(d.join(model.file)).map_err(|e| e.to_string()));
+            if file.is_ok_and(|f| f.len() == model.bytes) {
                 let cell = cell.clone();
                 tokio::spawn(async move { loaded(&cell).await.map(drop) });
             }
@@ -346,10 +347,13 @@ async fn loaded(
         let path = functor_stt::ensure_model(&model_dir()?, &functor_stt::DEFAULT_MODEL)?;
         functor_stt::Whisper::load(&path).map(Arc::new)
     };
+    // A thread of its own, not `spawn_blocking`: the runtime waits for
+    // those as it shuts down, and a load can take seconds (Metal compiles
+    // its shaders on a new build's first load), so quitting would too.
     let init = || async {
-        tokio::task::spawn_blocking(load)
-            .await
-            .map_err(|e| e.to_string())?
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || tx.send(load()));
+        rx.await.map_err(|_| "loading the speech model panicked".to_string())?
     };
     cell.get_or_try_init(init).await.cloned()
 }

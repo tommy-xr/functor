@@ -126,7 +126,8 @@ pub struct Task {
     /// Last active, as `created_at`.
     #[serde(default)]
     pub updated_at: Option<u64>,
-    /// Its latest spoken request's stage times, while it was the last.
+    /// Its latest spoken request's stage times (a typed message after it
+    /// leaves them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub voice: Option<crate::voice_timing::VoiceTiming>,
