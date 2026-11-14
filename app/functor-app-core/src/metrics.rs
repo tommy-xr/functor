@@ -185,6 +185,7 @@ mod tests {
             model: Some("m".into()),
             session_id: None,
             run: None,
+            queued: None,
             baseline: None,
             moment: None,
             evidence: None,

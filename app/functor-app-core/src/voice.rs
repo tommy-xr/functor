@@ -5,7 +5,7 @@
 
 use crate::devices::LinkCommand;
 use crate::layout::Placement;
-use crate::state::{can_run, connected, AppState, Command};
+use crate::state::{connected, AppState, Command};
 use crate::tasks::{Item, Spoken};
 
 /// After a run ends ok, how long the game has to reload with its edit
@@ -39,7 +39,8 @@ pub struct Job {
     pub device: String,
     pub utterance: u64,
     pub task: u64,
-    pub run: u64,
+    /// `None` while the task waits its turn in the queue (D30).
+    pub run: Option<u64>,
     /// The game session it reloads: another one (a restart, a project
     /// switch) is not this run's game.
     session: u64,
@@ -56,15 +57,15 @@ pub struct Job {
 pub enum Route {
     /// Stop this running task and resume it with the utterance (D29's steer).
     Steer(u64),
-    /// Start a new task in the active project.
+    /// A new task in the active project, queued while it is busy (D30).
     New,
     /// Nowhere, for this reason.
     Nowhere(String),
 }
 
 /// Where `text` from `device` goes: into the task running for the game on
-/// that headset, else a new task in that game's project. The one decision
-/// the router (4.4b) replaces.
+/// that headset, else a new task in that game's project (started, or queued
+/// behind a decision or a revert). The router's fixed rule (D29).
 pub fn route(state: &AppState, device: &str, text: &str) -> Route {
     let Some(project) = state
         .active
@@ -77,23 +78,16 @@ change. Choose it as the game's place on your computer."
                 .to_string(),
         );
     };
-    let running = state
+    if text.trim().is_empty() {
+        return Route::Nowhere("the message is empty".to_string());
+    }
+    match state
         .tasks
         .iter()
-        .find(|t| t.project == project && t.run.is_some());
-    if let Some(t) = state.tasks.iter().find(|t| t.reverting) {
-        return Route::Nowhere(format!("task {}'s change is being reverted", t.id));
-    }
-    match running {
-        // Nothing to resume yet: a fresh run would lose the first request.
-        Some(task) if task.session_id.is_none() => {
-            Route::Nowhere("the agent is still starting: say it again in a moment".to_string())
-        }
-        Some(task) if !text.trim().is_empty() => Route::Steer(task.id),
-        _ => match can_run(state, project, None, text) {
-            Ok(()) => Route::New,
-            Err(reason) => Route::Nowhere(reason),
-        },
+        .find(|t| t.project == project && t.run.is_some())
+    {
+        Some(task) => Route::Steer(task.id),
+        None => Route::New,
     }
 }
 
@@ -118,14 +112,14 @@ pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, 
     }));
 }
 
-/// Follows run `run` of `task`, started for `u`: `Working` now.
+/// Follows `task`'s run, started for `u` (`Working` now), or the one it
+/// starts when its turn comes, if queued (`Working` then).
 pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &mut Vec<Command>) {
-    let run = state
-        .tasks
-        .iter()
-        .find(|t| t.id == task)
-        .and_then(|t| t.run.as_ref());
-    let (Some(run), Some((session, revision))) = (run, on_headset(state, &u.device)) else {
+    let Some(t) = state.tasks.iter().find(|t| t.id == task) else {
+        return;
+    };
+    let run = t.run.as_ref().map(|r| r.id);
+    let Some((session, revision)) = on_headset(state, &u.device) else {
         return;
     };
     // A steered task's earlier utterance is superseded, not failed.
@@ -136,13 +130,15 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
         device: u.device.clone(),
         utterance: u.utterance,
         task,
-        run: run.id,
+        run,
         session,
         revision,
         reloaded: false,
         ended: None,
     });
-    status(commands, &u.device, u.utterance, Stage::Working);
+    if run.is_some() {
+        status(commands, &u.device, u.utterance, Stage::Working);
+    }
 }
 
 /// After every event: each followed run's outcome, once known, goes to its
@@ -166,15 +162,27 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         let Some(task) = state.tasks.iter().find(|t| t.id == job.task) else {
             return end(Stage::Failed("the task was deleted".to_string()));
         };
+        // Queued: followed from its start, its reloads counted from then.
+        let run = match (job.run, &task.run) {
+            (Some(run), _) => run,
+            (None, _) if task.queued.is_some() => return true,
+            (None, Some(run)) => {
+                job.run = Some(run.id);
+                job.revision = revision;
+                status(commands, &job.device, job.utterance, Stage::Working);
+                return true;
+            }
+            (None, None) => return end(Stage::Failed("the task did not start".to_string())),
+        };
         match (revision, job.revision) {
             (Some(now), None) => job.revision = Some(now),
             (Some(now), Some(then)) if now > then => job.reloaded = true,
             _ => {}
         }
-        if task.run.as_ref().is_some_and(|r| r.id == job.run) {
+        if task.run.as_ref().is_some_and(|r| r.id == run) {
             return true;
         }
-        match outcome(&task.transcript, job.run) {
+        match outcome(&task.transcript, run) {
             Some(Item::Finished { ok: true, .. }) if job.reloaded => end(Stage::Reloaded),
             Some(Item::Finished { ok: true, .. })
                 if state.tracks_changes && task.change.as_ref().is_some_and(|c| c.is_empty()) =>

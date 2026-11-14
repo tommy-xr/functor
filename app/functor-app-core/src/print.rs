@@ -249,6 +249,7 @@ pub fn print_layout(layout: &Layout) -> String {
 
 fn task(t: &Task) -> String {
     let status = match &t.status {
+        TaskStatus::Queued => "queued".to_string(),
         TaskStatus::InProgress => "in_progress".to_string(),
         TaskStatus::WaitingOnYou => "waiting_on_you".to_string(),
         TaskStatus::ReadyForReview => "ready_for_review".to_string(),
@@ -768,6 +769,7 @@ recents: 2
                 model: Some("claude-model".into()),
                 session_id: None,
                 run: None,
+                queued: None,
                 baseline: Some("tree".into()),
                 change: Some(Change::from_files(
                     vec![FileChange {

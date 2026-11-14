@@ -89,10 +89,14 @@ pub struct Call {
     pub label: String,
 }
 
-/// Every task's activity, by id; `windows` are the context windows seen,
-/// by [`window_key`].
+/// Every task's activity, by id, but a queued one's (it has no agent yet);
+/// `windows` are the context windows seen, by [`window_key`].
 pub fn activities(tasks: &[Task], windows: &BTreeMap<String, u64>) -> BTreeMap<u64, Activity> {
-    tasks.iter().map(|t| (t.id, activity(t, windows))).collect()
+    tasks
+        .iter()
+        .filter(|t| t.queued.is_none())
+        .map(|t| (t.id, activity(t, windows)))
+        .collect()
 }
 
 /// Where the context window of `harness` running `model` is remembered.
@@ -171,7 +175,10 @@ pub fn activity(task: &Task, windows: &BTreeMap<String, u64>) -> Activity {
             }
         }
         TaskStatus::WaitingOnYou | TaskStatus::ReadyForReview => Stance::Waiting,
-        TaskStatus::Done | TaskStatus::Kept | TaskStatus::Reverted => Stance::Done,
+        // Queued: never asked (`activities` leaves it out).
+        TaskStatus::Done | TaskStatus::Kept | TaskStatus::Reverted | TaskStatus::Queued => {
+            Stance::Done
+        }
         TaskStatus::Failed { .. } => Stance::Failed,
         TaskStatus::InProgress => Stance::Thinking,
     };

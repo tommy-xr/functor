@@ -105,6 +105,11 @@ activity: { [key in number]: Activity },
  */
 decisions: { [key in number]: Decision }, 
 /**
+ * Per project path with queued tasks or a reason a new one would
+ * wait, its queue (D30), refreshed after every event.
+ */
+queues: { [key in string]: Queue }, 
+/**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
  * chooses one for the project; not kept across restarts.
@@ -227,7 +232,7 @@ result: string, ok: boolean, };
 /**
  * UI → core.
  */
-export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, scope?: Scope, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_scope", scope: Scope, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
+export type ClientMsg = { "type": "get_state" } | { "type": "set_active_project", path: string, } | { "type": "start_session" } | { "type": "stop_session" } | { "type": "input", input: GameInput, } | { "type": "transport", call: TransportCall, } | { "type": "watch_transport", on: boolean, } | { "type": "new_task", message: string, harness: Harness, scope?: Scope, } | { "type": "send_message", task: number, message: string, } | { "type": "stop_task", task: number, } | { "type": "move_queued", task: number, to: number, } | { "type": "start_queued", task: number, } | { "type": "get_transcript", task: number, } | { "type": "set_harness", harness: Harness, } | { "type": "set_scope", scope: Scope, } | { "type": "set_review", setting: ReviewSetting, } | { "type": "get_diff", task: number, } | { "type": "keep_change", task: number, } | { "type": "revert_change", task: number, tree: string, } | { "type": "layout", op: LayoutOp, } | { "type": "get_file", path: string, } | { "type": "open_folder", path: string, } | { "type": "pick_folder" } | { "type": "show_new_project", here: boolean, } | { "type": "close_new_project" } | { "type": "check_new_project", request: NewProjectRequest, } | { "type": "pick_parent" } | { "type": "create_project", request: NewProjectRequest, harness: Harness, } | { "type": "list_dirs", path: string, } | { "type": "remove_recent", path: string, } | { "type": "walkthrough_step", task: number, item: number, step: number, } | { "type": "clear_highlight", seq: number, } | { "type": "canvas_stacked", stacked: boolean, } | { "type": "select_task", task: number | null, if_unset: boolean, } | { "type": "rename_task", task: number, title: string, } | { "type": "delete_task", task: number, } | { "type": "allow_pairing", request: number, } | { "type": "deny_pairing", request: number, } | { "type": "forget_device", device: string, } | { "type": "pair_by_cable", serial: string, replace: boolean, };
 
 /**
  * Tokens of context in use, of the model's `window`.
@@ -629,6 +634,23 @@ name: string,
  */
 path: string, entries: Entries, };
 
+/**
+ * A project's queue, derived after every event.
+ */
+export type Queue = { 
+/**
+ * Its queued tasks, the next to start first.
+ */
+tasks: Array<number>, 
+/**
+ * Why a task cannot start in the project now; `None`: it would start at once.
+ */
+wait: Wait | null, 
+/**
+ * A task the user starts now would queue ([`holds`]).
+ */
+holds: boolean, };
+
 export type Recent = { 
 /**
  * The project directory's name.
@@ -736,7 +758,11 @@ views: number,
  * The latest usage split, when the harness gives one; added to the
  * usage item when the run ends.
  */
-detail?: UsageDetail, };
+detail?: UsageDetail, 
+/**
+ * The agent reported its start, so it has the run's messages.
+ */
+started: boolean, };
 
 /**
  * How much of the user's own setup an agent run reads (D39): instructions,
@@ -859,6 +885,11 @@ session_id: string | null,
  */
 run: Run | null, 
 /**
+ * Waiting its turn in its project's queue (D30): lower goes first. A
+ * queued task has never run; its transcript is the user's messages.
+ */
+queued: number | null, 
+/**
  * The snapshot (a git tree in the app's store) the task's change is
  * measured from: taken as its first run, or the first after a keep or
  * revert, started. `None` outside git.
@@ -900,7 +931,7 @@ created_at: number | null,
  */
 updated_at: number | null, };
 
-export type TaskStatus = { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
+export type TaskStatus = { "kind": "queued" } | { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
 /**
  * One of `functor init --list --json`'s entries.
@@ -1023,5 +1054,10 @@ export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "k
  * (scrolled to `path`), or the game. Paths are relative to the project.
  */
 export type ViewTarget = { "kind": "file", path: string, lines: [number, number] | null, } | { "kind": "changes", path: string | null, } | { "kind": "game" };
+
+/**
+ * Why a project's next task cannot start now.
+ */
+export type Wait = { "kind": "running", task: number, } | { "kind": "reverting", task: number, } | { "kind": "decision", task: number, } | { "kind": "measuring", task: number, };
 
 export type WalkthroughStep = { title: string, note: string | null, view: ViewTarget, };

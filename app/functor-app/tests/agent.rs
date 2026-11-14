@@ -736,7 +736,7 @@ async fn tasks_over_the_websocket() {
     assert_eq!(task["session_id"], "fake-session-1");
     assert_gone(&[&server, &agent]);
 
-    // A follow-up continues the stored session; meanwhile more messages are refused.
+    // A follow-up continues the stored session.
     send(
         &mut ws,
         json!({"type": "send_message", "task": 1, "message": "And now?"}),
@@ -751,20 +751,6 @@ async fn tasks_over_the_websocket() {
             .any(|a| a == "--replay-resume=fake-session-1"),
         "{agent:?}"
     );
-    for (msg, reason) in [
-        (
-            json!({"type": "send_message", "task": 1, "message": "more"}),
-            "task 1 is still running: wait for it to finish or stop it",
-        ),
-        (
-            json!({"type": "new_task", "message": "other", "harness": "codex"}),
-            "task 1 is running in a: one run per project at a time",
-        ),
-    ] {
-        send(&mut ws, msg).await;
-        let (rejected, _) = until(&mut ws, |m| m["type"] == "rejected").await;
-        assert_eq!(rejected["reason"], reason);
-    }
     until(&mut ws, status_is("done")).await;
     assert_gone(&[&server, &agent]);
 

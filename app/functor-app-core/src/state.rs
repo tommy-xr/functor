@@ -21,6 +21,7 @@ use crate::folders::{mark_missing, remember, Recent};
 use crate::layout::{Layout, LayoutOp, Placement, Target, View};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
+use crate::queue::{self, Queue};
 use crate::review::{
     brief, default_model, review_harness, Review, ReviewEvent, ReviewSetting, ReviewSpec,
     ReviewState,
@@ -65,6 +66,11 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub start_on_open: bool,
+    /// Queued tasks start by themselves when their turn comes (D30). Off
+    /// for `--print` and `task`, which start no run unasked.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub auto_start: bool,
     /// Every project's tasks, by id; their transcripts travel separately.
     pub tasks: Vec<Task>,
     /// Per task id, what its agent is doing (D34), refreshed after every event.
@@ -72,6 +78,9 @@ pub struct AppState {
     /// Per task id whose change waits, its decision page's size and verdict
     /// (D35), refreshed after every event.
     pub decisions: BTreeMap<u64, Decision>,
+    /// Per project path with queued tasks or a reason a new one would
+    /// wait, its queue (D30), refreshed after every event.
+    pub queues: BTreeMap<String, Queue>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -202,9 +211,11 @@ impl AppState {
             no_gpu: false,
             speech: false,
             start_on_open: false,
+            auto_start: false,
             tasks: Vec::new(),
             activity: BTreeMap::new(),
             decisions: BTreeMap::new(),
+            queues: BTreeMap::new(),
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -550,6 +561,13 @@ pub struct RunSpec {
 pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let mut commands = Vec::new();
     let get_state = event == Event::Client(ClientMsg::GetState);
+    // The exit starts no queued task; nor would a loader's step (a safeguard:
+    // its state has auto-start off, and its commands are dropped).
+    let starts = state.auto_start
+        && !matches!(
+            event,
+            Event::Shutdown | Event::TasksLoaded { .. } | Event::LayoutsLoaded { .. }
+        );
     let shown = transport_shown(&state);
     // A handler may move only the highlight (a step click on a shown tab).
     let highlighted = state.highlight.clone();
@@ -883,6 +901,12 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         Event::Client(ClientMsg::StopTask { task }) => {
             (stop_task(&mut state, task, &mut commands), false)
         }
+        Event::Client(ClientMsg::MoveQueued { task, to }) => {
+            (move_queued(&mut state, task, to, &mut commands), false)
+        }
+        Event::Client(ClientMsg::StartQueued { task }) => {
+            (start_now(&mut state, task, &mut commands), false)
+        }
         Event::Client(ClientMsg::KeepChange { task }) => {
             (keep(&mut state, task, &mut commands), false)
         }
@@ -998,16 +1022,21 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             (false, false)
         }
     };
+    let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
     prune_highlight(&mut state);
     let activity = activities(&state.tasks, &state.context_windows);
     let decided = decisions(&state.tasks);
+    let queues = queue::queues(&state.tasks, state.tracks_changes, state.active.as_deref());
     let changed = changed
+        || started
         || state.highlight != highlighted
         || state.activity != activity
-        || state.decisions != decided;
+        || state.decisions != decided
+        || state.queues != queues;
     state.activity = activity;
     state.decisions = decided;
+    state.queues = queues;
     refresh_contexts(&mut state, &mut commands);
     // A client message that changed nothing still answers with the state, so
     // the sender sees what is active.
@@ -1197,9 +1226,11 @@ fn opened(
         // Derived from `tasks` at the end of the step.
         activity: _,
         decisions: _,
+        queues: _,
         session: _,
         no_gpu: _,
         start_on_open: _,
+        auto_start: _,
         harnesses: _,
         can_review: _,
         recents: _,
@@ -1245,6 +1276,19 @@ fn opened(
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
+    // A change left unmeasured (the app quit with its diff in flight) would
+    // hold the queue until someone opened it: measured now.
+    if state.tracks_changes {
+        for task in state.tasks.iter().filter(|t| t.change.is_none()) {
+            if let Some(baseline) = &task.baseline {
+                commands.push(Command::Diff {
+                    task: task.id,
+                    baseline: baseline.clone(),
+                    reply: false,
+                });
+            }
+        }
+    }
     // A project just created: its game starts, then its first task.
     let mut started = false;
     if let Some(NewProject {
@@ -1891,8 +1935,10 @@ fn delete_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bo
     true
 }
 
-/// Starts task `id` in the active project with `message`, reading `scope`
-/// of the user's setup (else the project's level).
+/// Starts task `id` in the active project with `message` (reading `scope` of
+/// the user's setup, else the project's level), or queues it while the
+/// project is busy ([`queue::holds`], D30); refused where nothing starts
+/// unasked.
 fn new_task(
     state: &mut AppState,
     id: u64,
@@ -1902,27 +1948,45 @@ fn new_task(
     spoken: Option<Spoken>,
     commands: &mut Vec<Command>,
 ) -> bool {
+    match create_task(state, id, message, harness, scope, spoken, commands) {
+        Ok(()) => true,
+        Err(reason) => reject(commands, reason),
+    }
+}
+
+/// [`new_task`], or why not.
+fn create_task(
+    state: &mut AppState,
+    id: u64,
+    message: String,
+    harness: Harness,
+    scope: Option<Scope>,
+    spoken: Option<Spoken>,
+    commands: &mut Vec<Command>,
+) -> Result<(), String> {
     let Some(project) = state.active.clone() else {
-        return reject(
-            commands,
-            "there is no project to start a task in".to_string(),
-        );
+        return Err("there is no project to start a task in".to_string());
     };
-    if let Err(reason) = can_run(state, &project, None, &message) {
-        return reject(commands, reason);
+    if message.trim().is_empty() {
+        return Err("the message is empty".to_string());
+    }
+    let wait = queue::holds(&state.tasks, state.tracks_changes, &project);
+    if let (Some(wait), false) = (&wait, state.auto_start) {
+        return Err(wait.reason());
     }
     state.current_task.insert(project.clone(), Some(id));
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
-    state.tasks.push(Task {
+    let mut task = Task {
         id,
         project,
         title: title(&message),
-        status: TaskStatus::InProgress,
+        status: TaskStatus::Queued,
         harness,
         scope: scope.unwrap_or_default().for_harness(harness),
         model: None,
         session_id: None,
         run: None,
+        queued: Some(queue::last_place(&state.tasks)),
         baseline: None,
         change: None,
         reverting: false,
@@ -1932,50 +1996,80 @@ fn new_task(
         review: None,
         created_at: stamp(state.now),
         updated_at: None,
-        transcript: Vec::new(),
-    });
-    start_run(state, id, message, spoken, commands);
-    true
+        transcript: vec![Item::User {
+            text: message,
+            spoken,
+        }],
+    };
+    if wait.is_some() {
+        commands.push(save(Path::new(&state.repo_root), &task));
+        broadcast_items(commands, &task, vec![0]);
+        state.tasks.push(task);
+        return Ok(());
+    }
+    task.queued = None;
+    state.tasks.push(task);
+    start_run(state, id, commands);
+    Ok(())
 }
 
-/// A follow-up on task `id`, resuming its agent session.
+/// A message to task `id`: added to it while it is queued, a steer while
+/// it runs, else a follow-up resuming its agent session.
 fn send_message(
     state: &mut AppState,
     id: u64,
     message: String,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
+    let root = PathBuf::from(&state.repo_root);
+    let now = stamp(state.now);
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
         commands.push(Command::Reply(no_task(id)));
         return false;
     };
-    if let Err(reason) = can_run(state, &task.project, Some(id), &message) {
+    if message.trim().is_empty() {
+        return reject(commands, "the message is empty".to_string());
+    }
+    if task.queued.is_some() {
+        // Sent with the rest when its turn comes (D30).
+        task.transcript.push(Item::User {
+            text: message,
+            spoken: None,
+        });
+        task.updated_at = now.or(task.updated_at);
+        commands.push(save(&root, task));
+        broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+        return true;
+    }
+    if task.run.is_some() {
+        steer(state, id, message, None, commands);
+        return true;
+    }
+    let project = task.project.clone();
+    if let Err(reason) = can_run(state, &project, &message) {
         return reject(commands, reason);
     }
-    start_run(state, id, message, None, commands);
+    say(state, id, message, None);
+    start_run(state, id, commands);
     true
 }
 
-/// Why `message` cannot start a run in `project` now; `task` for a follow-up.
-/// v1 runs one task per project at a time and queues nothing.
-pub(crate) fn can_run(
-    state: &AppState,
-    project: &str,
-    task: Option<u64>,
-    message: &str,
-) -> Result<(), String> {
+/// Why `message` cannot start a follow-up run in `project` now: one run
+/// per project at a time, and none during a revert.
+pub(crate) fn can_run(state: &AppState, project: &str, message: &str) -> Result<(), String> {
     if message.trim().is_empty() {
         return Err("the message is empty".to_string());
     }
+    busy(state, project)
+}
+
+/// Why no run can start in `project` now: it runs one, or a revert runs.
+fn busy(state: &AppState, project: &str) -> Result<(), String> {
     match state
         .tasks
         .iter()
         .find(|t| t.project == project && t.run.is_some())
     {
-        Some(busy) if Some(busy.id) == task => Err(format!(
-            "task {} is still running: wait for it to finish or stop it",
-            busy.id
-        )),
         Some(busy) => Err(format!(
             "task {} is running in {project}: one run per project at a time",
             busy.id
@@ -1988,15 +2082,103 @@ pub(crate) fn can_run(
     }
 }
 
-/// Adds `message` to task `id` and starts its run; a `spoken` one reaches
-/// the agent with where it was said ([`voice::prompt`]).
-fn start_run(
+/// Adds the user's `message` to task `id`'s transcript.
+fn say(state: &mut AppState, id: u64, message: String, spoken: Option<Spoken>) {
+    let task = state
+        .tasks
+        .iter_mut()
+        .find(|t| t.id == id)
+        .expect("a known task");
+    task.transcript.push(Item::User {
+        text: message,
+        spoken,
+    });
+}
+
+/// Steers running task `id` with `message` (D29): the agent CLIs take no
+/// input mid-run, so its run stops and the same conversation resumes with
+/// it. The task keeps its baseline, so the change accumulates. A run cut
+/// before its agent started ends with no `Stopped`: its messages go again
+/// with this one ([`queue::prompt`]).
+fn steer(
     state: &mut AppState,
     id: u64,
     message: String,
     spoken: Option<Spoken>,
     commands: &mut Vec<Command>,
 ) {
+    let task = state.tasks.iter_mut().find(|t| t.id == id).expect("running");
+    match task.run.take() {
+        Some(run) if !run.started => {
+            commands.push(Command::StopRun { task: id, run: run.id });
+            // What it left (a snapshot only) is measured as the next run ends.
+            task.change = None;
+        }
+        run => {
+            task.run = run;
+            stop_task(state, id, commands);
+        }
+    }
+    say(state, id, message, spoken);
+    start_run(state, id, commands);
+}
+
+/// Each free project's next queued task starts (D30); whether one did.
+/// The active project's waits for its game to listen, so its agent attaches
+/// to it and the game's moment is taken (as a new project's first task does).
+fn start_ready(state: &mut AppState, commands: &mut Vec<Command>) -> bool {
+    let starting = (state.session.as_ref()).is_some_and(|s| s.status == SessionStatus::Starting);
+    let mut ready = queue::ready(&state.tasks, state.tracks_changes);
+    ready.retain(|&id| {
+        let task = state.tasks.iter().find(|t| t.id == id).expect("ready");
+        !(starting && state.active.as_ref() == Some(&task.project))
+    });
+    for &id in &ready {
+        let task = state.tasks.iter_mut().find(|t| t.id == id).expect("ready");
+        task.queued = None;
+        start_run(state, id, commands);
+    }
+    !ready.is_empty()
+}
+
+/// Starts queued task `id` now, ahead of its turn: the user's choice to
+/// start it beside a change waiting for a decision, as a new task may be.
+/// Refused while its project runs a task or a revert runs.
+fn start_now(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
+    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
+        commands.push(Command::Reply(no_task(id)));
+        return false;
+    };
+    if task.queued.is_none() {
+        return reject(commands, format!("task {id} is not queued"));
+    }
+    let project = task.project.clone();
+    if let Err(reason) = busy(state, &project) {
+        return reject(commands, reason);
+    }
+    let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
+    task.queued = None;
+    start_run(state, id, commands);
+    true
+}
+
+/// Moves queued task `id` to place `to` in its project's queue.
+fn move_queued(state: &mut AppState, id: u64, to: usize, commands: &mut Vec<Command>) -> bool {
+    let root = PathBuf::from(&state.repo_root);
+    match queue::reorder(&mut state.tasks, id, to) {
+        Ok(moved) => {
+            for task in state.tasks.iter().filter(|t| moved.contains(&t.id)) {
+                commands.push(save(&root, task));
+            }
+            !moved.is_empty()
+        }
+        Err(reason) => reject(commands, reason),
+    }
+}
+
+/// Starts task `id`'s run for its last message (the user's), sending the
+/// agent every message it has not seen ([`queue::prompt`]).
+fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     let root = PathBuf::from(&state.repo_root);
     let project = &state
         .tasks
@@ -2016,15 +2198,8 @@ fn start_run(
         .find(|t| t.id == id)
         .expect("a known task");
     task.updated_at = now.or(task.updated_at);
-    let run = task.transcript.len() as u64;
-    let prompt = match &spoken {
-        Some(s) => voice::prompt(&message, s),
-        None => message.clone(),
-    };
-    task.transcript.push(Item::User {
-        text: message,
-        spoken,
-    });
+    let run = task.transcript.len() as u64 - 1;
+    let prompt = queue::prompt(task);
     task.run = Some(Run {
         id: run,
         ..Default::default()
@@ -2107,10 +2282,8 @@ fn heard(
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
             false
         }
-        // Stop and resume (D29): the run's session continues with the utterance.
         Route::Steer(id) => {
-            stop_task(state, id, commands);
-            start_run(state, id, u.text.clone(), Some(u.spoken.clone()), commands);
+            steer(state, id, u.text.clone(), Some(u.spoken.clone()), commands);
             voice::follow(state, &u, id, commands);
             true
         }
@@ -2133,8 +2306,9 @@ fn heard(
     }
 }
 
-/// A new task for utterance `u`, with the id reserved for it, if it still
-/// goes to a new task.
+/// A new task for utterance `u`, with the id reserved for it, while its
+/// headset still runs the game; a steer if a task started meanwhile, as
+/// the rule would have chosen then.
 fn voice_task(
     state: &mut AppState,
     id: Result<u64, String>,
@@ -2144,20 +2318,16 @@ fn voice_task(
 ) -> bool {
     let started = match (id, voice::route(state, &u.device, &u.text)) {
         (Err(e), _) => Err(format!("cannot start a task: {e}")),
-        (Ok(id), Route::New) => {
-            new_task(
-                state,
-                id,
-                u.text.clone(),
-                harness,
-                None,
-                Some(u.spoken.clone()),
-                commands,
-            );
+        (_, Route::Nowhere(reason)) => Err(reason),
+        (_, Route::Steer(id)) => {
+            steer(state, id, u.text.clone(), Some(u.spoken.clone()), commands);
             Ok(id)
         }
-        (_, Route::Nowhere(reason)) => Err(reason),
-        (_, Route::Steer(_)) => Err("another task started meanwhile".to_string()),
+        (Ok(id), Route::New) => {
+            let spoken = Some(u.spoken.clone());
+            // The project's level (D39).
+            create_task(state, id, u.text.clone(), harness, None, spoken, commands).map(|()| id)
+        }
     };
     match started {
         Ok(id) => {
@@ -2800,6 +2970,7 @@ mod tests {
             tracks_changes: false,
             session: None,
             no_gpu: false,
+            auto_start: true,
             tasks: vec![],
             harnesses: vec![Harness::Claude, Harness::Codex],
             harness_choice: BTreeMap::new(),
@@ -3826,6 +3997,7 @@ mod tests {
     fn derived(mut s: AppState) -> AppState {
         s.activity = activities(&s.tasks, &s.context_windows);
         s.decisions = decisions(&s.tasks);
+        s.queues = queue::queues(&s.tasks, s.tracks_changes, s.active.as_deref());
         s
     }
 
@@ -4093,26 +4265,262 @@ mod tests {
         assert_eq!((again, commands), (next, vec![]));
     }
 
+    fn queue_of<'a>(s: &'a AppState, project: &str) -> Option<&'a Queue> {
+        s.queues.get(project)
+    }
+
+    /// A message to the running task steers it (D29): the run stops and
+    /// the session resumes with it. A new task in the project waits its
+    /// turn (D30); a follow-up on another task is refused; another project
+    /// runs alongside.
     #[test]
-    fn messages_are_rejected_while_a_run_is_active() {
+    fn a_busy_project_steers_its_run_and_queues_new_tasks() {
         let (s, _) = update(state(), new_task("first"));
-        let (next, commands) = update(s.clone(), send(1, "more"));
-        assert_eq!(next, s);
+        let (s, _) = update(s, agent(1, 0, started("sess-1")));
+        let (s, commands) = update(s, send(1, "more"));
+        let stop = commands
+            .iter()
+            .position(|c| *c == Command::StopRun { task: 1, run: 0 });
+        let start = commands
+            .iter()
+            .position(|c| matches!(c, Command::StartRun(_)));
+        assert!(stop.is_some() && stop < start, "{commands:?}");
+        let run = spec(&commands);
+        assert_eq!(
+            (run.run, run.message.as_str(), run.resume.as_deref()),
+            (2, "more", Some("sess-1"))
+        );
+        assert_eq!(task(&s, 1).transcript[1], Item::Stopped);
+
+        let (s, commands) = update(s, nth_task(2, "second"));
+        assert!(!commands.iter().any(|c| matches!(c, Command::StartRun(_))));
+        assert_eq!(task(&s, 2).status, TaskStatus::Queued);
+        assert_eq!(s.current_task["examples/a"], Some(2));
+        assert_eq!(
+            queue_of(&s, "examples/a"),
+            Some(&Queue {
+                tasks: vec![2],
+                wait: Some(queue::Wait::Running { task: 1 }),
+                holds: true,
+            })
+        );
+        // A queued task has no agent, so no card.
+        assert!(!s.activity.contains_key(&2));
+        // Queued with the level picked, kept until it starts (D39).
+        let isolated = Event::NewTask {
+            id: Ok(3),
+            message: "third".to_string(),
+            harness: Harness::Claude,
+            scope: Some(crate::tasks::Scope::Isolated),
+            voice: None,
+        };
+        let (s, commands) = update(s, isolated);
+        assert_eq!(task(&s, 3).scope, crate::tasks::Scope::Isolated);
+        assert_eq!(queue_of(&s, "examples/a").unwrap().tasks, [2, 3]);
+        assert!(matches!(&commands[..], [Command::SaveTask { .. }, _, _]));
+
+        // Said to a queued task: kept for its start, not run.
+        let (s, commands) = update(s, send(3, "and fourth"));
+        assert_eq!(commands.len(), 3, "{commands:?}");
+        assert_eq!(task(&s, 3).transcript.len(), 2);
+        // The next one starts as the run ends; a follow-up on the first waits.
+        let (s, _) = update(s, agent(1, 2, finished()));
+        let (done, _) = update(s.clone(), ended(1, 2));
+        assert!(task(&done, 2).run.is_some());
+        let (_, commands) = update(done, send(1, "again"));
         assert_eq!(
             commands,
-            rejected("task 1 is still running: wait for it to finish or stop it")
+            rejected("task 2 is running in examples/a: one run per project at a time")
         );
-        let (next, commands) = update(s.clone(), nth_task(2, "second"));
-        assert_eq!(next, s);
-        assert_eq!(
-            commands,
-            rejected("task 1 is running in examples/a: one run per project at a time")
-        );
-        // Another project may run alongside it.
+
         let (b, _) = update(s, switch("examples/b"));
-        let (b, commands) = update(b, nth_task(2, "in b"));
-        assert_eq!(task(&b, 2).project, "examples/b");
+        let (b, commands) = update(b, nth_task(4, "in b"));
+        assert_eq!(task(&b, 4).project, "examples/b");
         assert!(matches!(commands[0], Command::StartRun(_)), "{commands:?}");
+    }
+
+    /// A queued task starts by itself when the run ends (ok, failed or
+    /// stopped), given its request and everything said to it since, in order.
+    #[test]
+    fn a_queued_task_starts_when_the_run_ends_with_every_message() {
+        let busy = || {
+            let (s, _) = update(state(), new_task("first"));
+            let (s, _) = update(s, nth_task(2, "make it red"));
+            update(s, send(2, "no, blue")).0
+        };
+        for end in [ended(1, 0), client(ClientMsg::StopTask { task: 1 })] {
+            let (s, commands) = update(busy(), end);
+            let run = spec(&commands);
+            assert_eq!((run.task, run.run), (2, 1));
+            assert_eq!(
+                run.message,
+                format!("make it red\n\n{}\n\nno, blue", queue::LATER)
+            );
+            assert_eq!(run.resume, None);
+            let t = task(&s, 2);
+            assert_eq!((t.queued, &t.status), (None, &TaskStatus::InProgress));
+            assert_eq!(queue_of(&s, "examples/a").unwrap().tasks, Vec::<u64>::new());
+        }
+        // Its events then land on that run.
+        let (s, _) = update(busy(), ended(1, 0));
+        let (s, _) = update(s, agent(2, 1, finished()));
+        let (s, _) = update(s, ended(2, 1));
+        assert_eq!(task(&s, 2).status, TaskStatus::Done);
+    }
+
+    /// A change waiting for Keep or Revert holds the queue: a second task's
+    /// edits would land in its change. The queue says whose, and starts
+    /// once it is kept or reverted; an empty change holds nothing.
+    #[test]
+    fn a_change_awaiting_a_decision_holds_the_queue_until_kept_or_reverted() {
+        let (s, _) = update(tracked(), new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, nth_task(2, "then bounce"));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, change(1, "tree-1", one_file(2)));
+        let (s, commands) = update(s, ended(1, 0));
+        assert!(!commands.iter().any(|c| matches!(c, Command::StartRun(_))));
+        assert_eq!(
+            queue_of(&s, "examples/a").unwrap().wait,
+            Some(queue::Wait::Decision { task: 1 })
+        );
+        // A new task goes behind it; one the user starts now runs beside
+        // the change, as a new task with nothing queued does.
+        let (behind, _) = update(s.clone(), nth_task(3, "and spin"));
+        assert_eq!(queue_of(&behind, "examples/a").unwrap().tasks, [2, 3]);
+        let (now, commands) = update(behind, client(ClientMsg::StartQueued { task: 3 }));
+        assert_eq!(spec(&commands).task, 3);
+        let (_, commands) = update(now, client(ClientMsg::StartQueued { task: 2 }));
+        assert_eq!(
+            commands,
+            rejected("task 3 is running in examples/a: one run per project at a time")
+        );
+        let (_, commands) = update(reviewed(one_file(2)), nth_task(2, "beside"));
+        assert_eq!(spec(&commands).task, 2);
+
+        let (kept, commands) = update(s.clone(), keep(1));
+        let run = spec(&commands);
+        assert_eq!((run.task, run.snapshot), (2, true));
+        assert!(task(&kept, 2).run.is_some());
+
+        let (reverting, _) = update(s, revert(1));
+        assert_eq!(
+            queue_of(&reverting, "examples/a").unwrap().wait,
+            Some(queue::Wait::Reverting { task: 1 })
+        );
+        let (_, commands) = update(reverting, reverted(1, "tree-1", Ok(())));
+        assert_eq!(spec(&commands).task, 2);
+
+        // Stopped: held while its change is measured, then free if empty.
+        let (s, _) = update(tracked(), new_task("Make it spin"));
+        let (s, _) = update(s, baseline(1, 0, "tree-1"));
+        let (s, _) = update(s, nth_task(2, "then bounce"));
+        let (s, _) = update(s, client(ClientMsg::StopTask { task: 1 }));
+        assert_eq!(
+            queue_of(&s, "examples/a").unwrap().wait,
+            Some(queue::Wait::Measuring { task: 1 })
+        );
+        let (_, commands) = update(s, change(1, "tree-1", Change::default()));
+        assert_eq!(spec(&commands).task, 2);
+    }
+
+    /// The queue is reordered and pruned by the user; "run next" is a move
+    /// to the front; each project keeps its own line.
+    #[test]
+    fn a_queue_is_reordered_and_pruned_and_kept_per_project() {
+        let (s, _) = update(state(), new_task("first"));
+        let (s, _) = update(s, nth_task(2, "two"));
+        let (s, _) = update(s, nth_task(3, "three"));
+        let (s, _) = update(s, nth_task(4, "four"));
+        let to = |task, to| client(ClientMsg::MoveQueued { task, to });
+        let (s, commands) = update(s, to(4, 0));
+        assert_eq!(queue_of(&s, "examples/a").unwrap().tasks, [4, 2, 3]);
+        let saved: Vec<u64> = commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::SaveTask { task, .. } => Some(task.id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(saved, [2, 3, 4]);
+        let (s, commands) = update(s, to(1, 0));
+        assert_eq!(commands, rejected("task 1 is not queued"));
+        let (s, _) = update(s, client(ClientMsg::DeleteTask { task: 2 }));
+        assert_eq!(queue_of(&s, "examples/a").unwrap().tasks, [4, 3]);
+
+        // Switched away: a's queue still starts in its turn.
+        let (s, _) = update(s, switch("examples/b"));
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(spec(&commands).task, 4);
+        assert_eq!(task(&s, 4).project, "examples/a");
+    }
+
+    /// A restart keeps the queue (it is saved with each task); the loader's
+    /// own step starts nothing, and the next step starts the head of a free
+    /// project. Without auto-start (`task`, `--print`) nothing is queued.
+    #[test]
+    fn a_restart_keeps_the_queue_and_only_the_app_starts_it() {
+        let (s, _) = update(state(), new_task("first"));
+        let (s, commands) = update(s, nth_task(2, "two"));
+        let Some(Command::SaveTask { task: saved, .. }) = commands.first() else {
+            panic!("{commands:?}");
+        };
+        let stored = crate::tasks::from_stored(&crate::tasks::to_stored(saved)).unwrap();
+        assert_eq!(stored.queued, task(&s, 2).queued);
+        let loaded = Event::TasksLoaded {
+            tasks: vec![task(&s, 1).clone(), stored],
+        };
+        let (s, commands) = update(state(), loaded);
+        assert!(!commands.iter().any(|c| matches!(c, Command::StartRun(_))));
+        assert_eq!(task(&s, 2).status, TaskStatus::Queued);
+        // The active project's waits for its game to listen.
+        let mut waiting = s.clone();
+        waiting.session = Some(Session {
+            id: 7,
+            pid: None,
+            status: SessionStatus::Starting,
+        });
+        let (waiting, commands) = update(waiting, client(ClientMsg::GetState));
+        assert!(!commands.iter().any(|c| matches!(c, Command::StartRun(_))));
+        let listening = SessionEvent::Listening {
+            debug_url: "http://127.0.0.1:6000".into(),
+        };
+        let (_, commands) = update(waiting, session(7, listening));
+        assert_eq!(spec(&commands).attach.as_deref(), Some("http://127.0.0.1:6000"));
+        let (s, commands) = update(s, client(ClientMsg::GetState));
+        assert_eq!(spec(&commands).task, 2);
+        assert!(task(&s, 2).run.is_some());
+
+        // A change left unmeasured when the app quit is measured on open,
+        // so it does not hold the queue until someone looks.
+        let mut saved = task(&finished_task(), 1).clone();
+        saved.baseline = Some("tree-1".to_string());
+        let opened = Event::Opened {
+            id: 0,
+            folder: "/other/".into(),
+            result: Ok(Box::new(AppState {
+                tracks_changes: true,
+                tasks: vec![saved],
+                ..other()
+            })),
+        };
+        let (_, commands) = update(state(), opened);
+        assert!(commands.contains(&Command::Diff {
+            task: 1,
+            baseline: "tree-1".to_string(),
+            reply: false,
+        }));
+
+        let manual = AppState {
+            auto_start: false,
+            ..state()
+        };
+        let (s, _) = update(manual, new_task("first"));
+        let (_, commands) = update(s, nth_task(2, "two"));
+        assert_eq!(
+            commands,
+            rejected("task 1 is running: one run per project at a time")
+        );
     }
 
     #[test]
@@ -5283,8 +5691,9 @@ mod tests {
         assert_eq!(commands, rejected("task 1's change is being reverted"));
         let (_, commands) = update(s.clone(), send(1, "more"));
         assert_eq!(commands, rejected("task 1's change is being reverted"));
-        let (_, commands) = update(s.clone(), nth_task(2, "other"));
-        assert_eq!(commands, rejected("task 1's change is being reverted"));
+        // A new task waits for it.
+        let (queued, _) = update(s.clone(), nth_task(2, "other"));
+        assert_eq!(task(&queued, 2).status, TaskStatus::Queued);
 
         let (done, commands) = update(s.clone(), reverted(1, "tree-1", Ok(())));
         let t = task(&done, 1);
@@ -5327,10 +5736,10 @@ mod tests {
         let (running, _) = update(tracked(), new_task("x"));
         let (running, _) = update(running, baseline(1, 0, "tree-1"));
         let (running, _) = update(running, change(1, "tree-1", one_file(2)));
-        let untracked = AppState {
+        let untracked = derived(AppState {
             tracks_changes: false,
             ..reviewed(one_file(2))
-        };
+        });
         for (s, reason) in [
             (
                 running,
@@ -5883,6 +6292,7 @@ mod tests {
                 status: SessionStatus::Stopped,
             }),
             no_gpu: true,
+            auto_start: true,
             harnesses: before.harnesses.clone(),
             recents: vec![
                 Recent {
@@ -6873,19 +7283,27 @@ mod tests {
 
     /// Said while a task runs for the game: that task is stopped and
     /// resumed with it (D29's steer), and only the new utterance is followed.
-    /// Before its agent has a session to resume, it is said again later.
+    /// A run cut before its agent started (no session yet, or steered twice
+    /// quickly) leaves no `Stopped`: the next run gets its message too.
     #[test]
     fn an_utterance_steers_the_running_task() {
         let (s, _) = update(voice_ready(), nth_task(3, "make a ball"));
-        let (_, commands) = update(s.clone(), said("bigger", 5));
-        assert_eq!(
-            stages(&commands),
-            [(
-                5,
-                Stage::Failed("the agent is still starting: say it again in a moment".into())
-            )]
-        );
+        let (fresh, commands) = update(s.clone(), said("bigger", 5));
+        assert_eq!(stages(&commands), [(5, Stage::Working)]);
+        let run = spec(&commands);
+        assert_eq!(run.resume, None);
+        assert!(run.message.starts_with("make a ball\n\n"), "{}", run.message);
+        assert!(run.message.ends_with("\n\nbigger"), "{}", run.message);
+        assert_eq!(task(&fresh, 3).run.as_ref().map(|r| r.id), Some(1));
+        assert!(commands.contains(&Command::StopRun { task: 3, run: 0 }));
         let (s, _) = update(s, agent(3, 0, started("sess-1")));
+        // Steered, then steered again before that run's agent started.
+        let (quick, _) = update(s.clone(), said("red", 8));
+        let (_, commands) = update(quick, said("and round", 9));
+        let run = spec(&commands);
+        assert_eq!(run.resume.as_deref(), Some("sess-1"));
+        assert!(run.message.contains("\n\nred\n\n"), "{}", run.message);
+        assert!(run.message.ends_with("\n\nand round"), "{}", run.message);
         assert_eq!(voice::route(&s, "aa", "bigger"), Route::Steer(3));
         let (s, commands) = update(s, said("bigger", 6));
         let stop = commands
@@ -6911,6 +7329,31 @@ mod tests {
         let (s, commands) = update(s, said("and blue", 7));
         assert_eq!(stages(&commands), [(7, Stage::Working)]);
         assert_eq!(s.voice.len(), 1);
+    }
+
+    /// A task that started while the utterance's id was reserved is steered
+    /// with it, as the rule would have chosen then; the id goes unused.
+    #[test]
+    fn a_task_started_meanwhile_is_steered() {
+        let (s, commands) = update(voice_ready(), said("go", 1));
+        let Some(Command::ReserveTask { voice, .. }) = commands
+            .into_iter()
+            .find(|c| matches!(c, Command::ReserveTask { .. }))
+        else {
+            panic!("reserved");
+        };
+        let (s, _) = update(s, nth_task(3, "make a ball"));
+        let reserved = Event::NewTask {
+            id: Ok(4),
+            message: "go".to_string(),
+            harness: Harness::Claude,
+            scope: None,
+            voice,
+        };
+        let (s, commands) = update(s, reserved);
+        assert_eq!(s.tasks.len(), 1);
+        assert_eq!(spec(&commands).task, 3);
+        assert_eq!(stages(&commands), [(1, Stage::Working)]);
     }
 
     /// Nothing to change: no game from the app on that headset, or a
@@ -7015,7 +7458,8 @@ mod tests {
     }
 
     /// An answer that changed nothing is said at once, not after the wait
-    /// for a reload; a steer waits while a change is being reverted.
+    /// for a reload; said during a revert, it queues a task behind it,
+    /// `Working` once that starts.
     #[test]
     fn an_answer_without_a_change_and_a_revert_are_reported() {
         let mut s = voice_task_running();
@@ -7042,13 +7486,34 @@ mod tests {
         );
 
         let mut s = voice_ready();
+        s.tracks_changes = true;
         s.tasks.push(Task {
             reverting: true,
+            run: None,
+            baseline: Some("t0".to_string()),
+            change: Some(one_file(1)),
             ..task(&voice_task_running(), 4).clone()
         });
-        assert!(matches!(
-            voice::route(&s, "aa", "go"),
-            Route::Nowhere(r) if r.contains("being reverted")
-        ));
+        assert_eq!(voice::route(&s, "aa", "go"), Route::New);
+        let (s, commands) = update(s, said("go", 2));
+        let Some(Command::ReserveTask { voice, .. }) = commands
+            .into_iter()
+            .find(|c| matches!(c, Command::ReserveTask { .. }))
+        else {
+            panic!("reserved");
+        };
+        let reserved = Event::NewTask {
+            id: Ok(5),
+            message: "go".to_string(),
+            harness: Harness::Claude,
+            scope: None,
+            voice,
+        };
+        let (s, commands) = update(s, reserved);
+        assert_eq!(task(&s, 5).status, TaskStatus::Queued);
+        assert_eq!(stages(&commands), []);
+        let (_, commands) = update(s, reverted(4, "t0", Ok(())));
+        assert_eq!(spec(&commands).task, 5);
+        assert_eq!(stages(&commands), [(2, Stage::Working)]);
     }
 }

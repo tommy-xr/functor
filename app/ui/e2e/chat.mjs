@@ -99,11 +99,10 @@ async function conversation(browser, width, height) {
     await expect(badge).toHaveText("In progress");
     await expect(stop).toBeVisible();
     await expect(send).toHaveCount(0);
-    // A message while the run is going is refused, and stays in the composer.
+    // While it runs a message would steer it (queue.mjs sends one); Send shows once there is one.
+    await expect(dock.getByTestId("composer-place").locator("span")).toHaveText(/^Steers “/);
     await input.fill("And the count?");
-    await input.press("Enter");
-    await expect(notice).toContainText("still running");
-    await expect(input).toHaveValue("And the count?");
+    await expect(send).toBeEnabled();
     await expect(log.getByTestId("step").first()).toContainText("Read the game state");
     // Streamed: the reply shows while it is still arriving.
     await expect(log.locator(".msg-agent[aria-busy=true]")).toContainText("The game is on");
@@ -184,7 +183,7 @@ async function conversation(browser, width, height) {
     await expect(results).toHaveCount(4);
 
     // A new task, then switching between the two from the recent list.
-    await dock.getByRole("button", { name: "New task" }).click();
+    await dock.getByRole("button", { name: "New task", exact: true }).click();
     await expect(heading).toHaveText("New task");
     await input.fill("Make the count go up by two");
     await input.press("Enter");

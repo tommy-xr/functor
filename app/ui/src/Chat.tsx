@@ -43,6 +43,7 @@ import { transcribe } from "./socket";
 import { record, type Recording } from "./mic";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
+import { destinations } from "./queue-model";
 
 
 const RECENT = 8;
@@ -223,17 +224,28 @@ export function ChatDock({
   const harness: Harness = current?.harness ?? pickHarness(state);
   const scope = taskScope(scopePick, current, state, harness);
   const running = current?.run != null;
+  // Where the message goes, and the one-click switch to the other place (a new task ↔ a task).
+  const [switched, setSwitched] = useState(false);
+  useEffect(() => setSwitched(false), [current?.id]);
+  const places = destinations(state, current);
+  const place = places && (switched && places[1] ? places[1] : places[0]);
+  const other = places && (switched ? places[0] : places[1]);
 
   const submit = () => {
     const text = draft;
-    if (!text.trim() || pending || !online) return;
-    const sent = current
-      ? send({ type: "send_message", task: current.id, message: text })
-      : send({ type: "new_task", message: text, harness, scope });
-    if (sent) {
-      setPending({ task: current?.id ?? null, text });
-      setScopePick(null);
-    }
+    if (!text.trim() || pending || !online || !place) return;
+    // The level picked applies to a task started from a new one; a new task
+    // switched to from a task takes the project's.
+    const sent =
+      place.kind === "task"
+        ? send({ type: "send_message", task: place.task, message: text })
+        : send({ type: "new_task", message: text, harness, ...(current === null && { scope }) });
+    if (!sent) return;
+    setPending({ task: place.kind === "task" ? place.task : null, text });
+    setScopePick(null);
+    setSwitched(false);
+    // Steering the running task from a new one shows that task.
+    if (place.kind === "task" && place.task !== current?.id) setSelected(place.task);
   };
   const stop = () => current && send({ type: "stop_task", task: current.id });
   const select = (task: number | null) => {
@@ -309,6 +321,9 @@ export function ChatDock({
             </>
           }
           running={running}
+          place={place?.line ?? null}
+          switchTo={other?.switchTo ?? null}
+          onSwitch={() => setSwitched((s) => !s)}
           busy={pending !== null}
           onSubmit={submit}
           onStop={stop}
@@ -845,6 +860,9 @@ function Composer({
   onHarness,
   review,
   running,
+  place,
+  switchTo,
+  onSwitch,
   busy,
   onSubmit,
   onStop,
@@ -862,6 +880,10 @@ function Composer({
   /** The review setting's control, beside the agent picker. */
   review: ReactNode;
   running: boolean;
+  /** Where the message goes ("Steers “…”"), and the switch to the other place. */
+  place: string | null;
+  switchTo: string | null;
+  onSwitch: () => void;
   busy: boolean;
   onSubmit: () => void;
   onStop: () => void;
@@ -891,6 +913,16 @@ function Composer({
   const project = state?.projects.find((p) => p.path === state.active);
   return (
     <div className="composer">
+      {place && (
+        <p className="composer-place" data-testid="composer-place">
+          <span>{place}</span>
+          {switchTo && (
+            <button type="button" className="link-button" disabled={!online} onClick={onSwitch}>
+              {switchTo}
+            </button>
+          )}
+        </p>
+      )}
       <ul className="chips" aria-label="What the agent will see">
         {project && <li className="chip mono">{project.path === "." ? project.name : project.path}</li>}
         <li className="chip">{session === "running" ? "Game running" : "No game running"}</li>
@@ -947,11 +979,13 @@ function Composer({
             <Icon name="mic" />
           </button>
         )}
-        {running ? (
+        {running && (
           <button type="button" className="round round-stop" aria-label="Stop" disabled={!online} onClick={onStop}>
             <Icon name="stop" />
           </button>
-        ) : (
+        )}
+        {/* While it runs, an empty draft leaves only Stop. */}
+        {(!running || draft.trim()) && (
           <button
             type="button"
             className="round round-send"

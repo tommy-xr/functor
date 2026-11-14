@@ -90,6 +90,10 @@ pub struct Task {
     pub session_id: Option<String>,
     /// The run in flight.
     pub run: Option<Run>,
+    /// Waiting its turn in its project's queue (D30): lower goes first. A
+    /// queued task has never run; its transcript is the user's messages.
+    #[serde(default)]
+    pub queued: Option<u64>,
     /// The snapshot (a git tree in the app's store) the task's change is
     /// measured from: taken as its first run, or the first after a keep or
     /// revert, started. `None` outside git.
@@ -132,6 +136,8 @@ pub struct Task {
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Waiting its turn in its project's queue (D30).
+    Queued,
     InProgress,
     /// The last run ended and the next move is the user's.
     WaitingOnYou,
@@ -168,6 +174,9 @@ pub struct Run {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub held: Option<String>,
+    /// The agent reported its start, so it has the run's messages.
+    #[serde(default)]
+    pub started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +411,7 @@ fn apply_event(task: &mut Task, event: AgentEvent) -> Vec<usize> {
     let start = run.id as usize + 1;
     match event {
         AgentEvent::Started { session, model } => {
+            run.started = true;
             task.session_id = session.or(task.session_id.take());
             task.model = model.or(task.model.take());
             vec![]
@@ -538,6 +548,9 @@ pub fn stop_run(task: &mut Task) -> Vec<usize> {
 pub fn derive_status(task: &Task) -> TaskStatus {
     if task.run.is_some() {
         return TaskStatus::InProgress;
+    }
+    if task.queued.is_some() {
+        return TaskStatus::Queued;
     }
     match task.transcript.last() {
         Some(Item::Kept) => return TaskStatus::Kept,
@@ -768,6 +781,7 @@ mod tests {
                 id: 0,
                 ..Default::default()
             }),
+            queued: None,
             baseline: None,
             change: None,
             reverting: false,
