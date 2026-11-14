@@ -2747,6 +2747,93 @@ async fn a_slow_transcription_still_reports_every_stage_in_order() {
     assert_eq!(quest.line("voice "), "voice 1 working");
 }
 
+/// Voice with the real app and a Quest (`FUNCTOR_QUEST_E2E=1`, needs
+/// `FUNCTOR_BIN`): the game placed on the headset, push-to-talk held by
+/// injected presses over a test tone, a transcription as slow as the real
+/// model (11 s) and an agent that answers without a change. The headset's
+/// toast is read every 200 ms: it must show heard, then the words, then
+/// working, then the outcome, in that order. The timeline is printed.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_shows_every_voice_step_from_the_real_app() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let Some(functor) = functor_bin() else { return };
+    let quest = Quest::attach(&[
+        "debug.oculus.guardian_pause",
+        "debug.functor.pair_input",
+        "debug.functor.voice_tone",
+    ]);
+    let projects = tempfile::tempdir().unwrap();
+    let project = cubes_project(projects.path(), &[]);
+    let fixture = projects.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":20000,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"It is already red.\"}}\n",
+    )
+    .unwrap();
+    let functor_arg = functor.to_string_lossy().to_string();
+    let app = app_env(
+        &project,
+        &["--device-link", "0.0.0.0:0", "--functor", &functor_arg],
+        &[
+            ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+            ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+            ("FUNCTOR_APP_FAKE_TRANSCRIPT_MS", "11000"),
+        ],
+    )
+    .await;
+    let (mut app, id, _) = pair_quest_by_cable(&quest, app).await;
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    app.state_where("the game runs on the headset", 90, |s| {
+        card_by_id(&s["devices"], &id).is_some_and(|c| c["state"]["project"] == "cubes")
+    })
+    .await;
+
+    let voice = || quest.link()["voice"].clone();
+    quest
+        .press(&quest.debug, "right", "thumbstick_pressed", 2500)
+        .await;
+    let released = Instant::now();
+    // What the toast shows, each time it changes.
+    let mut seen: Vec<(f32, String)> = Vec::new();
+    while released.elapsed() < Duration::from_secs(50) {
+        let v = voice();
+        let shown = match v["stage"].as_str() {
+            None => "-".to_string(),
+            Some(stage) => format!(
+                "{stage}{}",
+                v["transcript"]
+                    .as_str()
+                    .map_or(String::new(), |t| format!(" \"{t}\""))
+            ),
+        };
+        if seen.last().is_none_or(|(_, last)| *last != shown) {
+            eprintln!("toast at {:5.1} s: {shown}", released.elapsed().as_secs_f32());
+            seen.push((released.elapsed().as_secs_f32(), shown));
+        }
+        if seen.iter().any(|(_, s)| s.starts_with("failed") || s.starts_with("reloaded")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let order = ["heard", "heard \"make the ball red\"", "working \"make the ball red\""];
+    let mut at = 0;
+    for (_, shown) in &seen {
+        if at < order.len() && shown == order[at] {
+            at += 1;
+        }
+    }
+    assert_eq!(at, order.len(), "every step, in order: {seen:?}");
+    assert!(
+        seen.iter().any(|(_, s)| s.starts_with("failed") || s.starts_with("reloaded")),
+        "an outcome: {seen:?}"
+    );
+}
+
 /// The router (D29) end to end on loopback, under the fake agent,
 /// transcriber and model router: the stub says a clip, which starts a task
 /// (nothing to choose between, so no model call), then says it again while
