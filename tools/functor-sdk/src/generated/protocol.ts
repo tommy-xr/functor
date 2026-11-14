@@ -937,7 +937,7 @@ export type StageTimings = { frames: number, sim_ms: number, render_ms: number, 
 /**
  * An agent's stance (D34), as the desktop reports it.
  */
-export type TaskStance = "thinking" | "working" | "waiting" | "done" | "failed";
+export type TaskStance = "thinking" | "working" | "waiting" | "done" | "failed" | "queued";
 
 /**
  * One frame's terrain draws, summed over every draw of the frame (a stereo

@@ -706,6 +706,8 @@ pub enum TaskStance {
     Waiting,
     Done,
     Failed,
+    /// In the project's queue (D30).
+    Queued,
 }
 
 /// The headset's push-to-talk toast: where an utterance is, and what the

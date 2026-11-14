@@ -27,6 +27,26 @@ pub struct PanelData {
     /// The task in front of the user, one of `tasks`.
     pub now: Option<u64>,
     pub tasks: Vec<PanelTask>,
+    /// Why queued tasks wait; empty when none are queued.
+    pub waiting: String,
+    /// Where this headset's latest utterance went, while it can be moved.
+    pub route: Option<PanelRoute>,
+}
+
+/// The router's decision on an utterance (D29) and its moves.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelRoute {
+    pub id: u64,
+    pub line: String,
+    pub moves: Vec<(String, Destination)>,
+}
+
+/// Where a route can be moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Steer { task: u64 },
+    New,
+    Queued { task: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +75,7 @@ pub enum PanelAction {
     Keep { task: u64 },
     Revert { task: u64, tree: String },
     Stop { task: u64 },
+    Move { id: u64, to: Destination },
 }
 
 /// The link as the header shows it (D27), each with its one fix.
@@ -108,6 +129,8 @@ enum Item {
     Keep(u64, String),
     Revert(u64, String),
     Stop(u64),
+    /// Move route `id`'s utterance (its move at this index).
+    Move(u64, Destination),
 }
 
 /// How long a refusal from the desktop shows.
@@ -237,6 +260,7 @@ impl Panel {
                     tree: tree.clone(),
                 },
                 Item::Stop(task) => PanelAction::Stop { task: *task },
+                Item::Move(id, to) => PanelAction::Move { id: *id, to: *to },
                 Item::Page(_) => unreachable!("pages open without a confirm"),
             };
             if a || b {
@@ -330,7 +354,12 @@ impl Panel {
                 _ => vec![],
             },
             Section::Tasks => data.tasks.iter().map(|t| Item::Page(t.id)).collect(),
-            Section::Talk | Section::GameMenu => vec![],
+            Section::Talk => data
+                .route
+                .iter()
+                .flat_map(|r| r.moves.iter().map(|(_, to)| Item::Move(r.id, *to)))
+                .collect(),
+            Section::GameMenu => vec![],
         }
     }
 
@@ -352,6 +381,7 @@ impl Panel {
                     Item::Keep(..) => "keep",
                     Item::Revert(..) => "revert",
                     Item::Stop(_) => "stop",
+                    Item::Move(..) => "move",
                     Item::Page(_) => "page",
                 }
                 .to_string()
@@ -464,6 +494,7 @@ pub fn stance_color(stance: TaskStance) -> [f32; 3] {
         TaskStance::Waiting => WARN,
         TaskStance::Done => OK,
         TaskStance::Failed => DANGER,
+        TaskStance::Queued => FAINT,
     }
 }
 
@@ -474,6 +505,7 @@ fn stance_word(stance: TaskStance) -> &'static str {
         TaskStance::Waiting => "WAITING FOR YOU",
         TaskStance::Done => "DONE",
         TaskStance::Failed => "FAILED",
+        TaskStance::Queued => "QUEUED",
     }
 }
 
@@ -739,6 +771,9 @@ impl Panel {
                 if !t.activity.is_empty() {
                     col.para(&t.activity, BODY, MUTED, 2);
                 }
+                if !data.waiting.is_empty() {
+                    col.para(&data.waiting, SMALL, WARN, 1);
+                }
                 if let Some(d) = &t.decision {
                     col.gap(0.008);
                     col.line(&d.size, BODY, TEXT);
@@ -757,17 +792,42 @@ impl Panel {
             Section::Talk => {
                 col.line("TALK", LABEL, FAINT);
                 col.gap(0.004);
-                col.para("Hold the right thumbstick, speak, and let go to send. B while talking cancels.", BODY, TEXT, 3);
+                col.para(
+                    "Hold the right thumbstick to talk; let go to send.",
+                    BODY,
+                    TEXT,
+                    2,
+                );
                 if let Some(toast) = toast {
-                    col.gap(0.012);
+                    col.gap(0.008);
                     for l in toast_lines(toast) {
                         col.line(&l.text, l.size * 0.8, l.color);
                     }
+                }
+                let Some(route) = &data.route else {
+                    return None;
+                };
+                col.gap(0.008);
+                col.line("WHERE IT WENT", LABEL, FAINT);
+                col.para(&route.line, BODY, TEXT, 2);
+                if let Some(Item::Move(_, to)) = &self.confirm {
+                    let label = route
+                        .moves
+                        .iter()
+                        .find(|(_, t)| t == to)
+                        .map_or("", |(l, _)| l);
+                    return confirm(col, &format!("{label}?"), bottom);
+                }
+                for (i, (label, _)) in route.moves.iter().enumerate() {
+                    self.row(col, self.focus == Some(i), label, "", TEXT, "");
                 }
                 None
             }
             Section::Tasks => {
                 col.line("TASKS", LABEL, FAINT);
+                if !data.waiting.is_empty() {
+                    col.line(&data.waiting, SMALL, WARN);
+                }
                 col.gap(0.004);
                 if data.tasks.is_empty() {
                     col.para(
@@ -778,38 +838,19 @@ impl Panel {
                     );
                 }
                 for (i, t) in data.tasks.iter().enumerate() {
-                    let rect = [col.x, col.y - ROW, col.w, ROW];
-                    let focus = self.focus == Some(i) && self.page.is_none();
-                    fill(col.out, rect, if focus { SELECTED } else { SUNK });
-                    if focus {
-                        outline(col.out, rect, ACCENT);
-                    }
                     let word = match t.stance {
                         TaskStance::Waiting => "NEEDS YOU",
                         s => stance_word(s),
                     };
-                    let inset = 0.01;
-                    let wx = col.x + col.w - inset - word.len() as f32 * SMALL;
-                    let title_n = ((wx - col.x - 2.0 * inset) / BODY) as usize;
-                    let ty = col.y - 0.008;
-                    text(
-                        col.out,
-                        [col.x + inset, ty],
-                        BODY,
-                        TEXT,
-                        &fit(&ascii(&t.title), title_n),
+                    let focus = self.focus == Some(i) && self.page.is_none();
+                    self.row(
+                        col,
+                        focus,
+                        &t.title,
+                        word,
+                        stance_color(t.stance),
+                        &t.activity,
                     );
-                    text(col.out, [wx, ty], SMALL, stance_color(t.stance), word);
-                    let n = ((col.w - 2.0 * inset) / SMALL) as usize;
-                    let sub = ty - BODY - 0.006;
-                    text(
-                        col.out,
-                        [col.x + inset, sub],
-                        SMALL,
-                        FAINT,
-                        &fit(&ascii(&t.activity), n),
-                    );
-                    col.gap(ROW + 0.006);
                 }
                 None
             }
@@ -882,6 +923,37 @@ impl Panel {
                     .or(Some("A choose   B back   Click & hold R stick: talk"))
             }
         }
+    }
+
+    /// A list row: `title` with `word` at its right, `sub` under it.
+    fn row(&self, col: &mut Col, focus: bool, title: &str, word: &str, color: [f32; 3], sub: &str) {
+        let rect = [col.x, col.y - ROW, col.w, ROW];
+        fill(col.out, rect, if focus { SELECTED } else { SUNK });
+        if focus {
+            outline(col.out, rect, ACCENT);
+        }
+        let inset = 0.01;
+        let wx = col.x + col.w - inset - word.len() as f32 * SMALL;
+        let title_n = ((wx - col.x - 2.0 * inset) / BODY) as usize;
+        let ty = col.y - 0.008;
+        text(
+            col.out,
+            [col.x + inset, ty],
+            BODY,
+            TEXT,
+            &fit(&ascii(title), title_n),
+        );
+        text(col.out, [wx, ty], SMALL, color, word);
+        let n = ((col.w - 2.0 * inset) / SMALL) as usize;
+        let sy = ty - BODY - 0.006;
+        text(
+            col.out,
+            [col.x + inset, sy],
+            SMALL,
+            FAINT,
+            &fit(&ascii(sub), n),
+        );
+        col.gap(ROW + 0.006);
     }
 
     /// A row of buttons above the footer, the focused one ringed.
@@ -972,7 +1044,20 @@ mod tests {
             tasks: vec![
                 task(1, TaskStance::Waiting, true),
                 task(2, TaskStance::Working, false),
+                task(3, TaskStance::Queued, false),
             ],
+            waiting: "Waiting for your decision on \"Task 1\"".into(),
+            route: Some(PanelRoute {
+                id: 9,
+                line: "Queued behind \"Task 2\"".into(),
+                moves: vec![
+                    (
+                        "Steer \"Task 2\" instead".into(),
+                        Destination::Steer { task: 2 },
+                    ),
+                    ("Make it a new task".into(), Destination::New),
+                ],
+            }),
         }
     }
 
@@ -1016,9 +1101,11 @@ mod tests {
         assert_eq!(press(&mut p, &d, P::Right), None);
         assert_eq!(p.focus, Some(0));
         // Past the end: it stays on the last.
-        press(&mut p, &d, P::Down);
-        press(&mut p, &d, P::Down);
-        assert_eq!(p.focus, Some(1));
+        for _ in 0..3 {
+            press(&mut p, &d, P::Down);
+        }
+        assert_eq!(p.focus, Some(2));
+        press(&mut p, &d, P::Up);
         press(&mut p, &d, P::Up);
         assert_eq!(
             press(&mut p, &d, P::A),
@@ -1120,6 +1207,31 @@ mod tests {
         assert!(p.hides_controls(), "still held");
         p.step(Some(&XrInputSnapshot::default()), Some(&d), false);
         assert!(!p.hides_controls());
+    }
+
+    #[test]
+    fn talk_offers_the_routes_moves_each_with_a_confirm() {
+        let d = data();
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::Down);
+        assert_eq!(p.section, Section::Talk);
+        press(&mut p, &d, P::Right);
+        press(&mut p, &d, P::Down);
+        assert_eq!(press(&mut p, &d, P::A), None);
+        assert_eq!(p.debug(Some(&d), None).confirm.as_deref(), Some("move"));
+        assert_eq!(
+            press(&mut p, &d, P::A),
+            Some(Out::Action(PanelAction::Move {
+                id: 9,
+                to: Destination::New
+            }))
+        );
+        // The route moved: its moves go, and so does the focus.
+        let mut gone = d.clone();
+        gone.route = None;
+        press(&mut p, &gone, P::Up);
+        assert_eq!(p.focus, None);
     }
 
     #[test]

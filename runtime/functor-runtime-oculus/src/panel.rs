@@ -11,7 +11,8 @@ use functor_device_link::client::{Client, View};
 use functor_device_link::panel::{self as wire, Action, Update, ACTION_CHANNEL};
 use functor_runtime_common::debug_protocol::{PanelState, TaskStance, WristLight};
 use functor_runtime_common::link_panel::{
-    self, Connection, Out, Panel, PanelAction, PanelData, PanelDecision, PanelTask,
+    self, Connection, Destination, Out, Panel, PanelAction, PanelData, PanelDecision, PanelRoute,
+    PanelTask,
 };
 use functor_runtime_common::XrInputSnapshot;
 
@@ -117,6 +118,7 @@ fn data(p: wire::Panel) -> PanelData {
                     wire::Stance::Waiting => TaskStance::Waiting,
                     wire::Stance::Done => TaskStance::Done,
                     wire::Stance::Failed => TaskStance::Failed,
+                    wire::Stance::Queued => TaskStance::Queued,
                 },
                 activity: t.activity,
                 decision: t.decision.map(|d| PanelDecision {
@@ -129,6 +131,21 @@ fn data(p: wire::Panel) -> PanelData {
                 }),
             })
             .collect(),
+        waiting: p.waiting,
+        route: p.route.map(|r| PanelRoute {
+            id: r.id,
+            line: r.line,
+            moves: (r.moves.into_iter())
+                .map(|m| {
+                    let to = match m.to {
+                        wire::Destination::Steer { task } => Destination::Steer { task },
+                        wire::Destination::New => Destination::New,
+                        wire::Destination::Queued { task } => Destination::Queued { task },
+                    };
+                    (m.label, to)
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -138,6 +155,14 @@ fn encode(action: PanelAction) -> Vec<u8> {
         PanelAction::Keep { task } => Action::Keep { task },
         PanelAction::Revert { task, tree } => Action::Revert { task, tree },
         PanelAction::Stop { task } => Action::Stop { task },
+        PanelAction::Move { id, to } => Action::Move {
+            id,
+            to: match to {
+                Destination::Steer { task } => wire::Destination::Steer { task },
+                Destination::New => wire::Destination::New,
+                Destination::Queued { task } => wire::Destination::Queued { task },
+            },
+        },
     }
     .encode()
 }
