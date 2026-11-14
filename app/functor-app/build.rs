@@ -19,27 +19,33 @@ fn main() {
     let ui = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ui");
     let dist = ui.join("dist");
     let mut files = Vec::new();
-    // A `dist` older than the UI's source would put an old page in a new
+    // A `dist` older than the UI's own files would put an old page in a new
     // app (one whose window expects page changes that are not there).
+    // Files it imports from elsewhere in the repo are not compared.
     let mut stale = false;
     if dist.join("index.html").is_file() {
         walk(&dist, &mut files);
         files.sort();
         println!("cargo:rerun-if-changed={}", dist.display());
         let src = ui.join("src");
-        println!("cargo:rerun-if-changed={}", src.display());
-        let mut sources = Vec::new();
-        walk(&src, &mut sources);
+        let mut sources = vec![ui.join("index.html"), ui.join("build.mjs")];
+        if src.is_dir() {
+            walk(&src, &mut sources);
+        }
+        for source in [&src, &sources[0], &sources[1]] {
+            println!("cargo:rerun-if-changed={}", source.display());
+        }
         let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let test = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().contains(".test."));
         let newest = sources
             .iter()
-            .filter(|p| !p.to_string_lossy().contains(".test."))
+            .filter(|p| !test(p))
             .filter_map(|p| modified(p))
             .max();
         stale = newest > modified(&dist.join("app.js"));
         if stale {
             println!(
-                "cargo:warning=app/ui/dist is older than app/ui/src: run `npm run build:app-ui`, then rebuild"
+                "cargo:warning=app/ui/dist is older than its source: run `npm run build:app-ui`, then rebuild"
             );
         }
     } else {

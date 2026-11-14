@@ -382,7 +382,7 @@ async fn app(
         None => {
             if server::UI_STALE {
                 eprintln!(
-                    "functor-app: the built-in UI is older than app/ui/src; \
+                    "functor-app: the built-in UI is older than its source in app/ui; \
                      run `npm run build:app-ui`, then rebuild functor-app"
                 );
             }
