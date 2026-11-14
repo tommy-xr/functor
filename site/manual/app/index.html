@@ -90,16 +90,18 @@
             <code>wasm-pack</code>), plus an agent on your <code>PATH</code>: Claude Code (<code>claude</code>) or Codex
             (<code>codex</code>). From a checkout of the repository:
           </p>
-          <pre class="shell">npm run build              # on macOS: target/release/functor, with the app built in</pre>
+          <pre class="shell">npm run build                          # everything: target/release/functor, with the app built in (macOS)
+npm run app -- -d examples/primitives  # while working on it: rebuild what changed, then open it
+npm run package:app                    # Functor.app, for the Dock and Finder</pre>
           <p>
-            Then open a project. Bare <code>functor</code> opens the app; so does
+            After <code>npm run build</code>, bare <code>functor</code> opens the app; so does
             <code>functor app</code>. Its games and the agent's tools run on that same
             <code>functor</code>, so they always match it:
           </p>
           <pre class="shell">./target/release/functor -d examples/primitives</pre>
           <p>
-            The window is macOS only for now, and elsewhere <code>build:cli</code> builds the CLI
-            alone: add the app beside it with <code>npm run build:app</code>, and
+            The window is macOS only for now, and elsewhere <code>npm run build</code> builds the
+            CLI alone: add the app beside it with <code>npm run build:app</code>, and
             <code>functor</code> finds <code>functor-app</code> next to itself, then in
             <code>FUNCTOR_APP_BIN</code>, then on <code>PATH</code>. Anywhere without a window, or
             over SSH, run it without one and open the printed URL in a browser:

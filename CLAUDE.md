@@ -177,38 +177,39 @@ language, prelude, and semantics are documented in the **`functor-lang` skill** 
 **Prerequisites:** Rust stable + `wasm32-unknown-unknown` target, Node 22 / npm 10, and
 `wasm-pack`.
 
-**Build everything** — the CLI (on macOS with the desktop app built in), both wasm bundles,
-and the site:
+**Three commands** cover building (details and the parts: `DEVELOPMENT.md`):
 
 ```sh
-npm run build
+npm run build                          # everything, release: ./target/release/functor works with nothing else
+npm run app [-- -d <project> …]        # the app loop: build what changed, open the app (release; app:debug)
+npm run package:app                    # macOS: target/package/Functor.app
 ```
 
-Afterwards on macOS `./target/release/functor` with no arguments opens a current app: one
-command, and the app's games and tools are that same binary.
+`npm run build` builds, in order, the web runtime bundle, the app UI bundle (macOS), the release
+`functor` (on macOS with the desktop app and speech-to-text built in, D40), the editor's language
+wasm and the site. Reach for it when you don't know which pieces a change touches. The parts are
+silently order-dependent, and getting the order wrong fails at runtime rather than at build time:
+a site built against a stale `runtime/functor-runtime-web/pkg` looks fine but its sandbox hangs at
+`loading…` with a missing-export error in the console, and without `build:lang-wasm` the editor's
+`/pkg/functor_lang_wasm.js` 404s so its "0 problems" indicator isn't checking anything.
 
-Reach for this when you don't know which pieces a change touches. The individual
-targets are silently order-dependent, and getting the order wrong fails at
-runtime rather than at build time: a site built against a stale
-`runtime/functor-runtime-web/pkg` looks fine but its sandbox hangs at
-`loading…` with a missing-export error in the console, and without
-`build:lang-wasm` the editor's `/pkg/functor_lang_wasm.js` 404s so its
-"0 problems" indicator isn't checking anything.
+`npm run app` rebuilds the UI bundle when it changed and the combined binary (incremental), then
+opens the app in it; the app and every game and tool it starts are that one executable, so they
+never mismatch. It builds the web runtime bundle only when missing.
 
-**Build just the CLI.** Order matters — the CLI embeds the web runtime bundle at compile time via
-`include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
+**Parts**, for CI, scripts and a lighter build. The CLI embeds the web runtime bundle at compile
+time via `include_bytes!`, so the wasm bundle must exist before the `functor` binary is built:
 
 ```sh
 npm run build:cli           # the wasm bundle, then the functor CLI (RELEASE) → target/release/functor
 npm run build:cli:debug     # a debug build of the CLI alone → target/debug/functor
 ```
 
-On macOS `build:cli` also builds the desktop app into that binary (`scripts/build-cli.mjs`, in
-order: the web runtime bundle, the app UI bundle when its sources changed, then `--features
-whisper`, which turns on the CLI's `app` feature; D40): bare `functor` opens the app in-process
-and its children are the same executable. `npm run build:cli -- --cli-only`, `build:cli:debug`
-and plain `cargo build` leave the app out (lighter; CI builds the CLI that way); the standalone
-`functor-app` (`npm run build:app`) remains for the app's tests.
+On macOS `build:cli` also builds the app in (`scripts/build-cli.mjs`: the UI bundle when its
+sources changed, then `--features whisper`, which turns on the CLI's `app` feature);
+`npm run build:cli -- --cli-only`, `build:cli:debug` and plain `cargo build` leave the app out
+(lighter; CI builds the CLI that way). The standalone `functor-app` (`npm run build:app`) remains
+for the app's tests.
 
 (The human-facing docs mirror this split: `README.md` covers installing and using
 Functor; `DEVELOPMENT.md` covers building the CLI from source.)

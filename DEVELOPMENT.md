@@ -97,75 +97,79 @@ checkout's, and warns when it runs a PR build or can't be reached. Put `f` on yo
 `npm run f -- …` works too, but resolves `-d` from the repo root. The downloaded
 binary is not notarized.
 
-## Building the CLI
+## Building
 
-Build the CLI. **Order matters:** the CLI embeds the web runtime bundle at compile
-time (via `include_bytes!`), so the wasm bundle must exist before the `functor` binary is built.
-
-```sh
-wasm-pack build runtime/functor-runtime-web --target=web     # web bundle (embedded into the CLI)
-cargo build --release --bin functor                          # the CLI (embeds the desktop runtime)
-```
-
-Or use the bundled convenience script, which runs both in order:
+Three commands cover it:
 
 ```sh
-npm run build              # everything: CLI (+ the app on macOS), both wasm bundles, and the site
-npm run build:cli          # release build → target/release/functor (on macOS with the desktop app)
-npm run build:cli:debug    # debug build   → target/debug/functor (the CLI alone)
+npm run build                          # everything, release: ./target/release/functor works with nothing else
+npm run app [-- -d <project> …]        # the app loop: build what changed, open the app (release)
+npm run package:app                    # macOS: target/package/Functor.app
 ```
 
-`npm run build` is the one to reach for when you are unsure which pieces a
-change touches: the individual targets are order-dependent, and the wrong order
-fails at runtime rather than at build time (a site built against a stale runtime
-bundle hangs at `loading…` instead of erroring).
+- **`npm run build`** builds, in order: the web runtime bundle, the app's UI
+  bundle (macOS), the release `functor` (on macOS with the desktop app and its
+  speech-to-text built in), the editor's language wasm, and the site. The
+  binary embeds the two bundles, so they come first. Afterwards
+  `./target/release/functor` with no arguments opens the app (macOS) and
+  `./target/release/functor -d <project> run` runs a game.
+- **`npm run app`** is the loop while working on the app or the engine: it
+  rebuilds the UI bundle when its sources changed, then the combined binary
+  (cargo is incremental), and opens the app inside it on the directory you ran
+  it from (else your last project). Arguments after `--` go to the app
+  (`-d <project>`, `--headless`, `--no-device-link`). The web runtime bundle is
+  built only when missing (it is only for `run wasm`; run `npm run build` after
+  changing the web runtime). Release by default, as the live game view is far
+  too slow in debug; `npm run app:debug` compiles faster when you only check
+  that something loads. The app and every game and tool it starts are that one
+  executable, so they never mismatch.
+- **`npm run package:app`** bundles the release `functor` as `Functor.app`
+  (below).
 
-**Prefer the release build (`npm run build:cli`) for interactive use** — the debug
-build's CPU-bound paths (the webview overlay's software raster, rapier physics) are
-far slower live. The debug build is faster to *compile*, so it's the better choice
-for quick headless checks, frame captures, and the e2e scripts.
+The parts, for CI and scripts:
 
-Either produces a single `functor` binary (the CLI, with the desktop runtime linked
-in as a library and run in-process — there is no separate `functor-runner`), under
-`target/release/` or `target/debug/` respectively.
+| Part | What it builds |
+| --- | --- |
+| `npm run build:cli` | Web runtime bundle, then `target/release/functor` (macOS: with the app; `-- --cli-only` for the CLI alone). The first step of `build`. |
+| `npm run build:cli:debug` | Web runtime bundle, then `target/debug/functor`, the CLI alone. |
+| `npm run build:app-ui` | The app's UI bundle, `app/ui/dist`. |
+| `npm run build:app` | The standalone `functor-app` shim, for the app's tests. |
+
+By hand: `wasm-pack build runtime/functor-runtime-web --target=web`, then
+`cargo build --release --bin functor` (the CLI alone; `-p functor-cli
+--features app` or `whisper` adds the app, after `npm run build:app-ui`).
+
+**Prefer release builds for interactive use** — the debug build's CPU-bound
+paths (the webview overlay's software raster, rapier physics) are far slower
+live. Debug compiles faster, so it suits quick headless checks, frame captures
+and the e2e scripts.
+
+Every build produces a single `functor` binary (the CLI, with the desktop
+runtime linked in as a library and run in-process — there is no separate
+`functor-runner`), under `target/release/` or `target/debug/`.
 
 ## Desktop app (preview)
 
 The desktop app (under `app/`) is a chat-and-game-view app around a project;
 using it is covered in [the manual](https://functor.games/manual/app/). It is a
-library the `functor` CLI links behind its `app` feature: `functor` with no
-subcommand opens it in-process, and every game session and agent tool server it
-starts is that same executable again, so they never differ. On macOS
-`npm run build:cli` builds it in:
+library the `functor` CLI links behind its `app` feature (`whisper` adds
+speech-to-text and implies it): `functor` with no subcommand opens it
+in-process, and every game session and agent tool server it starts is that
+same executable again. `npm run build` and `npm run app` build it in on macOS;
+a plain `cargo build` leaves it out. Elsewhere the window does not exist yet:
+`--features app` gives `functor app -- --headless`.
 
-```sh
-npm run build:cli          # macOS: the UI bundle, then target/release/functor with the app
-```
-
-`npm run build` does the same as its first step. That is the web runtime
-bundle, `npm run build:app-ui` (when the UI changed), then
-`cargo build --release -p functor-cli --bin functor --features whisper`
-(`whisper` turns on `app`), in that order: the binary embeds both bundles.
-`npm run build:cli -- --cli-only` builds the CLI alone on macOS too. Elsewhere `build:cli` builds the CLI alone, as the
-window is macOS-only; `--features app` adds the app there too, for
-`functor app -- --headless`. A plain `cargo build` leaves the app out.
-
-`whisper` is local speech-to-text: it compiles whisper.cpp. Its model (about
-148 MB) is fetched on first use into `~/.functor/models` (`FUNCTOR_MODELS`
-overrides), not at build time. To skip the C++ build, use `--features app`
-alone: the composer shows no mic, and a headset's voice clip is answered with
-"speech-to-text is not in this build".
-
-```sh
-npm run build:app-ui && cargo build --release -p functor-cli --bin functor --features app   # no speech-to-text
-```
+`whisper` compiles whisper.cpp. Its model (about 148 MB) is fetched on first
+use into `~/.functor/models` (`FUNCTOR_MODELS` overrides), not at build time.
+`npm run app:debug` and `--features app` leave it out: the composer shows no
+mic, and a headset's voice clip is answered with "speech-to-text is not in this
+build".
 
 The app's own binary, `functor-app`, is still built for the tests and scripts
 that start it by name (`npm run build:app`, `cargo build -p functor-app`). It
 runs the `functor` it finds (`--functor`, `FUNCTOR_BIN`, next to itself, then
 PATH) and checks it first: one too old for the app is named in a banner with
-the fix, and nothing is started with it. A `functor` built without the app
-runs that `functor-app` instead (next to itself, `FUNCTOR_APP_BIN`, PATH).
+the build that fixes it, and nothing is started with it.
 
 Run it:
 
