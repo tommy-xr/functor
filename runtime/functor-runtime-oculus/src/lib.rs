@@ -1767,7 +1767,9 @@ pub fn android_main(app: AndroidApp) {
         eyes[0].height
     );
 
-    let asset_cache = Arc::new(AssetCache::new());
+    // A model takes seconds to decode here: off the frame, the headset
+    // keeps rendering meanwhile.
+    let asset_cache = Arc::new(AssetCache::new().decode_in_background());
     // `File.bytes` reads the files `functor run vr` pushed, then those it
     // fetched from the host, kept in app storage across launches.
     let device_files = Arc::new(DeviceFiles::new(
