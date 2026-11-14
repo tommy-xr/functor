@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Layout, Task, View } from "./generated/protocol";
-import { agentTabs, clampLines, isTyping, keysFor, panesOf, shortcutFor, shortcutHelp, tabTitles, viewKey } from "./layout-model.ts";
+import { agentTabs, clampLines, isTyping, keysFor, panesOf, poppedPane, shortcutFor, shortcutHelp, tabTitles, viewKey, wantedWindows, windowPanes } from "./layout-model.ts";
 
 const file = (path: string): View => ({ kind: "file", path });
 
@@ -103,4 +103,23 @@ test("the agent's tabs by key; none in an older layout", () => {
   assert.deepEqual([...agentTabs(layout)], ["file:a.fun", "game"]);
   assert.equal(agentTabs({} as Layout).size, 0);
   assert.equal(agentTabs(null).size, 0);
+});
+
+test("windows: their panes, the pane a pop-out page shows, and what the shell keeps open", () => {
+  const frame = { x: 10, y: 20, width: 800, height: 600 };
+  const layout = {
+    windows: [
+      { pane: { id: 4, tabs: [file("a.fun"), file("b.fun")], active: 1 }, home: 1, frame },
+      { pane: { id: 7, tabs: [{ kind: "game" }], active: 0 }, home: null, frame: null },
+    ],
+  } as unknown as Layout;
+  assert.deepEqual(windowPanes(layout).map((p) => p.id), [4, 7]);
+  assert.deepEqual(windowPanes(null), []);
+  const titles = tabTitles(windowPanes(layout).flatMap((p) => p.tabs), []);
+  assert.deepEqual(wantedWindows(layout, titles), [
+    { pane: 4, frame, title: "b.fun" },
+    { pane: 7, frame: null, title: "Game" },
+  ]);
+  assert.equal(poppedPane("?pane=7"), 7);
+  for (const s of ["", "?pane=", "?pane=x", "?pane=-1", "?other=7"]) assert.equal(poppedPane(s), null, s);
 });

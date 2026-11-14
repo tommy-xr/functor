@@ -2,7 +2,7 @@
 // titles, and which keys are layout shortcuts. The layout itself is the
 // core's (`AppState.layouts`); the page only renders it and sends ops.
 
-import type { Layout, Pane, Placement, Task, View } from "./generated/protocol";
+import type { Frame, Layout, Pane, Placement, Task, View } from "./generated/protocol";
 
 /** A view as a string, for React keys, DOM ids and comparisons. */
 export function viewKey(view: View): string {
@@ -152,3 +152,24 @@ export function agentTabs(layout: Layout | null | undefined): Set<string> {
  * `@container (max-width: 560px)` rule), so the agent opens no splits there.
  */
 export const STACK_WIDTH = 560;
+
+/** Every pane in a window of its own (`Layout.windows`). */
+export function windowPanes(layout: Layout | null | undefined): Pane[] {
+  return (layout?.windows ?? []).map((w) => w.pane);
+}
+
+/** The pane a pop-out page shows (`?pane=7`), or null for the main window. */
+export function poppedPane(search: string): number | null {
+  const pane = new URLSearchParams(search).get("pane");
+  return pane && /^\d+$/.test(pane) ? Number(pane) : null;
+}
+
+/** A window the shell keeps open: its pane, last frame and title (its shown tab's). */
+export type WantedWindow = { pane: number; frame: Frame | null; title: string };
+
+export function wantedWindows(layout: Layout | null | undefined, titles: Map<string, string>): WantedWindow[] {
+  return (layout?.windows ?? []).map(({ pane, frame }) => {
+    const shown = pane.tabs[pane.active];
+    return { pane: pane.id, frame, title: (shown && titles.get(viewKey(shown))) || "Functor" };
+  });
+}

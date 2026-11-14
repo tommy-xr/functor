@@ -4262,6 +4262,7 @@ mod tests {
             focus: Some(1),
             game: Default::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         s.layouts.insert("examples/b".to_string(), file_only);
         let (next, _) = update(s, switch("examples/b"));
@@ -6502,6 +6503,7 @@ mod tests {
             focus: Some(2),
             game: Default::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         // Another project's files are not listed yet, so its file tabs stay.
         let theirs = Layout {
@@ -6509,6 +6511,7 @@ mod tests {
             focus: Some(1),
             game: Default::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         let layouts = BTreeMap::from([
             ("examples/a".to_string(), saved),
@@ -6532,6 +6535,7 @@ mod tests {
                 focus: None,
                 game: Default::default(),
                 agent: Default::default(),
+                windows: Vec::new(),
             }
         );
         assert_eq!(

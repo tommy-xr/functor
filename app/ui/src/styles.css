@@ -2984,6 +2984,49 @@ blockquote {
   margin-right: 0;
 }
 
+/* Panes out in their own windows: one quiet line each, above the panes. */
+.windows-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0 4px;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.windows-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.windows-bar-item svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+.windows-bar-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+/* A pop-out page: its one pane fills the window. */
+.canvas-window {
+  padding: 8px;
+}
+
+.dock-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .menu button[role="menuitemcheckbox"] {
   justify-content: flex-start;
 }

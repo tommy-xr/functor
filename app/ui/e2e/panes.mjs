@@ -221,7 +221,7 @@ async function panes(browser, width, height) {
     await page.getByRole("button", { name: "Open a view here" }).click();
     await page.getByRole("menuitem", { name: "Reset layout" }).click();
     await expect.poll(() => tabs(page)).toEqual([["Game"]]);
-    await expect(page.getByRole("button", { name: /^Pop out/ })).toHaveAttribute("aria-disabled", "true");
+    await expect(page.getByRole("button", { name: "Pop out into its own window" })).toBeEnabled();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow, "horizontal overflow (px)").toBeLessThanOrEqual(0);
