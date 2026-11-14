@@ -11,7 +11,9 @@
 //! once a game runs on it, printing each voice status it gets back: `voice 1 heard`,
 //! `voice 1 transcribed <text>`, `voice 1 working`, `voice 1 reloaded`,
 //! `voice 1 failed <why>`, `voice 1 idle`; with `--say-again`, the clip
-//! again as utterance 2 once the first is working. With `--mirror <json>` it answers
+//! again as utterance 2 once the first is working. A spoken reply it is sent
+//! prints `speech <reply> <samples>` once whole (the samples it would play),
+//! `speech <reply> stopped` when told to stop. With `--mirror <json>` it answers
 //! `GET /mirror` with that recorded snapshot, for a desktop mirror to draw.
 
 use std::io::Write;
@@ -257,6 +259,7 @@ async fn session(
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut silent = false;
     let mut served = 0u64;
+    let mut player = functor_device_link::play::Player::default();
     loop {
         let out = tokio::select! {
             msg = ws.next() => match msg {
@@ -383,6 +386,27 @@ async fn session(
                         }
                     }
                     Err(e) => say(&format!("voice unreadable {e}")),
+                },
+                device::Event::Channel {
+                    channel: voice::SPEECH_CHANNEL,
+                    data,
+                } => match voice::Speech::decode(&data) {
+                    Ok(speech) => {
+                        let line = match speech {
+                            voice::Speech::End { reply } => Some((reply, None)),
+                            voice::Speech::Stop { reply } => Some((reply, Some("stopped"))),
+                            _ => None,
+                        };
+                        player.receive(speech, voice::SAMPLE_RATE);
+                        match line {
+                            Some((reply, Some(what))) => say(&format!("speech {reply} {what}")),
+                            Some((reply, None)) => {
+                                say(&format!("speech {reply} {}", player.pending().len()))
+                            }
+                            None => {}
+                        }
+                    }
+                    Err(e) => say(&format!("speech unreadable {e}")),
                 },
                 device::Event::Channel { .. } => {}
                 device::Event::Rejected(reject) => say(&format!("rejected {reject:?}")),

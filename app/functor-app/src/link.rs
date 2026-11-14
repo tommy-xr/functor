@@ -161,6 +161,37 @@ fn status_frames(status: &voice::Status) -> Vec<wire::Frame> {
     clear.into_iter().chain([status.frame()]).collect()
 }
 
+/// A linked headset as the output of reply `reply`: the whole reply goes
+/// onto its link at once, and the headset plays it.
+struct Headset {
+    link: UnboundedSender<ConnCmd>,
+    reply: u64,
+}
+
+impl crate::reply::Output for Headset {
+    fn play(&self, pcm: Vec<i16>) -> Result<Box<dyn Send>, String> {
+        let sent = voice::Speech::frames(self.reply, &pcm)
+            .into_iter()
+            .all(|frame| self.link.send(ConnCmd::Send(frame)).is_ok());
+        match sent {
+            true => Ok(Box::new(Sent(self.link.clone(), self.reply))),
+            false => Err("the headset's link dropped".into()),
+        }
+    }
+}
+
+/// A reply on a headset's link. Dropped (replaced, or the user started
+/// talking), the headset is told to stop it; one it finished ignores that.
+struct Sent(UnboundedSender<ConnCmd>, u64);
+
+impl Drop for Sent {
+    fn drop(&mut self) {
+        if let Ok(stop) = (voice::Speech::Stop { reply: self.1 }).frame() {
+            let _ = self.0.send(ConnCmd::Send(stop));
+        }
+    }
+}
+
 struct Conn {
     cmds: UnboundedSender<ConnCmd>,
     /// Hex id, once linked.
@@ -422,12 +453,17 @@ impl Hub {
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
             }
-            // On this machine's speakers for now, whichever headset asked.
-            LinkCommand::Say { text, .. } => {
+            // In the headset that asked while it is linked, else here.
+            LinkCommand::Say { device, text } => {
                 if let Some(replies) = self.0.replies.clone() {
                     let reply = replies.next();
+                    let headset = self.link_of(&device).map(|link| Headset { link, reply });
                     tokio::task::spawn_blocking(move || {
-                        if let Err(e) = replies.say(reply, &text) {
+                        let said = match &headset {
+                            Some(headset) => replies.say_on(reply, &text, headset),
+                            None => replies.say(reply, &text),
+                        };
+                        if let Err(e) = said {
                             eprintln!("functor-app: cannot say the reply: {e}");
                         }
                     });

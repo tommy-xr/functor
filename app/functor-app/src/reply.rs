@@ -1,7 +1,8 @@
 //! Spoken replies, the shell's half (D47): the core's text turned into
-//! sound here on this machine and played on its speakers. One reply at a
-//! time: a new one replaces one still playing, and [`Replies::stop`] (the
-//! user started talking) silences it. Off with `FUNCTOR_APP_SPEAK=off`.
+//! sound here on this machine and played on its speakers, or in the headset
+//! that asked (the link's output). One reply at a time, wherever it plays: a
+//! new one replaces one still playing, and [`Replies::stop`] (the user
+//! started talking) silences it. Off with `FUNCTOR_APP_SPEAK=off`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -65,14 +66,20 @@ impl Replies {
         now.0
     }
 
-    /// Says reply `mine`, unless stopped or replaced meanwhile. Blocks
-    /// while it is synthesised: call it off the async threads.
+    /// Says reply `mine` on this machine, unless stopped or replaced
+    /// meanwhile. Blocks while it is synthesised: call it off the async
+    /// threads.
     pub fn say(&self, mine: u64, text: &str) -> Result<(), String> {
+        self.say_on(mine, text, &*self.output)
+    }
+
+    /// [`Replies::say`], on `output`.
+    pub fn say_on(&self, mine: u64, text: &str, output: &dyn Output) -> Result<(), String> {
         let pcm = self.synth.synth(text)?;
         let mut now = self.now.lock().unwrap();
         // Stopped, or replaced, while it was synthesised.
         if now.0 == mine {
-            now.1 = Some(self.output.play(pcm)?);
+            now.1 = Some(output.play(pcm)?);
         }
         Ok(())
     }
@@ -272,6 +279,12 @@ mod tests {
         assert_eq!(seen.try_iter().collect::<Vec<_>>(), [Seen::Stop]);
         replies.stop();
         assert!(seen.try_recv().is_err(), "nothing left to stop");
+        // On another output (a headset): it too is replaced and stopped.
+        let (tx, there) = mpsc::channel();
+        replies.say_on(replies.next(), "there", &Out(tx)).unwrap();
+        replies.say(replies.next(), "here").unwrap();
+        assert_eq!(there.try_iter().collect::<Vec<_>>(), [Seen::Play(5), Seen::Stop]);
+        assert_eq!(seen.try_recv(), Ok(Seen::Play(4)));
     }
 
     #[test]

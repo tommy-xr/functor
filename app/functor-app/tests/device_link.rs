@@ -2789,16 +2789,13 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // The agent's edit is pushed, as `functor run vr` does after a save.
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
-    // Its reply is said aloud (D47), and not before the first clip started.
-    let mut spoke = String::new();
-    for _ in 0..50 {
-        spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
-        if spoke.contains("play ") {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert!(spoke.starts_with("play "), "{spoke:?}");
+    // Its reply is said aloud (D47) in the headset that asked: the whole
+    // reply arrives there, and nothing plays on the desktop.
+    let speech = quest.line("speech ");
+    let samples = speech.rsplit(' ').next().and_then(|n| n.parse::<usize>().ok());
+    assert!(samples.is_some_and(|n| n > 0), "{speech}");
+    let here = std::fs::read_to_string(&voice_log).unwrap_or_default();
+    assert!(!here.contains("play"), "{here:?}");
     // Its one record (D43) went through every step to the reload.
     let reloaded = |s: &Value| {
         s["requests"].as_array().and_then(|r| r.last()).cloned().filter(|r| r["outcome"]["reload"] == "reloaded")
