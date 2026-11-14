@@ -234,8 +234,8 @@ type WindowHooks = {
   ipc?: { postMessage: (text: string) => void };
 };
 
-/** What a press on the title bar never moves the window from. */
-const TITLEBAR_CONTROLS = "button, a, input, select, textarea, .pill, [role=menu], [role=listbox]";
+/** The title bar's controls, which a press acts on instead of moving the window. */
+const TITLEBAR_CONTROLS = "button, .pill";
 
 /**
  * In the macOS window the page's bar is the title bar: a press on its empty
@@ -244,6 +244,8 @@ const TITLEBAR_CONTROLS = "button, a, input, select, textarea, .pill, [role=menu
 function titlebarPress(e: MouseEvent) {
   const ipc = (window as WindowHooks).ipc;
   if (!ipc || e.button !== 0 || (e.target as Element).closest(TITLEBAR_CONTROLS)) return;
+  // As a native title bar: focus stays where it was, nothing is dragged out.
+  e.preventDefault();
   ipc.postMessage(JSON.stringify({ titlebar: e.detail === 2 ? "zoom" : "drag" }));
 }
 

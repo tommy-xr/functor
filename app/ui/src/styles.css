@@ -220,8 +220,16 @@ blockquote {
 /* The macOS window's title bar: clear of its traffic lights, except in
    fullscreen, where they hide. */
 .native-titlebar .titlebar {
+  flex-wrap: nowrap;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* One row at the window's narrowest: the branch gives way first. */
+.native-titlebar .titlebar .branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .native-titlebar:not(.fullscreen) .titlebar {

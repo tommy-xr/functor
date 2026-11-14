@@ -128,13 +128,18 @@ pub fn run(
     // it reaching here.
     let (mut inset, mut dragged) = (None, false);
     let mut fullscreen = false;
+    let mut probed = false;
     event_loop.run_return(|event, _, flow| {
         match event {
             Event::NewEvents(StartCause::Init) => menu.init_for_nsapp(),
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 if close.is_some() {
+                    let what = match probed {
+                        true => "the title bar did not answer its probe",
+                        false => "the page did not connect",
+                    };
                     eprintln!(
-                        "functor-app: window smoke: the page did not connect within {}s",
+                        "functor-app: window smoke: {what} within {}s",
                         SMOKE_TIMEOUT.as_secs()
                     );
                     smoke_failed = true;
@@ -162,6 +167,7 @@ pub fn run(
                 // The page names the project once its socket has the state.
                 if smoke && close.is_some() && t.starts_with("Functor — ") && inset.is_none() {
                     eprintln!("[functor-app] window smoke: the page connected ({t})");
+                    probed = true;
                     if let Err(e) = webview.evaluate_script(SMOKE_PROBE) {
                         eprintln!("functor-app: window smoke: cannot probe the title bar: {e}");
                     }
@@ -174,10 +180,13 @@ pub fn run(
                 window.set_title(&t);
             }
             Event::UserEvent(UserEvent::Drag) if smoke => dragged = true,
-            Event::UserEvent(UserEvent::Drag) => {
+            // Fullscreen neither moves nor zooms (tao would zoom on exit).
+            Event::UserEvent(UserEvent::Drag) if !fullscreen => {
                 let _ = window.drag_window();
             }
-            Event::UserEvent(UserEvent::Zoom) => window.set_maximized(!window.is_maximized()),
+            Event::UserEvent(UserEvent::Zoom) if !fullscreen => {
+                window.set_maximized(!window.is_maximized())
+            }
             Event::UserEvent(UserEvent::Inset(px)) => inset = Some(px),
             // The page acts on its own menu commands, as on its buttons.
             Event::UserEvent(UserEvent::Menu(id)) => {
@@ -271,6 +280,7 @@ fn open(
         .with_titlebar_transparent(true)
         .with_fullsize_content_view(true)
         .with_traffic_light_inset(LogicalPosition::new(LIGHTS_AT.0, LIGHTS_AT.1))
+        // Dark before the page paints, and the lights drawn for a dark bar.
         .with_theme(Some(Theme::Dark))
         .with_background_color(BACKGROUND)
         .with_inner_size(LogicalSize::new(at.w, at.h))
@@ -287,6 +297,9 @@ fn open(
     let webview = WebViewBuilder::new()
         .with_url(format!("{origin}/"))
         .with_background_color(BACKGROUND)
+        // A press on a window behind others acts at once, so its title bar
+        // drags on the first press, as a native one does.
+        .with_accept_first_mouse(true)
         // Only on our own page; `server` describes the token's model.
         .with_initialization_script(format!(
             "if (location.origin === {}) {{ window.functorToken = {}; window.functorTitlebar = true; }}",
