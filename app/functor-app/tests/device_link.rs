@@ -2926,8 +2926,8 @@ async fn a_task_typed_while_the_headset_is_away_reaches_it_when_it_is_back() {
         r#"{"ms":0,"event":{"type":"started","session":"a1","model":"m"}}"#,
         r#"{"ms":300,"mcp":{"tool":"api_reference","arguments":{"query":"Ui.row"}}}"#,
         r#"{"ms":400,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
-        r#"{"ms":9000,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
-        r#"{"ms":9100,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
+        r#"{"ms":12000,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":12100,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
     ]
     .join("\n");
     let Some((mut app, store, quest, _)) = game_on_stub(dir.path(), &fixture, &[]).await else {

@@ -187,16 +187,17 @@ pub async fn execute(
     };
     for raw in attach {
         let url = raw.trim_end_matches('/');
+        // Not answering now (a stopped game, a headset that is away, a slow
+        // one): its session is kept and checked on first use. An answer as
+        // anything else is wrong.
         let error = match tokio::time::timeout(ATTACH_WAIT, server.attach(url, std::future::pending())).await {
             Ok(Ok(_)) => continue,
+            Ok(Err(error)) if !server.unavailable(url).await => {
+                return Err(io::Error::other(format!("--attach {raw}: {error}")));
+            }
             Ok(Err(error)) => error,
             Err(_) => format!("no answer within {}s", ATTACH_WAIT.as_secs()),
         };
-        // Not answering now (a stopped game, a headset that is away): its
-        // session is kept and checked on first use. Anything else is wrong.
-        if !server.unavailable(url).await {
-            return Err(io::Error::other(format!("--attach {raw}: {error}")));
-        }
         server.attach_unverified(url).map_err(io::Error::other)?;
         eprintln!("--attach {raw}: not answering now ({error}); its session waits for it");
     }
@@ -2472,7 +2473,7 @@ impl FunctorMcp {
         }
         self.discover(url)
             .await
-            .map_err(|error| format!("session {session:?} is not answering yet: {error}"))?;
+            .map_err(|error| format!("session {session:?} could not be attached yet: {error}"))?;
         let mut registry = self.sessions.lock().expect("mcp registry poisoned");
         if let Some(s) = registry.sessions.get_mut(session).filter(|s| s.url == url) {
             s.unverified = false;

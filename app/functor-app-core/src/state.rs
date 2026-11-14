@@ -1922,7 +1922,7 @@ fn headset_away(state: &AppState, project: &str) -> Option<String> {
         return None;
     }
     let device = state.devices.list.iter().find(|d| d.id == id);
-    Some(device.map_or("the headset".to_string(), |d| d.name.clone()))
+    Some(device.map_or("your headset".to_string(), |d| d.name.clone()))
 }
 
 /// Paired device `id` is linked now.
@@ -7749,12 +7749,17 @@ mod tests {
 
     /// `s` after a poll reporting program revision `revision`.
     fn reloaded_to(s: AppState, revision: u64) -> AppState {
+        polled_revision(s, revision).0
+    }
+
+    /// A poll reporting program revision `revision`: the state and commands.
+    fn polled_revision(s: AppState, revision: u64) -> (AppState, Vec<Command>) {
         let id = s.session.as_ref().unwrap().id;
         let clock = PolledClock {
             program_revision: revision,
             ..PolledClock::default()
         };
-        update(s, session(id, polled_clock(8, clock))).0
+        update(s, session(id, polled_clock(8, clock)))
     }
 
     fn said(text: &str, utterance: u64) -> Event {
@@ -7914,7 +7919,7 @@ mod tests {
         let (back, commands) = update(s, link(1, true));
         assert_eq!(stages(&commands), []);
         assert_eq!(headset_away(&back, "examples/a"), None);
-        assert_eq!(stages(&reloaded_commands(back.clone(), 6)), [(1, Stage::Reloaded)]);
+        assert_eq!(stages(&polled_revision(back.clone(), 6).1), [(1, Stage::Reloaded)]);
         // Back with no reload: failed once the grace from the relink passes.
         let (s, commands) = update(back, Event::Link(LinkEvent::Tick));
         assert_eq!(stages(&commands), []);
@@ -7934,7 +7939,7 @@ mod tests {
         let (s, _) = update(s, agent(4, 0, finished()));
         let (s, _) = update(s, ended(4, 0));
         let (s, _) = update(s, link(1, true));
-        assert_eq!(stages(&reloaded_commands(s, 0)), [(1, Stage::Reloaded)]);
+        assert_eq!(stages(&polled_revision(s, 0).1), [(1, Stage::Reloaded)]);
     }
 
     /// A run that fails while the headset is away still says so: the shell
@@ -7953,15 +7958,7 @@ mod tests {
         assert_eq!(stages(&commands), [(1, Stage::Failed("boom".to_string()))]);
     }
 
-    /// The commands of a poll reporting program revision `revision`.
-    fn reloaded_commands(s: AppState, revision: u64) -> Vec<Command> {
-        let id = s.session.as_ref().unwrap().id;
-        let clock = PolledClock {
-            program_revision: revision,
-            ..PolledClock::default()
-        };
-        update(s, session(id, polled_clock(8, clock))).1
-    }
+
 
     /// Said while a task runs for the game: that task is stopped and
     /// resumed with it (D29's steer), and only the new utterance is followed.

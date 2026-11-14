@@ -94,7 +94,9 @@ export function headsetNote(device: Device | null, session: Session | null, tran
       title: `${name}: ${WORDS[device.state.state]}`,
       detail:
         status.kind === "running"
-          ? "The game goes on there; this view follows it again when the headset reconnects. An edit saved meanwhile loads there once it is back."
+          ? `The game goes on there; this view follows it again when the headset reconnects.${
+              device.state.state === "away" ? " An edit saved meanwhile loads there once it is back." : ""
+            }`
           : "The game starts there when the headset reconnects.",
       fix: fixFor(device),
     };

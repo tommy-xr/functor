@@ -63,7 +63,7 @@ frame (`clock.paused`): `step` or `resume` it to run it, as input lands only whe
 /// is back (`functor mcp --attach`).
 fn away(headset: &str) -> String {
     format!(
-        "The game runs on the headset {headset} as session `s1`, but that headset is away right \
+        "The game runs on {headset} as session `s1`, but that headset is away right \
 now: game tools answer that it is away until it reconnects, and `list_sessions` shows `alive: \
 true` once it is back. Read and edit the code meanwhile: an edit you save loads on the headset \
 when it is back."
@@ -1291,7 +1291,7 @@ mod tests {
     #[test]
     fn the_preamble_says_the_headset_is_away() {
         let away = prompt("hi", false, Game::Away("Quest 3"), false);
-        assert!(away.contains("headset Quest 3 as session `s1`"), "{away}");
+        assert!(away.contains("runs on Quest 3 as session `s1`"), "{away}");
         assert!(away.contains("`list_sessions`") && away.contains("when it is back"), "{away}");
         assert!(!away.contains(ATTACHED) && !away.contains(NO_GAME), "{away}");
     }

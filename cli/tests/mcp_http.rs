@@ -241,26 +241,7 @@ fn read_head(stream: &mut std::net::TcpStream) -> String {
 
 /// A stand-in debug runtime answering `GET /` (discovery) and `GET /state`.
 fn fake_debug_runtime() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().map_while(Result::ok) {
-            let head = read_head(&mut stream);
-            let path = head.split_whitespace().nth(1).unwrap_or("");
-            let body = match path {
-                "/" => json!({"service": "functor debug runtime", "protocol_version": 8}),
-                "/state" => json!({"frame": 42, "tts": 0.7, "model": {"count": 7}}),
-                _ => json!({"error": "not found"}),
-            }
-            .to_string();
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        }
-    });
-    url
+    tunnelled_runtime(Default::default())
 }
 
 fn answers(url: &str) -> bool {
@@ -431,7 +412,7 @@ fn tunnelled_runtime_on(
             let (status, body) = match (away.load(std::sync::atomic::Ordering::SeqCst), path) {
                 (true, _) => ("503 Service Unavailable", "the headset is away; try again when it is back".to_string()),
                 (false, "/") => ("200 OK", json!({"service": "functor debug runtime", "protocol_version": 8}).to_string()),
-                (false, _) => ("200 OK", json!({"frame": 42, "model": {"count": 7}}).to_string()),
+                (false, _) => ("200 OK", json!({"frame": 42, "tts": 0.7, "model": {"count": 7}}).to_string()),
             };
             let _ = write!(
                 stream,
@@ -491,7 +472,7 @@ fn attach_to_a_dead_url_keeps_its_session() {
     let mut mcp = HttpMcp::connect(&server.url);
     let asked = Instant::now();
     let error = call_error(&mut mcp, "get_state", json!({"session": "s1"}));
-    assert!(error.contains("not answering yet") && error.contains(&dead), "{error}");
+    assert!(error.contains("could not be attached yet") && error.contains(&dead), "{error}");
     assert!(asked.elapsed() < Duration::from_secs(3), "answered in {:?}", asked.elapsed());
     let Ok(listener) = TcpListener::bind(addr) else {
         return; // The port was taken meanwhile: the rest cannot be shown.
