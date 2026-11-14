@@ -701,6 +701,13 @@ keep one fork, several, or send one back, and sees the combined result as one
 more miniature before the final Keep — two forks that each work but not
 together show up there.
 
+**Drafts are drawn by the desktop.** A fork's miniature need not be a game
+running in the headset. The desktop already runs each fork's game hidden; it
+renders the miniature from where the user is looking and sends the picture,
+which the headset shows as a draft — semi-transparent, at a low rate. Only
+the one the user reaches for becomes a live game in the headset. So the
+headset's cost stays that of one game however many forks there are.
+
 **What watching them is for — all three.** Progress in real time (position,
 link, bubble, context). Steering: an agent can be addressed — look or point
 at a figure and talk to that one; talking to the orchestrator redirects the
