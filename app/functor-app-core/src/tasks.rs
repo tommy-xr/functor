@@ -37,15 +37,18 @@ impl Harness {
 }
 
 /// How much of the user's own setup an agent run reads (D39): instructions,
-/// skills, memory and settings. Permissions are the app's at every level.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// skills, memory and settings. The app's permissions apply at every level;
+/// the allow rules and hooks in the user's settings come only with them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// The user's own and the project's, as in their terminal.
     #[default]
     UserAndProject,
-    /// What is checked into the project only.
+    /// The project's: what it has checked in, and the user's local
+    /// settings for it (`.claude/settings.local.json`), nothing from their
+    /// home.
     Project,
     /// Neither: only what the app gives the run.
     Isolated,
@@ -75,8 +78,9 @@ pub struct Task {
     /// From [`derive_status`], after every change.
     pub status: TaskStatus,
     pub harness: Harness,
-    /// What its last run read of the user's setup (D39); tasks saved before
-    /// it was kept read all of it.
+    /// What its runs read of the user's setup (D39), fixed when it starts:
+    /// its follow-ups resume a session that already holds it. Tasks saved
+    /// before it was kept read all of it.
     #[serde(default)]
     pub scope: Scope,
     /// As the agent reported it.

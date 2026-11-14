@@ -1,14 +1,15 @@
 import type { Harness, Scope } from "./generated/protocol";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
-import { CODEX_NOTE, SCOPE_WORDS, SCOPES, scopesFor } from "./scope-model";
+import { CODEX_NOTE, KEPT_NOTE, LIMITS_NOTE, SCOPE_WORDS, SCOPES, scopesFor } from "./scope-model";
 
 /**
- * Beside the agent picker: how much of the user's own setup the next
- * request reads (D39), and the project's default for its new tasks.
+ * Beside the agent picker: how much of the user's own setup a task reads
+ * (D39), picked as it starts, and the project's default for new tasks.
  */
 export function ScopeSettings({
   scope,
+  pickable,
   projectDefault,
   harness,
   online,
@@ -16,8 +17,10 @@ export function ScopeSettings({
   onPick,
   onDefault,
 }: {
-  /** What the next request reads. */
+  /** What the task reads. */
   scope: Scope;
+  /** A new task: its level can still be picked. */
+  pickable: boolean;
   projectDefault: Scope;
   harness: Harness;
   online: boolean;
@@ -43,7 +46,7 @@ export function ScopeSettings({
       {open && (
         <div className="review-panel scope-panel" role="dialog" aria-label="Instruction scope">
           <fieldset className="scope-levels">
-            <legend>What this request reads</legend>
+            <legend>What this task reads</legend>
             {SCOPES.map((s) => (
               <label key={s} className={`scope-level${allowed.includes(s) ? "" : " scope-off"}`}>
                 <input
@@ -51,7 +54,7 @@ export function ScopeSettings({
                   name="scope"
                   value={s}
                   checked={scope === s}
-                  disabled={!online || !allowed.includes(s)}
+                  disabled={!online || !pickable || !allowed.includes(s)}
                   onChange={() => onPick(s)}
                 />
                 <span>
@@ -61,7 +64,8 @@ export function ScopeSettings({
               </label>
             ))}
           </fieldset>
-          {harness === "codex" && <p className="review-help scope-note">{CODEX_NOTE}</p>}
+          {!pickable && <p className="review-help scope-note">{KEPT_NOTE}</p>}
+          {pickable && harness === "codex" && <p className="review-help scope-note">{CODEX_NOTE}</p>}
           <label className="review-field">
             <span>New tasks in this project</span>
             <span className="switcher model-picker">
@@ -80,7 +84,7 @@ export function ScopeSettings({
               <Icon name="chevron" />
             </span>
           </label>
-          <p className="review-help">What the agent may do does not change: at every level it may edit only inside the open folder.</p>
+          <p className="review-help">{LIMITS_NOTE}</p>
         </div>
       )}
     </div>

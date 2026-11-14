@@ -56,18 +56,23 @@ async function scopeView(browser, width, height) {
     await expect(toggle).toHaveText("Setup");
     await toggle.click();
     await expect(level("Yours and the project's")).toBeChecked();
-    await expect(panel).toContainText("nor the permission rules and hooks in your settings");
-    await expect(panel).toContainText("it may edit only inside the open folder");
+    await expect(panel).toContainText("nor the permission rules and hooks in your user settings");
+    await expect(panel).toContainText("a shell command your settings allow is denied");
     await shot(page, `scope-panel-${width}`);
 
-    // One request reads less, and the runner gets that level.
+    // A new task reads less, and the runner gets that level.
     await level("Isolated").check();
     await expect(toggle).toHaveText("Isolated");
     await page.keyboard.press("Escape");
     await ask("Where does the count start?");
     await expect.poll(() => seen.at(-1)).toBe("Isolated");
-    // The task keeps it; a new task goes back to the project's.
+    // The task keeps it, fixed (its session holds what it read); a new task
+    // goes back to the project's.
     await expect(toggle).toHaveText("Isolated");
+    await toggle.click();
+    await expect(level("Yours and the project's")).toBeDisabled();
+    await expect(panel).toContainText("A task keeps the level it started with");
+    await page.keyboard.press("Escape");
     await newTask();
     await expect(toggle).toHaveText("Setup");
 

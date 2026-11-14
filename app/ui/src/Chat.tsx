@@ -37,7 +37,7 @@ import { fileFor, hasChange, plural, totals } from "./diff-model";
 import { renderMarkdown } from "./markdown";
 import { ReviewSettings } from "./ReviewSettings";
 import { ScopeSettings } from "./ScopeSettings";
-import { projectScope, requestScope } from "./scope-model";
+import { projectScope, taskScope } from "./scope-model";
 import type { Accepted, Conn, Notice, Send } from "./socket";
 import { transcribe } from "./socket";
 import { record, type Recording } from "./mic";
@@ -182,7 +182,7 @@ export function ChatDock({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<{ task: number | null; text: string } | null>(null);
   const [shownNotice, setShownNotice] = useState<string | null>(null);
-  // The level picked for the next request (D39), until it is sent or the task changes.
+  // The level picked for a new task (D39), until it is sent or another task is shown.
   const [scopePick, setScopePick] = useState<Scope | null>(null);
   useEffect(() => setScopePick(null), [current?.id]);
   useEffect(() => {
@@ -221,14 +221,14 @@ export function ChatDock({
   );
   const agent = dockTask(state, current?.id ?? null);
   const harness: Harness = current?.harness ?? pickHarness(state);
-  const scope = requestScope(scopePick, current, state, harness);
+  const scope = taskScope(scopePick, current, state, harness);
   const running = current?.run != null;
 
   const submit = () => {
     const text = draft;
     if (!text.trim() || pending || !online) return;
     const sent = current
-      ? send({ type: "send_message", task: current.id, message: text, scope })
+      ? send({ type: "send_message", task: current.id, message: text })
       : send({ type: "new_task", message: text, harness, scope });
     if (sent) {
       setPending({ task: current?.id ?? null, text });
@@ -297,6 +297,7 @@ export function ChatDock({
             <>
               <ScopeSettings
                 scope={scope}
+                pickable={current === null}
                 projectDefault={projectScope(state)}
                 harness={harness}
                 online={online}

@@ -17,15 +17,24 @@ export const SCOPE_WORDS: Record<Scope, { name: string; short: string; help: str
     name: "The project's only",
     short: "Project only",
     help:
-      "What the project has checked in. Not your instructions, skills or memory, nor the permission rules " +
-      "and hooks in your settings, nor the project's own extra MCP servers.",
+      "The project's own instructions, skills and settings, and your local settings for it " +
+      "(.claude/settings.local.json). Not your own instructions, skills, memory, MCP servers or plugins, " +
+      "nor the permission rules and hooks in your user settings, nor the project's extra MCP servers (.mcp.json).",
   },
   isolated: {
     name: "Isolated",
     short: "Isolated",
-    help: "Only the app's opening instructions and tools. None of your setup or the project's: the cheapest and most repeatable.",
+    help: "Only the app's opening instructions and tools: none of your setup or the project's. The fewest tokens a turn.",
   },
 };
+
+/** A task keeps its level: its session already holds what it read. */
+export const KEPT_NOTE = "A task keeps the level it started with: its conversation already holds what it read.";
+
+/** The app's limits stay; the allow rules and hooks in a setting go with it. */
+export const LIMITS_NOTE =
+  "The app's own limits apply at every level: edits stay inside the open folder. Allow rules and hooks come " +
+  "only with the settings that hold them, so a shell command your settings allow is denied at a level that leaves them out.";
 
 /** Codex has no way to leave out the user's own instructions and skills. */
 export const CODEX_NOTE = "Codex always reads your own instructions and skills: it cannot leave them out.";
@@ -40,8 +49,8 @@ export function scopesFor(harness: Harness): Scope[] {
   return harness === "codex" ? ["user_and_project"] : SCOPES;
 }
 
-/** What the next request reads: the level picked for it, else the task's last, else the project's; Codex all of it. */
-export function requestScope(pick: Scope | null, task: Task | null, state: AppState | null, harness: Harness): Scope {
-  const scope = pick ?? task?.scope ?? projectScope(state);
+/** What a task reads: its own level once it exists (its follow-ups resume a session that already holds it), else the one picked for it, else the project's; Codex all of it. */
+export function taskScope(pick: Scope | null, task: Task | null, state: AppState | null, harness: Harness): Scope {
+  const scope = task ? task.scope : (pick ?? projectScope(state));
   return scopesFor(harness).includes(scope) ? scope : "user_and_project";
 }

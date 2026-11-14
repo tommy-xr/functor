@@ -38,7 +38,7 @@ pub enum ClientMsg {
         on: bool,
     },
     /// Start a task in the active project with its first message; `scope`
-    /// for this request, else the project's (D39).
+    /// for this task, else the project's (D39).
     NewTask {
         message: String,
         harness: Harness,
@@ -46,14 +46,11 @@ pub enum ClientMsg {
         #[cfg_attr(feature = "ts", ts(optional))]
         scope: Option<Scope>,
     },
-    /// A follow-up on `task`, continuing its agent session; `scope` for
-    /// this request, else the task's last.
+    /// A follow-up on `task`, continuing its agent session (and reading
+    /// what it started with).
     SendMessage {
         task: u64,
         message: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(feature = "ts", ts(optional))]
-        scope: Option<Scope>,
     },
     /// Stop `task`'s run.
     StopTask {

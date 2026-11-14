@@ -876,12 +876,8 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 false,
             ),
         },
-        Event::Client(ClientMsg::SendMessage {
-            task,
-            message,
-            scope,
-        }) => (
-            send_message(&mut state, task, message, scope, &mut commands),
+        Event::Client(ClientMsg::SendMessage { task, message }) => (
+            send_message(&mut state, task, message, &mut commands),
             false,
         ),
         Event::Client(ClientMsg::StopTask { task }) => {
@@ -1947,20 +1943,15 @@ fn send_message(
     state: &mut AppState,
     id: u64,
     message: String,
-    scope: Option<Scope>,
     commands: &mut Vec<Command>,
 ) -> bool {
-    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+    let Some(task) = state.tasks.iter().find(|t| t.id == id) else {
         commands.push(Command::Reply(no_task(id)));
         return false;
     };
-    let project = task.project.clone();
-    if let Err(reason) = can_run(state, &project, Some(id), &message) {
+    if let Err(reason) = can_run(state, &task.project, Some(id), &message) {
         return reject(commands, reason);
     }
-    let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
-    // This request's level, else the task's last.
-    task.scope = scope.unwrap_or(task.scope).for_harness(task.harness);
     start_run(state, id, message, None, commands);
     true
 }
@@ -3778,7 +3769,6 @@ mod tests {
         client(ClientMsg::SendMessage {
             task,
             message: message.to_string(),
-            scope: Default::default(),
         })
     }
 
@@ -3980,10 +3970,10 @@ mod tests {
         assert_eq!(s.context_windows, windows);
     }
 
-    /// D39: the project's level by default, a request's own when it gives
+    /// D39: the project's level by default, a new task's own when it gives
     /// one, kept with the task; Codex always reads all of the user's setup.
     #[test]
-    fn a_runs_scope_is_the_requests_else_the_projects_and_never_less_for_codex() {
+    fn a_tasks_scope_is_its_own_else_the_projects_and_never_less_for_codex() {
         let task_with = |harness, scope| Event::NewTask {
             id: Ok(1),
             message: "hi".into(),
@@ -4002,23 +3992,14 @@ mod tests {
         let (s2, commands) = update(s.clone(), task_with(Harness::Claude, None));
         assert_eq!(spec(&commands).scope, Scope::Isolated);
         assert_eq!(task(&s2, 1).scope, Scope::Isolated);
-        // One request's level, then a follow-up keeps it unless it gives its own.
+        // A task's own level, kept by its follow-ups (they resume its session).
         let (s2, commands) = update(s.clone(), task_with(Harness::Claude, Some(Scope::Project)));
         assert_eq!(spec(&commands).scope, Scope::Project);
         let (s2, _) = update(s2, agent(1, 0, finished()));
         let (s2, _) = update(s2, ended(1, 0));
         let (s2, commands) = update(s2, send(1, "more"));
         assert_eq!(spec(&commands).scope, Scope::Project);
-        let (s2, _) = update(s2, agent(1, 2, finished()));
-        let (s2, _) = update(s2, ended(1, 2));
-        let again = client(ClientMsg::SendMessage {
-            task: 1,
-            message: "all of it".into(),
-            scope: Some(Scope::UserAndProject),
-        });
-        let (s2, commands) = update(s2, again);
-        assert_eq!(spec(&commands).scope, Scope::UserAndProject);
-        assert_eq!(task(&s2, 1).scope, Scope::UserAndProject);
+        assert_eq!(task(&s2, 1).scope, Scope::Project);
         // Codex: all of it, whatever the project or the request says.
         let (s3, commands) = update(s, task_with(Harness::Codex, Some(Scope::Isolated)));
         assert_eq!(spec(&commands).scope, Scope::UserAndProject);

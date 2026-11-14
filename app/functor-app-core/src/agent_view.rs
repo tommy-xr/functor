@@ -1131,7 +1131,6 @@ mod tests {
         let more = Event::Client(ClientMsg::SendMessage {
             task: 1,
             message: "And the other one".into(),
-            scope: Default::default(),
         });
         let (s, _) = update(s, more);
         assert_eq!(s.tasks[0].report, None);
@@ -1173,7 +1172,6 @@ mod tests {
             Event::Client(ClientMsg::SendMessage {
                 task: 1,
                 message: "and?".into(),
-                scope: Default::default(),
             }),
         );
         let run = s.tasks[0].run.as_ref().unwrap().id;
@@ -1508,7 +1506,6 @@ mod tests {
             Event::Client(ClientMsg::SendMessage {
                 task: 1,
                 message: "more".into(),
-                scope: Default::default(),
             }),
         );
         let run = s.tasks[0].run.as_ref().unwrap().id;
