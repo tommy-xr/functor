@@ -79,22 +79,26 @@ fn a_command_missing_its_own_subcommand_keeps_its_help() {
 // In-process (`app` on macOS) bare `functor` opens the window instead.
 #[cfg(not(all(feature = "app", target_os = "macos")))]
 #[test]
-fn bare_functor_runs_the_app_and_help_is_still_help() {
-    let app = |args: &[&str]| {
-        functor()
-            .env("FUNCTOR_APP_BIN", "/bin/echo")
-            .args(args)
-            .output()
-            .unwrap()
-    };
-    let out = app(&[]);
+fn bare_functor_runs_the_app() {
+    let out = functor()
+        .env("FUNCTOR_APP_BIN", "/bin/echo")
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("--functor "));
+}
+
+#[test]
+fn help_and_version_never_open_the_app() {
     for flag in ["--help", "--version"] {
-        let out = app(&[flag]);
+        let out = functor()
+            .env("FUNCTOR_APP_BIN", "/bin/echo")
+            .arg(flag)
+            .output()
+            .unwrap();
         let said = String::from_utf8_lossy(&out.stdout);
         assert!(out.status.success(), "{flag}");
-        assert!(!said.starts_with("--functor "), "{flag}: {said}");
+        assert!(said.starts_with("Functor") || said.starts_with("functor"), "{flag}: {said}");
     }
 }
 

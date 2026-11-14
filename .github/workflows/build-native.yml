@@ -136,7 +136,8 @@ jobs:
 
       # The one binary (D40, macOS): `functor` with the app built in runs it
       # in-process, its game sessions this same executable; then the real
-      # window through it. Rebuilds only the CLI crate with the feature.
+      # window through it. The feature changes the CLI's build, so later
+      # `cargo` steps without it rebuild the CLI.
       - name: One binary (functor with the app)
         if: matrix.os == 'macos-latest'
         run: |

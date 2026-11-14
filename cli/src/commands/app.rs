@@ -75,11 +75,13 @@ fn locate(functor: Option<&Path>) -> Result<PathBuf, String> {
     )
 }
 
-/// Whether bare `functor` opens the app: built in where its window is
-/// (macOS), else a `functor-app` that can be found.
+/// Whether bare `functor` opens the app: built in, where its window is
+/// (macOS; elsewhere help, D40); else a `functor-app` that can be found.
 pub fn installed() -> bool {
-    cfg!(all(feature = "app", target_os = "macos"))
-        || locate(std::env::current_exe().ok().as_deref()).is_ok()
+    match cfg!(feature = "app") {
+        true => cfg!(target_os = "macos"),
+        false => locate(std::env::current_exe().ok().as_deref()).is_ok(),
+    }
 }
 
 /// Runs the app in this process with `dir` and `extra` as its arguments

@@ -196,7 +196,7 @@ runtime rather than at build time: a site built against a stale
 
 ```sh
 npm run build:cli           # the wasm bundle, then the functor CLI (RELEASE) → target/release/functor
-npm run build:cli:debug     # same, but a debug build → target/debug/functor
+npm run build:cli:debug     # a debug build of the CLI alone → target/debug/functor
 ```
 
 On macOS `build:cli` also builds the desktop app into that binary (`scripts/build-cli.mjs`: the

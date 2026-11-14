@@ -74,8 +74,9 @@ struct Args {
     #[arg(long, global = true)]
     no_gpu: bool,
 
-    /// The `functor` binary for game sessions and agent tools (else
-    /// `FUNCTOR_BIN`, else one next to this executable, else `functor` on PATH).
+    /// The `functor` binary for game sessions and agent tools. Else, run by
+    /// `functor`: itself; as `functor-app`: `FUNCTOR_BIN`, else one next to
+    /// this executable, else `functor` on PATH.
     #[arg(long, value_name = "PATH", global = true)]
     functor: Option<PathBuf>,
 
@@ -254,7 +255,7 @@ pub fn run(argv: impl IntoIterator<Item = OsString>, host: Host) -> std::io::Res
         });
     }
     if args.headless {
-        return runtime()?.block_on(app(args, token, None));
+        return runtime()?.block_on(app(args, host, token, None));
     }
     if args.print || args.command.is_some() {
         eprintln!("functor-app: --print and task need --headless");
@@ -266,7 +267,7 @@ pub fn run(argv: impl IntoIterator<Item = OsString>, host: Host) -> std::io::Res
         let smoke = args.window_smoke;
         let reveal = token.clone();
         window::run(home, smoke, reveal, move |link| {
-            runtime()?.block_on(app(args, token, Some(link)))
+            runtime()?.block_on(app(args, host, token, Some(link)))
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -280,6 +281,7 @@ pub fn run(argv: impl IntoIterator<Item = OsString>, host: Host) -> std::io::Res
 /// the server until a signal (or, with `window`, the window) stops it.
 async fn app(
     args: Args,
+    host: Host,
     token: server::Token,
     window: Option<WindowLink>,
 ) -> std::io::Result<ExitCode> {
@@ -291,7 +293,6 @@ async fn app(
         eprintln!("functor-app: cannot make {} private: {e}", home.display());
     }
     let exe = std::env::current_exe().ok();
-    let host = HOST.get().copied().unwrap_or(Host::Shim);
     let cli = std::sync::Arc::new(match (host, args.functor, exe) {
         // Itself, unless told otherwise: no lookup, nothing to check.
         (Host::Cli, None, Some(exe)) => cli::Cli::own(exe),
