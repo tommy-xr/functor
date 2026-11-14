@@ -2761,7 +2761,15 @@ images cannot be posed"
 
         // `/scene` and `/mirror` serve the frame on screen.
         debug.last_frame = Some(frame);
-        debug.last_view = tracking_reference.and(tracked_center).map(|_| lod_camera);
+        // The head between the eyes, through an eye's vertical field of view.
+        debug.last_view = tracking_reference.and(tracked_center).map(|_| {
+            functor_runtime_common::Camera {
+                fov_radians: views
+                    .first()
+                    .map_or(lod_camera.fov_radians, |v| v.fov.angle_up - v.fov.angle_down),
+                ..lod_camera
+            }
+        });
         debug.last_tts = frame_time.tts;
         if let Some(pushed) = pushed_progress {
             lockstep = feedback
