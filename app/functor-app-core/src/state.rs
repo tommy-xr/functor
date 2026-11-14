@@ -8233,4 +8233,37 @@ mod tests {
         assert_eq!(commands, vec![refused(0, "there is no task 1 here")]);
         assert_eq!(after, other);
     }
+
+    /// The panel shows this headset's latest route with its moves, and a
+    /// move from it is the desktop's move; a queued task says why it waits.
+    #[test]
+    fn the_panel_carries_the_route_its_moves_and_the_queue() {
+        use crate::panel::{panel, PanelAction};
+        let (s, _) = update(routing(), said("bigger", 5));
+        let (s, _) = answered(s, 5, Ok(Choice::Steer { task: 3 }));
+        let (s, _) = update(s, agent(3, 2, started("sess-1")));
+        let route = panel(&s, "aa").route.unwrap();
+        assert_eq!(route.id, s.routes[0].id);
+        assert_eq!(route.line, s.routes[0].line);
+        assert_eq!(route.moves, s.routes[0].moves);
+        assert!(panel(&s, "bb").route.is_none(), "another headset's speech");
+
+        let to = route.moves[0].to.clone();
+        let (by_panel, commands) = update(s.clone(), from_panel(0, PanelAction::Move { id: route.id, to: to.clone() }));
+        let (by_desktop, _) = update(s.clone(), client(ClientMsg::MoveUtterance { id: route.id, to: to.clone() }));
+        assert!(commands.contains(&Command::StopRun { task: 3, run: 2 }));
+        assert_eq!(by_panel.tasks, by_desktop.tasks);
+        let (moved, commands) = reserved(by_panel, commands, 7);
+        let p = panel(&moved, "aa");
+        let queued = p.tasks.iter().find(|t| t.id == 7).unwrap();
+        assert!(queued.queued);
+        assert!(p.waiting.unwrap().starts_with("Starts after"), "{commands:?}");
+
+        let stale = PanelAction::Move { id: 999, to };
+        let (_, commands) = update(s, from_panel(0, stale));
+        assert!(commands.iter().any(|c| matches!(
+            c,
+            Command::Link(LinkCommand::PanelRefused { conn: 0, .. })
+        )));
+    }
 }

@@ -37,6 +37,11 @@ pub const MAX_SIZE: usize = 96;
 pub const MAX_REASON: usize = 192;
 pub const MAX_SUMMARY: usize = 640;
 pub const MAX_NOTE: usize = 192;
+pub const MAX_WAITING: usize = 192;
+pub const MAX_LINE: usize = 192;
+pub const MAX_LABEL: usize = 96;
+/// Most moves offered for a route.
+pub const MAX_MOVES: usize = 3;
 
 /// What an agent is doing, as its character shows it (D34).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +52,8 @@ pub enum Stance {
     Waiting,
     Done,
     Failed,
+    /// Waiting in the project's queue (D30).
+    Queued,
 }
 
 /// The panel's content for one headset.
@@ -62,6 +69,36 @@ pub struct Panel {
     /// The project's tasks, `now` first, then those waiting on the user,
     /// then the most recent; at most [`MAX_TASKS`].
     pub tasks: Vec<Task>,
+    /// Why the queue is not moving ("Waiting for your decision on …");
+    /// empty when nothing is queued.
+    pub waiting: String,
+    /// Where this headset's latest utterance went, while it can be moved.
+    pub route: Option<Route>,
+}
+
+/// The router's decision on an utterance (D29).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub id: u64,
+    /// "Steered “…”", "Queued behind “…”".
+    pub line: String,
+    /// At most [`MAX_MOVES`].
+    pub moves: Vec<Move>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Move {
+    /// "Make it a new task".
+    pub label: String,
+    pub to: Destination,
+}
+
+/// Where a route can be moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Steer { task: u64 },
+    New,
+    Queued { task: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +157,11 @@ pub enum Action {
     Stop {
         task: u64,
     },
+    /// Move route `id` ([`Route`]) to `to`.
+    Move {
+        id: u64,
+        to: Destination,
+    },
 }
 
 impl Stance {
@@ -130,6 +172,7 @@ impl Stance {
             Stance::Waiting => 3,
             Stance::Done => 4,
             Stance::Failed => 5,
+            Stance::Queued => 6,
         }
     }
 
@@ -140,6 +183,7 @@ impl Stance {
             3 => Stance::Waiting,
             4 => Stance::Done,
             5 => Stance::Failed,
+            6 => Stance::Queued,
             _ => return Err(Error::Malformed("panel stance")),
         })
     }
@@ -191,6 +235,21 @@ impl Update {
                         }
                         None => w.u8(0),
                     }
+                }
+                w.str16(&tidy(&p.waiting, MAX_WAITING));
+                match &p.route {
+                    Some(r) => {
+                        w.u8(1);
+                        w.u64(r.id);
+                        w.str16(&tidy(&r.line, MAX_LINE));
+                        let moves = &r.moves[..r.moves.len().min(MAX_MOVES)];
+                        w.u8(moves.len() as u8);
+                        for m in moves {
+                            w.str16(&tidy(&m.label, MAX_LABEL));
+                            destination(&mut w, m.to);
+                        }
+                    }
+                    None => w.u8(0),
                 }
             }
             Update::Refused { reason } => {
@@ -246,11 +305,29 @@ impl Update {
                         },
                     });
                 }
+                let waiting = r.text16(MAX_WAITING)?;
+                let route = match r.flag()? {
+                    true => Some(Route {
+                        id: r.u64()?,
+                        line: r.text16(MAX_LINE)?,
+                        moves: (0..count(&mut r, MAX_MOVES)?)
+                            .map(|_| {
+                                Ok(Move {
+                                    label: r.text16(MAX_LABEL)?,
+                                    to: read_destination(&mut r)?,
+                                })
+                            })
+                            .collect::<Result<_, Error>>()?,
+                    }),
+                    false => None,
+                };
                 Update::Panel(Panel {
                     project,
                     placed,
                     now,
                     tasks,
+                    waiting,
+                    route,
                 })
             }
             2 => Update::Refused {
@@ -264,15 +341,6 @@ impl Update {
 }
 
 impl Action {
-    pub fn task(&self) -> u64 {
-        match self {
-            Action::Select { task }
-            | Action::Keep { task }
-            | Action::Revert { task, .. }
-            | Action::Stop { task } => *task,
-        }
-    }
-
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::default();
         w.u8(VERSION);
@@ -294,6 +362,11 @@ impl Action {
                 w.u8(4);
                 w.u64(*task);
             }
+            Action::Move { id, to } => {
+                w.u8(5);
+                w.u64(*id);
+                destination(&mut w, *to);
+            }
         }
         w.0
     }
@@ -309,11 +382,38 @@ impl Action {
                 tree: r.text16(MAX_TREE)?,
             },
             4 => Action::Stop { task: r.u64()? },
+            5 => Action::Move {
+                id: r.u64()?,
+                to: read_destination(&mut r)?,
+            },
             _ => return Err(Error::Malformed("panel action")),
         };
         r.end()?;
         Ok(action)
     }
+}
+
+fn destination(w: &mut Writer, to: Destination) {
+    match to {
+        Destination::Steer { task } => {
+            w.u8(1);
+            w.u64(task);
+        }
+        Destination::New => w.u8(2),
+        Destination::Queued { task } => {
+            w.u8(3);
+            w.u64(task);
+        }
+    }
+}
+
+fn read_destination(r: &mut Reader) -> Result<Destination, Error> {
+    Ok(match r.u8()? {
+        1 => Destination::Steer { task: r.u64()? },
+        2 => Destination::New,
+        3 => Destination::Queued { task: r.u64()? },
+        _ => return Err(Error::Malformed("panel destination")),
+    })
 }
 
 fn count(r: &mut Reader, max: usize) -> Result<usize, Error> {
@@ -366,6 +466,25 @@ mod tests {
                 placed: true,
                 now: Some(7),
                 tasks: vec![task(7, Some(decision())), task(u64::MAX, None)],
+                waiting: "Waiting for your decision on \"Make the ball red\"".into(),
+                route: Some(Route {
+                    id: 3,
+                    line: "Queued behind \"Make the ball red\"".into(),
+                    moves: vec![
+                        Move {
+                            label: "Steer it instead".into(),
+                            to: Destination::Steer { task: 7 },
+                        },
+                        Move {
+                            label: "Add to the queued task".into(),
+                            to: Destination::Queued { task: 8 },
+                        },
+                        Move {
+                            label: "Make it a new task".into(),
+                            to: Destination::New,
+                        },
+                    ],
+                }),
             }),
             Update::Refused {
                 reason: "task 7 is still running".into(),
@@ -382,6 +501,14 @@ mod tests {
                 tree: "abc".into(),
             },
             Action::Stop { task: u64::MAX },
+            Action::Move {
+                id: 3,
+                to: Destination::New,
+            },
+            Action::Move {
+                id: 3,
+                to: Destination::Queued { task: 8 },
+            },
         ];
         for action in actions {
             assert_eq!(Action::decode(&action.encode()).unwrap(), action);
@@ -402,11 +529,24 @@ mod tests {
         let mut t = task(1, Some(big));
         t.title = long(1000);
         t.activity = long(1000);
+        let moves = vec![
+            Move {
+                label: long(1000),
+                to: Destination::New,
+            };
+            9
+        ];
         let panel = Panel {
             project: Some(long(1000)),
             placed: false,
             now: Some(1),
             tasks: vec![t; 20],
+            waiting: long(1000),
+            route: Some(Route {
+                id: 1,
+                line: long(1000),
+                moves,
+            }),
         };
         let bytes = Update::Panel(panel).encode();
         // Noise adds a 16-byte tag; leave room for it and the frame.
@@ -415,6 +555,7 @@ mod tests {
             panic!("a panel");
         };
         assert_eq!(back.tasks.len(), MAX_TASKS);
+        assert_eq!(back.route.unwrap().moves.len(), MAX_MOVES);
         let d = back.tasks[0].decision.as_ref().unwrap();
         assert_eq!(d.notes.len(), MAX_NOTES);
         assert!(d.summary.len() <= MAX_SUMMARY && back.tasks[0].title.len() <= MAX_TITLE);
@@ -440,7 +581,8 @@ mod tests {
         );
         // A forged task count over the limit.
         let mut many = Update::Panel(Panel::default()).encode();
-        *many.last_mut().unwrap() = MAX_TASKS as u8 + 1;
+        let at = many.len() - 4;
+        many[at] = MAX_TASKS as u8 + 1;
         assert_eq!(Update::decode(&many), Err(Error::TooLarge));
         // A forged stance.
         let mut bytes = Update::Panel(Panel {
@@ -448,7 +590,7 @@ mod tests {
             ..Panel::default()
         })
         .encode();
-        let stance = bytes.len() - 1 - 2 - "reading game.fun".len() - 1;
+        let stance = bytes.len() - 3 - 1 - 2 - "reading game.fun".len() - 1;
         bytes[stance] = 9;
         assert_eq!(
             Update::decode(&bytes),

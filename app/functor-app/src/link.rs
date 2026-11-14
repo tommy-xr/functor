@@ -37,6 +37,7 @@ use axum::Router;
 use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::panel::{Panel as CorePanel, PanelAction};
+use functor_app_core::route::Destination;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
 use functor_device_link::panel;
@@ -1117,6 +1118,7 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                 id: t.id,
                 title: t.title.clone(),
                 stance: match t.stance {
+                    _ if t.queued => panel::Stance::Queued,
                     Stance::Thinking => panel::Stance::Thinking,
                     Stance::Working => panel::Stance::Working,
                     Stance::Waiting => panel::Stance::Waiting,
@@ -1134,6 +1136,21 @@ fn wire_panel(p: &CorePanel) -> panel::Panel {
                 }),
             })
             .collect(),
+        waiting: p.waiting.clone().unwrap_or_default(),
+        route: p.route.as_ref().map(|r| panel::Route {
+            id: r.id,
+            line: r.line.clone(),
+            moves: (r.moves.iter())
+                .map(|m| panel::Move {
+                    label: m.label.clone(),
+                    to: match m.to {
+                        Destination::Steer { task } => panel::Destination::Steer { task },
+                        Destination::New => panel::Destination::New,
+                        Destination::Queued { task } => panel::Destination::Queued { task },
+                    },
+                })
+                .collect(),
+        }),
     }
 }
 
@@ -1143,6 +1160,14 @@ fn core_action(action: panel::Action) -> PanelAction {
         panel::Action::Keep { task } => PanelAction::Keep { task },
         panel::Action::Revert { task, tree } => PanelAction::Revert { task, tree },
         panel::Action::Stop { task } => PanelAction::Stop { task },
+        panel::Action::Move { id, to } => PanelAction::Move {
+            id,
+            to: match to {
+                panel::Destination::Steer { task } => Destination::Steer { task },
+                panel::Destination::New => Destination::New,
+                panel::Destination::Queued { task } => Destination::Queued { task },
+            },
+        },
     }
 }
 

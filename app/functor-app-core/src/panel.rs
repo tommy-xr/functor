@@ -8,8 +8,10 @@ use crate::decision::{count, Depth, Kind};
 use crate::devices::{DeviceState, LinkCommand};
 use crate::layout::Placement;
 use crate::protocol::ClientMsg;
+use crate::queue::Wait;
+use crate::route::{Destination, Move};
 use crate::state::{AppState, Command};
-use crate::tasks::Task;
+use crate::tasks::{Task, TaskStatus};
 
 /// Most tasks a panel lists; notes on its decision page.
 pub const TASKS: usize = 6;
@@ -26,6 +28,19 @@ pub struct Panel {
     pub now: Option<u64>,
     /// `now` first, then those waiting on the user, then the latest.
     pub tasks: Vec<PanelTask>,
+    /// While tasks are queued, why they wait: "Waiting for your decision
+    /// on “…”".
+    pub waiting: Option<String>,
+    /// This headset's latest utterance's route, while it can be moved.
+    pub route: Option<PanelRoute>,
+}
+
+/// Where the router put an utterance (D29), and where it can go instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PanelRoute {
+    pub id: u64,
+    pub line: String,
+    pub moves: Vec<Move>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +48,8 @@ pub struct PanelTask {
     pub id: u64,
     pub title: String,
     pub stance: Stance,
+    /// In the project's queue (D30).
+    pub queued: bool,
     /// Its running call's label, its error, or empty.
     pub activity: String,
     pub decision: Option<PanelDecision>,
@@ -53,10 +70,24 @@ pub struct PanelDecision {
 /// What the headset's user chose.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PanelAction {
-    Select { task: u64 },
-    Keep { task: u64 },
-    Revert { task: u64, tree: String },
-    Stop { task: u64 },
+    Select {
+        task: u64,
+    },
+    Keep {
+        task: u64,
+    },
+    Revert {
+        task: u64,
+        tree: String,
+    },
+    Stop {
+        task: u64,
+    },
+    /// Move route `id` to `to`.
+    Move {
+        id: u64,
+        to: Destination,
+    },
 }
 
 /// The panel for headset `device`: the open project's tasks.
@@ -92,6 +123,7 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
                 id: t.id,
                 title: t.title.clone(),
                 stance: stance(t),
+                queued: t.status == TaskStatus::Queued,
                 activity: activity
                     .and_then(|a| a.calls.first().map(|c| &c.label).or(a.error.as_ref()))
                     .cloned()
@@ -100,11 +132,48 @@ pub fn panel(state: &AppState, device: &str) -> Panel {
             }
         })
         .collect();
+    let title = |id: u64| {
+        let t = state.tasks.iter().find(|t| t.id == id);
+        t.map_or(format!("task {id}"), |t| t.title.clone())
+    };
+    let waiting = state
+        .queues
+        .get(&project)
+        .filter(|q| !q.tasks.is_empty())
+        .and_then(|q| q.wait.as_ref())
+        .map(|w| match w {
+            Wait::Decision { task } => format!(
+                "Waiting for your decision on \u{201c}{}\u{201d}",
+                title(*task)
+            ),
+            Wait::Running { task } => format!("Starts after \u{201c}{}\u{201d}", title(*task)),
+            Wait::Reverting { task } => {
+                format!("Waiting for \u{201c}{}\u{201d} to revert", title(*task))
+            }
+            Wait::Measuring { task } => format!(
+                "Waiting for \u{201c}{}\u{201d}'s change to be measured",
+                title(*task)
+            ),
+        });
+    // The newest open decision on this headset's speech.
+    let route = state
+        .routed
+        .iter()
+        .rev()
+        .filter(|o| o.device == device)
+        .find_map(|o| state.routes.iter().find(|r| r.id == o.id))
+        .map(|r| PanelRoute {
+            id: r.id,
+            line: r.line.clone(),
+            moves: r.moves.clone(),
+        });
     Panel {
         project: Some(project),
         placed,
         now,
         tasks,
+        waiting,
+        route,
     }
 }
 
@@ -170,19 +239,31 @@ pub(crate) fn client_msg(
     conn: u64,
     action: PanelAction,
 ) -> Result<ClientMsg, Option<String>> {
-    let linked = state
+    let Some(device) = state
         .devices
         .list
         .iter()
-        .any(|d| d.conn == Some(conn) && matches!(d.state, DeviceState::Connected { .. }));
-    if !linked {
+        .find(|d| d.conn == Some(conn) && matches!(d.state, DeviceState::Connected { .. }))
+    else {
         return Err(None);
+    };
+    // A route is the headset's own utterance's.
+    if let PanelAction::Move { id, to } = action {
+        if !state
+            .routed
+            .iter()
+            .any(|o| o.id == id && o.device == device.id)
+        {
+            return Err(Some("that utterance can no longer be moved".to_string()));
+        }
+        return Ok(ClientMsg::MoveUtterance { id, to });
     }
     let task = match &action {
         PanelAction::Select { task }
         | PanelAction::Keep { task }
         | PanelAction::Revert { task, .. }
         | PanelAction::Stop { task } => *task,
+        PanelAction::Move { .. } => unreachable!("answered above"),
     };
     if !state
         .tasks
@@ -199,6 +280,7 @@ pub(crate) fn client_msg(
         PanelAction::Keep { task } => ClientMsg::KeepChange { task },
         PanelAction::Revert { task, tree } => ClientMsg::RevertChange { task, tree },
         PanelAction::Stop { task } => ClientMsg::StopTask { task },
+        PanelAction::Move { .. } => unreachable!("answered above"),
     };
     Ok(msg)
 }
