@@ -39,6 +39,8 @@ pub enum Stage {
     Working,
     /// The game on the headset reloaded after the run's edit.
     Reloaded,
+    /// The run answered without changing the game: its answer's first line.
+    Answered(String),
     Failed(String),
 }
 
@@ -202,9 +204,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             Some(Item::Finished { ok: true, .. })
                 if state.tracks_changes && task.change.as_ref().is_some_and(|c| c.is_empty()) =>
             {
-                end(Stage::Failed(
-                    "the agent answered without changing the game: see the computer".to_string(),
-                ))
+                end(Stage::Answered(answer(&task.transcript, run)))
             }
             // The change is ready; it loads when the headset is back.
             Some(Item::Finished { ok: true, .. }) if !linked => {
@@ -230,6 +230,21 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
     });
     state.voice = jobs;
+}
+
+/// Run `run`'s answer, as a headset's toast says it: its last reply's
+/// first line, or where to read it.
+fn answer(items: &[Item], run: u64) -> String {
+    let reply = items
+        .iter()
+        .skip(run as usize + 1)
+        .take_while(|i| !matches!(i, Item::User { .. }))
+        .filter_map(|i| match i {
+            Item::Agent { text, .. } => text.lines().find(|l| !l.trim().is_empty()),
+            _ => None,
+        })
+        .last();
+    reply.map_or("Answered: see the conversation".to_string(), |l| l.trim().to_string())
 }
 
 /// How run `run` (its user message's index) of a transcript ended.

@@ -416,16 +416,24 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
+                    Core::Answered(text) => voice::Stage::Answered { text },
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
+                // A headset too old to read `Answered` still clears its toast.
+                let idle = matches!(stage, voice::Stage::Answered { .. }).then(|| voice::Status {
+                    utterance: Some(utterance),
+                    stage: voice::Stage::Idle,
+                });
                 let status = voice::Status {
                     utterance: Some(utterance),
                     stage,
                 };
-                let sent = self
-                    .link_of(&device)
-                    .is_some_and(|link| link.send(ConnCmd::Send(status.frame())).is_ok());
-                if !sent {
+                let link = self.link_of(&device);
+                let send = |s: &voice::Status| {
+                    link.as_ref().is_some_and(|l| l.send(ConnCmd::Send(s.frame())).is_ok())
+                };
+                idle.as_ref().map(send);
+                if !send(&status) {
                     self.0.state.lock().unwrap().unsent.insert(device, status);
                 }
             }

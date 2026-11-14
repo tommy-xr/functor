@@ -395,6 +395,11 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         VoiceStage::Heard => vec![line("HEARD", HEADING, CYAN)],
         VoiceStage::Working => vec![line("WORKING...", HEADING, CYAN)],
         VoiceStage::Reloaded => vec![line("RELOADED", HEADING, CYAN)],
+        VoiceStage::Answered { text } => {
+            let mut lines = vec![line("ANSWERED", HEADING, CYAN)];
+            lines.extend(wrap(text, WRAP, WRAP_LINES).iter().map(|l| line(l, BODY, WHITE)));
+            lines
+        }
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
         }
@@ -1084,6 +1089,20 @@ mod tests {
         toast.show(VoiceStage::Working, t);
         toast.hide(t);
         assert!(toast.look(t + FADE).is_none());
+    }
+
+    /// An answer that changed nothing says so, with its start.
+    #[test]
+    fn an_answer_shows_its_start() {
+        let mut toast = Toast::default();
+        let t = Instant::now();
+        let text = "The ball is red already.".to_string();
+        toast.show(VoiceStage::Answered { text }, t);
+        let lines = toast_lines(toast.look(t).unwrap().0);
+        assert_eq!(
+            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            ["ANSWERED", "The ball is red already."]
+        );
     }
 
     #[test]

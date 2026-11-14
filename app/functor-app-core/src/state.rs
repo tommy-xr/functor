@@ -8354,7 +8354,8 @@ mod tests {
         assert_eq!(voice::route(&s, "aa", "and blue"), Route::New);
     }
 
-    /// An answer that changed nothing is said at once, not after the wait
+    /// An answer that changed nothing is said at once (its first line, not
+    /// a failure), not after the wait
     /// for a reload; said during a revert, it queues a task behind it,
     /// `Working` once that starts.
     #[test]
@@ -8369,6 +8370,10 @@ mod tests {
             },
         };
         let (s, _) = update(s, baseline);
+        let reply = AgentEvent::Text {
+            text: "\nThe ball is red already.\nNothing to change.".to_string(),
+        };
+        let (s, _) = update(s, agent(4, 0, reply));
         let (s, _) = update(s, agent(4, 0, finished()));
         let none = Event::Change {
             task: 4,
@@ -8377,9 +8382,10 @@ mod tests {
         };
         let (s, _) = update(s, none);
         let (_, commands) = update(s, ended(4, 0));
-        assert!(
-            matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("without changing")),
-            "{commands:?}"
+        // Not a failure: the answer's first line.
+        assert_eq!(
+            stages(&commands),
+            [(1, Stage::Answered("The ball is red already.".to_string()))]
         );
 
         let mut s = voice_ready();
