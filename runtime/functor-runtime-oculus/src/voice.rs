@@ -16,7 +16,7 @@ use functor_device_link::client::Client;
 use functor_device_link::talk::{Stopped, Talk};
 use functor_device_link::voice::{Capsule, Pose, Stage, Status, MAX_SECONDS, STATUS_CHANNEL};
 use functor_runtime_common::debug_protocol::{VoiceStage, VoiceToast};
-use functor_runtime_common::link_overlay::{self, Follow, PushToTalk, Toast};
+use functor_runtime_common::link_overlay::{self, Follow, Progress, PushToTalk, Toast};
 use functor_runtime_common::{TrackingPose, XrInputSnapshot};
 use jni::objects::JObject;
 use jni::{jni_sig, jni_str, JValue};
@@ -286,27 +286,34 @@ impl Voice {
         self.toast.show(stage, now);
     }
 
-    /// The desktop's progress. Ignored while the user is talking, and for an
-    /// earlier utterance than the last.
+    /// The desktop's progress, queued on the toast. Ignored while the user
+    /// is talking, and for an utterance older than the last (one from
+    /// before this app started still shows).
     fn status(&mut self, status: Status, now: Instant) {
-        if self.talk.utterance().is_some() || status.utterance.is_some_and(|u| Some(u) != self.last)
-        {
+        let stale = status
+            .utterance
+            .is_some_and(|u| self.last.is_some_and(|last| u < last));
+        let shown = !stale && self.talk.utterance().is_none();
+        log::info!(
+            "voice: the desktop says {:?} for {:?}{}",
+            status.stage,
+            status.utterance,
+            if shown { "" } else { " (not shown)" }
+        );
+        if !shown {
             return;
         }
-        let stage = match status.stage {
-            Stage::Heard => VoiceStage::Heard,
-            Stage::Transcribed { text } => {
-                if self.toast.stage().is_none() {
-                    self.toast.show(VoiceStage::Heard, now);
-                }
-                return self.toast.transcript(text, now);
-            }
-            Stage::Working => VoiceStage::Working,
-            Stage::Reloaded => VoiceStage::Reloaded,
-            Stage::Failed { reason } => VoiceStage::Failed { reason },
-            Stage::Idle => return self.toast.hide(now),
+        let step = match status.stage {
+            Stage::Heard => Progress::Stage(VoiceStage::Heard),
+            Stage::Transcribed { text } => Progress::Transcript(text),
+            Stage::Working => Progress::Stage(VoiceStage::Working),
+            Stage::Reloaded => Progress::Stage(VoiceStage::Reloaded),
+            Stage::Answered => Progress::Stage(VoiceStage::Answered),
+            Stage::NeedsYou => Progress::Stage(VoiceStage::NeedsYou),
+            Stage::Failed { reason } => Progress::Stage(VoiceStage::Failed { reason }),
+            Stage::Idle => Progress::Idle,
         };
-        self.toast.show(stage, now);
+        self.toast.progress(step, now);
     }
 }
 

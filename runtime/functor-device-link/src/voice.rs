@@ -6,7 +6,9 @@
 //!   from 0, then `End` (or `Cancel`). The audio is 16 kHz mono 16-bit
 //!   little-endian PCM, fixed by [`VERSION`].
 //! - [`STATUS_CHANNEL`] carries [`Status`]: `Heard` → `Transcribed` →
-//!   `Working` → `Reloaded`, or `Failed` at any point; `Idle` clears.
+//!   `Working` → an outcome (`Reloaded`, `Answered`, `NeedsYou`), or
+//!   `Failed` at any point; `Idle` clears. A peer older than `Answered` and
+//!   `NeedsYou` drops them as unreadable, keeping the link.
 //!
 //! Every message starts with [`VERSION`]. `decode` refuses another version
 //! and anything over the per-message limits below; the receiver enforces
@@ -163,6 +165,10 @@ pub enum Stage {
     Working,
     /// The game on the headset reloaded with the run's edit.
     Reloaded,
+    /// The run answered without changing anything.
+    Answered,
+    /// The run waits on the user (a change to keep, a question).
+    NeedsYou,
     Failed {
         reason: String,
     },
@@ -200,6 +206,8 @@ impl Status {
             }
             Stage::Working => w.u8(3),
             Stage::Reloaded => w.u8(4),
+            Stage::Answered => w.u8(7),
+            Stage::NeedsYou => w.u8(8),
             Stage::Failed { reason } => {
                 w.u8(5);
                 w.str16(&tidy(reason, MAX_REASON));
@@ -231,6 +239,8 @@ impl Status {
             },
             3 => Stage::Working,
             4 => Stage::Reloaded,
+            7 => Stage::Answered,
+            8 => Stage::NeedsYou,
             5 => Stage::Failed {
                 reason: r.text16(MAX_REASON)?,
             },
@@ -348,6 +358,8 @@ mod tests {
             },
             Stage::Working,
             Stage::Reloaded,
+            Stage::Answered,
+            Stage::NeedsYou,
             Stage::Failed {
                 reason: "no project".into(),
             },

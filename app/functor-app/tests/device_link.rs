@@ -2687,6 +2687,66 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
 }
 
+/// A slow transcription (11 s, as the real model took on the headset):
+/// heard at once, then the words, then working, every stage on the link
+/// the clip came in on and in order.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_slow_transcription_still_reports_every_stage_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("functor.json"),
+        r#"{"language": "functor-lang"}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":30000,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT_MS", "11000"),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let quest = stub(&app.link, store.path(), "Test Quest", &["--say", CLIP]);
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    assert_eq!(quest.line("voice "), "voice 1 heard");
+    let heard = Instant::now();
+    assert_eq!(
+        quest.line("voice "),
+        "voice 1 transcribed make the ball red"
+    );
+    assert!(heard.elapsed() >= Duration::from_secs(10), "{:?}", heard.elapsed());
+    assert_eq!(quest.line("voice "), "voice 1 working");
+}
+
 /// The router (D29) end to end on loopback, under the fake agent,
 /// transcriber and model router: the stub says a clip, which starts a task
 /// (nothing to choose between, so no model call), then says it again while

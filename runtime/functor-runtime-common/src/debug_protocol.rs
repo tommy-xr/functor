@@ -256,7 +256,8 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// Shift, Control, Alt, F1–F12 and punctuation (`crate::Key`) to `POST
 /// /input` and the reported key sets.
 ///
-/// 46 adds the `microphone_allowed` and `microphone_denied` voice stages.
+/// 46 adds the `microphone_allowed`, `microphone_denied`, `answered` and
+/// `needs_you` voice stages, and the toast's `waiting` seconds.
 pub const DEBUG_PROTOCOL_VERSION: u32 = 46;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -797,6 +798,11 @@ pub struct VoiceToast {
     #[serde(flatten)]
     pub stage: VoiceStage,
     pub transcript: Option<String>,
+    /// Seconds the current step has been going, once it is long enough to
+    /// say so (v46).
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,6 +827,10 @@ pub enum VoiceStage {
     Heard,
     Working,
     Reloaded,
+    /// Answered without a change (v46).
+    Answered,
+    /// Waits on the user: a change to keep, a question (v46).
+    NeedsYou,
     /// The desktop could not act on it.
     Failed { reason: String },
     /// It never reached the desktop whole: cancelled, or the link failed.

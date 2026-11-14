@@ -51,9 +51,26 @@ const FORWARDED: [&str; 3] = ["content-type", "accept", "origin"];
 /// Bytes of bounded channel data queued for the desktop, past which
 /// [`Client::send_channel`] refuses more: about 8 s of voice audio.
 pub const OUTBOX_LIMIT: usize = 256 * 1024;
-/// Channel messages from the desktop kept until the shell takes them; the
-/// oldest go first.
+/// Channel messages from the desktop kept until the shell takes them (it
+/// takes them every frame; more wait while it renders nothing).
 const INBOX_LIMIT: usize = 32;
+
+/// Keeps `data` for the shell. Full, the oldest message of the busiest
+/// channel goes: a burst on one (panel snapshots while the headset sleeps)
+/// never pushes out another's few (voice statuses).
+fn admit(inbox: &mut VecDeque<(u16, Vec<u8>)>, channel: u16, data: Vec<u8>) {
+    if inbox.len() >= INBOX_LIMIT {
+        let count = |c: u16| inbox.iter().filter(|(x, _)| *x == c).count();
+        let busiest = inbox
+            .iter()
+            .map(|(c, _)| *c)
+            .max_by_key(|c| count(*c))
+            .unwrap_or(channel);
+        let oldest = inbox.iter().position(|(c, _)| *c == busiest).unwrap_or(0);
+        inbox.remove(oldest);
+    }
+    inbox.push_back((channel, data));
+}
 
 pub struct Config {
     /// The pairing file ([`Stored`]).
@@ -816,10 +833,7 @@ impl Connection<'_> {
                 }
                 device::Event::Channel { channel, data } => {
                     let mut inbox = worker.shared.inbox.lock().unwrap();
-                    if inbox.len() == INBOX_LIMIT {
-                        inbox.pop_front();
-                    }
-                    inbox.push_back((channel, data));
+                    admit(&mut inbox, channel, data);
                     worker.shared.received.store(true, Ordering::Release);
                 }
                 // Forgeable: report, never drop the stored secret over it.
@@ -1013,6 +1027,24 @@ mod tests {
                 .collect(),
             body: body.to_vec(),
         }
+    }
+
+    #[test]
+    fn a_burst_on_one_channel_keeps_the_others_messages() {
+        let mut inbox = VecDeque::new();
+        admit(&mut inbox, 2, b"heard".to_vec());
+        for i in 0..100u8 {
+            admit(&mut inbox, 3, vec![i]);
+        }
+        admit(&mut inbox, 2, b"working".to_vec());
+        assert_eq!(inbox.len(), INBOX_LIMIT);
+        let statuses: Vec<_> = inbox.iter().filter(|(c, _)| *c == 2).collect();
+        assert_eq!(
+            statuses,
+            [&(2, b"heard".to_vec()), &(2, b"working".to_vec())],
+            "the statuses stay, in order"
+        );
+        assert!(inbox.contains(&(3, vec![99])), "the latest snapshot");
     }
 
     #[test]
