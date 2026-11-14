@@ -96,11 +96,13 @@ jobs:
         run: cargo build
         working-directory: cli
 
-      # The app's session test, its agent test's tool-server case and its
-      # new-project test drive a real `functor` (skipped in "Run tests",
-      # which runs before the CLI exists).
+      # The app's session test, its agent test's tool-server case, its
+      # new-project test and its runs against an away headset drive a real
+      # `functor` (skipped in "Run tests", which runs before the CLI exists).
       - name: Test app game sessions and agent tools
-        run: cargo test -p functor-app --test session --test agent --test creation
+        run: |
+          cargo test -p functor-app --test session --test agent --test creation
+          cargo test -p functor-app --test device_link away
         env:
           FUNCTOR_BIN: ${{ github.workspace }}/target/debug/functor${{ runner.os == 'Windows' && '.exe' || '' }}
 
