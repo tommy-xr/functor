@@ -90,9 +90,9 @@
             <code>wasm-pack</code>), plus an agent on your <code>PATH</code>: Claude Code (<code>claude</code>) or Codex
             (<code>codex</code>). From a checkout of the repository:
           </p>
-          <pre class="shell">npm run build                          # everything: target/release/functor, with the app built in (macOS)
-npm run app -- -d examples/primitives  # while working on it: rebuild what changed, then open it
-npm run package:app                    # Functor.app, for the Dock and Finder</pre>
+          <pre class="shell">npm run build                          # everything, the app built in
+npm run app -- -d examples/primitives  # rebuild what changed, open it
+npm run package:app                    # Functor.app</pre>
           <p>
             After <code>npm run build</code>, bare <code>functor</code> opens the app; so does
             <code>functor app</code>. Its games and the agent's tools run on that same
