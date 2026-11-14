@@ -38,6 +38,7 @@ use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::panel::{Panel as CorePanel, PanelAction, Role, Step};
 use functor_app_core::route::Destination;
+use functor_app_core::voice::HearingStage;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
 use functor_device_link::panel;
@@ -416,6 +417,10 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
+                    // No stage of its own on the wire (an older headset could
+                    // not read one): the toast clears. The answer is in the
+                    // request's record (`AppState::requests`) for the panel.
+                    Core::Answered(_) => voice::Stage::Idle,
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {
@@ -984,7 +989,12 @@ impl Connection {
                 channel: voice::CLIP_CHANNEL,
                 data,
             } => {
-                if let Some(heard) = self.voice.receive(&data, now_ms()) {
+                let before = self.voice.arriving();
+                let heard = self.voice.receive(&data, now_ms());
+                if let Some(utterance) = self.voice.arriving().filter(|u| before != Some(*u)) {
+                    self.hearing(utterance, HearingStage::Arriving);
+                }
+                if let Some(heard) = heard {
                     self.heard(heard);
                 }
             }
@@ -1016,7 +1026,7 @@ impl Connection {
     /// `ConnCmd::Transcribed`).
     fn heard(&mut self, heard: Heard) {
         let (utterance, pcm, capsule) = match heard {
-            Heard::Status(status) => return self.outgoing.push(status.frame()),
+            Heard::Status(status) => return self.tell(status),
             Heard::Clip {
                 utterance,
                 pcm,
@@ -1072,11 +1082,35 @@ impl Connection {
     }
 
     fn say(&mut self, utterance: u64, stage: voice::Stage) {
-        let status = voice::Status {
+        self.tell(voice::Status {
             utterance: Some(utterance),
             stage,
+        });
+    }
+
+    /// `status` to the headset, and to the core while its request has no
+    /// text yet (the chat's line for it).
+    fn tell(&mut self, status: voice::Status) {
+        let stage = match &status.stage {
+            voice::Stage::Heard => Some(HearingStage::Transcribing),
+            voice::Stage::Idle => Some(HearingStage::Cancelled),
+            voice::Stage::Failed { reason } => Some(HearingStage::Failed {
+                reason: reason.clone(),
+            }),
+            _ => None,
         };
+        if let (Some(utterance), Some(stage)) = (status.utterance, stage) {
+            self.hearing(utterance, stage);
+        }
         self.outgoing.push(status.frame());
+    }
+
+    fn hearing(&self, utterance: u64, stage: HearingStage) {
+        self.hub.send(LinkEvent::Hearing {
+            conn: self.id,
+            utterance,
+            stage,
+        });
     }
 
     fn unpend(&mut self) {

@@ -2774,6 +2774,43 @@ blockquote {
   font-size: 12px;
 }
 
+/* Where the latest request is (D43): one quiet line above the composer. */
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--chip);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.request-done,
+.request-slow {
+  color: var(--muted);
+}
+
+.request-failed .request-now {
+  color: var(--danger);
+}
+
+.request-elsewhere {
+  cursor: pointer;
+}
+
+.request-elsewhere:hover {
+  background: var(--selected);
+}
+
+.request-go {
+  color: var(--accent-soft);
+}
+
 .composer {
   display: flex;
   flex-direction: column;

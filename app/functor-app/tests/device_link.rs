@@ -2784,6 +2784,15 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // The agent's edit is pushed, as `functor run vr` does after a save.
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    // Its one record (D43) went through every step to the reload.
+    let reloaded = |s: &Value| {
+        s["requests"].as_array().and_then(|r| r.last()).cloned().filter(|r| r["outcome"]["reload"] == "reloaded")
+    };
+    let state = app.state_where("the request reloaded", 10, |s| reloaded(s).is_some()).await;
+    let request = reloaded(&state).unwrap();
+    let steps: Vec<&str> = request["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["received", "transcribing", "transcribed", "processing", "agent"]);
+    assert_eq!((request["headset"].as_str(), request["line"].as_str()), (Some("Test Quest"), Some("Started a new task")));
 
     // The task holds what was said, marked spoken, with the capsule.
     let state = app

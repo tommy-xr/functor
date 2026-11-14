@@ -15,6 +15,19 @@ use crate::tasks::{Item, Spoken};
 /// the push for a headset that is away until it is back.
 pub const RELOAD_GRACE_MS: u64 = 15_000;
 
+/// A spoken request's clip as the shell sees it, before it has text
+/// (`LinkEvent::Hearing`): the first steps of its record (`progress`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HearingStage {
+    /// Its clip is arriving.
+    Arriving,
+    /// Its clip is whole and being turned into text.
+    Transcribing,
+    /// Cancelled in the headset.
+    Cancelled,
+    Failed { reason: String },
+}
+
 /// A transcribed utterance from a linked headset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Utterance {
@@ -39,6 +52,8 @@ pub enum Stage {
     Working,
     /// The game on the headset reloaded after the run's edit.
     Reloaded,
+    /// The run answered without changing the game: its answer's first line.
+    Answered(String),
     Failed(String),
 }
 
@@ -157,9 +172,11 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
 /// for: the shell delivers what it missed when it relinks.
 pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     let mut jobs = std::mem::take(&mut state.voice);
+    let mut ended = Vec::new();
     jobs.retain_mut(|job| {
-        let mut end = |stage| {
-            status(commands, &job.device, job.utterance, stage);
+        let mut end = |stage: Stage| {
+            status(commands, &job.device, job.utterance, stage.clone());
+            ended.push((job.device.clone(), job.utterance, stage));
             false
         };
         let revision = match on_headset(state, &job.device) {
@@ -202,9 +219,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             Some(Item::Finished { ok: true, .. })
                 if state.tracks_changes && task.change.as_ref().is_some_and(|c| c.is_empty()) =>
             {
-                end(Stage::Failed(
-                    "the agent answered without changing the game: see the computer".to_string(),
-                ))
+                end(Stage::Answered(answer(&task.transcript, run)))
             }
             // The change is ready; it loads when the headset is back.
             Some(Item::Finished { ok: true, .. }) if !linked => {
@@ -230,10 +245,28 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
     });
     state.voice = jobs;
+    for (device, utterance, stage) in ended {
+        crate::progress::voice_ended(state, &device, utterance, &stage);
+    }
+}
+
+/// Run `run`'s answer, as a headset's toast says it: its last reply's
+/// first line, or where to read it.
+pub(crate) fn answer(items: &[Item], run: u64) -> String {
+    let reply = items
+        .iter()
+        .skip(run as usize + 1)
+        .take_while(|i| !matches!(i, Item::User { .. }))
+        .filter_map(|i| match i {
+            Item::Agent { text, .. } => text.lines().find(|l| !l.trim().is_empty()),
+            _ => None,
+        })
+        .last();
+    reply.map_or("Answered: see the conversation".to_string(), |l| crate::activity::cut(l.trim()))
 }
 
 /// How run `run` (its user message's index) of a transcript ended.
-fn outcome(items: &[Item], run: u64) -> Option<&Item> {
+pub(crate) fn outcome(items: &[Item], run: u64) -> Option<&Item> {
     items
         .iter()
         .skip(run as usize + 1)
