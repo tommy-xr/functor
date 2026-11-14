@@ -42,12 +42,14 @@ pub(crate) mod cull;
 mod instanced_renderer;
 mod instancing;
 mod instance_cache;
+mod instance_raycast;
 mod material_description;
 mod model_description;
 mod terrain_materials;
 mod texture_description;
 
 pub use cull::{Aabb, MeshBounds};
+pub use instance_raycast::{raycast_instances, BoxHit};
 pub use instancing::{InstanceData, InstanceList, PaintData, PaintList};
 pub use material_description::*;
 

@@ -2581,6 +2581,21 @@ fn register_instance(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
+        "Instance.raycast",
+        "Instance.raycast({ origin, direction }, instances)",
+        |ray: solid::Ray, instances: InstanceListArg| {
+            let hit = crate::scene3d::raycast_instances(ray.origin, ray.direction, &instances.0);
+            crate::input::option_value(hit.map(|hit| {
+                Value::Record(Rc::new(vec![
+                    ("index".to_string(), Value::Number(hit.index as f64)),
+                    ("point".to_string(), solid::vec3_value(hit.point)),
+                    ("normal".to_string(), solid::vec3_value(hit.normal)),
+                    ("distance".to_string(), Value::Number(hit.distance)),
+                ]))
+            }))
+        },
+    );
+    reg.fn2(
         "Instance.tint",
         "Instance.tint(color, instance)",
         |color: FunctorLangColor, instance: FunctorLangInstance| {
@@ -10803,6 +10818,29 @@ Vec3.make(x, y, z)"
         assert!((instance.rotation[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert_eq!(instance.rotation[0], 0.0);
         assert_eq!(instance.rotation[2], 0.0);
+    }
+
+    /// `Instance.raycast` answers the nearest box's index and face, or None.
+    #[test]
+    fn instance_raycast_picks_the_nearest_box() {
+        let source = "let boxes = [Instance.at(Vec3.make(0.0, 0.0, 9.0)), \
+             Instance.at(Vec3.make(0.0, 0.0, 4.0)) |> Instance.scale(2.0)] \
+             let ray = (x) => { origin: Vec3.make(x, 0.0, 0.0), direction: Vec3.make(0.0, 0.0, 1.0) } \
+             let pick = (x) => Instance.raycast(ray(x), boxes) ";
+        let some = |value: Value| match value {
+            Value::Variant { args, .. } => args.first().cloned(),
+            other => panic!("expected an Option, got {}", other.kind_name()),
+        };
+        let number = |hit: &Value, name: &str| match field(hit, name) {
+            Value::Number(n) => n,
+            _ => panic!("no number {name}"),
+        };
+        // Index 1 (the nearer, larger box), 3 units away, facing -Z.
+        let hit = some(eval(&format!("{source} let main = () => pick(0.0)"))).expect("a hit");
+        assert_eq!((number(&hit, "index"), number(&hit, "distance")), (1.0, 3.0));
+        let normal = vec3_of(&field(&hit, "normal"), "normal", Span::new(0, 0)).unwrap();
+        assert_eq!(normal, (0.0, 0.0, -1.0));
+        assert!(some(eval(&format!("{source} let main = () => pick(5.0)"))).is_none());
     }
 
     /// The same paint bytes convert once: the second call returns the same

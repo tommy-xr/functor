@@ -6,5 +6,14 @@
     "targets": [
       "native"
     ]
+  },
+  {
+    "name": "city-lights-pick",
+    "inputScript": "pick.input",
+    "captureAtFrame": 90,
+    "debugRender": null,
+    "targets": [
+      "native"
+    ]
   }
 ]

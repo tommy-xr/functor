@@ -202,7 +202,7 @@ fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
-fn vec3_value([x, y, z]: [f64; 3]) -> Value {
+pub(super) fn vec3_value([x, y, z]: [f64; 3]) -> Value {
     Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
 }
 
@@ -341,10 +341,10 @@ build it with Solid.frame(origin, xAxis, zAxis)"
     }
 }
 
-/// `Solid.raycast`'s ray: `Camera3D.ray`'s `{ origin, direction }`, in mm.
-struct Ray {
-    origin: [f64; 3],
-    direction: [f64; 3],
+/// `Camera3D.ray`'s `{ origin, direction }` (in mm for `Solid.raycast`).
+pub(super) struct Ray {
+    pub(super) origin: [f64; 3],
+    pub(super) direction: [f64; 3],
 }
 
 impl crate::host_registry::FromArg for Ray {
