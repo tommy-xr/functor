@@ -16,8 +16,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # Advertises the device link on the LAN (pure Rust, no async runtime).
 mdns-sd = { version = "0.21", default-features = false }
 # The agent runner (claude / codex) and its event types; one pinned revision.
-mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
-mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "139014e8f03ba79359c2a200b5c44d66307c9e1e" }
+mis-agent = { git = "https://github.com/tommy-xr/MakeItSo", rev = "87b7707afbbd7ba2971fb7c3868409973a2f8deb" }
+mis-types = { git = "https://github.com/tommy-xr/MakeItSo", rev = "87b7707afbbd7ba2971fb7c3868409973a2f8deb" }
 serde = "1.0"
 serde_json = "1.0"
 # Constant-time token comparison (as the CLI's MCP bearer check uses).

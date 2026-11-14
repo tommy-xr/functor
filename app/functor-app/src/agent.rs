@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use functor_app_core::tasks::mcp_listening_url;
-use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec};
-use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts};
+use functor_app_core::tasks::{TokenUsage, UsageDetail, Usd};
+use functor_app_core::{AgentEvent, Event, Harness, ReviewEvent, ReviewSpec, RunEvent, RunSpec, Scope};
+use mis_agent::{run_guarded, Agent, BoxFut, Mcp, RunOpts, Setup};
 use mis_types::{PermissionMode, Permissions};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -69,15 +70,30 @@ ranges, then the game. Do not show anything else they did not ask to see.";
 /// anywhere in the repo are accepted, the game tools are allowed (`mis-agent`
 /// allows its own MCP server) and anything no rule allows is denied, never
 /// asked. Shell commands run sandboxed to the repo: claude's need an allow
-/// rule (none here), codex runs any. This mode also loads the user's own
-/// agent settings, hooks and MCP servers, as in their terminal (D19), so
-/// their allow rules apply too; an isolated mode would be chosen here.
+/// rule (none here), codex runs any. At [`Scope::UserAndProject`] the run
+/// also loads the user's own agent settings, hooks and MCP servers, as in
+/// their terminal (D19), so their allow rules apply too ([`setup`]).
 pub fn permissions(repo_root: &Path) -> Permissions {
     Permissions {
         mode: PermissionMode::Folders,
         folders: vec![repo_root.to_string_lossy().into_owned()],
         mcp: vec![],
         commands: vec![],
+    }
+}
+
+/// What a run at `scope` reads of the user's setup (D39). For Claude, both
+/// narrower levels leave out the user's instructions, skills, memory, MCP
+/// servers (and the project's `.mcp.json`), and the rules and hooks in their
+/// own settings; [`Scope::Project`] keeps the project's checked-in settings
+/// and `.claude/settings.local.json`. The app's [`permissions`] apply at
+/// every level. Codex refuses them, so the core never
+/// asks (`Scope::for_harness`).
+fn setup(scope: Scope) -> Setup {
+    match scope {
+        Scope::UserAndProject => Setup::UserAndProject,
+        Scope::Project => Setup::Project,
+        Scope::Isolated => Setup::Isolated,
     }
 }
 
@@ -527,6 +543,7 @@ async fn run(
         resume: spec.resume.as_deref(),
         // Follow-ups continue the session itself (claude would otherwise fork it).
         fork: Some(false),
+        setup: setup(spec.scope),
         permissions: Some(&permissions),
         ..RunOpts::default()
     };
@@ -695,6 +712,9 @@ async fn review(
         mcp: Some(&mcp),
         permissions: Some(&permissions),
         read_only: true,
+        // Read-only runs read no settings or MCP servers already; this also
+        // leaves out auto memory.
+        setup: Setup::Isolated,
         ..RunOpts::default()
     };
     let prompt = review_prompt(spec.instructions.as_deref());
@@ -766,10 +786,37 @@ fn mirror(event: mis_types::AgentEvent) -> Option<AgentEvent> {
         Up::Text { text } => AgentEvent::Text { text },
         Up::ToolUse { name, input } => AgentEvent::ToolUse { name, input },
         Up::ToolResult { content } => AgentEvent::ToolResult { content },
+        Up::ToolUseMeta { id, parent_id } => AgentEvent::ToolUseMeta { id, parent_id },
+        Up::ToolResultMeta { id, is_error } => AgentEvent::ToolResultMeta { id, is_error },
         Up::Usage { input, output } => AgentEvent::Usage { input, output },
+        Up::UsageDetail {
+            total,
+            last,
+            turns,
+            cost_usd,
+            api_ms,
+            context_window,
+        } => AgentEvent::UsageDetail(UsageDetail {
+            total: tokens(total),
+            last: last.map(tokens),
+            turns,
+            cost_usd: cost_usd.map(Usd),
+            api_ms,
+            context_window,
+        }),
         Up::Finished { ok, summary } => AgentEvent::Finished { ok, summary },
         _ => return None,
     })
+}
+
+fn tokens(up: mis_types::TokenUsage) -> TokenUsage {
+    TokenUsage {
+        input: up.input,
+        cache_read: up.cache_read,
+        cache_creation: up.cache_creation,
+        output: up.output,
+        reasoning_output: up.reasoning_output,
+    }
 }
 
 /// A fresh secret: 64 hex digits from two random UUIDs. As the tool server's
@@ -963,6 +1010,8 @@ impl Agent for FakeAgent {
     ) -> BoxFut<'a> {
         Box::pin(async move {
             let mut command = Command::new(std::env::current_exe()?);
+            // What a test checks reached the runner.
+            eprintln!("[fake agent] setup: {:?}", opts.setup);
             command.arg("--replay-events").arg(&self.fixture);
             if let Some(session) = opts.resume {
                 command.arg(format!("--replay-resume={session}"));
@@ -1015,7 +1064,8 @@ const FAKE_MCP_TOKEN_ENV: &str = "FUNCTOR_APP_FAKE_MCP_TOKEN";
 /// replacing `old`'s first match in `path` (from the working directory) as
 /// an agent's edit tool would. A line with `"mcp": {"tool", "arguments"}`
 /// calls that tool on the run's tool server over MCP, printing its
-/// `tool_use` and `tool_result` as the agent's.
+/// `tool_use` and `tool_result` as the agent's; with `"id"` (and
+/// `"parent_id"`, for a subagent's call), their `_meta` events too.
 pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
     use std::io::Write;
     let text =
@@ -1050,20 +1100,29 @@ pub fn replay(fixture: &Path, resume: Option<&str>) -> Result<(), String> {
             let tool = call["tool"].as_str().ok_or_else(|| bad(&"no mcp.tool"))?;
             let arguments = call["arguments"].clone();
             let name = format!("mcp__mis__{tool}");
-            let used = serde_json::json!({"type": "tool_use", "name": name, "input": arguments});
-            writeln!(out, "{used}")
-                .and_then(|()| out.flush())
-                .map_err(|e| bad(&e))?;
-            let content = match mcp.get_or_insert_with(FakeMcp::from_env) {
-                Ok(client) => client
-                    .call(tool, arguments)
-                    .unwrap_or_else(|e| format!("error: {e}")),
-                Err(e) => format!("error: {e}"),
+            let id = call.get("id").filter(|id| id.is_string());
+            let mut print = |event: serde_json::Value| {
+                writeln!(out, "{event}")
+                    .and_then(|()| out.flush())
+                    .map_err(|e| bad(&e))
             };
-            let result = serde_json::json!({"type": "tool_result", "content": content});
-            writeln!(out, "{result}")
-                .and_then(|()| out.flush())
-                .map_err(|e| bad(&e))?;
+            print(serde_json::json!({"type": "tool_use", "name": name, "input": arguments}))?;
+            if let Some(id) = id {
+                let parent = &call["parent_id"];
+                print(serde_json::json!({"type": "tool_use_meta", "id": id, "parent_id": parent}))?;
+            }
+            let answer = match mcp.get_or_insert_with(FakeMcp::from_env) {
+                Ok(client) => client.call(tool, arguments),
+                Err(e) => Err(e.clone()),
+            };
+            let failed = answer.is_err();
+            let content = answer.unwrap_or_else(|e| format!("error: {e}"));
+            print(serde_json::json!({"type": "tool_result", "content": content}))?;
+            if let Some(id) = id {
+                print(
+                    serde_json::json!({"type": "tool_result_meta", "id": id, "is_error": failed}),
+                )?;
+            }
             continue;
         }
         let event = &mut line["event"];
@@ -1301,6 +1360,7 @@ mod tests {
                 &functor_app_core::AppState::none(),
                 ".",
             ),
+            scope: Default::default(),
         });
         let pid = loop {
             if let Ok(text) = std::fs::read_to_string(&pid_file) {
@@ -1365,6 +1425,12 @@ mod tests {
             serde_json::json!({"type": "tool_use", "name": "Read", "input": {"x": 1}}),
             serde_json::json!({"type": "tool_result", "content": "c"}),
             serde_json::json!({"type": "usage", "input": 1, "output": 2}),
+            serde_json::json!({"type": "tool_use_meta", "id": "t2", "parent_id": "t1"}),
+            serde_json::json!({"type": "tool_result_meta", "id": "t2", "is_error": true}),
+            serde_json::json!({"type": "usage_detail",
+                "total": {"input": 10, "cache_read": 21431, "cache_creation": 14233, "output": 467, "reasoning_output": 120},
+                "last": {"input": 2, "cache_read": 8512, "cache_creation": 119, "output": 3, "reasoning_output": null},
+                "turns": 3, "cost_usd": 0.00287526, "api_ms": 4193, "context_window": 1000000}),
             serde_json::json!({"type": "finished", "ok": true, "summary": null}),
         ] {
             let mirrored = mirror(up(json.clone())).unwrap();

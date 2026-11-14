@@ -1,7 +1,8 @@
 // The agent cards' pure parts (D34): which tasks have a card, and what each
 // card's bubble and stance say. No React, so `node --test` runs them.
 
-import type { Activity, AppState, CallKind, Stance, Task } from "./generated/protocol";
+import type { Activity, AppState, CallKind, ContextFill, Stance, Subagent, Task } from "./generated/protocol";
+import { tokens } from "./chat-model.ts";
 import { newestFirst, untitled } from "./tasks-model.ts";
 
 export const STANCE_WORDS: Record<Stance, string> = {
@@ -48,10 +49,30 @@ export function dockTask(state: AppState | null, current: number | null): Task |
   return mine.find((t) => t.run !== null) ?? mine.find((t) => t.id === current) ?? null;
 }
 
-/** The card's accessible name: who, on what, its stance and bubble. */
+/** How full the context is: amber from 70%, red from 90%, like a health bar running out. */
+export type Room = { percent: number; level: "ok" | "low" | "out"; title: string };
+
+export function room(fill: ContextFill | null): Room | null {
+  if (!fill || fill.window <= 0) return null;
+  const share = fill.used / fill.window;
+  const level = share >= 0.9 ? "out" : share >= 0.7 ? "low" : "ok";
+  const percent = Math.min(100, Math.floor(share * 100));
+  return { percent, level, title: `Context ${percent}% full: ${tokens(fill.used)} of ${tokens(fill.window)} tokens` };
+}
+
+/** A subagent's figure: working while a call of its own runs, its line that call or "thinking". */
+export function subBubble(sub: Subagent): { stance: Stance; kind: CallKind; text: string } {
+  const call = sub.calls[0];
+  return call ? { stance: "working", kind: call.kind, text: call.label } : { stance: "thinking", kind: "thinking", text: "thinking" };
+}
+
+/** The card's accessible name: who, on what, its stance and bubble, its subagents and context. */
 export function cardLabel(task: Task, activity: Activity): string {
   const b = bubble(task, activity);
   const more = b.count > 1 ? `, ${b.count} calls` : "";
   const error = b.error && activity.calls.length > 0 ? `, error: ${activity.error}` : "";
-  return `${ENGINE_WORDS[task.harness]} on “${untitled(task)}”: ${STANCE_WORDS[activity.stance]}. ${b.text}${more}${error}`;
+  const subs = activity.subagents.map((s) => `; subagent “${s.label}”: ${subBubble(s).text}`).join("");
+  const r = room(activity.context);
+  const context = r ? `; context ${r.percent}% full` : "";
+  return `${ENGINE_WORDS[task.harness]} on “${untitled(task)}”: ${STANCE_WORDS[activity.stance]}. ${b.text}${more}${error}${subs}${context}`;
 }

@@ -227,6 +227,7 @@ mod tests {
             title: format!("t{id}"),
             status: TaskStatus::Done,
             harness: Harness::Claude,
+            scope: Default::default(),
             model: None,
             session_id: None,
             run: None,
@@ -253,12 +254,7 @@ mod tests {
 
     fn running(id: u64, project: &str) -> Task {
         Task {
-            run: Some(Run {
-                id: 0,
-                usage: None,
-                views: 0,
-                started: false,
-            }),
+            run: Some(Run::default()),
             ..task(id, project)
         }
     }
