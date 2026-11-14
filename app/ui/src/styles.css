@@ -1768,7 +1768,9 @@ blockquote {
 }
 
 /* The mirror (D5): one strip that says where the game runs, the way back,
-   the rate and the camera, over the headset's frames. */
+   the rate and the camera, over the headset's frames. One row whatever
+   arrives late (the clock, the rate): a taller strip would resize the
+   picture, restarting its stream, which blanks it. */
 .mirror {
   flex: 1 1 auto;
   min-width: 0;
@@ -1781,7 +1783,6 @@ blockquote {
 .mirror-bar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px 12px;
   padding: 6px 6px 6px 12px;
@@ -1791,15 +1792,26 @@ blockquote {
 }
 
 .mirror-where {
+  flex: 1 1 auto;
   display: flex;
-  flex-wrap: wrap;
   align-items: baseline;
-  gap: 2px 10px;
+  gap: 10px;
   min-width: 0;
 }
 
 .mirror-where p {
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirror-where .headset-title {
+  flex: none;
+}
+
+.mirror-bar > .button {
+  flex: none;
 }
 
 .mirror-where .headset-detail {
@@ -1808,6 +1820,7 @@ blockquote {
 }
 
 .mirror-view {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 10px;
