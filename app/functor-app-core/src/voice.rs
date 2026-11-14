@@ -10,7 +10,9 @@ use crate::state::{connected, AppState, Command};
 use crate::tasks::{Item, Spoken};
 
 /// After a run ends ok, how long the game has to reload with its edit
-/// (the push follows the save) before the headset is told it did not.
+/// (the push follows the save) before the headset is told it did not;
+/// counted only while the headset is linked, as `functor run vr` holds
+/// the push for a headset that is away until it is back.
 pub const RELOAD_GRACE_MS: u64 = 15_000;
 
 /// A transcribed utterance from a linked headset.
@@ -55,7 +57,8 @@ pub struct Job {
     /// polled yet; the first poll sets it).
     revision: Option<u64>,
     reloaded: bool,
-    /// When (`AppState::clock`) the run ended ok.
+    /// Since when (`AppState::clock`) the run has ended ok with the
+    /// headset linked.
     ended: Option<u64>,
 }
 
@@ -150,7 +153,8 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
 /// After every event: each followed run's outcome, once known, goes to its
 /// headset — `Reloaded` once the run ended ok and the game reloaded since
 /// it started; `Failed` if the run failed, was stopped, or the game left
-/// the headset or did not reload in time.
+/// the headset or did not reload in time. A headset that is away is waited
+/// for: the shell delivers what it missed when it relinks.
 pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     let mut jobs = std::mem::take(&mut state.voice);
     jobs.retain_mut(|job| {
@@ -162,9 +166,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             Some((session, revision)) if session == job.session => revision,
             _ => return end(Stage::Failed("the game stopped on the headset".to_string())),
         };
-        if !connected(&state.devices, &job.device) {
-            return false;
-        }
+        let linked = connected(&state.devices, &job.device);
         let Some(task) = state.tasks.iter().find(|t| t.id == job.task) else {
             return end(Stage::Failed("the task was deleted".to_string()));
         };
@@ -180,12 +182,19 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             }
             (None, None) => return end(Stage::Failed("the task did not start".to_string())),
         };
+        let running = task.run.as_ref().is_some_and(|r| r.id == run);
         match (revision, job.revision) {
             (Some(now), None) => job.revision = Some(now),
             (Some(now), Some(then)) if now > then => job.reloaded = true,
+            // A fresh load (its app restarted while away): counted from
+            // here, and after the run it carries what the run saved.
+            (Some(now), Some(then)) if now < then => {
+                job.revision = Some(now);
+                job.reloaded |= !running;
+            }
             _ => {}
         }
-        if task.run.as_ref().is_some_and(|r| r.id == run) {
+        if running {
             return true;
         }
         match outcome(&task.transcript, run) {
@@ -196,6 +205,11 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
                 end(Stage::Failed(
                     "the agent answered without changing the game: see the computer".to_string(),
                 ))
+            }
+            // The change is ready; it loads when the headset is back.
+            Some(Item::Finished { ok: true, .. }) if !linked => {
+                job.ended = None;
+                true
             }
             Some(Item::Finished { ok: true, .. }) => {
                 let ended = *job.ended.get_or_insert(state.clock);

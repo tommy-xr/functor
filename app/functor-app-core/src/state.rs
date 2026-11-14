@@ -618,6 +618,9 @@ pub struct RunSpec {
     pub baseline: Option<String>,
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
+    /// The headset that game runs on, by name, when it is away as the run
+    /// starts: its tools answer once it is back.
+    pub away: Option<String>,
     /// Record the game's moment with the snapshot (`RunEvent::Moment`):
     /// sessions get a GPU, so its paths can be drawn (D38).
     pub moment: bool,
@@ -1910,6 +1913,18 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
     }
 }
 
+/// The name of the headset `project`'s game is placed on, when it is not
+/// linked now.
+fn headset_away(state: &AppState, project: &str) -> Option<String> {
+    let game = &state.layouts.get(project)?.game;
+    let id = game.headset.as_deref().filter(|_| game.placement == Placement::Headset)?;
+    if connected(&state.devices, id) {
+        return None;
+    }
+    let device = state.devices.list.iter().find(|d| d.id == id);
+    Some(device.map_or("the headset".to_string(), |d| d.name.clone()))
+}
+
 /// Paired device `id` is linked now.
 pub(crate) fn connected(devices: &Devices, id: &str) -> bool {
     devices
@@ -2374,6 +2389,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     // The session is the active project's; another project's task gets none.
     let context = app_context(state, project);
     let attach = context.session.clone();
+    let away = attach.as_ref().and_then(|_| headset_away(state, project));
     state.contexts.insert(id, context.clone());
     let tracks = state.tracks_changes;
     let now = stamp(state.now);
@@ -2405,6 +2421,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         snapshot: tracks && task.baseline.is_none(),
         baseline: task.baseline.clone().filter(|_| tracks),
         attach,
+        away,
         moment: tracks && task.baseline.is_none() && !state.no_gpu,
         context,
     })));
@@ -4569,6 +4586,7 @@ mod tests {
                     snapshot: false,
                     baseline: None,
                     attach: None,
+                    away: None,
                     moment: false,
                     context: crate::agent_view::app_context(&s0, "examples/a"),
                     scope: Default::default(),

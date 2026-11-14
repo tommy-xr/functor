@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fitRect, headsetChoices, headsetNote, mirrorCamera, mirrorProblem, mirrorRate, streamUrl, toSurface } from "./game-view.ts";
+import { fitRect, headsetChoices, headsetNote, mirrorCamera, mirrorProblem, mirrorRate, sessionPill, streamUrl, toSurface } from "./game-view.ts";
 import type { MirrorStats } from "./game-view.ts";
 import type { Device, Session, Transport } from "./generated/protocol";
 
@@ -84,6 +84,17 @@ test("headsets are a placement only while connected, or while the game is on one
     headsetChoices(twins, null).map((c) => c.label),
     ["Quest 3 aa11", "Quest 3 cc33"],
   );
+});
+
+test("the session pill takes the headset's word while the game runs on one that is away", () => {
+  const running: Session = { id: 1, pid: 7, status: { kind: "running", debug_url: "http://127.0.0.1:6000", surface: null } as Session["status"], mirror: null };
+  assert.deepEqual(sessionPill(quest("a", "Quest 3", linked), true, running), { text: "Headset session · running", word: "running" });
+  assert.deepEqual(sessionPill(quest("a", "Quest 3", away), true, running), { text: "Headset session · away", word: "away" });
+  const unreachable: Device["state"] = { state: "cannot_reach", reason: "timed out", since: 0 };
+  assert.equal(sessionPill(quest("a", "Quest 3", unreachable), true, running).text, "Headset session · unreachable");
+  // Stopped is stopped wherever the headset is; a local session ignores it.
+  assert.equal(sessionPill(quest("a", "Quest 3", away), true, null).text, "Headset session · stopped");
+  assert.equal(sessionPill(undefined, false, running).text, "Local session · running");
 });
 
 test("the headset note says where the game runs, its clock, and the fix while away", () => {
