@@ -245,7 +245,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 43 adds `panel` on `GET /state`'s `link` ([`PanelState`]): the headset
 /// panel's navigation and the wrist light. Task ids only: titles and
 /// summaries stay on the link.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 43;
+///
+/// 44 adds the `microphone_allowed` and `microphone_denied` voice stages.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 44;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -728,6 +730,10 @@ pub enum VoiceStage {
     NotConnected,
     /// The microphone permission was asked for.
     AllowMicrophone,
+    /// Allowed after asking: the next hold talks.
+    MicrophoneAllowed,
+    /// Asked before and still not allowed.
+    MicrophoneDenied,
     /// Recording: `level` 0–[`crate::link_overlay::METER`];
     /// `seconds_left` in the last few seconds before it sends by itself.
     Listening {
