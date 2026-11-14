@@ -1074,7 +1074,7 @@ export type UiEventKind = "Clicked" | { "SliderChanged": number } | { "TextChang
  * The headset's push-to-talk toast: where an utterance is, and what the
  * desktop heard while it is recent.
  */
-export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, } | { "stage": "replied", text: string, } | { "stage": "done", text: string, });
+export type VoiceToast = { transcript: string | null, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 export type WristLight = { stance: TaskStance, 
 /**

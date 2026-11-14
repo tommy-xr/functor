@@ -2221,14 +2221,6 @@ pub fn android_main(app: AndroidApp) {
                 debug.panel.nav.talk();
             }
             debug.panel.frame(client, sample, debug.voice.busy());
-            // After speaking: the reply and the result, as toasts while the
-            // panel is closed (open, the conversation shows them).
-            if let Some(text) = debug.voice.take_heard() {
-                debug.panel.followup.said(&text);
-            }
-            if let Some(news) = debug.panel.news().filter(|_| !debug.panel.nav.is_open()) {
-                debug.voice.notice(news, Instant::now());
-            }
         }
 
         if !xr_frame_state.should_render {

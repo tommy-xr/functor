@@ -284,9 +284,8 @@ pub const METER: u8 = 12;
 /// How long an outcome shows, and the fade after.
 const OUTCOME: Duration = Duration::from_secs(4);
 const FADE: Duration = Duration::from_millis(500);
-/// How long the transcript shows, and the agent's reply or result.
+/// How long the transcript shows.
 const TRANSCRIPT: Duration = Duration::from_secs(5);
-const READ: Duration = Duration::from_secs(7);
 /// A stage waiting on the desktop stops showing after this; sent but not
 /// yet heard, sooner (a desktop without voice never answers).
 const STALE: Duration = Duration::from_secs(120);
@@ -311,7 +310,6 @@ impl Toast {
             VoiceStage::Listening { .. } => None,
             VoiceStage::Sending => Some(now + UNHEARD),
             VoiceStage::Heard | VoiceStage::Working => Some(now + STALE),
-            VoiceStage::Replied { .. } | VoiceStage::Done { .. } => Some(now + READ),
             _ => Some(now + OUTCOME),
         };
         // A new utterance starts clean.
@@ -402,20 +400,6 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         }
         VoiceStage::NotSent { reason } => {
             vec![line("NOT SENT", HEADING, PINK), line(reason, BODY, WHITE)]
-        }
-        VoiceStage::Replied { text } | VoiceStage::Done { text } => {
-            let head = match &toast.stage {
-                VoiceStage::Replied { .. } => "REPLY",
-                _ => "DONE",
-            };
-            let mut out = vec![line(head, HEADING, CYAN)];
-            let text = crate::link_panel::ascii(text);
-            out.extend(
-                wrap(&text, WRAP, WRAP_LINES)
-                    .iter()
-                    .map(|l| line(l, BODY, WHITE)),
-            );
-            out
         }
     };
     if let Some(text) = &toast.transcript {

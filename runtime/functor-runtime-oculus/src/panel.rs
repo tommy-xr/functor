@@ -13,8 +13,8 @@ use functor_device_link::panel::{self as wire, Action, Update, ACTION_CHANNEL};
 use functor_runtime_common::debug_protocol::{PanelState, TaskStance, VoiceToast, WristLight};
 use functor_runtime_common::link_overlay::Shape;
 use functor_runtime_common::link_panel::{
-    self, Connection, ConversationData, Destination, Followup, Out, Panel, PanelAction, PanelData,
-    PanelDecision, PanelRoute, PanelTask, Role, SaidLine,
+    self, Connection, ConversationData, Destination, Out, Panel, PanelAction, PanelData,
+    PanelDecision, PanelRoute, PanelTask, ProgressLine, ProgressStep, Role, SaidLine,
 };
 use functor_runtime_common::XrInputSnapshot;
 
@@ -27,8 +27,6 @@ pub struct HeadsetPanel {
     pub anchor: Option<Matrix4<f32>>,
     /// Game menu chosen: one menu press for the game's next step.
     menu_tap: bool,
-    /// After speaking: the reply and result to toast while closed.
-    pub followup: Followup,
     /// Counts the desktop's updates, so the drawing knows its data changed.
     generation: u64,
     /// The open panel's shapes and what they were laid out from: laid out
@@ -132,12 +130,6 @@ impl HeadsetPanel {
         }
     }
 
-    /// The reply or result to toast, once, after the user spoke.
-    pub fn news(&mut self) -> Option<functor_runtime_common::debug_protocol::VoiceStage> {
-        let conversation = self.data.as_ref().and_then(|d| d.conversation.as_ref());
-        self.followup.news(conversation)
-    }
-
     pub fn wrist(&self, linked: bool) -> Option<WristLight> {
         link_panel::wrist(self.data.as_ref(), linked && !self.nav.is_open())
     }
@@ -202,7 +194,7 @@ fn data(p: wire::Panel) -> PanelData {
             stance: stance(c.stance),
             activity: c.activity,
             question: c.question,
-            earlier: c.earlier,
+            first: c.first,
             items: (c.items.into_iter())
                 .map(|i| SaidLine {
                     role: match i.role {
@@ -215,6 +207,17 @@ fn data(p: wire::Panel) -> PanelData {
                     text: i.text,
                 })
                 .collect(),
+        }),
+        progress: p.progress.map(|g| ProgressLine {
+            step: match g.step {
+                wire::Step::Received => ProgressStep::Received,
+                wire::Step::Transcribed => ProgressStep::Transcribed,
+                wire::Step::Processing => ProgressStep::Processing,
+                wire::Step::Agent => ProgressStep::Agent,
+                wire::Step::Outcome => ProgressStep::Outcome,
+            },
+            detail: g.detail,
+            failed: g.failed,
         }),
     }
 }

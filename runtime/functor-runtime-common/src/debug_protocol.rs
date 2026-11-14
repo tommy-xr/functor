@@ -257,8 +257,7 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// /input` and the reported key sets.
 ///
 /// 46 adds the conversation to `link.panel` ([`PanelState`]: `conversation`,
-/// `following`, `said`, `question`) and the toast stages `replied` and
-/// `done` ([`VoiceStage`]).
+/// `following`, `said`, `question`).
 pub const DEBUG_PROTOCOL_VERSION: u32 = 46;
 
 /// The well-known localhost port `functor develop` serves this protocol on
@@ -835,10 +834,6 @@ pub enum VoiceStage {
     Failed { reason: String },
     /// It never reached the desktop whole: cancelled, or the link failed.
     NotSent { reason: String },
-    /// The agent's first reply to it, its first lines (v46).
-    Replied { text: String },
-    /// The run it started or steered finished.
-    Done { text: String },
 }
 
 /// A pairing as the headset shows it.
