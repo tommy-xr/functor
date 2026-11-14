@@ -7,7 +7,8 @@
 // APP_UI_SHOTS=<dir> saves stills; APP_UI_FRAMES=<dir> saves numbered frames
 // of the 1440 run for a GIF.
 import { chromium, expect } from "@playwright/test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   FUNCTOR,
   ROOT,
@@ -25,6 +26,8 @@ import {
 
 const FIXTURE = `${ROOT}app/ui/e2e/fixtures/views.jsonl`;
 const BESIDE = `${ROOT}app/ui/e2e/fixtures/views-beside.jsonl`;
+const SWITCH = `${ROOT}app/ui/e2e/fixtures/switch.jsonl`;
+const SWITCH_ASK = "Switch to the cubes sample";
 const ASK = "Make the counter count by two, and show me";
 const DRAFT = "Next, make the cube";
 
@@ -233,8 +236,51 @@ async function settingOff(browser) {
   }
 }
 
+/**
+ * The agent switches the project when asked (D42): the app shows the other
+ * project with a new task and the line naming the asking task; Undo goes
+ * back to that task.
+ */
+async function switching(browser, width) {
+  const dir = tempProject("examples/counter");
+  cpSync(`${ROOT}examples/hello-cubes`, join(dir, "../hello-cubes"), { recursive: true });
+  const server = await startServer(0, { dir, fakeAgent: SWITCH });
+  const page = await browser.newPage({ viewport: { width, height: 900 } });
+  const app = watchState(page);
+  const errors = watchErrors(page);
+  try {
+    await page.goto(server.url);
+    const dock = page.locator(".chat");
+    const input = dock.getByLabel("Message the agent");
+    await expect(input).toBeEnabled();
+    await input.fill(SWITCH_ASK);
+    await input.press("Enter");
+    const line = dock.getByTestId("agent-switch");
+    await expect(line).toHaveText(`Switched to examples/hello-cubes — asked by you in “${SWITCH_ASK}”.Undo`, {
+      timeout: 15_000,
+    });
+    expect(app.state.active).toBe("examples/hello-cubes");
+    await expect(dock.locator("#chat-heading")).toHaveText("New task");
+    await expect.poll(() => app.state?.tasks[0].run).toBeNull();
+    await shot(page, `switch-${width}`);
+    await line.getByRole("button", { name: "Undo" }).click();
+    await expect(line).toHaveCount(0);
+    await expect.poll(() => app.state?.active).toBe("examples/counter");
+    await expect(dock.locator("#chat-heading")).toHaveText(SWITCH_ASK);
+    await expect(dock.getByRole("log", { name: "Conversation" }).getByTestId("result")).toHaveText(["Done"]);
+    await shot(page, `switch-undone-${width}`);
+    expect(errors, "console errors (switch)").toEqual([]);
+    console.log(`ok: agent switch ${width}`);
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
+}
+
 const browser = await chromium.launch();
 try {
+  await switching(browser, 1440);
+  await switching(browser, 700);
   await walkthrough(browser, 1440, 900);
   await walkthrough(browser, 700, 900);
   await stacked(browser);

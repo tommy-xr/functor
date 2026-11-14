@@ -2687,6 +2687,76 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
 }
 
+/// A spoken "switch to another sample" (D42) on loopback with the real
+/// `functor` (`FUNCTOR_BIN`: its tool server and `run vr`), under the fake
+/// agent and transcriber: the run opens `b`, the headset hears "Switched to
+/// b", `b` is pushed to it, and the app shows `b` on the headset.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_spoken_switch_runs_the_new_project_on_the_headset() {
+    let Some(functor) = functor_bin() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a", "b"] {
+        std::fs::rename(cubes_project(dir.path(), &[]), dir.path().join(name)).unwrap();
+    }
+    let fixture = dir.path().join("agent.jsonl");
+    let lines = [
+        r#"{"ms":0,"event":{"type":"started","session":"s1","model":"m"}}"#,
+        r#"{"ms":0,"mcp":{"tool":"list_projects","arguments":{}}}"#,
+        r#"{"ms":0,"mcp":{"tool":"open_project","arguments":{"path":"b"}}}"#,
+        r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"The app shows b."}}"#,
+    ];
+    std::fs::write(&fixture, lines.join("\n")).unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "switch to another sample"),
+    ];
+    let mut app = app_env(dir.path(), &args, &envs).await;
+    app.send(json!({"type": "set_active_project", "path": "a"})).await;
+    app.state_where("a open", 10, |s| s["active"] == "a").await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let quest = stub(&app.link, store.path(), "Test Quest", &["--say", CLIP]);
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    assert!(quest.line("request POST /load-project").contains("name=a"));
+    assert_eq!(quest.line("voice "), "voice 1 heard");
+    quest.line("voice 1 working");
+    // Its outcome, then the new project's push, in either order.
+    let (mut said, mut loaded) = (None, false);
+    while said.is_none() || !loaded {
+        let line = quest.line("");
+        if line.starts_with("voice 1 ") {
+            said = Some(line);
+        } else if line.starts_with("request POST /load-project") {
+            loaded = line.contains("name=b");
+        }
+    }
+    assert_eq!(said.unwrap(), "voice 1 done Switched to b");
+    let state = app
+        .state_where("b on the headset", 10, |s| {
+            s["active"] == "b" && s["layouts"]["b"]["game"]["placement"] == "headset"
+        })
+        .await;
+    assert_eq!(state["agent_switch"]["to"], "b");
+    assert_eq!(state["tasks"][0]["project"], "a", "the task stays");
+}
+
 /// The router (D29) end to end on loopback, under the fake agent,
 /// transcriber and model router: the stub says a clip, which starts a task
 /// (nothing to choose between, so no model call), then says it again while

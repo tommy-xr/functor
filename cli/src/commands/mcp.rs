@@ -5734,7 +5734,8 @@ mod tests {
             ..FunctorMcp::new()
         });
         assert!(has(&linked, "show_view") && has(&linked, "present"), "{linked:?}");
-        assert_eq!(linked.len(), stdio.len() + 3);
+        assert!(has(&linked, "list_projects") && has(&linked, "open_project"), "{linked:?}");
+        assert_eq!(linked.len(), stdio.len() + 5);
     }
 
     #[test]

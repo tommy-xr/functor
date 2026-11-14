@@ -623,6 +623,34 @@ Until then the app checks the `functor` it found before using it and, when it
 is too old, says which one it is and how to fix it, in one place — not as
 launch errors in the game view and the chat.
 
+### D42 — the agent can switch the project when asked
+
+Extends D25. Asked in the headset "switch to another sample", the agent
+could only say it could not: its tools drove one project's game. Switching
+the project is taking the wheel, so it is allowed only when the user asks.
+
+- **Tools.** `list_projects` names the open folder's projects (the open one
+  marked) and recent ones in other folders. `open_project` takes one of those
+  paths and no other, so the agent cannot open an arbitrary folder.
+- **The picker's switch.** The app switches as the project picker does: the
+  old game stops and the new one opens paused (D37). A game on a headset
+  stays on it: the new project's game runs there too, for this switch and a
+  manual one. A recent project in another folder opens when the asking run
+  ends, as a folder opens only when no task runs.
+- **The gate, without judging intent.** Applied only for the run of the task
+  the user is looking at, within 10 minutes of the message that started it,
+  once per run, with "Let the agent arrange views" on (one setting for what
+  the agent may change on screen), and never for a review.
+- **The task stays.** A task belongs to its project (D12). The tool answers
+  that the app now shows the other project and that the next request works
+  there; the run ends with a sentence. Its tool server forgets the game it
+  was attached to, which may now be the other project's at the same address.
+- **The chat follows the app.** It shows a new task in the new project and a
+  line: "Switched to *project* — asked by you in *task*", with Undo (back to
+  that task) and a dismiss. Switching again, or the next request, clears it.
+- **The headset hears it.** The spoken request ends with "Switched to
+  *project*", a new status beside Reloaded and Failed.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
