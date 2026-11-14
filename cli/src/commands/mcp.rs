@@ -108,6 +108,9 @@ const RUNTIME_CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const CODE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-request timeout for the (loopback or adb-forwarded) debug server.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `--attach` waits for a runtime at startup before keeping its
+/// session unchecked: well inside a host's wait for the listening line.
+const ATTACH_WAIT: Duration = Duration::from_secs(5);
 /// Lowest debug-protocol version whose contract these tools actually keep
 /// (`pending_steps` on `/state`, `frames` on `/time advance`, structured
 /// `model`, and `/time cancel`).
@@ -184,10 +187,19 @@ pub async fn execute(
     };
     for raw in attach {
         let url = raw.trim_end_matches('/');
-        server
-            .attach(url, std::future::pending())
-            .await
-            .map_err(|error| io::Error::other(format!("--attach {raw}: {error}")))?;
+        // Not answering now (a stopped game, a headset that is away, a slow
+        // one): its session is kept and checked on first use. An answer as
+        // anything else is wrong.
+        let error = match tokio::time::timeout(ATTACH_WAIT, server.attach(url, std::future::pending())).await {
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) if !server.unavailable(url).await => {
+                return Err(io::Error::other(format!("--attach {raw}: {error}")));
+            }
+            Ok(Err(error)) => error,
+            Err(_) => format!("no answer within {}s", ATTACH_WAIT.as_secs()),
+        };
+        server.attach_unverified(url).map_err(io::Error::other)?;
+        eprintln!("--attach {raw}: not answering now ({error}); its session waits for it");
     }
     let sessions = server.sessions.clone();
     if let (Some(port), Some(token)) = (http, token) {
@@ -264,6 +276,8 @@ struct Session {
     /// ATTACHED session: the manifest of a runtime someone else started is not
     /// knowable over the wire.
     manifest: Option<String>,
+    /// Attached at startup while it did not answer: discovered on first use.
+    unverified: bool,
 }
 
 /// One role of a session GROUP: a runtime launched on the embedder transport,
@@ -655,6 +669,7 @@ impl Registry {
                 child,
                 scratch,
                 manifest,
+                unverified: false,
             },
         );
         id
@@ -1856,7 +1871,7 @@ MCP server before reconnecting or reusing that runtime URL.",
         Parameters(args): Parameters<SessionArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target = resolve!(self.target(&args.session));
+        let target = resolve!(self.target(&args.session).await);
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let body = resolve!(self.capture_png(&target.url).await);
         Ok(CallToolResult::success(vec![ContentBlock::image(
@@ -1937,7 +1952,7 @@ MCP server before reconnecting or reusing that runtime URL.",
                 ))
             }
         };
-        let target = match self.target(&args.session) {
+        let target = match self.target(&args.session).await {
             Ok(target) => target,
             Err(message) => return code_tool_error(message),
         };
@@ -1974,7 +1989,7 @@ MCP server before reconnecting or reusing that runtime URL.",
         Parameters(args): Parameters<PauseArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target = resolve!(self.target(&args.session));
+        let target = resolve!(self.target(&args.session).await);
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         ok_text(resolve!(self.pin(&target.url, args.tts).await))
     }
@@ -1994,7 +2009,7 @@ MCP server before reconnecting or reusing that runtime URL.",
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (dts, frames) = resolve!(step_args("step", args.dts, args.frames));
-        let target = resolve!(self.target(&args.session));
+        let target = resolve!(self.target(&args.session).await);
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let operation_deadline = Instant::now() + OPERATION_TOTAL_TIMEOUT;
         let state = resolve!(self.advance(&target, dts, frames, operation_deadline).await);
@@ -2048,7 +2063,7 @@ MCP server before reconnecting or reusing that runtime URL.",
         // runtime — and stepping that game twice is exactly what this prevents.
         let mut targets: Vec<(String, SessionTarget)> = Vec::with_capacity(args.sessions.len());
         for session in &args.sessions {
-            let target = resolve!(self.target(session));
+            let target = resolve!(self.target(session).await);
             if let Some((other, _)) = targets.iter().find(|(_, seen)| seen.url == target.url) {
                 return tool_error(format!(
                     "step_all lists {other:?} and {session:?}, which are the same runtime ({}) — \
@@ -2157,7 +2172,7 @@ in the list have already advanced; the group is no longer in lockstep."
         Parameters(args): Parameters<RewindArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target = resolve!(self.target(&args.session));
+        let target = resolve!(self.target(&args.session).await);
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let tts = resolve!(tts_of(&resolve!(self.state(&target.url).await)));
         // The clock must be pinned before a rewind or the next wall-clock frame
@@ -2249,7 +2264,7 @@ in the list have already advanced; the group is no longer in lockstep."
         Parameters(args): Parameters<SaveProjectArgs>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target = resolve!(self.target(&args.session));
+        let target = resolve!(self.target(&args.session).await);
         let _operation = resolve!(self.acquire_operation(&target, &context).await);
         let body = match self.get(&target.url, "/project").await {
             Ok(body) => body,
@@ -2403,18 +2418,67 @@ impl FunctorMcp {
         *self.app_context.lock().expect("app context poisoned") = Some(context);
     }
 
-    fn read_url(&self, session: &str) -> Result<String, String> {
-        self.sessions
-            .lock()
-            .expect("mcp registry poisoned")
-            .read_url(session)
+    /// Whether `url` is not answering at all now (refused, timed out, or a
+    /// device tunnel's 502–504), as opposed to answering as something else.
+    async fn unavailable(&self, url: &str) -> bool {
+        let probe = self.http.get(format!("{url}/")).timeout(Duration::from_secs(2));
+        match probe.send().await {
+            Ok(response) => (502..=504).contains(&response.status().as_u16()),
+            Err(error) => error.is_connect() || error.is_timeout(),
+        }
     }
 
-    fn target(&self, session: &str) -> Result<SessionTarget, String> {
-        self.sessions
+    /// Registers `url` as an attached session without discovery, which
+    /// [`Self::target`] runs on its first use.
+    fn attach_unverified(&self, url: &str) -> Result<String, String> {
+        let id = self.reserve_connect(url).finish()?;
+        let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+        if let Some(session) = registry.sessions.get_mut(&id) {
+            session.unverified = true;
+        }
+        Ok(id)
+    }
+
+    async fn read_url(&self, session: &str) -> Result<String, String> {
+        let url = self
+            .sessions
             .lock()
             .expect("mcp registry poisoned")
-            .target(session)
+            .read_url(session)?;
+        self.verify(session, &url).await?;
+        Ok(url)
+    }
+
+    async fn target(&self, session: &str) -> Result<SessionTarget, String> {
+        let target = self
+            .sessions
+            .lock()
+            .expect("mcp registry poisoned")
+            .target(session)?;
+        self.verify(session, &target.url).await?;
+        Ok(target)
+    }
+
+    /// Discovers a session attached unverified, once it answers; each call
+    /// until then fails with why (a headset that is away says so).
+    async fn verify(&self, session: &str, url: &str) -> Result<(), String> {
+        let unverified = |registry: &Registry| {
+            registry
+                .sessions
+                .get(session)
+                .is_some_and(|s| s.unverified && s.url == url)
+        };
+        if !unverified(&self.sessions.lock().expect("mcp registry poisoned")) {
+            return Ok(());
+        }
+        self.discover(url)
+            .await
+            .map_err(|error| format!("session {session:?} could not be attached yet: {error}"))?;
+        let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+        if let Some(s) = registry.sessions.get_mut(session).filter(|s| s.url == url) {
+            s.unverified = false;
+        }
+        Ok(())
     }
 
     /// Spawn one runtime child, wait for it to answer discovery, and register
@@ -2753,7 +2817,7 @@ that session is not consuming its traffic"
     }
 
     async fn proxy_get(&self, session: &str, path: &str) -> Result<CallToolResult, ErrorData> {
-        let url = resolve!(self.read_url(session));
+        let url = resolve!(self.read_url(session).await);
         ok_text(resolve!(self.get(&url, path).await))
     }
 
@@ -2764,7 +2828,7 @@ that session is not consuming its traffic"
         body: String,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let target = resolve!(self.target(session));
+        let target = resolve!(self.target(session).await);
         let _operation = resolve!(self.acquire_operation(&target, context).await);
         ok_text(resolve!(self.post(&target.url, path, body).await))
     }
@@ -6132,7 +6196,7 @@ mod tests {
             registry.insert(url.clone(), None, None, None, None);
             registry.insert(url.clone(), None, None, None, None);
         }
-        let target = server.target("s1").unwrap();
+        let target = server.target("s1").await.unwrap();
 
         let error = server.abort_advance(&target, "advance failed".into()).await;
 

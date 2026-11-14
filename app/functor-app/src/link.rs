@@ -139,6 +139,9 @@ struct HubState {
     next_conn: u64,
     /// What adb last showed on the cable.
     attached: Vec<Attached>,
+    /// Per device, the latest voice status sent while it had no link: sent
+    /// when it relinks, so its panel shows where things are.
+    unsent: HashMap<String, voice::Status>,
 }
 
 struct Conn {
@@ -419,8 +422,11 @@ impl Hub {
                     utterance: Some(utterance),
                     stage,
                 };
-                if let Some(link) = self.link_of(&device) {
-                    let _ = link.send(ConnCmd::Send(status.frame()));
+                let sent = self
+                    .link_of(&device)
+                    .is_some_and(|link| link.send(ConnCmd::Send(status.frame())).is_ok());
+                if !sent {
+                    self.0.state.lock().unwrap().unsent.insert(device, status);
                 }
             }
         }
@@ -480,6 +486,7 @@ impl Hub {
         if let Some((_, task)) = s.tunnels.remove(device) {
             task.abort();
         }
+        s.unsent.remove(device);
         Ok(gone)
     }
 
@@ -943,6 +950,9 @@ impl Connection {
                 }
                 self.unpend();
                 hub.seen(&device);
+                if let Some(status) = hub.0.state.lock().unwrap().unsent.remove(&device) {
+                    self.outgoing.push(status.frame());
+                }
                 self.linked = Some(device.clone());
                 hub.send(LinkEvent::Connected {
                     conn: self.id,
@@ -1285,7 +1295,7 @@ async fn tunnel(State(t): State<Arc<Tunnel>>, request: axum::extract::Request) -
     let Some(link) = t.hub.link_of(&t.device) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            "the headset is not connected",
+            "the headset is away; try again when it is back",
         );
     };
     let request = wire::Request {

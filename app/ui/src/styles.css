@@ -272,6 +272,8 @@ blockquote {
 }
 
 .pill-session-starting,
+.pill-session-away,
+.pill-session-needs_update,
 .pill-warn,
 .pill-hs-asking_to_pair,
 .pill-hs-needs_update {
@@ -281,6 +283,7 @@ blockquote {
 
 .pill-session-failed,
 .pill-session-exited,
+.pill-session-cannot_reach,
 .pill-hs-cannot_reach {
   background: var(--danger-bg);
   color: var(--danger);

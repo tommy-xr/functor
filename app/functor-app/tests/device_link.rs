@@ -3090,3 +3090,249 @@ async fn a_second_clip_is_routed_and_moved() {
         .cloned();
     assert_eq!(moved.unwrap()["line"], "Moved: steered “make the ball red”");
 }
+
+/// [`voice_functor`] with the real `functor mcp` (`real`) as runs' tool
+/// servers: `app-compat` passes (CI's CLI is built without the app), `run
+/// vr --device-url <url>` says it listens there and holds, and other runs
+/// (the local game) hold.
+#[cfg(unix)]
+fn link_functor(dir: &Path, real: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("functor");
+    let script = format!(
+        "#!/bin/sh\n\
+         [ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n\
+         [ \"$1\" = mcp ] && exec '{}' \"$@\"\n\
+         url=\n\
+         for a in \"$@\"; do [ \"$prev\" = --device-url ] && url=\"$a\"; prev=\"$a\"; done\n\
+         [ -n \"$url\" ] && echo \"[debug-server] listening on $url\" >&2\n\
+         exec sleep 600\n",
+        real.display()
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// An app on a new project under `fixture`'s fake agent and a
+/// [`link_functor`], with "Test Quest" paired and the game placed on it:
+/// the app, the stub's store, the stub (run with `say`) and its tunnel.
+/// `None` without `FUNCTOR_BIN`.
+#[cfg(unix)]
+async fn game_on_stub(
+    dir: &Path,
+    fixture: &str,
+    say: &[&str],
+) -> Option<(App, tempfile::TempDir, Stub, String)> {
+    let real = functor_bin()?;
+    let project = dir.join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = link_functor(dir, &real);
+    let agent = dir.join("agent.jsonl");
+    std::fs::write(&agent, fixture).unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", agent.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    let quest = stub(&app.link, store.path(), "Test Quest", say);
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let card = card(&devices, "Test Quest").unwrap();
+    let (id, tunnel) = (card["id"].clone(), card["tunnel"].as_str().unwrap().to_string());
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    // Said in full if it never does: the session and the CLI check.
+    let last = std::cell::RefCell::new(Value::Null);
+    let runs = |s: &Value| {
+        *last.borrow_mut() = json!({"session": s["session"], "cli": s["cli_problem"]});
+        s["session"]["status"]["debug_url"] == tunnel.as_str()
+    };
+    let waited = tokio::time::timeout(
+        Duration::from_secs(60),
+        app.state_where("the game runs on the headset", 61, runs),
+    );
+    if waited.await.is_err() {
+        panic!("the game never ran on the headset: {}", last.borrow());
+    }
+    Some((app, store, quest, tunnel))
+}
+
+/// Task `task`'s transcript items once `done` holds for them, within 30s.
+#[cfg(unix)]
+async fn transcript_where(
+    app: &mut App,
+    task: &Value,
+    what: &str,
+    done: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        app.send(json!({"type": "get_transcript", "task": task})).await;
+        let items = loop {
+            let msg = app.socket.next().await.unwrap().unwrap();
+            let json: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+            if json["type"] == "transcript" {
+                break json["items"].as_array().unwrap().clone();
+            }
+        };
+        if done(&items) {
+            return items;
+        }
+        assert!(Instant::now() < deadline, "no transcript where {what}: {items:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The results of the calls to tool `tool` so far.
+fn results(items: &[Value], tool: &str) -> Vec<String> {
+    let name = format!("mcp__mis__{tool}");
+    items
+        .iter()
+        .filter(|i| i["kind"] == "tool" && i["name"] == name.as_str())
+        .filter_map(|i| i["result"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn finished_ok(items: &[Value]) -> bool {
+    items.iter().any(|i| i["kind"] == "finished" && i["ok"] == true)
+}
+
+/// The reported failure: a task typed while the game's headset is away.
+/// The run starts anyway (its tool server keeps the game's session), its
+/// non-game tools work, a game tool says the headset is away at once, and
+/// once the headset is back the same run's game tool reaches it.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_task_typed_while_the_headset_is_away_reaches_it_when_it_is_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = [
+        r#"{"ms":0,"event":{"type":"started","session":"a1","model":"m"}}"#,
+        r#"{"ms":300,"mcp":{"tool":"api_reference","arguments":{"query":"Ui.row"}}}"#,
+        r#"{"ms":400,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":12000,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":12100,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
+    ]
+    .join("\n");
+    let Some((mut app, store, quest, _)) = game_on_stub(dir.path(), &fixture, &[]).await else {
+        return;
+    };
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+
+    app.send(json!({"type": "new_task", "message": "What is the count?", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the task runs", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+        .await;
+    let task = state["tasks"][0]["id"].clone();
+    let items = transcript_where(&mut app, &task, "the game tool answered", |i| {
+        !results(i, "get_state").is_empty()
+    })
+    .await;
+    assert!(results(&items, "api_reference")[0].contains("Ui.row"), "{items:?}");
+    let away = &results(&items, "get_state")[0];
+    assert!(away.contains("the headset is away; try again when it is back"), "{away}");
+    assert!(!items.iter().any(|i| i["kind"] == "finished"), "still running: {items:?}");
+
+    // Back: the same run's next call reaches the headset.
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
+    quest.line("linked ");
+    let items = transcript_where(&mut app, &task, "the run finished", |i| {
+        i.iter().any(|i| i["kind"] == "finished")
+    })
+    .await;
+    let back = &results(&items, "get_state")[1];
+    assert!(back.contains("\"stub\":true"), "{back}");
+    assert!(finished_ok(&items), "{items:?}");
+    // Its `run vr` stand-in stops with the session, not orphaned by the kill.
+    app.send(json!({"type": "stop_session"})).await;
+    app.state_where("the game stops", 10, |s| {
+        s["session"]["status"]["kind"] != "running"
+    })
+    .await;
+}
+
+/// A spoken request whose headset goes away mid-run: the run goes on (a
+/// game tool says the headset is away), ends ok while it is away without
+/// "did not reload", and the reload once it is back is reported. A status
+/// the headset missed while away (its game stopped) reaches it on relink.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_spoken_request_waits_for_an_away_headset() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = [
+        r#"{"ms":0,"event":{"type":"started","session":"a1","model":"m"}}"#,
+        r#"{"ms":1500,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":1600,"mcp":{"tool":"api_reference","arguments":{"query":"Ui.row"}}}"#,
+        r#"{"ms":2000,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
+    ]
+    .join("\n");
+    let say = ["--say", CLIP];
+    let Some((mut app, store, quest, tunnel)) = game_on_stub(dir.path(), &fixture, &say).await
+    else {
+        return;
+    };
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let state = app
+        .state_where("the spoken task", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+        .await;
+    let task = state["tasks"][0]["id"].clone();
+    let items = transcript_where(&mut app, &task, "the run finished", |i| {
+        i.iter().any(|i| i["kind"] == "finished")
+    })
+    .await;
+    assert!(results(&items, "get_state")[0].contains("the headset is away"), "{items:?}");
+    assert!(results(&items, "api_reference")[0].contains("Ui.row"), "{items:?}");
+    assert!(finished_ok(&items), "{items:?}");
+
+    // Back: the edit's push lands (as `functor run vr`'s held one does).
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
+    quest.line("linked ");
+    app.devices_where("it is back", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
+    assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    drop(quest);
+
+    // Said again, away while it works, and the game stopped meanwhile:
+    // told once it is back.
+    let quest = stub(&app.link, store.path(), "Test Quest", &say);
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    app.send(json!({"type": "stop_session"})).await;
+    app.state_where("the game stops", 10, |s| {
+        s["session"]["status"]["kind"] != "running"
+    })
+    .await;
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
+    assert_eq!(
+        quest.line("voice "),
+        "voice 1 failed the game stopped on the headset"
+    );
+}
