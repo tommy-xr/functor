@@ -35,8 +35,10 @@ import {
   tabbed,
   tabTitles,
   viewKey,
+  windowPanes,
   type Shortcut,
 } from "./layout-model";
+import { popOut, showWindow, windowOpen } from "./windows";
 import { headsetChoices } from "./game-view";
 import { fileKey, type DiffMsg, type FileMsg, type Notice, type Send } from "./socket";
 
@@ -66,6 +68,8 @@ export type CanvasProps = {
   fetchTranscript: (task: number) => void;
   /** Makes `task` the chat's current task and puts the cursor in its composer. */
   onContinue: (task: number) => void;
+  /** In a pop-out page: the pane of `Layout.windows` it shows instead of the canvas. */
+  window?: number;
 };
 
 /** What every pane needs, passed down the split tree. */
@@ -81,6 +85,8 @@ type Ctx = CanvasProps & {
   agentTabs: Set<string>;
   /** What the agent or a walkthrough step points at in this project. */
   highlight: Highlight | null;
+  /** This page shows one pane in a window of its own. */
+  inWindow: boolean;
 };
 
 export function isLive(session: Session | null | undefined): boolean {
@@ -97,7 +103,8 @@ export function Canvas(props: CanvasProps) {
   const { state, send } = props;
   const layout = state?.active ? (state.layouts[state.active] ?? null) : null;
   const op = useCallback((op: LayoutOp) => send({ type: "layout", op }), [send]);
-  const views = panesOf(layout).flatMap((p) => p.tabs);
+  const inWindow = props.window !== undefined;
+  const views = [...panesOf(layout), ...windowPanes(layout)].flatMap((p) => p.tabs);
   const titles = tabTitles(views, state?.tasks ?? []);
 
   // After a keyboard action, focus follows the layout the core sends back:
@@ -119,8 +126,9 @@ export function Canvas(props: CanvasProps) {
     pane.querySelector<HTMLElement>("[role=tab][aria-selected=true], .pane-actions button, .empty-canvas button")?.focus();
   }, [layout]);
 
-  useShortcuts(layout, op, refocus);
-  useStackedReport(main, props.online, send);
+  // A window's page leaves the main window's focus and stacking alone.
+  useShortcuts(inWindow ? null : layout, op, refocus);
+  useStackedReport(main, props.online && !inWindow, send);
   useEffect(() => {
     const track = (e: FocusEvent) => {
       const el = e.target instanceof HTMLElement ? e.target : null;
@@ -132,11 +140,30 @@ export function Canvas(props: CanvasProps) {
   }, []);
   const placement = placementOf(layout);
   const highlight = state?.highlight?.project === state?.active ? (state?.highlight ?? null) : null;
-  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus, agentTabs: agentTabs(layout), highlight };
+  const ctx: Ctx = { ...props, op, titles, focus: layout?.focus ?? null, placement, refocus, agentTabs: agentTabs(layout), highlight, inWindow };
+  if (inWindow) {
+    const pane = windowPanes(layout).find((p) => p.id === props.window);
+    return (
+      <main className="canvas canvas-window" ref={main} aria-label="Canvas">
+        <GameHost state={state} online={props.online} send={send}>
+          <div className="canvas-body">
+            {pane ? (
+              <NodeView node={{ kind: "pane", ...pane }} ctx={ctx} />
+            ) : (
+              <div className="placeholder">
+                <p>{state ? "This pane is back in the main window" : "Connecting…"}</p>
+              </div>
+            )}
+          </div>
+        </GameHost>
+      </main>
+    );
+  }
   return (
     <main className="canvas" ref={main} aria-label="Canvas">
       {placement === "window" && <WindowNote ctx={ctx} />}
       {layout && (layout.agent.restore || ctx.agentTabs.size > 0) && <AgentBar ctx={ctx} restorable={!!layout.agent.restore} />}
+      {layout && layout.windows.length > 0 && <WindowsBar ctx={ctx} panes={windowPanes(layout)} />}
       <GameHost state={state} online={props.online} send={send}>
         <div className="canvas-body">
           {layout?.root ? <NodeView key={nodeId(layout.root)} node={layout.root} ctx={ctx} /> : <EmptyCanvas ctx={ctx} />}
@@ -145,6 +172,38 @@ export function Canvas(props: CanvasProps) {
         {placement === "mini" && layout && <MiniGame key={state?.active} ctx={ctx} game={layout.game} canvas={main} />}
       </GameHost>
     </main>
+  );
+}
+
+/**
+ * The panes in windows of their own, one line each: Show brings its window
+ * to the front (a browser opens it again after a restart), Dock back returns
+ * its tabs here.
+ */
+function WindowsBar({ ctx, panes }: { ctx: Ctx; panes: Pane[] }) {
+  return (
+    <ul className="windows-bar" aria-label="Panes in their own windows" data-testid="windows-bar">
+      {panes.map((pane) => {
+        const shown = pane.tabs[pane.active];
+        const title = (shown && ctx.titles.get(viewKey(shown))) || "Pane";
+        const more = pane.tabs.length > 1 ? ` and ${pane.tabs.length - 1} more` : "";
+        return (
+          <li key={pane.id} className="windows-bar-item">
+            <Icon name="pop-out" />
+            <span className="windows-bar-text">
+              {title}
+              {more}
+            </span>
+            <button type="button" className="link-button" onClick={() => showWindow(pane.id)}>
+              {windowOpen(pane.id) ? "Show" : "Open window"}
+            </button>
+            <button type="button" className="link-button" disabled={!ctx.online} onClick={() => ctx.op({ type: "dock", window: pane.id })}>
+              Dock back
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -885,6 +944,18 @@ function offers(ctx: Ctx): { view: View; label: string }[] {
 function PaneActions({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
   const { op, online } = ctx;
   const split = (direction: Direction) => op({ type: "split", pane: pane.id, direction });
+  // In its own window a pane does not split; it goes back.
+  if (ctx.inWindow) {
+    return (
+      <div className="pane-actions">
+        <ViewMenu ctx={ctx} pane={pane} />
+        <button type="button" className="button button-compact dock-back" disabled={!online} onClick={() => op({ type: "dock", window: pane.id })}>
+          <Icon name="dock" />
+          Dock back
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="pane-actions">
       <ViewMenu ctx={ctx} pane={pane} />
@@ -904,9 +975,10 @@ function PaneActions({ pane, ctx }: { pane: Pane; ctx: Ctx }) {
       <button
         type="button"
         className="icon-button"
-        aria-label="Pop out into its own window (coming later)"
-        title="Popping a pane out into its own window comes later"
-        aria-disabled="true"
+        aria-label="Pop out into its own window"
+        title="Pop out into its own window"
+        disabled={!online || pane.tabs.length === 0}
+        onClick={() => popOut(pane.id, ctx.send)}
       >
         <Icon name="pop-out" />
       </button>

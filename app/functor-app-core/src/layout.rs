@@ -1,5 +1,6 @@
 //! The canvas layout (D20): a tree of splits whose leaves are panes of tabs,
-//! each tab a [`View`]. A view is open at most once in the whole layout, so a
+//! each tab a [`View`], plus panes the user popped out into windows of their
+//! own ([`PopOut`]). A view is open at most once in the whole layout, so a
 //! view names its tab. The game view's placement (D21) is part of it: only
 //! [`Placement::Pane`] and [`Placement::Headset`] have a Game tab. [`Layout::apply`] is the one reducer
 //! and [`Layout::normalize`] the one place the invariants are enforced.
@@ -80,6 +81,35 @@ pub struct Layout {
     /// What the agent arranged (D25). Absent from older layouts.
     #[serde(default)]
     pub agent: AgentLayout,
+    /// Panes in windows of their own, in the order they were popped out.
+    /// Absent from older layouts.
+    #[serde(default)]
+    pub windows: Vec<PopOut>,
+}
+
+/// A pane the user popped out into its own window (D20): one pane of tabs,
+/// named by its pane's id. Only the user opens and closes one; the agent
+/// shows a view already in it there, and opens new ones in the main window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct PopOut {
+    pub pane: Pane,
+    /// The main window's pane its tabs go back to when it closes (else the
+    /// focused one): the pane beside it when it was popped out.
+    pub home: Option<u64>,
+    /// Where the window was, once its shell reported it.
+    #[serde(default)]
+    pub frame: Option<Frame>,
+}
+
+/// A window's place and size in points, its top left from the main screen's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+pub struct Frame {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -300,6 +330,21 @@ pub enum LayoutOp {
     AgentArranges {
         on: bool,
     },
+    /// Moves main-window pane `pane`, with its tabs, into a window of its own.
+    PopOut {
+        pane: u64,
+    },
+    /// Closes window `window` (its pane's id): its tabs go back to the pane
+    /// they came from, else the focused one. Closing the window itself does
+    /// this too, so nothing in it is lost.
+    Dock {
+        window: u64,
+    },
+    /// Where window `window` is now, as its shell reports it.
+    SetFrame {
+        window: u64,
+        frame: Frame,
+    },
 }
 
 pub const RATIO_MIN: u16 = 100;
@@ -345,6 +390,7 @@ impl Layout {
             focus: Some(1),
             game: GamePlacement::default(),
             agent: AgentLayout::default(),
+            windows: Vec::new(),
         }
     }
 
@@ -366,11 +412,17 @@ impl Layout {
         out
     }
 
-    /// The pane `view` is open in, and its tab index.
+    /// The pane `view` is open in (in either window), and its tab index.
     pub fn find(&self, view: &View) -> Option<(u64, usize)> {
         self.panes()
             .into_iter()
+            .chain(self.windows.iter().map(|w| &w.pane))
             .find_map(|p| Some((p.id, p.tabs.iter().position(|t| t == view)?)))
+    }
+
+    /// Whether `pane` is in the main window's tree.
+    fn in_main(&self, pane: u64) -> bool {
+        self.panes().iter().any(|p| p.id == pane)
     }
 
     /// Applies `op` and restores the invariants; whether the layout changed.
@@ -416,8 +468,9 @@ impl Layout {
                     self.focus = Some(new);
                 }
             }
+            // The focus is the main window's.
             LayoutOp::Focus { pane } => {
-                if self.pane_mut(pane).is_some() {
+                if self.in_main(pane) {
                     self.focus = Some(pane);
                 }
             }
@@ -430,6 +483,7 @@ impl Layout {
                 *self = Self {
                     game: self.game.clone(),
                     agent: std::mem::take(&mut self.agent),
+                    windows: std::mem::take(&mut self.windows),
                     ..Self::initial()
                 }
             }
@@ -440,6 +494,14 @@ impl Layout {
                 if let Some(before) = self.agent.restore.take() {
                     self.root = before.root;
                     self.focus = before.focus;
+                    // The user's windows as they were, where they are now.
+                    let mut windows = before.windows;
+                    for w in &mut windows {
+                        if let Some(now) = self.windows.iter().find(|n| n.pane.id == w.pane.id) {
+                            w.frame = now.frame;
+                        }
+                    }
+                    self.windows = windows;
                     self.agent.tabs.clear();
                     self.agent.restore_run = None;
                 }
@@ -452,6 +514,24 @@ impl Layout {
                 }
             }
             LayoutOp::AgentArranges { on } => self.agent.arranges = on,
+            LayoutOp::PopOut { pane } => {
+                let popped = self.panes().into_iter().find(|p| p.id == pane).cloned();
+                if let Some(popped) = popped.filter(|p| !p.tabs.is_empty()) {
+                    let home = self.neighbour(pane);
+                    self.remove_pane(pane);
+                    self.windows.push(PopOut {
+                        pane: popped,
+                        home,
+                        frame: None,
+                    });
+                }
+            }
+            LayoutOp::Dock { window } => self.dock(window),
+            LayoutOp::SetFrame { window, frame } => {
+                if let Some(w) = self.windows.iter_mut().find(|w| w.pane.id == window) {
+                    w.frame = Some(frame);
+                }
+            }
         }
         self.normalize();
         Ok(*self != before)
@@ -482,13 +562,25 @@ impl Layout {
     }
 
     /// The invariants, for a layout from any source (disk included): each
-    /// view open once (so at most one Game tab, and none unless the game's
-    /// placement is a pane), unique ids, each pane's `active` in range,
-    /// ratios and the mini width clamped, and the focus on a pane.
+    /// view open once across the windows (so at most one Game tab, and none
+    /// unless the game's placement is a pane), unique ids, each pane's
+    /// `active` in range, no empty window, ratios and the mini width clamped,
+    /// and the focus on a main-window pane.
     pub fn normalize(&mut self) {
         let mut views = HashSet::new();
         let mut ids = HashSet::new();
         let mut next = self.next_id();
+        // The user's windows first: a window's pane id names its window and
+        // its tabs are where the user put them, so a main-window node sharing
+        // either (after a Reset, say) gives way.
+        for w in &mut self.windows {
+            w.pane.retain_tabs(&mut |t| views.insert(t.clone()));
+            if !ids.insert(w.pane.id) {
+                w.pane.id = next;
+                ids.insert(next);
+                next += 1;
+            }
+        }
         fn walk(
             node: &mut Node,
             views: &mut HashSet<View>,
@@ -522,6 +614,7 @@ impl Layout {
         if let Some(root) = &mut self.root {
             walk(root, &mut views, &mut ids, &mut next);
         }
+        self.windows.retain(|w| !w.pane.tabs.is_empty());
         // The Game tab leaving for Mini or Own window remembers its place.
         if !self.game.placement.tabbed() {
             if let Some((pane, index)) = self.find(&View::Game) {
@@ -550,7 +643,10 @@ impl Layout {
         if let Some(before) = &mut self.agent.restore {
             before.agent = AgentLayout::default();
             before.normalize();
-            if (&before.root, before.focus) == (&self.root, self.focus) {
+            let windows = before.windows.iter().map(|w| &w.pane);
+            if (&before.root, before.focus) == (&self.root, self.focus)
+                && windows.eq(self.windows.iter().map(|w| &w.pane))
+            {
                 self.agent.restore = None;
                 self.agent.restore_run = None;
             }
@@ -746,9 +842,30 @@ impl Layout {
         }
     }
 
+    /// Shows tab `i` of `pane`, focusing it if it is in the main window.
     fn show(&mut self, pane: u64, i: usize) {
         self.pane_mut(pane).expect("a pane of the layout").active = i;
-        self.focus = Some(pane);
+        if self.in_main(pane) {
+            self.focus = Some(pane);
+        }
+    }
+
+    /// Closes window `window`, its tabs going last into its home pane (else
+    /// the focused one, else a new one), its shown tab shown there.
+    fn dock(&mut self, window: u64) {
+        let Some(at) = self.windows.iter().position(|w| w.pane.id == window) else {
+            return;
+        };
+        let PopOut { pane, home, .. } = self.windows.remove(at);
+        let to = match home.filter(|h| self.in_main(*h)).or(self.focus) {
+            Some(to) => to,
+            None => self.add_root(),
+        };
+        let shown = pane.tabs.get(pane.active).cloned();
+        self.pane_mut(to).expect("a main pane").tabs.extend(pane.tabs);
+        if let Some((to, i)) = shown.and_then(|v| self.find(&v)) {
+            self.show(to, i);
+        }
     }
 
     /// The pane after `pane` in reading order, else the one before it.
@@ -791,8 +908,10 @@ impl Layout {
     }
 
     /// Removes `pane`; its sibling takes the parent split's place, and the
-    /// focus moves to its neighbour if it was on it.
+    /// focus moves to its neighbour if it was on it. A window's pane takes
+    /// its window with it.
     fn remove_pane(&mut self, pane: u64) {
+        self.windows.retain(|w| w.pane.id != pane);
         if self.focus == Some(pane) {
             self.focus = self.neighbour(pane);
         }
@@ -830,7 +949,8 @@ impl Layout {
                 } => (*id).max(max(first)).max(max(second)),
             }
         }
-        self.root.as_ref().map_or(0, max) + 1
+        let windows = self.windows.iter().map(|w| w.pane.id).max().unwrap_or(0);
+        self.root.as_ref().map_or(0, max).max(windows) + 1
     }
 
     /// The pane or split with `id`.
@@ -851,7 +971,11 @@ impl Layout {
         find(self.root.as_mut()?, id)
     }
 
+    /// The pane with `id`, in either window.
     fn pane_mut(&mut self, id: u64) -> Option<&mut Pane> {
+        if self.windows.iter().any(|w| w.pane.id == id) {
+            return self.windows.iter_mut().map(|w| &mut w.pane).find(|p| p.id == id);
+        }
         match self.node_mut(id)? {
             Node::Pane(p) => Some(p),
             Node::Split { .. } => None,
@@ -870,6 +994,9 @@ impl Layout {
         }
         if let Some(root) = &mut self.root {
             walk(root, &mut f);
+        }
+        for w in &mut self.windows {
+            f(&mut w.pane);
         }
     }
 }
@@ -908,6 +1035,7 @@ mod tests {
             focus: Some(focus),
             game: GamePlacement::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         }
     }
 
@@ -1035,6 +1163,7 @@ mod tests {
                 focus: None,
                 game: GamePlacement::default(),
                 agent: Default::default(),
+                windows: Vec::new(),
             };
             assert!(apply(&mut l, open(View::Game, target)));
             assert_eq!(l, Layout::initial());
@@ -1289,6 +1418,7 @@ mod tests {
                 focus: None,
                 game: GamePlacement::default(),
                 agent: Default::default(),
+                windows: Vec::new(),
             }
         );
     }
@@ -1391,6 +1521,7 @@ mod tests {
             focus: Some(42),
             game: GamePlacement::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         l.normalize();
         assert_eq!(
@@ -1406,6 +1537,7 @@ mod tests {
                 focus: Some(1),
                 game: GamePlacement::default(),
                 agent: Default::default(),
+                windows: Vec::new(),
             }
         );
         check(&l);
@@ -1415,6 +1547,7 @@ mod tests {
             focus: Some(1),
             game: GamePlacement::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         empty.normalize();
         assert_eq!(empty.focus, None);
@@ -1961,6 +2094,7 @@ mod tests {
             focus: None,
             game: GamePlacement::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         };
         assert_eq!(
             l.agent_show(&file("a.fun"), false, [1, 0], ok),
@@ -2066,5 +2200,184 @@ mod tests {
         assert_eq!(old.agent, AgentLayout::default());
         let json = serde_json::to_string(&l).unwrap();
         assert_eq!(serde_json::from_str::<Layout>(&json).unwrap(), l);
+    }
+
+    /// `two()` with a.fun's pane (2) and b.fun beside the game popped out.
+    fn popped() -> Layout {
+        let mut l = two();
+        assert!(apply(&mut l, open(file("b.fun"), Target::Pane { pane: 2 })));
+        assert!(apply(&mut l, LayoutOp::PopOut { pane: 2 }));
+        l
+    }
+
+    #[test]
+    fn a_pane_pops_out_with_its_tabs_and_the_focus_stays_in_the_main_window() {
+        let l = popped();
+        assert_eq!(l.root, Some(pane(1, &[View::Game], 0)));
+        assert_eq!(l.focus, Some(1));
+        assert_eq!(
+            l.windows,
+            vec![PopOut {
+                pane: Pane {
+                    id: 2,
+                    tabs: vec![file("a.fun"), file("b.fun")],
+                    active: 1,
+                },
+                home: Some(1),
+                frame: None,
+            }]
+        );
+        // The view is found there, once.
+        assert_eq!(l.find(&file("b.fun")), Some((2, 1)));
+        // A pane that is not the main window's, or an empty one, stays.
+        let mut again = l.clone();
+        assert!(!apply(&mut again, LayoutOp::PopOut { pane: 2 }));
+        assert!(!apply(&mut again, LayoutOp::PopOut { pane: 9 }));
+    }
+
+    #[test]
+    fn the_last_pane_can_pop_out_leaving_an_empty_canvas() {
+        let mut l = Layout::initial();
+        assert!(apply(&mut l, LayoutOp::PopOut { pane: 1 }));
+        assert_eq!((l.root.as_ref(), l.focus), (None, None));
+        assert_eq!(l.windows[0].home, None);
+        // Docked, its tabs make the canvas's one pane again.
+        assert!(apply(&mut l, LayoutOp::Dock { window: 1 }));
+        assert!(l.windows.is_empty());
+        assert_eq!(l.panes().len(), 1);
+        assert_eq!(l.panes()[0].tabs, vec![View::Game]);
+        assert_eq!(l.focus, Some(l.panes()[0].id));
+    }
+
+    #[test]
+    fn docking_returns_the_tabs_home_or_to_the_focused_pane() {
+        let mut l = popped();
+        assert!(apply(&mut l, LayoutOp::Dock { window: 2 }));
+        assert!(l.windows.is_empty());
+        assert_eq!(l.root, Some(pane(1, &[View::Game, file("a.fun"), file("b.fun")], 2)));
+        assert_eq!(l.focus, Some(1));
+        // Its home pane gone (split, then closed), they go to the focused pane.
+        let mut l = popped();
+        assert!(apply(&mut l, LayoutOp::Split { pane: 1, direction: Direction::Right }));
+        let new = l.focus.unwrap();
+        l.windows[0].home = Some(99);
+        assert!(apply(&mut l, LayoutOp::Dock { window: 2 }));
+        assert_eq!(l.find(&file("b.fun")), Some((new, 1)));
+        assert!(!apply(&mut l, LayoutOp::Dock { window: 2 }));
+    }
+
+    #[test]
+    fn a_window_takes_views_without_taking_the_main_focus() {
+        let mut l = popped();
+        // Opened in it, shown there; the main window's focus does not move.
+        assert!(apply(&mut l, open(file("c.fun"), Target::Pane { pane: 2 })));
+        assert_eq!(l.find(&file("c.fun")), Some((2, 2)));
+        assert_eq!(l.focus, Some(1));
+        // Open elsewhere, it is shown in the window.
+        assert!(apply(&mut l, open(file("a.fun"), Target::Focused)));
+        assert_eq!((l.windows[0].pane.active, l.focus), (0, Some(1)));
+        assert!(!apply(&mut l, LayoutOp::Focus { pane: 2 }));
+        // Splitting it is the main window's business.
+        assert!(!apply(&mut l, LayoutOp::Split { pane: 2, direction: Direction::Down }));
+        // Its last tab closed, the window goes.
+        for v in [file("a.fun"), file("b.fun"), file("c.fun")] {
+            apply(&mut l, LayoutOp::Close { view: v });
+        }
+        assert!(l.windows.is_empty());
+        assert_eq!(l.focus, Some(1));
+    }
+
+    #[test]
+    fn the_game_can_pop_out_and_is_still_one_tab() {
+        let mut l = Layout::initial();
+        assert!(apply(&mut l, open(file("a.fun"), Target::Side)));
+        assert!(apply(&mut l, LayoutOp::PopOut { pane: 1 }));
+        assert_eq!(l.windows[0].pane.tabs, vec![View::Game]);
+        // Opening the game shows it there, not a second tab.
+        apply(&mut l, open(View::Game, Target::Focused));
+        assert_eq!(l.find(&View::Game), Some((1, 0)));
+        assert_eq!(l.panes().iter().map(|p| p.tabs.len()).sum::<usize>(), 1);
+        // To Mini it leaves the window (now empty, so gone) and comes back to the main window.
+        assert!(apply(&mut l, LayoutOp::Place { placement: Placement::Mini }));
+        assert!(l.windows.is_empty());
+        assert!(apply(&mut l, LayoutOp::Place { placement: Placement::Pane }));
+        assert!(l.panes().iter().any(|p| p.tabs.contains(&View::Game)));
+    }
+
+    #[test]
+    fn views_and_ids_stay_unique_across_windows() {
+        let mut l = popped();
+        // A saved layout with b.fun in both windows, and a window sharing pane 1's id.
+        l.root = Some(pane(1, &[View::Game, file("b.fun")], 1));
+        l.windows.push(PopOut {
+            pane: Pane { id: 1, tabs: vec![file("c.fun")], active: 0 },
+            home: None,
+            frame: None,
+        });
+        l.normalize();
+        // The windows keep their tabs and ids; the main pane gives way.
+        assert_eq!(l.windows[0].pane.tabs, vec![file("a.fun"), file("b.fun")]);
+        assert_eq!(l.windows.iter().map(|w| w.pane.id).collect::<Vec<_>>(), vec![2, 1]);
+        let main = l.panes()[0].clone();
+        assert_eq!(main.tabs, vec![View::Game]);
+        assert!(![1, 2].contains(&main.id));
+        assert_eq!(l.focus, Some(main.id));
+        // New panes never take a window's id.
+        assert!(apply(&mut l, LayoutOp::Split { pane: main.id, direction: Direction::Down }));
+        assert!(!l.windows.iter().any(|w| Some(w.pane.id) == l.focus));
+        // Reset keeps the windows.
+        assert!(apply(&mut l, LayoutOp::Reset));
+        assert_eq!(l.windows.len(), 2);
+    }
+
+    #[test]
+    fn a_window_keeps_its_id_when_a_reset_pane_would_take_it() {
+        let mut l = Layout::initial();
+        assert!(apply(&mut l, open(file("a.fun"), Target::Side)));
+        assert!(apply(&mut l, LayoutOp::PopOut { pane: 1 }));
+        assert!(apply(&mut l, LayoutOp::Reset));
+        // The window is still pane 1 (its page is `?pane=1`) with the game;
+        // the reset canvas is one empty pane of another id.
+        assert_eq!(l.windows[0].pane.id, 1);
+        assert_eq!(l.windows[0].pane.tabs, vec![View::Game]);
+        assert_eq!(l.panes().len(), 1);
+        assert!(l.panes()[0].tabs.is_empty());
+        assert_ne!(l.focus, Some(1));
+        assert!(l.focus.is_some_and(|f| l.in_main(f)));
+    }
+
+    #[test]
+    fn the_agent_shows_a_view_where_the_user_put_it_and_opens_new_ones_in_the_main_window() {
+        let mut l = popped();
+        l.windows[0].pane.active = 0;
+        assert_eq!(l.agent_show(&file("b.fun"), false, [1, 0], ok), Ok(Placed::Shown));
+        assert_eq!((l.windows[0].pane.active, l.focus), (1, Some(1)));
+        assert_eq!(l.agent_show(&file("c.fun"), false, [1, 0], ok), Ok(Placed::Opened));
+        assert!(l.in_main(l.find(&file("c.fun")).unwrap().0));
+        assert_eq!(l.windows.len(), 1);
+    }
+
+    #[test]
+    fn restoring_the_users_layout_restores_their_windows_where_they_are() {
+        let mut l = popped();
+        let frame = Frame { x: 10, y: 20, width: 600, height: 400 };
+        l.agent_show(&file("c.fun"), false, [1, 0], ok).unwrap();
+        l.windows[0].pane.active = 0;
+        assert!(apply(&mut l, LayoutOp::SetFrame { window: 2, frame }));
+        assert!(apply(&mut l, LayoutOp::Restore));
+        assert_eq!(l.find(&file("c.fun")), None);
+        assert_eq!(l.windows[0].pane.tabs, vec![file("a.fun"), file("b.fun")]);
+        assert_eq!(l.windows[0].pane.active, 1);
+        assert_eq!(l.windows[0].frame, Some(frame));
+    }
+
+    #[test]
+    fn windows_are_kept_with_the_layout() {
+        let mut l = popped();
+        apply(&mut l, LayoutOp::SetFrame { window: 2, frame: Frame { x: -1200, y: 40, width: 800, height: 600 } });
+        let json = serde_json::to_string(&l).unwrap();
+        assert_eq!(serde_json::from_str::<Layout>(&json).unwrap(), l);
+        // A frame for a window that is gone changes nothing.
+        assert!(!apply(&mut l, LayoutOp::SetFrame { window: 7, frame: Frame { x: 0, y: 0, width: 1, height: 1 } }));
     }
 }

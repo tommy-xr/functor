@@ -205,7 +205,8 @@ fn or_none(path: &str) -> &str {
 
 /// A layout on one line: each pane as `#id[tabs]`, the focused one marked
 /// `>` and its shown tab `*`; each split as `right|down N% (first | second)`,
-/// N the first child's share; `empty` for no panes.
+/// N the first child's share; `empty` for no panes; then `; window #id[tabs]`
+/// for each pane in a window of its own.
 pub fn print_layout(layout: &Layout) -> String {
     fn node(n: &Node, focus: Option<u64>) -> String {
         match n {
@@ -244,10 +245,15 @@ pub fn print_layout(layout: &Layout) -> String {
             }
         }
     }
-    match &layout.root {
+    let main = match &layout.root {
         Some(root) => node(root, layout.focus),
         None => "empty".to_string(),
-    }
+    };
+    // Panes the user popped out, each in its own window.
+    layout.windows.iter().fold(main, |out, w| {
+        let pane = node(&Node::Pane(w.pane.clone()), None);
+        format!("{out}; window {pane}")
+    })
 }
 
 fn task(t: &Task) -> String {
@@ -620,18 +626,31 @@ recents: 2
             focus: Some(2),
             game: GamePlacement::default(),
             agent: Default::default(),
+            windows: Vec::new(),
         }
     }
 
     #[test]
     fn prints_layouts() {
         assert_eq!(print_layout(&Layout::initial()), ">#1[*game]");
+        let mut popped = Layout::initial();
+        let side = crate::layout::LayoutOp::Open {
+            view: View::File {
+                path: "a.fun".into(),
+            },
+            target: crate::layout::Target::Side,
+        };
+        popped.apply(side, |_| Ok(())).unwrap();
+        let out = crate::layout::LayoutOp::PopOut { pane: 3 };
+        popped.apply(out, |_| Ok(())).unwrap();
+        assert_eq!(print_layout(&popped), ">#1[*game]; window #3[*file:a.fun]");
         assert_eq!(
             print_layout(&Layout {
                 root: None,
                 focus: None,
                 game: GamePlacement::default(),
                 agent: Default::default(),
+                windows: Vec::new(),
             }),
             "empty"
         );

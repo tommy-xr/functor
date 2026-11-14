@@ -26,6 +26,10 @@ impl PointerLock {
         Some(lock)
     }
 
+    pub(crate) fn locked(&self) -> bool {
+        self.locked
+    }
+
     /// The mouse moved by `delta` points.
     pub(crate) fn motion(&mut self, (dx, dy): (f64, f64)) {
         if self.locked {
@@ -52,6 +56,22 @@ impl PointerLock {
     }
 }
 
+/// A page's `{"pointer": "lock" | "unlock"}`: whether it asks for the lock.
+pub(crate) fn request(body: &str) -> Option<bool> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Lock {
+        Lock,
+        Unlock,
+    }
+    #[derive(serde::Deserialize)]
+    struct Msg {
+        pointer: Lock,
+    }
+    let msg: Msg = serde_json::from_str(body).ok()?;
+    Some(matches!(msg.pointer, Lock::Lock))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +91,15 @@ mod tests {
         // Unlocking drops what was not handed over.
         assert_eq!(p.set(false), Some(false));
         assert_eq!(p.flush(), None);
+    }
+
+    #[test]
+    fn a_page_asks_for_the_lock_or_lets_it_go() {
+        assert_eq!(request(r#"{"pointer":"lock"}"#), Some(true));
+        assert_eq!(request(r#"{"pointer":"unlock"}"#), Some(false));
+        for bad in [r#"{"pointer":true}"#, r#"{"titlebar":"drag"}"#, ""] {
+            assert_eq!(request(bad), None, "{bad}");
+        }
     }
 
     #[test]
