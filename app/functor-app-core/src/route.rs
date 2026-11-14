@@ -228,12 +228,16 @@ pub fn is_open(state: &AppState, open: &Open) -> bool {
 }
 
 /// The open decisions with their lines and moves.
+/// The active project's only: a move lands in the active project.
 pub fn routes(state: &AppState) -> Vec<Routed> {
     state
         .routed
         .iter()
         .filter_map(|open| {
             let task = state.tasks.iter().find(|t| t.id == open.task)?;
+            if state.active.as_ref() != Some(&task.project) {
+                return None;
+            }
             let line = match task.transcript.get(open.item)? {
                 Item::User {
                     spoken: Some(s), ..
@@ -326,14 +330,14 @@ pub fn line(state: &AppState, task: u64, landed: Landed, by: By) -> String {
 
 /// The line left on a steered message moved `to` another place: what the
 /// run did with it meanwhile cannot be told apart from the task's change.
-pub fn moved(state: &AppState, to: &Destination, tracks: bool) -> String {
+pub fn moved(state: &AppState, to: &Destination) -> String {
     let title = |id: u64| state.tasks.iter().find(|t| t.id == id).map_or("", |t| &t.title);
     let place = match to {
         Destination::Steer { task } => format!("to steer “{}”", title(*task)),
         Destination::New => "to a new task".to_string(),
         Destination::Queued { task } => format!("to “{}”", title(*task)),
     };
-    match tracks {
+    match state.tracks_changes {
         true => format!("Moved {place}. What the agent changed for it so far stays in this task’s change."),
         false => format!("Moved {place}."),
     }

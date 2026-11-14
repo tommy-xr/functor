@@ -1330,6 +1330,11 @@ fn opened(
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
+    // Speech waiting on the router was said to the old folder's game.
+    for u in std::mem::take(&mut state.routing) {
+        let reason = "another folder was opened".to_string();
+        voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
+    }
     // A change left unmeasured (the app quit with its diff in flight) would
     // hold the queue until someone opened it: measured now.
     if state.tracks_changes {
@@ -2313,13 +2318,12 @@ fn heard(
         by: By::Rule,
         title: None,
     };
-    let rule = match voice::route(state, &u.device, &u.text) {
-        Route::Nowhere(reason) => {
+    let rule = match rule_place(state, &u) {
+        Ok(place) => place,
+        Err(reason) => {
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
             return false;
         }
-        Route::Steer(id) => Place::Steer(id),
-        Route::New => Place::New(None),
     };
     // With a choice to make, the model router decides, the rule its fallback.
     let project = state.active.clone().unwrap_or_default();
@@ -2336,6 +2340,15 @@ fn heard(
     land(state, u, rule, commands)
 }
 
+/// The fixed rule's place for `u` ([`voice::route`]), or why it has none.
+fn rule_place(state: &AppState, u: &Utterance) -> Result<Place, String> {
+    match voice::route(state, &u.device, &u.text) {
+        Route::Nowhere(reason) => Err(reason),
+        Route::Steer(id) => Ok(Place::Steer(id)),
+        Route::New => Ok(Place::New(None)),
+    }
+}
+
 /// The model router's `choice` for an utterance: its place if it is one
 /// still offered, else the fixed rule's.
 fn routed(
@@ -2350,13 +2363,12 @@ fn routed(
         return false;
     };
     let mut u = state.routing.remove(at);
-    let rule = match voice::route(state, &u.device, &u.text) {
-        Route::Nowhere(reason) => {
+    let rule = match rule_place(state, &u) {
+        Ok(place) => place,
+        Err(reason) => {
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
             return false;
         }
-        Route::Steer(id) => Place::Steer(id),
-        Route::New => Place::New(None),
     };
     let project = state.active.clone().unwrap_or_default();
     let request = route::request(state, &project, &u.text);
@@ -2387,13 +2399,14 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
             true
         }
         Place::Add(id) => {
-            let root = PathBuf::from(&state.repo_root);
+            let now = stamp(state.now);
             let task = state.tasks.iter_mut().find(|t| t.id == id).expect("offered");
             task.transcript.push(Item::User {
                 text: u.text.clone(),
                 spoken: Some(u.spoken.clone()),
             });
-            commands.push(save(&root, task));
+            task.updated_at = now.or(task.updated_at);
+            // Saved and broadcast with its line.
             record(state, &u, id, Landed::Added, commands);
             voice::follow(state, &u, id, commands);
             false
@@ -2446,6 +2459,16 @@ fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, comman
     });
 }
 
+/// Said to a task whose run was cut by a steer that is moved away before
+/// its agent started.
+pub const RESUMED: &str = "Carry on with what you were doing.";
+
+/// Whether task `id`'s run has its agent started.
+fn started(state: &AppState, id: u64) -> bool {
+    let task = state.tasks.iter().find(|t| t.id == id);
+    task.and_then(|t| t.run.as_ref()).is_some_and(|r| r.started)
+}
+
 /// Said to a steered task when its message is moved elsewhere.
 pub const RETRACTED: &str = "That last message was not for this task: the user moved it to \
 another. Ignore it and carry on with what you were doing before it.";
@@ -2461,6 +2484,8 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         return reject(commands, "that message cannot go there now".to_string());
     }
     state.routed.retain(|o| o.id != id);
+    // Followed again where it lands, not failed where it was.
+    (state.voice).retain(|j| !(j.device == open.device && j.utterance == open.utterance));
     let root = PathBuf::from(&state.repo_root);
     let task = state.tasks.iter().find(|t| t.id == open.task).expect("open");
     let Item::User {
@@ -2471,9 +2496,31 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         return reject(commands, "that message was not said aloud".to_string());
     };
     match open.landed {
+        // Cut before its agent started: it never had the message, so the
+        // message goes, and what it was given before runs again (or the
+        // run it interrupted resumes).
+        Landed::Steered { .. } if !started(state, open.task) => {
+            let t = state.tasks.iter_mut().find(|t| t.id == open.task).expect("open");
+            let run = t.run.take().expect("open").id;
+            commands.push(Command::StopRun {
+                task: open.task,
+                run,
+            });
+            t.transcript.truncate(open.item);
+            t.status = derive_status(t);
+            commands.push(save(&root, t));
+            commands.push(Command::Broadcast(ServerMsg::Transcript {
+                task: t.id,
+                items: t.transcript.clone(),
+            }));
+            if !matches!(t.transcript.last(), Some(Item::User { .. })) {
+                say(state, open.task, RESUMED.to_string(), None);
+            }
+            start_run(state, open.task, commands);
+        }
         Landed::Steered { .. } => {
             stop_task(state, open.task, commands);
-            let line = route::moved(state, &to, state.tracks_changes);
+            let line = route::moved(state, &to);
             let t = state.tasks.iter_mut().find(|t| t.id == open.task).expect("open");
             if let Item::User {
                 spoken: Some(s), ..
@@ -2531,7 +2578,8 @@ fn voice_task(
 ) -> bool {
     let started = match (id, voice::route(state, &u.device, &u.text)) {
         (Err(e), _) => Err(format!("cannot start a task: {e}")),
-        (_, Route::Nowhere(reason)) => Err(reason),
+        // Moved by the user: where they put it, wherever the game is now.
+        (_, Route::Nowhere(reason)) if u.by != By::You => Err(reason),
         // Chosen as a new task by the rule, which would steer it now.
         (_, Route::Steer(id)) if u.by == By::Rule => {
             steer(state, id, u.text.clone(), Some(u.spoken.clone()), commands);
@@ -7547,6 +7595,19 @@ mod tests {
         let id = s.routes[0].id;
         let labels: Vec<&str> = s.routes[0].moves.iter().map(|m| m.label.as_str()).collect();
         assert_eq!(labels, ["Make it a new task"]);
+
+        // Moved before the steered run's agent started: it never had the
+        // message, which goes; the interrupted run resumes.
+        let early = client(ClientMsg::MoveUtterance {
+            id,
+            to: Destination::New,
+        });
+        let (cut, commands) = update(s.clone(), early);
+        assert!(commands.contains(&Command::StopRun { task: 3, run: 2 }));
+        assert_eq!(task(&cut, 3).transcript.len(), 3);
+        assert_eq!(spec(&commands).message, RESUMED);
+        assert_eq!(stages(&commands), []);
+        let (s, _) = update(s, agent(3, 2, started("sess-1")));
 
         let to_new = client(ClientMsg::MoveUtterance {
             id,

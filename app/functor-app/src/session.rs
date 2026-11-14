@@ -410,6 +410,11 @@ impl Driver {
                         Some(router) => router.choose(&request).await,
                         None => Err("no model router".to_string()),
                     };
+                    // The rule decides instead: said, so a router that never
+                    // answers in time can be noticed.
+                    if let Err(e) = &choice {
+                        eprintln!("functor-app: the router: {e}; the fixed rule decides");
+                    }
                     let _ = events.send(Event::Routed {
                         device,
                         utterance,

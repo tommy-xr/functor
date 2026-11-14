@@ -127,10 +127,9 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
     let Some((session, revision)) = on_headset(state, &u.device) else {
         return;
     };
-    // A steered task's earlier utterance is superseded, not failed.
-    state
-        .voice
-        .retain(|j| j.task != task && j.device != u.device);
+    // A steered task's earlier utterance is superseded, not failed; one
+    // placed elsewhere is still followed.
+    state.voice.retain(|j| j.task != task);
     state.voice.push(Job {
         device: u.device.clone(),
         utterance: u.utterance,
