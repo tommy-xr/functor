@@ -604,7 +604,9 @@ current time, which makes it the pause that needs no `tts` read first.
 Any command may carry `"by": "agent" | "user"` (protocol v48): who asks. A
 command that pauses records it, and `GET /state` reports it as
 `clock.paused_by` while the clock holds (`"start"` for a `--paused` launch;
-omitted when nobody was named). Older runtimes ignore the field.
+omitted when nobody was named). `"user"` replaces any cause; `"agent"` and a
+command without `by` keep one already recorded. Older runtimes ignore the
+field.
 
 `advance.dts` must be finite and positive; invalid values are rejected before
 anything is queued, so direct debug clients cannot move simulation time

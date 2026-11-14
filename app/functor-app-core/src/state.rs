@@ -1291,7 +1291,8 @@ fn paused_by(state: &AppState) -> Option<PausedBy> {
 
 /// The active project, while an agent's tools hold its game paused.
 fn agent_paused(state: &AppState) -> Option<&str> {
-    let agent = paused_by(state) == Some(PausedBy::Agent);
+    // Not once a resume is on its way (`playing`).
+    let agent = paused_by(state) == Some(PausedBy::Agent) && playing(state).is_none();
     state.active.as_deref().filter(|_| agent)
 }
 

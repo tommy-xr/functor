@@ -2564,7 +2564,8 @@ images cannot be posed"
                     Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
                 })
                 .or_else(|| {
-                    let head = tracked_center?;
+                    // A capture shows the game, not the marker.
+                    let head = tracked_center.filter(|_| !capture_due)?;
                     let shapes = card(&paused_lines(clock.is_paused(), clock.paused_by())?);
                     let place = paused_marker_transform(head.orientation);
                     Some((std::rc::Rc::new(shapes), 1.0, Place::Head(place)))

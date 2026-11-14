@@ -465,7 +465,12 @@ past the {MAX_QUEUED_STEPS} step cap. Advance in smaller batches, or POST \
                 return Ok(());
             }
         }
-        self.paused_by = by;
+        // The user's own pause is theirs. An agent's (its `step` on a game
+        // already paused) or an unnamed one keeps the cause it found.
+        self.paused_by = match by {
+            Some(PausedBy::User) => by,
+            _ => self.paused_by.or(by),
+        };
         Ok(())
     }
 
@@ -1016,12 +1021,19 @@ mod tests {
             clock.apply(TimeCommand::Resume, Some(PausedBy::Agent)).unwrap();
             assert_eq!(clock.paused_by(), None, "resumed after {command:?}");
         }
-        // The last request names the cause; one without `by` names none.
+        // The user's pause takes an agent's over; an agent's step on a game
+        // the user paused, or a request without `by`, leaves it the user's.
         clock.apply(advance, Some(PausedBy::Agent)).unwrap();
         clock.apply(advance, Some(PausedBy::User)).unwrap();
         assert_eq!(clock.paused_by(), Some(PausedBy::User));
+        clock.apply(advance, Some(PausedBy::Agent)).unwrap();
         clock.apply(TimeCommand::Cancel, None).unwrap();
+        assert_eq!((clock.is_paused(), clock.paused_by()), (true, Some(PausedBy::User)));
+        clock.resume();
+        // Without `by` from running: paused, no cause.
+        clock.apply(advance, None).unwrap();
         assert_eq!((clock.is_paused(), clock.paused_by()), (true, None));
+        clock.resume();
         // The shell's own pause (a seek) keeps the cause it found.
         clock.apply(advance, Some(PausedBy::Agent)).unwrap();
         clock.pause();
@@ -1047,6 +1059,13 @@ mod tests {
         let mut clock = GameClock::new(None);
         clock.pause_at_start();
         assert_eq!((clock.is_paused(), clock.paused_by()), (true, Some(PausedBy::Start)));
+        // An agent stepping it does not make the pause the agent's.
+        let step = crate::debug_protocol::TimeCommand::Advance {
+            dts: FIXED_DT,
+            frames: 1,
+        };
+        clock.apply(step, Some(PausedBy::Agent)).unwrap();
+        assert_eq!(clock.paused_by(), Some(PausedBy::Start));
         clock.resume();
         assert_eq!(clock.paused_by(), None);
     }

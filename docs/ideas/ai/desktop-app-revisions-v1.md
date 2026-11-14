@@ -653,11 +653,16 @@ by a view.
 
 - **The request says who asks.** The agent's game tools, the transport bar,
   and a game that opens paused each name themselves; the runtime keeps the
-  last one while the clock holds and forgets it when the clock runs. A pause
-  nobody names (the game window's own timeline, a seek) shows no cause.
+  cause while the clock holds and forgets it when the clock runs. The user's
+  pause takes an agent's over; an agent stepping a game someone else paused
+  leaves it theirs. A pause nobody names (the game window's own timeline, a
+  seek) shows no cause.
+- **One run per project,** so the pause is put down to the project's run in
+  flight; the runtime knows an agent asked, not which.
 - **In the headset,** a small "PAUSED" marker stays for as long as the clock
   holds, with "Agent is checking its change" when the agent holds it. It gives
-  its place to the pairing card, the open panel and the voice toast.
+  its place to the pairing card, the open panel and the voice toast, and is
+  left out of a captured frame.
 - **The agent's status** says "checking the change, game paused" while its run
   is in flight and it holds the game: on its card, in the chat, and in the
   headset panel.
