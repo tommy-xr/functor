@@ -360,6 +360,34 @@ finished: ok
     assert_eq!(files(repo.path()), ["a/functor.json", "a/game.fun"]);
 }
 
+/// The runner's ids reach the core through the fake agent: a subagent's
+/// read answers while its `Agent` call is out, and each gets its own result.
+#[cfg(unix)]
+#[test]
+fn cli_task_pairs_results_by_id_while_a_subagent_runs() {
+    let repo = tree();
+    let home = tempfile::tempdir().unwrap();
+    let (functor, _requests) = stub::functor(home.path());
+    let fixture = fixture("claude-subagent.jsonl");
+    let out = task_command(repo.path(), home.path(), &functor, &fixture, "Do the steps")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success(), "{stdout}");
+    let tools: Vec<&str> = stdout.lines().filter(|l| l.starts_with("tool: ")).collect();
+    assert_eq!(tools.len(), 4, "{stdout}");
+    assert!(
+        tools[0].starts_with("tool: Agent ") && tools[0].contains("<tools-used-before-summary>"),
+        "{}",
+        tools[0]
+    );
+    assert!(
+        tools[1].contains("-> 1\tfirst line\\n2\tsecond"),
+        "{}",
+        tools[1]
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn cli_task_with_a_failed_run_exits_1() {
@@ -1332,7 +1360,10 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
     let edit = r#"{"ms":0,"edit":{"path":"game.fun","old":"xx","new":"xxx"}}"#;
     for (extra, ended) in [
         (&[][..], "prepared"),
-        (&[edit][..], "failed: the files changed while the review ran"),
+        (
+            &[edit][..],
+            "failed: the files changed while the review ran",
+        ),
     ] {
         let repo = git_tree();
         let home = tempfile::tempdir().unwrap();
@@ -1342,7 +1373,10 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
             .arg("--review")
             .arg("--metrics")
             .arg(&metrics)
-            .env("FUNCTOR_APP_FAKE_REVIEW", review_fixture(home.path(), extra))
+            .env(
+                "FUNCTOR_APP_FAKE_REVIEW",
+                review_fixture(home.path(), extra),
+            )
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
@@ -1357,7 +1391,10 @@ fn a_change_is_reviewed_through_the_real_tool_server() {
         assert_eq!(m["input_tokens"], Value::Null);
         match ended {
             "prepared" => {
-                assert!(review["summary"].as_str().unwrap().starts_with("The agent renamed"));
+                assert!(review["summary"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("The agent renamed"));
                 assert_eq!(review["notes"][0], "Nobody ran the game after the change.");
                 assert_eq!(review["style"], serde_json::json!([]));
             }

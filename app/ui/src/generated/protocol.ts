@@ -420,7 +420,19 @@ export type Item = { "kind": "user", text: string,
 /**
  * Said aloud in a headset, not typed.
  */
-spoken?: Spoken, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, } | { "kind": "usage", input: number, output: number, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
+spoken?: Spoken, } | { "kind": "agent", text: string, partial: boolean, } | { "kind": "tool", name: string, input: JsonValue, result: string | null, 
+/**
+ * The harness's id for the call, when it gives one.
+ */
+id?: string, 
+/**
+ * The call that started the subagent making this one.
+ */
+parent_id?: string, 
+/**
+ * Whether the result is an error, when the harness says.
+ */
+is_error?: boolean, } | { "kind": "usage", input: number, output: number, detail?: UsageDetail, } | { "kind": "finished", ok: boolean, summary: string | null, } | { "kind": "stopped" } | { "kind": "kept" } | { "kind": "reverted" } | { "kind": "walkthrough", steps: Array<WalkthroughStep>, current: number | null, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
@@ -694,7 +706,12 @@ usage: Usage | null,
 /**
  * View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
  */
-views: number, };
+views: number, 
+/**
+ * The latest usage split, when the harness gives one; added to the
+ * usage item when the run ends.
+ */
+detail?: UsageDetail, };
 
 /**
  * Core → UI.
@@ -845,6 +862,19 @@ name: string, description: string, tags: Array<string>, kind: TemplateKind, };
 export type TemplateKind = "starter" | "example";
 
 /**
+ * Tokens split by how the prompt side was billed (`mis-agent`'s).
+ */
+export type TokenUsage = { 
+/**
+ * Prompt tokens neither read from nor written to the cache.
+ */
+input: number, cache_read: number, cache_creation: number, output: number, 
+/**
+ * The part of `output` spent reasoning, if the harness says.
+ */
+reasoning_output: number | null, };
+
+/**
  * What the bar shows: `GET /state`'s `frame` and `clock`, with the bar's
  * seeks applied until the runtime has answered them.
  */
@@ -897,6 +927,38 @@ export type Usage = {
  * Includes cached prompt tokens.
  */
 input: number, output: number, };
+
+/**
+ * A run's usage as the harness splits it. Claude sends one after each API
+ * message, with the end-of-run fields last; Codex sends `total` at the end.
+ */
+export type UsageDetail = { 
+/**
+ * Cumulative for the run, subagents included.
+ */
+total: TokenUsage, 
+/**
+ * The main agent's latest API message: its `prompt()` is how full the
+ * context is now.
+ */
+last: TokenUsage | null, 
+/**
+ * API round trips.
+ */
+turns: number | null, cost_usd: Usd | null, 
+/**
+ * Time spent in API calls.
+ */
+api_ms: number | null, 
+/**
+ * The main model's context window, in tokens.
+ */
+context_window: number | null, };
+
+/**
+ * US dollars. Read from JSON, which has no NaN, so equality is total.
+ */
+export type Usd = number;
 
 /**
  * What a tab shows. New view types need no layout work.

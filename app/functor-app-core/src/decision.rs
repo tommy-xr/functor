@@ -531,8 +531,7 @@ mod tests {
         assert_eq!(decision(&task).unwrap().depth, Depth::Glance);
         task.run = Some(crate::tasks::Run {
             id: 0,
-            usage: None,
-            views: 0,
+            ..Default::default()
         });
         assert_eq!(decision(&task), None, "running");
     }

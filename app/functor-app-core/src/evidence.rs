@@ -203,8 +203,7 @@ mod tests {
         // Not while a run edits.
         t.run = Some(crate::tasks::Run {
             id: 1,
-            usage: None,
-            views: 0,
+            ..Default::default()
         });
         assert_eq!(next(&t), Next::Keep);
     }
