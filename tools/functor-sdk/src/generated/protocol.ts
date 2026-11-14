@@ -609,8 +609,8 @@ camera?: SensorStreamState, };
 
 /**
  * `GET /state`'s `pointer` (v44): whether the game takes the mouse captured
- * (`"mouseCapture"` on, the cursor policy not `visible`, and the game reads
- * mouse motion) or with a visible cursor.
+ * (`"mouseCapture"` on, the cursor policy not `visible`, and the game has a
+ * mouse hook) or with a visible cursor.
  */
 export type PointerMode = "captured" | "visible";
 
