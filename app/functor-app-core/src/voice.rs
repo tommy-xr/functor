@@ -4,6 +4,7 @@
 //! `Transcribed` itself; these are the stages after.
 
 use crate::devices::LinkCommand;
+use crate::route::By;
 use crate::layout::Placement;
 use crate::state::{connected, AppState, Command};
 use crate::tasks::{Item, Spoken};
@@ -21,6 +22,10 @@ pub struct Utterance {
     pub utterance: u64,
     pub text: String,
     pub spoken: Spoken,
+    /// Who chose its place; the fixed rule until the router or the user does.
+    pub by: By,
+    /// The model router's title, for a new task.
+    pub title: Option<String>,
 }
 
 /// The stages the core reports.

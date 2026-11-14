@@ -10,7 +10,8 @@
 //! `rejected <why>`, `ended <why>`. With `--say <wav>` it speaks that clip
 //! once a game runs on it, printing each voice status it gets back: `voice 1 heard`,
 //! `voice 1 transcribed <text>`, `voice 1 working`, `voice 1 reloaded`,
-//! `voice 1 failed <why>`, `voice 1 idle`.
+//! `voice 1 failed <why>`, `voice 1 idle`; with `--say-again`, the clip
+//! again as utterance 2 once the first is working.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -71,6 +72,11 @@ pub struct StubArgs {
     /// With --say: cancel the clip halfway instead of ending it.
     #[arg(long, requires = "say")]
     cancel: bool,
+
+    /// With --say: once the desktop says the first is working, speak the
+    /// clip again as utterance 2.
+    #[arg(long, requires = "say")]
+    say_again: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,7 +309,7 @@ async fn session(
                         }],
                         Some(Misbehave::VoiceTooLong) => {
                             let samples = voice::MAX_CLIP / 2 + voice::SAMPLE_RATE as usize;
-                            utterance(&vec![0; samples], runtime, false)
+                            utterance(&vec![0; samples], runtime, false, 1)
                         }
                         _ => Vec::new(),
                     };
@@ -329,7 +335,7 @@ async fn session(
                     if let (Some(pcm), false, "/state") =
                         (clip, *said, r.target.split('?').next().unwrap_or(""))
                     {
-                        frames.extend(utterance(pcm, runtime, args.cancel));
+                        frames.extend(utterance(pcm, runtime, args.cancel, 1));
                         *said = true;
                     }
                     for frame in frames {
@@ -344,7 +350,20 @@ async fn session(
                     channel: voice::STATUS_CHANNEL,
                     data,
                 } => match voice::Status::decode(&data) {
-                    Ok(status) => say(&status_line(&status)),
+                    Ok(status) => {
+                        say(&status_line(&status));
+                        let first_working =
+                            status.utterance == Some(1) && status.stage == voice::Stage::Working;
+                        if let (true, true, Some(pcm)) = (args.say_again, first_working, clip) {
+                            for frame in utterance(pcm, runtime, false, 2) {
+                                for msg in machine.send(&frame).map_err(|e| e.to_string())? {
+                                    ws.send(Message::Binary(msg.into()))
+                                        .await
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+                        }
+                    }
                     Err(e) => say(&format!("voice unreadable {e}")),
                 },
                 device::Event::Channel { .. } => {}
@@ -485,7 +504,7 @@ fn canned(
 
 /// `pcm` as utterance 1's frames: a start with a capsule naming the
 /// frame, chunks, then its end (or, with `cancel`, a cancel halfway).
-fn utterance(pcm: &[i16], runtime: &Runtime, cancel: bool) -> Vec<Frame> {
+fn utterance(pcm: &[i16], runtime: &Runtime, cancel: bool, utterance: u64) -> Vec<Frame> {
     let capsule = Capsule {
         frame: Some(runtime.frame),
         pointing_at: Some("the stub".to_string()),
@@ -494,7 +513,7 @@ fn utterance(pcm: &[i16], runtime: &Runtime, cancel: bool) -> Vec<Frame> {
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let chunks: Vec<&[u8]> = bytes.chunks(voice::MAX_CHUNK).collect();
     let mut clips = vec![Clip::Start {
-        utterance: 1,
+        utterance,
         capsule: capsule.to_json(),
     }];
     let sent = if cancel {
@@ -504,14 +523,14 @@ fn utterance(pcm: &[i16], runtime: &Runtime, cancel: bool) -> Vec<Frame> {
     };
     for (seq, data) in chunks[..sent].iter().enumerate() {
         clips.push(Clip::Chunk {
-            utterance: 1,
+            utterance,
             seq: seq as u32,
             data: data.to_vec(),
         });
     }
     clips.push(match cancel {
-        true => Clip::Cancel { utterance: 1 },
-        false => Clip::End { utterance: 1 },
+        true => Clip::Cancel { utterance },
+        false => Clip::End { utterance },
     });
     clips
         .iter()

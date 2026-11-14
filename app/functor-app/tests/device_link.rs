@@ -2139,3 +2139,118 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     let state = app.state_where("the state", 10, |_| true).await;
     assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
 }
+
+/// The router (D29) end to end on loopback, under the fake agent,
+/// transcriber and model router: the stub says a clip, which starts a task
+/// (nothing to choose between, so no model call), then says it again while
+/// that task runs. The router (with the project's setting on) makes it a
+/// new task, queued behind the first, so the headset hears nothing more yet.
+/// Moved to steer the running task, the queued one goes and the headset
+/// hears it is working.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_second_clip_is_routed_and_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("functor.json"),
+        r#"{"language": "functor-lang"}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":30000,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+        (
+            "FUNCTOR_APP_FAKE_ROUTE",
+            r#"{"route":"new_task","title":"Paint the ball"}"#,
+        ),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    app.send(json!({"type": "set_model_route", "on": true})).await;
+    app.state_where("the model routes speech", 10, |s| {
+        s["router"] == true && s["model_routes"] == json!(["."])
+    })
+    .await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let quest = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--say", CLIP, "--say-again"],
+    );
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    assert_eq!(
+        quest.line("voice 2 t"),
+        "voice 2 transcribed make the ball red"
+    );
+
+    // Routed to a new task, queued behind the first: the headset waits.
+    let state = app
+        .state_where("the second is queued", 10, |s| {
+            s["routes"].as_array().is_some_and(|r| r.len() == 2)
+        })
+        .await;
+    let tasks = state["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    let (first, second) = (tasks[0]["id"].clone(), &tasks[1]);
+    assert_eq!(second["title"], "Paint the ball");
+    assert_eq!(second["status"]["kind"], "queued");
+    let routed = state["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["task"] == second["id"])
+        .unwrap()
+        .clone();
+    assert_eq!(routed["by"], "model");
+    assert_eq!(routed["line"], "Queued behind “make the ball red”");
+    assert_eq!(
+        routed["moves"],
+        json!([{"to": {"kind": "steer", "task": first}, "label": "Steer “make the ball red” instead"}])
+    );
+
+    // Moved: it steers the first, and the queued task is gone.
+    let to = json!({"kind": "steer", "task": first});
+    app.send(json!({"type": "move_utterance", "id": routed["id"], "to": to}))
+        .await;
+    assert_eq!(quest.line("voice 2 w"), "voice 2 working");
+    let state = app
+        .state_where("one task", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| t.len() == 1)
+        })
+        .await;
+    let moved = state["routes"].as_array().unwrap().iter().find(|r| r["by"] == "you").cloned();
+    assert_eq!(
+        moved.unwrap()["line"],
+        "Moved: steered “make the ball red”"
+    );
+}

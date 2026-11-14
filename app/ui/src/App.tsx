@@ -110,7 +110,7 @@ export function App() {
               onNewTask={newTask}
             />
           )}
-          {view === "devices" && <DevicesPane devices={state?.devices} online={online} send={send} />}
+          {view === "devices" && <DevicesPane state={state} online={online} send={send} />}
           {state && !state.active ? (
             <NoProject {...folder} onNewProject={() => send({ type: "show_new_project", here: !!state.folder })} />
           ) : (

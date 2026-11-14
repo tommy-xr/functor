@@ -66,6 +66,12 @@ pub enum ClientMsg {
     StartQueued {
         task: u64,
     },
+    /// Move the spoken message of decision `id` (`AppState::routes`) to
+    /// `to`, one of its moves (D29's override).
+    MoveUtterance {
+        id: u64,
+        to: crate::route::Destination,
+    },
     /// Answered with [`ServerMsg::Transcript`].
     GetTranscript {
         task: u64,
@@ -74,6 +80,10 @@ pub enum ClientMsg {
     /// per project.
     SetHarness {
         harness: Harness,
+    },
+    /// Whether a model places the active project's speech (D29); remembered.
+    SetModelRoute {
+        on: bool,
     },
     /// How the active project's changes are reviewed (D31); remembered.
     SetReview {

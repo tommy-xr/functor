@@ -8,7 +8,7 @@
 //! Task ids are reserved in `<home>/task-ids/`, so app processes sharing a
 //! home never give two tasks one id. All of it is private to the user.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, Write as _};
@@ -45,6 +45,10 @@ fn layout_file(home: &Path, dir: &Path) -> PathBuf {
 
 fn review_file(home: &Path, dir: &Path) -> PathBuf {
     project_home(home, dir).join("review.json")
+}
+
+fn route_file(home: &Path, dir: &Path) -> PathBuf {
+    project_home(home, dir).join("model-route.json")
 }
 
 /// A directory name for `dir`: its last component, readable, then a hash
@@ -188,6 +192,17 @@ pub fn load_layouts(home: &Path, state: &AppState) -> BTreeMap<String, Layout> {
 /// Writes `layout` for the project at `dir`.
 pub fn save_layout(home: &Path, dir: &Path, layout: &Layout) -> io::Result<()> {
     save_json(&layout_file(home, dir), layout)
+}
+
+/// The discovered projects whose speech the model router places.
+pub fn load_model_routes(home: &Path, state: &AppState) -> BTreeSet<String> {
+    let on: BTreeMap<String, bool> = load_each(home, state, route_file);
+    on.into_iter().filter(|(_, on)| *on).map(|(p, _)| p).collect()
+}
+
+/// Writes whether the model router places speech in the project at `dir`.
+pub fn save_model_route(home: &Path, dir: &Path, on: bool) -> io::Result<()> {
+    save_json(&route_file(home, dir), &on)
 }
 
 /// Each discovered project's review setting; a missing or unreadable file

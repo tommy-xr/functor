@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Attached, Device, Devices, PairRequest } from "./generated/protocol";
+import type { AppState, Attached, Device, PairRequest } from "./generated/protocol";
 import type { Send } from "./socket";
 import {
   CABLE_ROW,
@@ -21,7 +21,8 @@ import { useNow } from "./TasksPane";
  * Rail → Devices: a card per paired device (and per request, and per
  * headset on a USB cable that has no card), each with its state's one fix.
  */
-export function DevicesPane({ devices, online, send }: { devices: Devices | undefined; online: boolean; send: Send }) {
+export function DevicesPane({ state, online, send }: { state: AppState | null; online: boolean; send: Send }) {
+  const devices = state?.devices;
   const now = useNow(1000);
   const list = devices?.list ?? [];
   const requests = devices?.requests ?? [];
@@ -42,7 +43,32 @@ export function DevicesPane({ devices, online, send }: { devices: Devices | unde
       {list.length === 0 && requests.length === 0 && loose.length === 0 && (
         <NoDevices listening={devices?.listening ?? null} adb={devices?.adb ?? false} />
       )}
+      {state?.router && state.active && <SpeechCard state={state} online={online} send={send} />}
     </aside>
+  );
+}
+
+/**
+ * Where what is said in the headset goes (D29), for the active project: by
+ * default the rule (steer the running task, else a new task); on, a small
+ * model decides, slower.
+ */
+function SpeechCard({ state, online, send }: { state: AppState; online: boolean; send: Send }) {
+  const on = state.model_routes.includes(state.active!);
+  return (
+    <section className="card device-card" data-testid="speech-card" aria-label="Speech">
+      <div className="device-head">
+        <span className="device-name">Speech</span>
+      </div>
+      <label className="speech-on">
+        <input type="checkbox" checked={on} disabled={!online} onChange={(e) => send({ type: "set_model_route", on: e.target.checked })} />
+        Let a model decide where it goes
+      </label>
+      <p className="hint">
+        Off, what you say steers the running task, or starts a new one. On, a small model can also add it to a queued task; it adds 2–3 s
+        and falls back to that rule if it is slower. Either way, the chat shows where it went, and you can move it.
+      </p>
+    </section>
   );
 }
 

@@ -153,6 +153,10 @@ pub struct Spoken {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// Where the router put it (D29): "Steered “…”", "Queued behind “…”".
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 /// One transcript entry, in the order the UI shows them.
