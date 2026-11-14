@@ -737,6 +737,9 @@ impl Review {
             r#"{"ms":500,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}"#,
             r#"{"ms":800,"event":{"type":"tool_result","content":"let x = 1"}}"#,
             r#"{"ms":1500,"event":{"type":"text","text":"Found it in game.fun. The colour is set once, at the top."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"The ball's material is a plain colour, so red is one value. The bounce does not touch it, and nothing else reads it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"I can change it in place, or add a colour field to the ball so a later change can animate it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"Changing it in place is one line. A field is three lines and a test."}}"#,
             r#"{"ms":1500,"event":{"type":"text","text":"One question first."}}"#,
             r#"{"ms":1500,"event":{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Should it stay red after a bounce?"}]}}}"#,
             r#"{"ms":120000,"event":{"type":"finished","ok":true,"summary":"Asked."}}"#,
@@ -2448,6 +2451,8 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
         s["current_task"]["a"] == id
     })
     .await;
+    // The page opens on its conversation; Keep is next.
+    down().await;
     quest.capture("panel-decision.png");
     a().await;
     until("Keep waits for its confirm", || {
