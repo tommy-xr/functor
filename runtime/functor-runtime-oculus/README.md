@@ -62,6 +62,14 @@ threads: the headset keeps rendering, and each shows its stand-in (nothing
 for a model, a checkerboard for a texture) until its decode lands. The pieces
 also work individually:
 
+A card low in the view says where a load is: `WAITING FOR A DESKTOP` or
+`CONNECTED` on the boot scene, then `RECEIVING PROJECT` (files and MB so
+far), `STARTING` (checking code), `LOADING ASSETS` (n of m) and `RUNNING`.
+Over a running game it shows only work that lasts: `RELOADING...` after
+150 ms, assets still loading, files still arriving. A rejected load or
+reload shows `LOAD FAILED` with the error (10 s over a running game, until
+the next push otherwise). `GET /state` reports its lines as `load_status`.
+
 Sound bytes are synchronized into the device cache, but Quest audio playback
 is still pending its Android audio host; the shell currently drains audio
 commands without playing them. Sounds therefore do not yet drive

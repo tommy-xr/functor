@@ -708,6 +708,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     return Some(());
                 }
             };
+            ASSET_BYTES.fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
             let body = match upload_part(query, body, max) {
                 Ok(Some(whole)) => whole,
                 Ok(None) => {
@@ -940,6 +941,14 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
         _ => respond_text(&mut stream, cors_origin, 404, "Not Found", "not found"),
     }
     Some(())
+}
+
+static ASSET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bytes `POST /reload-asset` has received in this process, parts of an
+/// unfinished upload included: a shell's "receiving" progress.
+pub fn asset_bytes_received() -> u64 {
+    ASSET_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// An asset envelope arriving in parts (`POST /reload-asset?upload=…`).

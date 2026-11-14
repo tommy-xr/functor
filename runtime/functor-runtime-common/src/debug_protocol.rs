@@ -261,7 +261,10 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 ///
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 47;
+///
+/// 48 adds `load_status` on `GET /state`: the lines of the headset's load
+/// status card ([`crate::load_status`]) while it shows.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -669,6 +672,11 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::audio::AudioCounts>,
+    /// The headset's load status card (v48, [`crate::load_status`]): its
+    /// lines, heading first. Omitted while it is hidden and on desktop.
+    #[cfg_attr(feature = "ts", ts(optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_status: Option<Vec<String>>,
     /// Controller pulses (`Effect.haptic`) sent and dropped since launch
     /// (v34, [`crate::haptics::HapticCounts`]). Omitted by runtimes that don't
     /// count them.
@@ -2004,6 +2012,7 @@ mod tests {
                 dropped: 1,
                 recent: vec!["door.wav".into()],
             }),
+            load_status: Some(vec!["LOADING ASSETS".into(), "2 of 6".into()]),
             haptics: Some(crate::haptics::HapticCounts {
                 sent: 1,
                 dropped: 0,
@@ -2078,6 +2087,7 @@ mod tests {
                     }
                 },
                 "audio": { "played": 2, "dropped": 1, "recent": ["door.wav"] },
+                "load_status": ["LOADING ASSETS", "2 of 6"],
                 "haptics": {
                     "sent": 1, "dropped": 0,
                     "recent": [{ "hand": "right", "amplitude": 0.5, "seconds": 0.25, "frame": 9 }]

@@ -216,15 +216,15 @@ pub struct Line {
     pub color: [f32; 3],
 }
 
-const CYAN: [f32; 3] = [65.0 / 255.0, 216.0 / 255.0, 230.0 / 255.0];
-const PINK: [f32; 3] = [1.0, 0.36, 0.72];
-const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
+pub(crate) const CYAN: [f32; 3] = [65.0 / 255.0, 216.0 / 255.0, 230.0 / 255.0];
+pub(crate) const PINK: [f32; 3] = [1.0, 0.36, 0.72];
+pub(crate) const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
 const DIM: [f32; 3] = [0.65, 0.65, 0.75];
 const BACKGROUND: [f32; 4] = [0.06, 0.04, 0.12, 0.92];
 /// Text sizes: a heading, the code, the rest.
-const HEADING: f32 = 0.022;
+pub(crate) const HEADING: f32 = 0.022;
 const CODE: f32 = 0.07;
-const BODY: f32 = 0.016;
+pub(crate) const BODY: f32 = 0.016;
 
 /// `482913` as `482 913`.
 pub fn spaced(code: &str) -> String {

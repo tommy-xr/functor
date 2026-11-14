@@ -889,6 +889,11 @@ xr?: XrState,
  */
 audio?: AudioCounts, 
 /**
+ * The headset's load status card (v48, [`crate::load_status`]): its
+ * lines, heading first. Omitted while it is hidden and on desktop.
+ */
+load_status?: Array<string>, 
+/**
  * Controller pulses (`Effect.haptic`) sent and dropped since launch
  * (v34, [`crate::haptics::HapticCounts`]). Omitted by runtimes that don't
  * count them.
