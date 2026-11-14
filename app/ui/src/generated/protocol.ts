@@ -51,22 +51,13 @@ restore_run: [number, number] | null, };
  */
 export type AgentSwitch = { 
 /**
- * The task that asked, and its title.
+ * The task that asked, its title and its project.
  */
-task: number, title: string, 
+task: number, title: string, from: string, 
 /**
- * Its project, and that project's directory (absolute), for Undo.
+ * The project the app switched to.
  */
-from: string, from_dir: string, 
-/**
- * The project opened (a path in the open folder) or, from another
- * folder, its directory.
- */
-to: string, 
-/**
- * Another folder, opened when the asking run ends.
- */
-waiting: boolean, };
+to: string, };
 
 export type AppState = { 
 /**

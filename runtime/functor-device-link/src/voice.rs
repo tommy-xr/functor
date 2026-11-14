@@ -169,7 +169,8 @@ pub enum Stage {
     /// Nothing in progress: clear the toast.
     Idle,
     /// The desktop did what was asked, in a few words ("Switched to
-    /// examples/hello"). A headset that does not know it ignores it.
+    /// examples/hello"). An older headset cannot read it: its toast stays
+    /// at Working until that goes stale.
     Done {
         text: String,
     },

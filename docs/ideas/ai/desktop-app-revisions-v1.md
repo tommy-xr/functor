@@ -630,13 +630,14 @@ could only say it could not: its tools drove one project's game. Switching
 the project is taking the wheel, so it is allowed only when the user asks.
 
 - **Tools.** `list_projects` names the open folder's projects (the open one
-  marked) and recent ones in other folders. `open_project` takes one of those
-  paths and no other, so the agent cannot open an arbitrary folder.
+  marked) and recent ones in other folders. `open_project` takes a project in
+  the open folder and no other path. Another folder opens only when no task
+  runs, and the asking one does, so the agent tells the user to open it from
+  the project switcher; nor can it open an arbitrary folder.
 - **The picker's switch.** The app switches as the project picker does: the
   old game stops and the new one opens paused (D37). A game on a headset
   stays on it: the new project's game runs there too, for this switch and a
-  manual one. A recent project in another folder opens when the asking run
-  ends, as a folder opens only when no task runs.
+  manual one.
 - **The gate, without judging intent.** Applied only for the run of the task
   the user is looking at, within 10 minutes of the message that started it,
   once per run, with "Let the agent arrange views" on (one setting for what

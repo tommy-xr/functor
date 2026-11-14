@@ -280,13 +280,7 @@ export function atBottom(el: { scrollTop: number; scrollHeight: number; clientHe
   return el.scrollHeight - el.scrollTop - el.clientHeight <= slack;
 }
 
-/**
- * The chat's line for the agent's project switch (D42): where it went, and
- * the task that asked, to undo it to. `null` while another folder waits to open.
- */
+/** The chat's line for the agent's project switch (D42): where it went, and the task that asked, to undo it to. */
 export function switchLine(sw: AgentSwitch | null): { to: string; task: string } | null {
-  if (!sw || sw.waiting) return null;
-  // Another folder's is absolute: its name reads better.
-  const absolute = /^([a-zA-Z]:)?[\\/]/.test(sw.to);
-  return { to: absolute ? basename(sw.to) : sw.to, task: sw.title || "Untitled task" };
+  return sw && { to: sw.to, task: sw.title || "Untitled task" };
 }

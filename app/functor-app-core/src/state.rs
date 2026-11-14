@@ -414,7 +414,7 @@ pub enum Event {
 
 /// Why the user cannot open a folder now: [`can_open`], or a new project
 /// being created (it opens itself).
-pub(crate) fn can_open_now(state: &AppState) -> Result<(), String> {
+fn can_open_now(state: &AppState) -> Result<(), String> {
     match &state.new_project {
         Some(np) if np.step.busy() => Err("a new project is being created".to_string()),
         _ => can_open(state),
@@ -863,8 +863,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         } => {
             let id = state.opening + 1;
             let open = can_open_now(&state).map(|()| Command::OpenFolder { id, path });
-            let undone = open.is_ok() && state.agent_switch.take().is_some();
-            (try_open(&mut state, open, &mut commands) || undone, false)
+            (try_open(&mut state, open, &mut commands), false)
         }
         Event::Picked { path: None, .. } => (false, false),
         Event::Picked {
@@ -1081,10 +1080,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             remember_window(&mut state, task, run, &event, &mut commands);
             let changed = on_run(&mut state, task, run, event, &mut commands);
             let shown = changed && ended && auto_apply(&mut state, task, run, &mut commands);
-            let opened = ended && agent_switch::run_ended(&mut state, task, &mut commands);
             let evidence = ended && refresh_evidence(&mut state, task, &mut commands);
             let review = changed && ended && start_review(&mut state, task, run, &mut commands);
-            (changed || shown || evidence || review || opened, false)
+            (changed || shown || evidence || review, false)
         }
         Event::TasksLoaded { tasks } => {
             state.tasks = tasks
@@ -1299,7 +1297,7 @@ fn read_marks(state: &mut AppState, commands: &mut Vec<Command>) {
 
 /// Starts opening a folder with `command`, or records why not in
 /// `open_error`; whether the state changed.
-pub(crate) fn try_open(
+fn try_open(
     state: &mut AppState,
     command: Result<Command, String>,
     commands: &mut Vec<Command>,
@@ -1345,7 +1343,6 @@ fn opened(
         not_opened(state, id);
         return true;
     }
-    let headset = headset_game(state);
     stop(state, commands);
     // Their results would land on the old folder's tasks.
     for task in &state.tasks {
@@ -1428,10 +1425,11 @@ fn opened(
         layouts,
         // The old folder's highlight could name a project of the same path.
         highlight: None,
+        // Its task and projects are the old folder's.
+        agent_switch: None,
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
-    carry_headset(state, headset, commands);
     // Speech waiting on the router was said to the old folder's game.
     for (u, _) in std::mem::take(&mut state.routing) {
         let reason = "another folder was opened".to_string();
@@ -1728,14 +1726,20 @@ fn remember_active(state: &mut AppState, commands: &mut Vec<Command>) {
     let Some(active) = &state.active else {
         return;
     };
-    // Rebuilt from its parts, so one directory has one spelling: on Windows
-    // `games/a` under `C:\r` joins as `C:\r\games/a`.
-    let dir: PathBuf = project_dir(Path::new(&state.repo_root), active)
-        .components()
-        .collect();
-    if remember(&mut state.recents, &dir.to_string_lossy()) {
+    let dir = recent_dir(state, active);
+    if remember(&mut state.recents, &dir) {
         save_recents(state, commands);
     }
+}
+
+/// Project `path`'s directory as the recent projects spell it: rebuilt
+/// from its parts, so one directory has one spelling (on Windows `games/a`
+/// under `C:\r` joins as `C:\r\games/a`).
+pub(crate) fn recent_dir(state: &AppState, path: &str) -> String {
+    let dir: PathBuf = project_dir(Path::new(&state.repo_root), path)
+        .components()
+        .collect();
+    dir.to_string_lossy().into_owned()
 }
 
 fn save_recents(state: &AppState, commands: &mut Vec<Command>) {
@@ -2210,9 +2214,7 @@ fn create_task(
     }
     state.current_task.insert(project.clone(), Some(id));
     // A request after the agent's switch takes it: nothing left to undo.
-    if state.agent_switch.as_ref().is_some_and(|s| !s.waiting) {
-        state.agent_switch = None;
-    }
+    state.agent_switch = None;
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,

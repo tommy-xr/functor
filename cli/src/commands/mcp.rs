@@ -885,7 +885,10 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
             .map(|(id, _)| id.clone())
             .collect();
         for id in &ids {
-            self.sessions.remove(id);
+            if let Some(session) = self.sessions.remove(id) {
+                // An operation already past its gate stops at its next check.
+                session.closing.store(true, Ordering::Release);
+            }
             self.gone.insert(id.clone(), why.to_string());
         }
         ids

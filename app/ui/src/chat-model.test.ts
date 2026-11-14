@@ -219,10 +219,9 @@ test("prev and next skip unavailable steps and stop at the ends", () => {
 });
 
 test("the agent's project switch reads as where it went and the task that asked", () => {
-  const sw = { task: 3, title: "Switch samples", from: "examples/a", from_dir: "/r/examples/a", to: "examples/b", waiting: false };
+  const sw = { task: 3, title: "Switch samples", from: "examples/a", to: "examples/b" };
   assert.deepEqual(switchLine(sw), { to: "examples/b", task: "Switch samples" });
-  assert.deepEqual(switchLine({ ...sw, to: "/home/me/games/kart", title: "" }), { to: "kart", task: "Untitled task" });
-  assert.equal(switchLine({ ...sw, waiting: true }), null);
+  assert.deepEqual(switchLine({ ...sw, title: "" }), { to: "examples/b", task: "Untitled task" });
   assert.equal(switchLine(null), null);
   assert.equal(phrase("mcp__mis__open_project", { path: "examples/b" }), "Switched to examples/b");
   assert.equal(phrase("mcp__mis__list_projects"), "Listed the projects");

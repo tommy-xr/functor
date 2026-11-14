@@ -7,12 +7,10 @@
 //! answer and stop.
 
 use std::fmt::Write;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::projects::project_dir;
-use crate::state::{can_open_now, switch_active, try_open, AppState, Command};
+use crate::state::{recent_dir, switch_active, AppState, Command};
 use crate::tasks::Task;
 use crate::voice;
 
@@ -26,41 +24,12 @@ const MAX_LISTED: usize = 60;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct AgentSwitch {
-    /// The task that asked, and its title.
+    /// The task that asked, its title and its project.
     pub task: u64,
     pub title: String,
-    /// Its project, and that project's directory (absolute), for Undo.
     pub from: String,
-    pub from_dir: String,
-    /// The project opened (a path in the open folder) or, from another
-    /// folder, its directory.
+    /// The project the app switched to.
     pub to: String,
-    /// Another folder, opened when the asking run ends.
-    pub waiting: bool,
-}
-
-/// Where a path `list_projects` gave goes.
-enum Dest {
-    /// A project in the open folder.
-    Here(String),
-    /// A recent project's directory in another folder.
-    Folder(String),
-}
-
-/// `project`'s directory as the recent projects spell it.
-fn dir_of(state: &AppState, project: &str) -> String {
-    let dir: PathBuf = project_dir(Path::new(&state.repo_root), project)
-        .components()
-        .collect();
-    dir.to_string_lossy().into_owned()
-}
-
-/// Recent projects that are not in the open folder and are still there.
-fn elsewhere(state: &AppState) -> impl Iterator<Item = &str> {
-    let here: Vec<String> = state.projects.iter().map(|p| dir_of(state, &p.path)).collect();
-    (state.recents.iter())
-        .filter(move |r| !r.missing && !here.contains(&r.path))
-        .map(|r| r.path.as_str())
 }
 
 /// Run `run` of task `id`, while it runs; never a review's.
@@ -74,7 +43,7 @@ fn caller(state: &AppState, id: u64, run: u64, review: bool) -> Result<&Task, St
 }
 
 /// `list_projects`: the open folder's projects, the open one marked, then
-/// recent ones elsewhere. Changes nothing.
+/// recent ones in other folders, which only the user opens. Changes nothing.
 pub(crate) fn list(
     state: &AppState,
     id: u64,
@@ -96,17 +65,25 @@ pub(crate) fn list(
     if let Some(more) = state.projects.len().checked_sub(MAX_LISTED).filter(|n| *n > 0) {
         let _ = writeln!(out, "… and {more} more");
     }
-    let recent: Vec<&str> = elsewhere(state).collect();
-    if !recent.is_empty() {
-        let _ = writeln!(out, "Recent, in other folders:\n{}", recent.join("\n"));
+    let here: Vec<String> = (state.projects.iter()).map(|p| recent_dir(state, &p.path)).collect();
+    let elsewhere: Vec<&str> = (state.recents.iter())
+        .filter(|r| !r.missing && !here.contains(&r.path))
+        .map(|r| r.path.as_str())
+        .collect();
+    if !elsewhere.is_empty() {
+        let _ = writeln!(
+            out,
+            "Recent, in other folders (the user opens these from the project switcher):\n{}",
+            elsewhere.join("\n")
+        );
     }
-    out.push_str("Switch with `open_project` and one of these paths, only when the user asked to.");
+    out.push_str("Switch with `open_project` and a project in this folder, only when the user asked to.");
     Ok((out, false))
 }
 
-/// `open_project`: switches the app to `path` (one `list_projects` gave)
-/// when the gate allows; another folder opens when the run ends. What
-/// happened, and whether the state changed.
+/// `open_project`: switches the app to `path`, a project in the open
+/// folder, when the gate allows. What happened, and whether the state
+/// changed.
 pub(crate) fn open(
     state: &mut AppState,
     id: u64,
@@ -140,118 +117,46 @@ pub(crate) fn open(
     if state.new_project.as_ref().is_some_and(|np| np.step.busy()) {
         return Err(nothing("a new project is being created".into()));
     }
-    let dest = resolve(state, path).map_err(nothing)?;
-    let from_dir = dir_of(state, &from);
-    let (to, waiting) = match &dest {
-        Dest::Here(to) if *to == from => return Err(nothing(format!("{to} is already open"))),
-        Dest::Here(to) => (to.clone(), false),
-        Dest::Folder(dir) => {
-            let busy = (state.tasks.iter()).find(|t| t.id != id && (t.run.is_some() || t.reverting));
-            if let Some(t) = busy {
-                return Err(nothing(format!(
-                    "task {} is running, and another folder opens only when no task runs",
-                    t.id
-                )));
-            }
-            (dir.clone(), true)
-        }
-    };
+    // Another folder opens only when no task runs, and this one does.
+    if !state.projects.iter().any(|p| p.path == path) {
+        return Err(nothing(format!(
+            "{path} is not a project in this folder: give one `list_projects` lists here, or ask \
+the user to open another folder from the project switcher"
+        )));
+    }
+    if path == from {
+        return Err(nothing(format!("{path} is already open")));
+    }
+    let to = path.to_string();
     let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
     task.run.as_mut().expect("running").switched = true;
     state.agent_switch = Some(AgentSwitch {
         task: id,
         title,
         from: from.clone(),
-        from_dir,
         to: to.clone(),
-        waiting,
     });
-    let tell = "Tell the user so in one sentence and stop: your game tools no longer reach a game.";
-    let (said, message) = match waiting {
-        false => {
-            switch_active(state, to.clone(), commands);
-            // The chat there starts a new task.
-            state.current_task.insert(to.clone(), None);
-            (
-                format!("Switched to {to}"),
-                format!(
-                    "The app now shows {to}. This task stays with {from}; say or type the next request to work in {to}. {tell}"
-                ),
-            )
-        }
-        true => {
-            let name = Path::new(&to).file_name().map_or(to.clone(), |n| n.to_string_lossy().into());
-            (
-                format!("Opening {name}"),
-                format!(
-                    "The app opens {to} when this run ends. This task stays with {from}; say or type the next request to work in {name}. {tell}"
-                ),
-            )
-        }
-    };
-    voice::switched(state, id, &said, commands);
-    Ok((message, true))
-}
-
-/// What `path` names: a project here, or a recent one elsewhere.
-fn resolve(state: &AppState, path: &str) -> Result<Dest, String> {
-    if state.projects.iter().any(|p| p.path == path) {
-        return Ok(Dest::Here(path.to_string()));
-    }
-    // A recent project in the open folder is one of its projects.
-    if let Some(p) = state.projects.iter().find(|p| dir_of(state, &p.path) == path) {
-        return Ok(Dest::Here(p.path.clone()));
-    }
-    match elsewhere(state).any(|r| r == path) {
-        true => Ok(Dest::Folder(path.to_string())),
-        false => Err(format!(
-            "{path} is not a path `list_projects` gives: call it and use one of those"
-        )),
-    }
-}
-
-/// Task `id`'s run ended: the other folder its switch waits on opens, if
-/// it can now. Whether the state changed.
-pub(crate) fn run_ended(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool {
-    let Some(switch) = (state.agent_switch.as_mut()).filter(|s| s.waiting && s.task == id) else {
-        return false;
-    };
-    switch.waiting = false;
-    let path = switch.to.clone();
-    let open = can_open_now(state).map(|()| Command::OpenFolder {
-        id: state.opening + 1,
-        path,
-    });
-    // Refused: the reason shows where folders' troubles do.
-    if open.is_err() {
-        state.agent_switch = None;
-    }
-    try_open(state, open, commands);
-    true
+    switch_active(state, to.clone(), commands);
+    // The chat there starts a new task.
+    state.current_task.insert(to.clone(), None);
+    voice::switched(state, id, &format!("Switched to {to}"), commands);
+    Ok((
+        format!(
+            "The app now shows {to}. This task stays with {from}; say or type the next request to \
+work in {to}. Tell the user so in one sentence and stop: your game tools no longer reach a game."
+        ),
+        true,
+    ))
 }
 
 /// The user's Undo: back to the project the agent was asked from, showing
-/// the task that asked; or, from another folder, that project's folder.
-/// One still waiting to open is cancelled.
+/// the task that asked.
 pub(crate) fn undo(state: &mut AppState, commands: &mut Vec<Command>) -> Result<bool, String> {
     let switch = state.agent_switch.take().ok_or("there is no switch to undo")?;
-    if switch.waiting {
-        return Ok(true);
+    switch_active(state, switch.from.clone(), commands);
+    if state.tasks.iter().any(|t| t.id == switch.task) {
+        state.current_task.insert(switch.from, Some(switch.task));
     }
-    let here = (state.projects.iter())
-        .any(|p| p.path == switch.from && dir_of(state, &p.path) == switch.from_dir);
-    if here {
-        switch_active(state, switch.from.clone(), commands);
-        if state.tasks.iter().any(|t| t.id == switch.task) {
-            state.current_task.insert(switch.from, Some(switch.task));
-        }
-        return Ok(true);
-    }
-    let open = can_open_now(state).map(|()| Command::OpenFolder {
-        id: state.opening + 1,
-        path: switch.from_dir,
-    });
-    try_open(state, open, commands);
     Ok(true)
 }
 
@@ -334,8 +239,8 @@ mod tests {
         assert_eq!(
             r.message,
             "Projects in /repo (this task's is examples/a):\nexamples/a (open)\nexamples/b\n\
-             Recent, in other folders:\n/other/kart\n\
-             Switch with `open_project` and one of these paths, only when the user asked to."
+             Recent, in other folders (the user opens these from the project switcher):\n/other/kart\n\
+             Switch with `open_project` and a project in this folder, only when the user asked to."
         );
     }
 
@@ -364,7 +269,6 @@ mod tests {
             (switch.task, switch.title.as_str(), switch.from.as_str(), switch.to.as_str()),
             (1, "switch to b", A, B)
         );
-        assert!(!switch.waiting);
         // Once per run.
         assert!(refused(update(s, client(ClientMsg::DismissSwitch)).0, open(A)).contains("once"));
     }
@@ -381,11 +285,10 @@ mod tests {
             request: ViewRequest::OpenProject { path: B.into() },
         };
         assert!(refused(s.clone(), gone).contains("this run has ended"));
-        assert!(refused(s.clone(), open("examples/c")).contains("not a path `list_projects` gives"));
-        assert!(refused(s.clone(), open("/gone")).contains("not a path"));
+        assert!(refused(s.clone(), open("examples/c")).contains("not a project in this folder"));
+        // Another folder opens only when no task runs: the user opens it.
+        assert!(refused(s.clone(), open("/other/kart")).contains("from the project switcher"));
         assert!(refused(s.clone(), open(A)).contains("examples/a is already open"));
-        // A recent spelling of a project here is that project.
-        assert!(refused(s.clone(), open("/repo/examples/a")).contains("already open"));
 
         let stale = AppState {
             clock: ASKED_WITHIN_MS + 1,
@@ -431,37 +334,6 @@ mod tests {
         };
         let (s, _) = update(update(s, ended(1, 0)).0, next);
         assert_eq!((task(&s, 2).project.as_str(), &s.agent_switch), (B, &None));
-    }
-
-    /// Another folder opens as the asking run ends, if nothing else runs.
-    #[test]
-    fn a_recent_folder_opens_when_the_run_ends() {
-        let (s, commands) = update(asking(), open("/other/kart"));
-        let r = reply(&commands);
-        assert!(r.ok && r.message.starts_with("The app opens /other/kart when this run ends."), "{r:?}");
-        assert!(!commands.iter().any(|c| matches!(c, Command::OpenFolder { .. })));
-        assert_eq!(s.active.as_deref(), Some(A));
-        let (s, _) = update(s, agent(1, 0, finished()));
-        let (s, commands) = update(s, ended(1, 0));
-        let opens: Vec<&String> = (commands.iter())
-            .filter_map(|c| match c {
-                Command::OpenFolder { path, .. } => Some(path),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(opens, ["/other/kart"]);
-        assert!(!s.agent_switch.unwrap().waiting);
-
-        // Not while another task runs: the folder would change under it.
-        let mut busy = asking();
-        busy.tasks[0].project = B.into();
-        busy.tasks.push(Task {
-            id: 2,
-            project: A.into(),
-            ..busy.tasks[0].clone()
-        });
-        let ask = request(2, false, ViewRequest::OpenProject { path: "/other/kart".into() });
-        assert!(refused(busy, ask).contains("task 1 is running"));
     }
 
     /// Asked for in the headset: the new project's game runs there, and the
