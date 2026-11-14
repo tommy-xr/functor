@@ -4252,6 +4252,102 @@ g.avatar-eyes {
   text-align: center;
 }
 
+/* A subagent: a smaller figure on a tether from the bubble of the agent
+   that started it. */
+.agent-sub {
+  position: relative;
+  min-width: 0;
+  padding-left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-sub::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: -5px;
+  width: 9px;
+  height: 16px;
+  border-left: 1.5px solid var(--border-strong);
+  border-bottom: 1.5px solid var(--border-strong);
+  border-bottom-left-radius: 6px;
+}
+
+.agent-sub .avatar {
+  width: 22px;
+  height: 22px;
+}
+
+.agent-sub-bubble {
+  flex: 1 1 auto;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.agent-sub-bubble::before {
+  top: 6px;
+  width: 4px;
+  height: 4px;
+  left: -4px;
+}
+
+.agent-sub-bubble .icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* How much room is left: a health bar in Claude's colour (Codex reports
+   no per-message usage, so has none), amber from
+   70% full, red from 90%. */
+.agent-room {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-room-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--chip);
+  overflow: hidden;
+}
+
+.agent-room-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--claude);
+}
+
+.agent-room-pct {
+  flex: none;
+  min-width: 3.5ch;
+  text-align: right;
+}
+
+.agent-room-low .agent-room-fill {
+  background: var(--warn);
+}
+
+.agent-room-low .agent-room-pct {
+  color: var(--warn);
+}
+
+.agent-room-out .agent-room-fill {
+  background: var(--danger);
+}
+
+.agent-room-out .agent-room-pct {
+  color: var(--danger);
+}
+
 /* Only while it works does anything move. */
 .agent-thinking .agent-bubble:not(.agent-bubble-error) .icon,
 .agent-working .agent-bubble:not(.agent-bubble-error) .icon {

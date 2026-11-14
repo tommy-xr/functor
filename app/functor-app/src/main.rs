@@ -286,6 +286,7 @@ async fn app(
     state.can_review = asked && agents.can_review();
     state.native_picker = window.is_some();
     state.recents = store::load_recents(&home);
+    state.context_windows = store::load_context_windows(&home);
     let dir = args.dir.map(std::fs::canonicalize).transpose()?;
     let cwd = match dir {
         Some(_) => None,
