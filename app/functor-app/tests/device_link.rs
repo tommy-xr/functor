@@ -2802,10 +2802,10 @@ async fn a_second_clip_is_routed_and_moved() {
     );
 }
 
-/// A `functor` whose `app-compat` passes and whose `run vr --device-url
-/// <url>` says it listens there and holds (as [`voice_functor`]'s: CI's CLI
-/// is built without the app), and whose every other command is `real`: a
-/// run's tool server is the real `functor mcp`, attached to the tunnel.
+/// [`voice_functor`] with the real `functor mcp` (`real`) as runs' tool
+/// servers: `app-compat` passes (CI's CLI is built without the app), `run
+/// vr --device-url <url>` says it listens there and holds, and other runs
+/// (the local game) hold.
 #[cfg(unix)]
 fn link_functor(dir: &Path, real: &Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -2813,10 +2813,10 @@ fn link_functor(dir: &Path, real: &Path) -> std::path::PathBuf {
     let script = format!(
         "#!/bin/sh\n\
          [ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n\
+         [ \"$1\" = mcp ] && exec '{}' \"$@\"\n\
          url=\n\
          for a in \"$@\"; do [ \"$prev\" = --device-url ] && url=\"$a\"; prev=\"$a\"; done\n\
-         [ -z \"$url\" ] && exec '{}' \"$@\"\n\
-         echo \"[debug-server] listening on $url\" >&2\n\
+         [ -n \"$url\" ] && echo \"[debug-server] listening on $url\" >&2\n\
          exec sleep 600\n",
         real.display()
     );
