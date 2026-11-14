@@ -2,26 +2,62 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState};
 
-use crate::{Model, Transcriber};
+use crate::{Model, Transcriber, SAMPLE_RATE};
 
-/// A loaded model.
+/// How whisper.cpp runs: [`Tuning::default`] is the app's; `stt_bench`
+/// compares others.
+#[derive(Clone, Copy, Debug)]
+pub struct Tuning {
+    /// On the GPU, in a build that has one (Metal, on macOS); else the CPU.
+    pub gpu: bool,
+    /// CPU threads for the work that stays on the CPU.
+    pub threads: usize,
+}
+
+impl Default for Tuning {
+    fn default() -> Tuning {
+        Tuning {
+            gpu: true,
+            // More than the performance cores only waits on the slowest.
+            threads: 4,
+        }
+    }
+}
+
+/// A loaded model, its decoder state kept from clip to clip.
 pub struct Whisper {
-    ctx: WhisperContext,
+    state: Mutex<WhisperState>,
+    tuning: Tuning,
 }
 
 impl Whisper {
     pub fn load(model: &Path) -> Result<Whisper, String> {
+        Whisper::load_tuned(model, Tuning::default())
+    }
+
+    /// Loads `model`, then transcribes a second of silence: the first clip
+    /// after a load otherwise pays for setting up (GPU kernels, buffers).
+    pub fn load_tuned(model: &Path, tuning: Tuning) -> Result<Whisper, String> {
         // whisper.cpp logs to stderr unless hooked; hooked with no backend, it is quiet.
         whisper_rs::install_logging_hooks();
         let path = model.to_str().ok_or("the model path is not UTF-8")?;
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
+        let mut params = WhisperContextParameters::default();
+        params.use_gpu(tuning.gpu);
+        let ctx = WhisperContext::new_with_params(path, params)
             .map_err(|e| format!("cannot load {}: {e}", model.display()))?;
-        Ok(Whisper { ctx })
+        let state = ctx.create_state().map_err(|e| e.to_string())?;
+        let whisper = Whisper {
+            state: Mutex::new(state),
+            tuning,
+        };
+        whisper.transcribe(&[0; SAMPLE_RATE as usize])?;
+        Ok(whisper)
     }
 }
 
@@ -29,11 +65,9 @@ impl Transcriber for Whisper {
     fn transcribe(&self, pcm: &[i16]) -> Result<String, String> {
         let mut audio = vec![0.0; pcm.len()];
         whisper_rs::convert_integer_to_float_audio(pcm, &mut audio).map_err(|e| e.to_string())?;
-        let mut state = self.ctx.create_state().map_err(|e| e.to_string())?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some("en"));
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-        params.set_n_threads(threads as i32);
+        params.set_n_threads(self.tuning.threads as i32);
         params.set_no_context(true);
         params.set_single_segment(true);
         params.set_no_timestamps(true);
@@ -43,6 +77,7 @@ impl Transcriber for Whisper {
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+        let mut state = self.state.lock().map_err(|_| "a transcription panicked")?;
         state.full(params, &audio).map_err(|e| e.to_string())?;
         let text: String = state.as_iter().map(|s| s.to_string()).collect();
         Ok(words(&text))

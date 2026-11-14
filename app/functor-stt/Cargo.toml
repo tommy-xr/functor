@@ -17,5 +17,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sha2 = { version = "0.10", optional = true }
 whisper-rs = { version = "0.16", optional = true }
 
+# On macOS whisper.cpp runs on the GPU (Metal; its shaders built in).
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", optional = true, features = ["metal"] }
+
 [dev-dependencies]
 tempfile = "3"
+
+# Timing on this machine: see its doc comment.
+[[example]]
+name = "stt_bench"
+required-features = ["whisper"]

@@ -1031,7 +1031,11 @@ created_at: number | null,
 /**
  * Last active, as `created_at`.
  */
-updated_at: number | null, };
+updated_at: number | null, 
+/**
+ * Its latest spoken request's stage times, while it was the last.
+ */
+voice?: VoiceTiming, };
 
 export type TaskStatus = { "kind": "queued" } | { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
@@ -1156,6 +1160,52 @@ export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "k
  * (scrolled to `path`), or the game. Paths are relative to the project.
  */
 export type ViewTarget = { "kind": "file", path: string, lines: [number, number] | null, } | { "kind": "changes", path: string | null, } | { "kind": "game" };
+
+/**
+ * Stage times: the shell's wall clock, ms since the Unix epoch (`None`:
+ * not reached yet).
+ */
+export type VoiceTiming = { 
+/**
+ * The headset's number for the utterance.
+ */
+utterance: number, 
+/**
+ * The clip's `Start` arrived: the button went down.
+ */
+start: number, first_chunk: number | null, 
+/**
+ * Its `End` arrived: the clip is whole.
+ */
+end: number, 
+/**
+ * The clip's length.
+ */
+audio_ms: number, transcribe_start: number, transcribe_end: number, 
+/**
+ * Of transcribing, the time spent loading the model (`None`: loaded).
+ */
+model_load_ms: number | null, 
+/**
+ * The core placed it: a task started, steered, queued or added to.
+ */
+routed: number | null, 
+/**
+ * The run it started (its user message's index), once it has one.
+ */
+run: number | null, run_started: number | null, 
+/**
+ * The tool server listened and the agent process was started.
+ */
+agent_spawned: number | null, 
+/**
+ * The agent's first event (its start).
+ */
+agent_event: number | null, first_text: number | null, finished: number | null, 
+/**
+ * [`VoiceTiming::summary`] as of the last stage, for the task page.
+ */
+line: string, };
 
 /**
  * Why a project's next task cannot start now.

@@ -548,6 +548,7 @@ async fn run(
         ..RunOpts::default()
     };
     let agent = agents.get(spec.harness, false);
+    send(RunEvent::Spawned);
     let forward = |event: AgentEvent| send(RunEvent::Agent(event));
     let outcome = drive(&*agent, &prompt, opts, &mcp.token, None, &forward, &mut cancel)
         .await

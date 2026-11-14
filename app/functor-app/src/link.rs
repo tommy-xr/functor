@@ -38,6 +38,7 @@ use functor_app_core::activity::Stance;
 use functor_app_core::devices::{Attached, LinkCommand, LinkEvent, LinkKind, Paired};
 use functor_app_core::panel::{Panel as CorePanel, PanelAction};
 use functor_app_core::route::Destination;
+use functor_app_core::voice_timing::VoiceTiming;
 use functor_app_core::Event;
 use functor_device_link::desktop::{self, Desktop};
 use functor_device_link::panel;
@@ -164,6 +165,7 @@ enum ConnCmd {
         utterance: u64,
         text: Result<String, String>,
         capsule: String,
+        timing: VoiceTiming,
     },
 }
 
@@ -369,7 +371,12 @@ impl Hub {
     /// composer's user sees "Transcribing…"; a headset is refused instead).
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
         let _turn = self.0.transcribing.acquire().await.map_err(|e| e.to_string())?;
-        self.0.speech.transcribe(pcm).await
+        Ok(self.0.speech.transcribe(pcm).await?.text)
+    }
+
+    /// Loads the speech model ahead of the first clip ([`Speech::preload`]).
+    pub fn preload_speech(&self) {
+        self.0.speech.preload();
     }
 
     fn secret(&self, device: &str) -> Option<Secret> {
@@ -812,8 +819,8 @@ impl Connection {
                         self.outgoing.push(frame);
                         desktop_output(Vec::new())
                     }
-                    ConnCmd::Transcribed { utterance, text, capsule } => {
-                        self.transcribed(utterance, text, &capsule);
+                    ConnCmd::Transcribed { utterance, text, capsule, timing } => {
+                        self.transcribed(utterance, text, &capsule, timing);
                         desktop_output(Vec::new())
                     }
                     ConnCmd::Request(mut request, reply) => {
@@ -1005,13 +1012,25 @@ impl Connection {
     /// clip to transcribe (off this loop; the text comes back as
     /// `ConnCmd::Transcribed`).
     fn heard(&mut self, heard: Heard) {
-        let (utterance, pcm, capsule) = match heard {
+        let (utterance, pcm, capsule, arrived) = match heard {
             Heard::Status(status) => return self.outgoing.push(status.frame()),
             Heard::Clip {
                 utterance,
                 pcm,
                 capsule,
-            } => (utterance, pcm, capsule),
+                arrived,
+            } => (utterance, pcm, capsule, arrived),
+        };
+        // The assembler's clock is the monotonic one; the core's, the wall.
+        let (mono, wall) = (now_ms(), wall_ms());
+        let at = |t: u64| wall.saturating_sub(mono.saturating_sub(t));
+        let mut timing = VoiceTiming {
+            utterance,
+            start: at(arrived.start),
+            first_chunk: arrived.first_chunk.map(at),
+            end: at(arrived.end),
+            audio_ms: pcm.len() as u64 * 1000 / u64::from(voice::SAMPLE_RATE),
+            ..VoiceTiming::default()
         };
         let Ok(permit) = self.hub.0.transcribing.clone().try_acquire_owned() else {
             let _ = self.voice.transcribed(utterance);
@@ -1026,17 +1045,30 @@ impl Connection {
         tokio::spawn(async move {
             let _permit = permit;
             crate::voice::keep_audio(&home, &name, &pcm);
-            let text = speech.transcribe(pcm).await;
+            timing.transcribe_start = wall_ms();
+            let transcript = speech.transcribe(pcm).await;
+            timing.transcribe_end = wall_ms();
+            let text = transcript.map(|t| {
+                timing.model_load_ms = t.load_ms;
+                t.text
+            });
             let _ = me.send(ConnCmd::Transcribed {
                 utterance,
                 text,
                 capsule,
+                timing,
             });
         });
     }
 
     /// Utterance `utterance`'s text: shown to the headset and handed to the core.
-    fn transcribed(&mut self, utterance: u64, text: Result<String, String>, capsule: &str) {
+    fn transcribed(
+        &mut self,
+        utterance: u64,
+        text: Result<String, String>,
+        capsule: &str,
+        mut timing: VoiceTiming,
+    ) {
         if !self.voice.transcribed(utterance) {
             return;
         }
@@ -1044,11 +1076,13 @@ impl Connection {
             Ok(text) if !text.is_empty() => {
                 let stage = voice::Stage::Transcribed { text: text.clone() };
                 self.say(utterance, stage);
+                timing.line = timing.summary();
                 self.hub.send(LinkEvent::Utterance {
                     conn: self.id,
                     utterance,
                     text,
                     context: crate::voice::render(capsule),
+                    timing,
                 });
             }
             Ok(_) => self.say(
