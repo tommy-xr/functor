@@ -687,6 +687,25 @@ is something the figure carries, and it fills.
 definitions; changed blocks glow; pointing at one opens its change. It grows
 into a city (D33) only when the project is large.
 
+**Seated and standing, hands busy or free.** The workshop must work at a
+desk and while walking about — the aim is to keep working on a game while
+doing chores, headset on.
+
+- **At the desk:** the full layout, anchored to the desk.
+- **About the house:** a compact form that comes along — the miniature small
+  and near a hand or parked on a surface, the request-progress line and one
+  agent status in the edge of view, everything else folded away. Passthrough
+  always; nothing may cover where the user is walking or what the hands are
+  doing.
+- **Hands, not controllers.** Hand tracking drives it: a pinch-and-hold to
+  talk, a pinch to pick, a grab to move the miniature, a palm-up glance for
+  status (the wrist light's successor), a clear gesture to go in and out.
+  Controllers stay supported for playing the game itself.
+- **Voice first, and sound back.** With eyes and hands elsewhere, a request
+  is spoken and its progress is heard as well as shown: a short sound per
+  step, the outcome spoken briefly ("Changed. Ready to look at."), a question
+  from the agent read out and answered by voice.
+
 **How it would be built.** The workshop is a Functor scene that contains the
 running game's frame — the same idea as the mirror (4.5), drawn small on a
 desk — so the engine gains one capability: a scene that holds another game.
