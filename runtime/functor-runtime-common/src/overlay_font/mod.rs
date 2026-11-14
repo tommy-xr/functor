@@ -67,17 +67,17 @@ struct Style {
 }
 
 fn style(text: &str) -> Style {
-    let (mut letters, mut lower, mut digits) = (false, false, false);
-    for c in text.chars() {
-        letters |= c.is_alphabetic();
-        lower |= c.is_lowercase();
-        digits |= c.is_ascii_digit();
-    }
-    match (letters, lower, digits) {
-        (true, false, _) => Style { weight: Weight::Semibold, tracking: CAPS_TRACKING, tabular: false },
-        (false, _, true) => Style { weight: Weight::Regular, tracking: FIGURE_TRACKING, tabular: true },
-        _ => Style { weight: Weight::Regular, tracking: 0.0, tabular: false },
-    }
+    let letters = text.chars().any(char::is_alphabetic);
+    let lower = text.chars().any(char::is_lowercase);
+    // Only digits and spaces, like the pairing code; "0.85" stays prose.
+    let figures = text.chars().any(|c| c.is_ascii_digit())
+        && text.chars().all(|c| c.is_ascii_digit() || c == ' ');
+    let (weight, tracking, tabular) = match (letters && !lower, figures) {
+        (true, _) => (Weight::Semibold, CAPS_TRACKING, false),
+        (_, true) => (Weight::Regular, FIGURE_TRACKING, true),
+        _ => (Weight::Regular, 0.0, false),
+    };
+    Style { weight, tracking, tabular }
 }
 
 fn glyph(weight: Weight, key: u32) -> &'static Glyph {
@@ -90,7 +90,8 @@ fn glyph(weight: Weight, key: u32) -> &'static Glyph {
 }
 
 /// Whether `c` draws as itself (not the missing-glyph box).
-pub fn has_glyph(c: char) -> bool {
+#[cfg(test)]
+pub(crate) fn has_glyph(c: char) -> bool {
     c.is_whitespace() || REGULAR.binary_search_by_key(&(c as u32), |g| g.key).is_ok()
 }
 
@@ -156,7 +157,7 @@ pub fn place(text: &str, size: f32, at: [f32; 2], mut each: impl FnMut(&'static 
 /// `text` as one line `size` tall at most `max` metres wide, cut with an
 /// ellipsis if it is longer.
 pub fn fit(text: &str, size: f32, max: f32) -> String {
-    let fitted = remembered(text, size, max, usize::MAX, || vec![fit_uncached(text, size, max)]);
+    let fitted = remembered(text, size, max, None, || vec![fit_uncached(text, size, max)]);
     fitted.into_iter().next().unwrap_or_default()
 }
 
@@ -166,7 +167,11 @@ fn fit_uncached(text: &str, size: f32, max: f32) -> String {
     }
     let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
     let cut = |n: usize| format!("{}{ELLIPSIS}", text[..ends[n]].trim_end());
-    cut(longest(ends.len() - 1, |n| width(&cut(n), size) <= max))
+    match longest(ends.len() - 1, |n| width(&cut(n), size) <= max) {
+        // Not even the ellipsis fits.
+        0 if width(&cut(0), size) > max => String::new(),
+        n => cut(n),
+    }
 }
 
 /// The largest `n` in `0..=most` that `fits` (0 if none does), for a test
@@ -188,19 +193,20 @@ fn longest(most: usize, fits: impl Fn(usize) -> bool) -> usize {
 /// spaces where it can be and inside a word too long for a line; at most
 /// `lines` of them, the last cut with an ellipsis.
 pub fn wrap(text: &str, size: f32, max: f32, lines: usize) -> Vec<String> {
-    remembered(text, size, max, lines, || wrap_uncached(text, size, max, lines))
+    remembered(text, size, max, Some(lines), || wrap_uncached(text, size, max, lines))
 }
 
-/// `make`'s lines for these arguments, remembered: the panel lays its text
-/// out every frame it shows, and the text rarely changes.
+/// `make`'s lines for these arguments (`lines` is `wrap`'s; `None` for
+/// `fit`), remembered: the panel lays its text out every frame it shows, and
+/// the text rarely changes.
 fn remembered(
     text: &str,
     size: f32,
     max: f32,
-    lines: usize,
+    lines: Option<usize>,
     make: impl FnOnce() -> Vec<String>,
 ) -> Vec<String> {
-    type Key = (String, u32, u32, usize);
+    type Key = (String, u32, u32, Option<usize>);
     thread_local! {
         static MEMO: RefCell<HashMap<Key, Vec<String>>> = RefCell::default();
     }
@@ -298,6 +304,7 @@ mod tests {
         assert!(cut.ends_with(ELLIPSIS) && width(&cut, SIZE) <= 0.1, "{cut}");
         assert!(!cut.contains(" \u{2026}"), "no space before the ellipsis: {cut}");
         assert_eq!(fit("", SIZE, 0.0), "");
+        assert_eq!(fit("Too wide", SIZE, 0.001), "", "not even the ellipsis fits");
     }
 
     #[test]
@@ -319,6 +326,7 @@ mod tests {
         assert_eq!((caps.weight, plain.weight), (Weight::Semibold, Weight::Regular));
         assert!(caps.tracking > 0.0 && plain.tracking == 0.0);
         assert!(style("482 913").tabular && !style("Sending in 3").tabular);
+        assert!(!style("0.85").tabular, "a number in prose stays proportional");
     }
 
     #[test]

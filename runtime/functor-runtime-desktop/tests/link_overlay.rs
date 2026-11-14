@@ -344,12 +344,9 @@ fn gpu_time(gl: &glow::Context, painter: &mut LinkOverlayPainter, shapes: &[Shap
     }
 }
 
-/// Bottom-row-first RGBA as a top-row-first image, alpha forced opaque.
+/// Bottom-row-first RGBA as a top-row-first image.
 fn flip(pixels: &[u8]) -> Vec<u8> {
-    let row = (SIZE.0 * 4) as usize;
-    let mut out: Vec<u8> = pixels.chunks(row).rev().flatten().copied().collect();
-    out.chunks_mut(4).for_each(|p| p[3] = 255);
-    out
+    functor_runtime_common::frame_capture::flip_rgba_rows(SIZE.0, SIZE.1, pixels).unwrap()
 }
 
 /// A hidden-window GL context.

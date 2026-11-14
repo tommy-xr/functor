@@ -720,6 +720,7 @@ impl LinkOverlayPainter {
                 let texture = gl.create_texture().expect("create link overlay atlas");
                 crate::gpu_counters::gpu_counters().texture_created();
                 gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                let alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
                 gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
                 // Distances, not colours: a linear format.
                 gl.tex_image_2d(
@@ -733,7 +734,7 @@ impl LinkOverlayPainter {
                     glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(Some(atlas.as_raw())),
                 );
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
                 for (param, value) in [
                     (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
                     (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
