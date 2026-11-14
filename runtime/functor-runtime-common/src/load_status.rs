@@ -10,8 +10,9 @@ use crate::link_overlay::{wrap, Line, BODY, CYAN, HEADING, PINK, WHITE};
 
 /// Work over a running game shows only once it has taken this long.
 pub const QUIET: Duration = Duration::from_millis(150);
-/// Uploads this far apart are separate pushes.
-const BURST: Duration = Duration::from_secs(3);
+/// Uploads this far apart are separate pushes. Longer than one part of a
+/// large file takes over a slow link (8 MiB at ~2 MB/s over Wi-Fi).
+const BURST: Duration = Duration::from_secs(20);
 /// Files arriving for a running game show once they have for this long: an
 /// edit's source arrives just before its reload.
 const SYNC: Duration = Duration::from_millis(500);
@@ -347,7 +348,7 @@ mod tests {
         let start = Instant::now();
         let got = Facts { files: 1, bytes: 10, ..Facts::default() };
         let mut status = LoadStatus::default();
-        let shown = run(&mut status, start, &[(0, Facts::default()), (10, got.clone()), (2000, got.clone()), (3100, got)]);
+        let shown = run(&mut status, start, &[(0, Facts::default()), (10, got.clone()), (19_000, got.clone()), (20_100, got)]);
         let receiving = Some(Step::Receiving { files: 1, bytes: 10 });
         assert_eq!(shown, vec![Some(Step::Waiting), receiving.clone(), receiving, Some(Step::Waiting)]);
     }
