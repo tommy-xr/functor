@@ -656,6 +656,47 @@ Rules:
 - **A failure names its step** ("Could not transcribe", "The headset is
   away"), so the user knows what to try again.
 
+### D44 — the workshop: a zoomed-out place to work from
+
+A direction, not yet a plan. Today the headset shows the game with our
+interface laid over it. The workshop turns that round: the workspace is where
+the user is, and the game is one object in it.
+
+**Two scales.**
+
+- **Workshop (zoomed out).** Passthrough, seated at the real desk. The game is
+  a live miniature on the desk, which can be grabbed, moved and scaled. Around
+  it: the tasks, the conversation, the agents and a map of the code. Status is
+  in the room; nothing has to be opened to see it.
+- **Inside (1:1).** The user is in the game, as today. Pointing at a spot in
+  the miniature and pressing goes in at that spot; one gesture comes back out.
+  The game's state is the same on both sides.
+
+**The miniature.** Pause and scrub it with a dial; point at something in it
+and say "this"; put the old and the new version side by side to decide
+(D36); a game with no 1:1 inside (a 2D platformer) is simply viewed this way.
+
+**The agents (D34, in the room).** A figure per agent, standing at what it
+is working on: at a file when it reads or edits, at the miniature when it
+drives the game, at the desk's edge with a hand up when it needs the user. A
+tool call is a visible link from the figure to its target (a file, the
+miniature, the network). A subagent splits off as a smaller figure. Context
+is something the figure carries, and it fills.
+
+**The code map.** A shelf of blocks, one per file, floors for its
+definitions; changed blocks glow; pointing at one opens its change. It grows
+into a city (D33) only when the project is large.
+
+**How it would be built.** The workshop is a Functor scene that contains the
+running game's frame — the same idea as the mirror (4.5), drawn small on a
+desk — so the engine gains one capability: a scene that holds another game.
+Things tied to the player's view (sky, fog, post-effects) and the world's
+bounds need answers first.
+
+**Order to try it in:** the miniature with teleport in and out; the tasks and
+the conversation beside it; the agents; the code shelf; two miniatures for a
+decision.
+
 ## Open
 
 - In-headset agent presence (the original's open issues) — after M4.
