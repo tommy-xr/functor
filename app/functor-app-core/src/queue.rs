@@ -58,12 +58,15 @@ pub struct Queue {
     pub tasks: Vec<u64>,
     /// Why a task cannot start in the project now; `None`: it would start at once.
     pub wait: Option<Wait>,
+    /// A task the user starts now would queue ([`holds`]).
+    pub holds: bool,
 }
 
-/// Why a task cannot start in `project` now (`tracks`: changes are tracked).
+/// Why a task cannot start in `project` now (`tracks`: changes are
+/// tracked). A change waiting anywhere in the repo holds it: snapshots
+/// cover the whole working tree, whatever the project.
 pub fn wait(tasks: &[Task], tracks: bool, project: &str) -> Option<Wait> {
-    let mine = || tasks.iter().filter(|t| t.project == project);
-    if let Some(t) = mine().find(|t| t.run.is_some()) {
+    if let Some(t) = (tasks.iter()).find(|t| t.project == project && t.run.is_some()) {
         return Some(Wait::Running { task: t.id });
     }
     if let Some(t) = tasks.iter().find(|t| t.reverting) {
@@ -72,7 +75,7 @@ pub fn wait(tasks: &[Task], tracks: bool, project: &str) -> Option<Wait> {
     if !tracks {
         return None;
     }
-    mine().find_map(|t| match (has_change(t), &t.baseline, &t.change) {
+    tasks.iter().find_map(|t| match (has_change(t), &t.baseline, &t.change) {
         (true, _, _) => Some(Wait::Decision { task: t.id }),
         (false, Some(_), None) => Some(Wait::Measuring { task: t.id }),
         _ => None,
@@ -102,19 +105,26 @@ pub fn order(tasks: &[Task], project: &str) -> Vec<u64> {
     queued.into_iter().map(|(_, id)| id).collect()
 }
 
-/// Every project's queue that has queued tasks or a wait.
-pub fn queues(tasks: &[Task], tracks: bool) -> BTreeMap<String, Queue> {
+/// The queue of each of `projects` (and every task's project) that has
+/// queued tasks or a wait.
+pub fn queues<'a>(
+    tasks: &'a [Task],
+    tracks: bool,
+    projects: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, Queue> {
     let mut out = BTreeMap::new();
-    for t in tasks {
-        if out.contains_key(&t.project) {
+    let all = projects.into_iter().chain(tasks.iter().map(|t| t.project.as_str()));
+    for project in all {
+        if out.contains_key(project) {
             continue;
         }
         let queue = Queue {
-            tasks: order(tasks, &t.project),
-            wait: wait(tasks, tracks, &t.project),
+            tasks: order(tasks, project),
+            wait: wait(tasks, tracks, project),
+            holds: holds(tasks, tracks, project).is_some(),
         };
         if !queue.tasks.is_empty() || queue.wait.is_some() {
-            out.insert(t.project.clone(), queue);
+            out.insert(project.to_string(), queue);
         }
     }
     out
@@ -122,7 +132,7 @@ pub fn queues(tasks: &[Task], tracks: bool) -> BTreeMap<String, Queue> {
 
 /// The tasks that can start now: each free project's first queued one.
 pub fn ready(tasks: &[Task], tracks: bool) -> Vec<u64> {
-    queues(tasks, tracks)
+    queues(tasks, tracks, [])
         .values()
         .filter(|q| q.wait.is_none())
         .filter_map(|q| q.tasks.first().copied())
@@ -173,27 +183,19 @@ from an earlier one, the later one wins; if one drops the request, change nothin
 /// What the agent is sent as `task`'s run starts: the messages it has not
 /// seen, in order. With no session to resume that is every one (D30: the
 /// request and all said since, so a change of mind is honoured); else
-/// those after its last run.
+/// those after its last run (a run cut before its agent started leaves no
+/// `Stopped`, so its messages are sent again).
 pub fn prompt(task: &Task) -> String {
+    fn user(i: &Item) -> Option<(&String, &Option<Spoken>)> {
+        match i {
+            Item::User { text, spoken } => Some((text, spoken)),
+            _ => None,
+        }
+    }
     let messages: Vec<(&String, &Option<Spoken>)> = match task.session_id {
-        None => task
-            .transcript
-            .iter()
-            .filter_map(|i| match i {
-                Item::User { text, spoken } => Some((text, spoken)),
-                _ => None,
-            })
-            .collect(),
+        None => task.transcript.iter().filter_map(user).collect(),
         Some(_) => {
-            let mut trailing: Vec<_> = task
-                .transcript
-                .iter()
-                .rev()
-                .map_while(|i| match i {
-                    Item::User { text, spoken } => Some((text, spoken)),
-                    _ => None,
-                })
-                .collect();
+            let mut trailing: Vec<_> = task.transcript.iter().rev().map_while(user).collect();
             trailing.reverse();
             trailing
         }
@@ -255,6 +257,7 @@ mod tests {
                 id: 0,
                 usage: None,
                 views: 0,
+                started: false,
             }),
             ..task(id, project)
         }
@@ -298,12 +301,16 @@ mod tests {
         ];
         assert_eq!(wait(&tasks, true, "b"), Some(Wait::Reverting { task: 1 }));
         assert!(ready(&tasks, true).is_empty());
+        // A project with no tasks yet, named, says a new one would wait.
+        assert!(queues(&tasks, true, ["c"])["c"].holds);
 
         // A change waiting for Keep or Revert holds its project, measured or not;
         // an empty one, or untracked changes, do not.
         let waiting = vec![with_change(task(1, "a"), 1), queued(2, "a", 1)];
         assert_eq!(wait(&waiting, true, "a"), Some(Wait::Decision { task: 1 }));
         assert_eq!(wait(&waiting, false, "a"), None);
+        // Another project's too: the snapshots cover the whole tree.
+        assert_eq!(wait(&waiting, true, "b"), Some(Wait::Decision { task: 1 }));
         let measuring = Task {
             change: None,
             ..with_change(task(1, "a"), 1)
@@ -324,7 +331,7 @@ mod tests {
             queued(6, "b", 2),
             task(7, "c"),
         ];
-        let q = queues(&tasks, true);
+        let q = queues(&tasks, true, ["d"]);
         assert_eq!(q["a"].tasks, [4, 5]);
         assert_eq!(q["a"].wait, Some(Wait::Running { task: 1 }));
         assert_eq!(q["b"].tasks, [6]);

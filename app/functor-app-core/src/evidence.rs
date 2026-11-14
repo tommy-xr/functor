@@ -205,6 +205,7 @@ mod tests {
             id: 1,
             usage: None,
             views: 0,
+            started: false,
         });
         assert_eq!(next(&t), Next::Keep);
     }

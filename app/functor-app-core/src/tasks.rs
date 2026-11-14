@@ -129,6 +129,9 @@ pub struct Run {
     /// View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
     #[serde(default)]
     pub views: u32,
+    /// The agent reported its start, so it has the run's messages.
+    #[serde(default)]
+    pub started: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +264,7 @@ pub fn apply(task: &mut Task, event: AgentEvent) -> Vec<usize> {
     let items = &mut task.transcript;
     match event {
         AgentEvent::Started { session, model } => {
+            run.started = true;
             task.session_id = session.or(task.session_id.take());
             task.model = model.or(task.model.take());
             vec![]
@@ -560,6 +564,7 @@ mod tests {
                 id: 0,
                 usage: None,
                 views: 0,
+                started: false,
             }),
             queued: None,
             baseline: None,
@@ -686,6 +691,7 @@ mod tests {
             id: task.transcript.len() as u64 - 1,
             usage: None,
             views: 0,
+            started: false,
         });
         let result = AgentEvent::ToolResult {
             content: "late".to_string(),

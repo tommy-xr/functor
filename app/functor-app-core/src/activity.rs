@@ -106,6 +106,7 @@ pub fn activity(task: &Task) -> Activity {
             }
         }
         TaskStatus::WaitingOnYou | TaskStatus::ReadyForReview => Stance::Waiting,
+        // Queued: never asked (`activities` leaves it out).
         TaskStatus::Done | TaskStatus::Kept | TaskStatus::Reverted | TaskStatus::Queued => {
             Stance::Done
         }

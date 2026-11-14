@@ -612,7 +612,11 @@ tasks: Array<number>,
 /**
  * Why a task cannot start in the project now; `None`: it would start at once.
  */
-wait: Wait | null, };
+wait: Wait | null, 
+/**
+ * A task the user starts now would queue ([`holds`]).
+ */
+holds: boolean, };
 
 export type Recent = { 
 /**
@@ -712,7 +716,11 @@ usage: Usage | null,
 /**
  * View requests the run made ([`crate::agent_view::MAX_VIEW_REQUESTS`]).
  */
-views: number, };
+views: number, 
+/**
+ * The agent reported its start, so it has the run's messages.
+ */
+started: boolean, };
 
 /**
  * Core → UI.

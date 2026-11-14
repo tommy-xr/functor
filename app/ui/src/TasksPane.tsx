@@ -111,6 +111,8 @@ export function TasksPane({
   const queue = active ? state?.queues[active] : undefined;
   // The user may start one beside a change waiting for a decision, not beside a run.
   const startNow = queue?.wait?.kind === "decision" || queue?.wait?.kind === "measuring";
+  // Places in the whole line, whatever the search shows.
+  const line = queue?.tasks ?? [];
 
   let empty: string | null = null;
   if (state && all.length === 0) empty = "No tasks yet. Ask the agent for a change and it is tracked here until you keep or revert it.";
@@ -171,11 +173,11 @@ export function TasksPane({
               )}
               {shown(g.group) && (
                 <ul className="tasks-rows" aria-labelledby={id}>
-                  {g.tasks.map((t, i) => (
+                  {g.tasks.map((t) => (
                     <TaskRow
                       key={t.id}
                       task={t}
-                      inLine={g.group === "queued" ? { index: i, count: g.tasks.length, startNow } : null}
+                      inLine={g.group === "queued" ? { index: line.indexOf(t.id), count: line.length, startNow } : null}
                       items={transcripts.get(t.id)}
                       now={now}
                       selected={t.id === selected}

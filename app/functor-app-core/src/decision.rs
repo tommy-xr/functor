@@ -533,6 +533,7 @@ mod tests {
             id: 0,
             usage: None,
             views: 0,
+            started: false,
         });
         assert_eq!(decision(&task), None, "running");
     }

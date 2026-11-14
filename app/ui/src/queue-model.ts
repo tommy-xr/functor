@@ -31,15 +31,15 @@ export function waitLine(state: AppState, wait: Wait | null): string {
 export function placeLine(index: number): string {
   if (index === 0) return "Next";
   const n = index + 1;
-  const suffix = n % 10 === 2 && n % 100 !== 12 ? "nd" : n % 10 === 3 && n % 100 !== 13 ? "rd" : "th";
+  const teen = n % 100 >= 11 && n % 100 <= 13;
+  const suffix = teen ? "th" : (({ 1: "st", 2: "nd", 3: "rd" }) as Record<number, string>)[n % 10] ?? "th";
   return `${n}${suffix} in line`;
 }
 
-/** Whether a task the user starts now in the active project waits (the core's `queue::holds`). */
+/** What a task the user starts now in the active project waits for, if it would queue. */
 function holds(state: AppState): Wait | null {
   const q = state.active ? state.queues[state.active] : undefined;
-  if (!q?.wait) return null;
-  return q.tasks.length > 0 || q.wait.kind === "running" || q.wait.kind === "reverting" ? q.wait : null;
+  return q?.holds ? q.wait : null;
 }
 
 /** Where a typed message goes: into a task (`send_message`) or a new one (`new_task`). */
