@@ -729,10 +729,12 @@ async fn step(mut state: AppState, event: Event, driver: &mut Driver) -> AppStat
     state
 }
 
-/// Marks where the login shell's `PATH` starts in its output, after anything
-/// its startup files print.
+/// Mark the login shell's `PATH` in its output, apart from anything its
+/// startup or logout files print.
 #[cfg(any(target_os = "macos", test))]
-const PATH_MARK: &str = "__FUNCTOR_PATH__";
+const PATH_START: &str = "__FUNCTOR_PATH__";
+#[cfg(any(target_os = "macos", test))]
+const PATH_END: &str = "__FUNCTOR_PATH_END__";
 
 /// In `Functor.app`, takes the login shell's `PATH`: Finder and the Dock
 /// start apps with launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, which has no
@@ -749,7 +751,10 @@ fn use_login_path() {
     }
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/zsh".into());
     let Ok(mut child) = Command::new(shell)
-        .args(["-ilc", &format!("printf '{PATH_MARK}%s' \"$PATH\"")])
+        .args([
+            "-ilc",
+            &format!("printf '{PATH_START}%s{PATH_END}' \"$PATH\""),
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -757,26 +762,33 @@ fn use_login_path() {
     else {
         return;
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while matches!(child.try_wait(), Ok(None)) {
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return;
+    // Reads until the PATH is complete, not to EOF: a background job its
+    // startup files began can hold the pipe open after the shell exits.
+    let mut stdout = child.stdout.take().expect("piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut out, mut buf) = (Vec::new(), [0; 4096]);
+        while let Ok(n @ 1..) = std::io::Read::read(&mut stdout, &mut buf) {
+            out.extend_from_slice(&buf[..n]);
+            if let Some(path) = login_path(&String::from_utf8_lossy(&out)) {
+                let _ = tx.send(path.to_string());
+                return;
+            }
         }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let mut out = String::new();
-    let _ = std::io::Read::read_to_string(&mut child.stdout.take().expect("piped"), &mut out);
-    if let Some(path) = login_path(&out) {
+    });
+    let path = rx.recv_timeout(Duration::from_secs(3));
+    let _ = child.kill();
+    let _ = child.wait();
+    if let Ok(path) = path {
         std::env::set_var("PATH", path);
     }
 }
 
-/// The `PATH` in a login shell's output, if it printed one.
+/// The `PATH` in a login shell's output, once it has printed all of it.
 #[cfg(any(target_os = "macos", test))]
 fn login_path(out: &str) -> Option<&str> {
-    let (_, path) = out.rsplit_once(PATH_MARK)?;
+    let (before, _) = out.split_once(PATH_END)?;
+    let (_, path) = before.rsplit_once(PATH_START)?;
     Some(path).filter(|p| !p.is_empty())
 }
 
@@ -808,10 +820,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_path_skips_what_startup_files_print() {
-        let out = format!("welcome {PATH_MARK} banner\n{PATH_MARK}/opt/bin:/usr/bin");
+    fn login_path_skips_what_startup_and_logout_files_print() {
+        let out = format!(
+            "welcome {PATH_START} banner\n{PATH_START}/opt/bin:/usr/bin{PATH_END}bye\n"
+        );
         assert_eq!(login_path(&out), Some("/opt/bin:/usr/bin"));
+        // Not complete yet: more is still to be read.
+        assert_eq!(login_path(&format!("{PATH_START}/opt/bin")), None);
         assert_eq!(login_path("no mark"), None);
-        assert_eq!(login_path(PATH_MARK), None);
+        assert_eq!(login_path(&format!("{PATH_START}{PATH_END}")), None);
     }
 }

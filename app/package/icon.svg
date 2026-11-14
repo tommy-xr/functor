@@ -18,6 +18,11 @@
     <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
       <feGaussianBlur stdDeviation="18"/>
     </filter>
+    <g id="mark" fill="#41d8e6">
+      <path d="M382 341 545 179H735L615 300H548L382 466Z"/>
+      <path d="M382 493 497 380V748L382 837Z"/>
+      <path d="M518 426H693L597 522H518Z"/>
+    </g>
     <clipPath id="tile">
       <rect x="100" y="100" width="824" height="824" rx="185"/>
     </clipPath>
@@ -32,15 +37,7 @@
 
   <!-- The mark, centred and scaled to ~62% of the tile's height. -->
   <g transform="translate(512 512) scale(0.78) translate(-558 -508)">
-    <g fill="#41d8e6" opacity="0.45" filter="url(#glow)">
-      <path d="M382 341 545 179H735L615 300H548L382 466Z"/>
-      <path d="M382 493 497 380V748L382 837Z"/>
-      <path d="M518 426H693L597 522H518Z"/>
-    </g>
-    <g fill="#41d8e6">
-      <path d="M382 341 545 179H735L615 300H548L382 466Z"/>
-      <path d="M382 493 497 380V748L382 837Z"/>
-      <path d="M518 426H693L597 522H518Z"/>
-    </g>
+    <use href="#mark" opacity="0.45" filter="url(#glow)"/>
+    <use href="#mark"/>
   </g>
 </svg>
