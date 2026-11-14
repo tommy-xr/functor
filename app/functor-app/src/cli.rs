@@ -55,12 +55,18 @@ impl Cli {
     }
 
     /// This executable, inside `functor`: the CLI cannot differ from the
-    /// app, so it is neither looked up nor checked.
+    /// app, so it is neither looked up nor checked. Inside `Functor.app` it
+    /// is run by `Contents/Helpers/functor`, a link to it: started from
+    /// `Contents/MacOS`, a game would take the app's bundle id, and a quit
+    /// sent to that id could reach the game instead of the app.
     pub fn own(exe: PathBuf) -> Self {
+        let cli = Self::new(None, None, Some(exe.clone()));
+        let link = cli.contents().map(|c| c.join("Helpers").join(exe.file_name().unwrap_or_default()));
+        let path = link.filter(|l| l.exists()).unwrap_or(exe);
         Self {
-            found: Mutex::new(Ok(exe)),
+            found: Mutex::new(Ok(path)),
             own: true,
-            ..Self::new(None, None, None)
+            ..cli
         }
     }
 
@@ -336,6 +342,20 @@ esac"#;
         assert_eq!(cli.path(), Ok(exe.clone()));
         assert_eq!(cli.check().await, None);
         assert_eq!(cli.path(), Ok(exe));
+    }
+
+    #[test]
+    fn inside_the_bundle_children_run_by_its_helpers_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = dir.path().join("Functor.app/Contents");
+        let exe = contents.join("MacOS/functor");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        // An older bundle without the link: the executable itself.
+        assert_eq!(Cli::own(exe.clone()).path(), Ok(exe.clone()));
+        std::fs::create_dir_all(contents.join("Helpers")).unwrap();
+        std::os::unix::fs::symlink("../MacOS/functor", contents.join("Helpers/functor")).unwrap();
+        assert_eq!(Cli::own(exe).path(), Ok(contents.join("Helpers/functor")));
     }
 
     #[test]

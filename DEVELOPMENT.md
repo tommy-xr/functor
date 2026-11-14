@@ -235,9 +235,12 @@ cp -R target/package/Functor.app /Applications/
 ```
 
 The bundle holds one executable, `functor` with the app and its UI built in
-(`Contents/MacOS`), and the icon (`app/package/icon.svg`). Its hidden game
-sessions are that executable too: each declares itself a background process,
-so it takes no Dock tile of its own and Quit quits the app. It is ad-hoc
+(`Contents/MacOS`), and the icon (`app/package/icon.svg`). Its game sessions
+and tool servers are that executable too, run by `Contents/Helpers/functor`, a
+symbolic link to it: from outside `MacOS` they do not take the app's bundle
+id. A hidden game also declares itself a background process, so it takes no
+Dock tile of its own and Quit quits the app. App flags follow `app`:
+`open target/package/Functor.app --args app --no-device-link`. It is ad-hoc
 signed: it runs on the Mac that built it, but Gatekeeper rejects it elsewhere
 (a downloaded copy is quarantined and blocked as from an unidentified
 developer). Opened from Finder or the Dock, it opens the last project and takes

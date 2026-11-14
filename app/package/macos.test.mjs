@@ -1,7 +1,7 @@
 // Bundles a stub binary and checks Functor.app's layout, Info.plist and
 // signature (macOS only: plutil, iconutil, codesign).
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,9 +13,10 @@ test("Functor.app from a stub binary", { skip: process.platform !== "darwin" }, 
     const script = new URL("macos.mjs", import.meta.url).pathname;
     execFileSync("node", [script, "--functor", "/usr/bin/true", "--out", out]);
     const contents = join(out, "Functor.app/Contents");
-    // One executable: the app is `functor` itself (D40).
+    // One executable: the app is `functor` itself (D40); its children run
+    // it by a link from outside MacOS, not a second copy.
     assert.deepEqual(readdirSync(join(contents, "MacOS")), ["functor"]);
-    assert.ok(!existsSync(join(contents, "Helpers")), "no second copy");
+    assert.equal(readlinkSync(join(contents, "Helpers/functor")), "../MacOS/functor");
     assert.ok(existsSync(join(contents, "Resources/Functor.icns")));
     const plist = execFileSync("plutil", ["-convert", "json", "-o", "-", join(contents, "Info.plist")]);
     const info = JSON.parse(plist);

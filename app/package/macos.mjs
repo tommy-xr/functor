@@ -7,11 +7,13 @@
 //
 // Layout: Contents/MacOS/functor, the one executable (D40): built with the
 // app in (`npm run build:cli` on macOS), so opened with no arguments it is
-// the app, and its game sessions and tool servers are itself again (a
-// hidden game declares itself a background process, so it takes no Dock
-// tile and Quit stays the app's). Contents/Resources/Functor.icns.
+// the app, and its game sessions and tool servers are itself again. They run
+// it by Contents/Helpers/functor, a symbolic link to it: from outside MacOS
+// they do not take the app's bundle id, so a quit sent to that id reaches the
+// app (a hidden game also declares itself a background process: no Dock
+// tile). Contents/Resources/Functor.icns.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,8 +29,9 @@ const functor = resolve(opts.functor ?? join(root, "target/release/functor"));
 const bundle = join(resolve(opts.out ?? join(root, "target/package")), "Functor.app");
 
 rmSync(bundle, { recursive: true, force: true });
-for (const dir of ["MacOS", "Resources"]) mkdirSync(join(bundle, "Contents", dir), { recursive: true });
+for (const dir of ["MacOS", "Helpers", "Resources"]) mkdirSync(join(bundle, "Contents", dir), { recursive: true });
 cpSync(functor, join(bundle, "Contents/MacOS/functor"));
+symlinkSync("../MacOS/functor", join(bundle, "Contents/Helpers/functor"));
 
 // One wording for the mic prompt: the plist the bare binary embeds.
 const embedded = join(root, "app/functor-app/Info.plist");
