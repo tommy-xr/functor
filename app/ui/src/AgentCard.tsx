@@ -65,7 +65,7 @@ export function AgentCard({ task, activity, onOpen }: { task: Task; activity: Ac
   return (
     <button
       type="button"
-      className={`agent-card agent-${activity.stance} agent-engine-${task.harness}`}
+      className={`agent-card agent-${activity.stance}`}
       data-testid="agent-card"
       data-stance={activity.stance}
       aria-label={cardLabel(task, activity)}

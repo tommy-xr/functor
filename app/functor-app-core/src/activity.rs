@@ -21,7 +21,9 @@ pub struct Activity {
     /// The last run's error or refusal, one short line; cleared by the
     /// user's next message.
     pub error: Option<String>,
-    /// The subagents running, oldest first, each started by one of `calls`.
+    /// The subagents running, oldest first: while the call that started
+    /// them is out, or (one started in the background, whose call returns
+    /// at once; its end is not reported) while a call of its own is.
     pub subagents: Vec<Subagent>,
     /// How full the main agent's context is, once both its use and its
     /// model's window are known.
@@ -965,7 +967,8 @@ mod tests {
         let mut task = running();
         task.harness = Harness::Codex;
         replay(&mut task, include_str!("../fixtures/agent/codex-exit.jsonl"));
-        let any = BTreeMap::from([(window_key(Harness::Codex, ""), 1)]);
+        task.model = Some("gpt-x".into());
+        let any = BTreeMap::from([(window_key(Harness::Codex, "gpt-x"), 1)]);
         assert_eq!(activity(&task, &any).context, None);
     }
 }

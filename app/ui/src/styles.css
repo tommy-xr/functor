@@ -4280,7 +4280,8 @@ g.avatar-eyes {
   height: 12px;
 }
 
-/* How much room is left: a health bar in the engine's colour, amber from
+/* How much room is left: a health bar in Claude's colour (Codex reports
+   no per-message usage, so has none), amber from
    70% full, red from 90%. */
 .agent-room {
   display: flex;
@@ -4304,10 +4305,6 @@ g.avatar-eyes {
   height: 100%;
   border-radius: inherit;
   background: var(--claude);
-}
-
-.agent-engine-codex .agent-room-fill {
-  background: var(--codex);
 }
 
 .agent-room-pct {

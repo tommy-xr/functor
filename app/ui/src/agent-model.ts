@@ -56,7 +56,7 @@ export function room(fill: ContextFill | null): Room | null {
   if (!fill || fill.window <= 0) return null;
   const share = fill.used / fill.window;
   const level = share >= 0.9 ? "out" : share >= 0.7 ? "low" : "ok";
-  const percent = Math.min(100, Math.round(share * 100));
+  const percent = Math.min(100, Math.floor(share * 100));
   return { percent, level, title: `Context ${percent}% full: ${tokens(fill.used)} of ${tokens(fill.window)} tokens` };
 }
 

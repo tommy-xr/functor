@@ -12,7 +12,9 @@ calls: Array<Call>,
  */
 error: string | null, 
 /**
- * The subagents running, oldest first, each started by one of `calls`.
+ * The subagents running, oldest first: while the call that started
+ * them is out, or (one started in the background, whose call returns
+ * at once; its end is not reported) while a call of its own is.
  */
 subagents: Array<Subagent>, 
 /**
