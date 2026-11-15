@@ -92,6 +92,12 @@ export type ClockState = {
  */
 paused: boolean, 
 /**
+ * Who asked for the pause (v52). Omitted while running, and when the
+ * request did not say (the shell's own scrubber, `POST /seek`, a client
+ * that sends no `by`).
+ */
+paused_by?: PausedBy, 
+/**
  * The seekable window, numbered as `frame`. Omitted before the first
  * recorded step, and for producers that record no history.
  */
@@ -660,6 +666,11 @@ warning?: string,
  * while `settings` asks for one.
  */
 camera?: SensorStreamState, };
+
+/**
+ * Who paused the clock (v52).
+ */
+export type PausedBy = "agent" | "user" | "start";
 
 /**
  * `GET /state`'s `pointer` (v45): whether the game takes the mouse captured

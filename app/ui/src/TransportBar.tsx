@@ -10,6 +10,7 @@ import {
   deriveTimelineView,
   editPeeks,
   follow,
+  pausedLabel,
   followMarks,
   keyAction,
   markerDetail,
@@ -109,6 +110,7 @@ export function TransportBar({
     },
   };
   const pause = pauseButton(transport.paused);
+  const paused = pausedLabel(transport);
   const pct = (unit: number) => `${unit * 100}%`;
   const active = view?.activeEvent ?? null;
   return (
@@ -133,6 +135,11 @@ export function TransportBar({
       >
         {STEP_BUTTON.glyph}
       </button>
+      {paused && !compact && (
+        <span className="transport-paused" role="status" data-testid="transport-paused">
+          {paused}
+        </span>
+      )}
       <div ref={rail} className="transport-rail" title={view ? "Drag to seek" : undefined} {...drag}>
         <svg viewBox="0 0 1000 30" preserveAspectRatio="none" aria-hidden={view ? undefined : true}>
           <defs>

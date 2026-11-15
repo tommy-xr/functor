@@ -21,6 +21,7 @@
 
 use std::collections::VecDeque;
 
+use crate::debug_protocol::PausedBy;
 use crate::FrameTime;
 
 /// The fixed model timestep, in seconds — the interval `tick` advances by under
@@ -60,6 +61,8 @@ pub struct GameClock {
     /// Scrubber / debug pause. While paused, `dts = 0` and `game_time` is
     /// frozen. A queued [`GameClock::step`] also sets this.
     paused: bool,
+    /// Who asked for the pause, where the request said. `None` while running.
+    paused_by: Option<PausedBy>,
     /// Queued one-shot steps that advance `game_time`, then hold. Queued by
     /// Step / debug Advance (both imply pause), and drained in order at up to
     /// [`MAX_SUBSTEPS`] per rendered frame.
@@ -103,6 +106,7 @@ impl GameClock {
             game_time: 0.0,
             accumulator: 0.0,
             paused: false,
+            paused_by: None,
             pending_steps: VecDeque::new(),
             pending_frames: 0,
             fixed_time,
@@ -275,6 +279,17 @@ impl GameClock {
         self.paused
     }
 
+    /// Who paused the clock, where the request said; `None` while it runs.
+    pub fn paused_by(&self) -> Option<PausedBy> {
+        self.paused_by.filter(|_| self.paused)
+    }
+
+    /// Pause as the game opens (`--paused`).
+    pub fn pause_at_start(&mut self) {
+        self.pause();
+        self.paused_by = Some(PausedBy::Start);
+    }
+
     /// Whether time is pinned by the deterministic `--fixed-time` mode rather
     /// than by the interactive pause transport.
     pub fn is_fixed_time(&self) -> bool {
@@ -292,6 +307,7 @@ impl GameClock {
     /// clock) — this is what kills the pause→resume jump.
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
+        self.paused_by = None;
         self.pending_steps.clear();
         self.pending_frames = 0;
     }
@@ -308,6 +324,7 @@ impl GameClock {
     /// `game_time` (debug `POST /time` Resume).
     pub fn resume(&mut self) {
         self.paused = false;
+        self.paused_by = None;
         self.pending_steps.clear();
         self.pending_frames = 0;
     }
@@ -318,6 +335,7 @@ impl GameClock {
         self.game_time = 0.0;
         self.accumulator = 0.0;
         self.paused = false;
+        self.paused_by = None;
         self.pending_steps.clear();
         self.pending_frames = 0;
         self.started = false;
@@ -402,7 +420,14 @@ impl GameClock {
     /// to a no-op strands a stepping harness. The pin stays unconditional (the
     /// golden-capture path must not become network-dependent), so the fix is to
     /// relaunch without it.
-    pub fn apply(&mut self, command: crate::debug_protocol::TimeCommand) -> Result<(), String> {
+    ///
+    /// `by` is who asked (`POST /time`'s `by`): a command that pauses records
+    /// it as the cause, replacing the last one.
+    pub fn apply(
+        &mut self,
+        command: crate::debug_protocol::TimeCommand,
+        by: Option<PausedBy>,
+    ) -> Result<(), String> {
         use crate::debug_protocol::TimeCommand;
         if let Some(pinned) = self.fixed_time {
             return Err(format!(
@@ -435,8 +460,19 @@ past the {MAX_QUEUED_STEPS} step cap. Advance in smaller batches, or POST \
                 self.step_n(dts, frames)
             }
             TimeCommand::Cancel => self.cancel_pending(),
-            TimeCommand::Resume => self.resume(),
+            TimeCommand::Resume => {
+                self.resume();
+                return Ok(());
+            }
         }
+        // The user's own pause is theirs. An agent's (its `step` on a game
+        // already paused) or an unnamed one keeps the cause it found. No
+        // request is the start: that names nobody.
+        self.paused_by = match by {
+            Some(PausedBy::User) => by,
+            Some(PausedBy::Start) => self.paused_by,
+            _ => self.paused_by.or(by),
+        };
         Ok(())
     }
 
@@ -806,7 +842,7 @@ mod tests {
             TimeCommand::Cancel,
             TimeCommand::Resume,
         ] {
-            let error = pinned.apply(command).expect_err("must be a conflict");
+            let error = pinned.apply(command, None).expect_err("must be a conflict");
             assert!(error.contains("--fixed-time"), "teaching message: {error}");
             assert!(error.contains("1.5"), "names the pinned time: {error}");
         }
@@ -818,13 +854,13 @@ mod tests {
             .apply(TimeCommand::Advance {
                 dts: FIXED_DT,
                 frames: 3
-            })
+            }, None)
             .is_ok());
         assert_eq!(clock.pending_steps(), 3);
-        assert!(clock.apply(TimeCommand::Set { tts: 4.0 }).is_ok());
+        assert!(clock.apply(TimeCommand::Set { tts: 4.0 }, None).is_ok());
         assert_eq!(clock.pending_steps(), 0, "set drops the queue");
         assert_eq!(clock.current_tts(), 4.0);
-        assert!(clock.apply(TimeCommand::Resume).is_ok());
+        assert!(clock.apply(TimeCommand::Resume, None).is_ok());
         assert!(!clock.is_paused());
     }
 
@@ -838,7 +874,7 @@ mod tests {
         let landed_tts = clock.current_tts();
         assert!(clock.pending_steps() > 0);
 
-        clock.apply(TimeCommand::Cancel).unwrap();
+        clock.apply(TimeCommand::Cancel, None).unwrap();
         assert_eq!(clock.pending_steps(), 0);
         assert_eq!(clock.current_tts(), landed_tts);
         assert!(clock.is_paused());
@@ -852,7 +888,7 @@ mod tests {
             dts: FIXED_DT,
             frames: MAX_QUEUED_STEPS + 1,
         };
-        let error = clock.apply(over).expect_err("past the cap");
+        let error = clock.apply(over, None).expect_err("past the cap");
         assert!(error.contains("cap"), "teaching message: {error}");
         assert_eq!(clock.pending_steps(), 0, "nothing was queued");
 
@@ -862,14 +898,14 @@ mod tests {
             .apply(TimeCommand::Advance {
                 dts: FIXED_DT,
                 frames: MAX_QUEUED_STEPS
-            })
+            }, None)
             .is_ok());
         assert_eq!(clock.pending_steps(), MAX_QUEUED_STEPS);
         assert!(clock
             .apply(TimeCommand::Advance {
                 dts: FIXED_DT,
                 frames: 1
-            })
+            }, None)
             .is_err());
         assert_eq!(clock.pending_steps(), MAX_QUEUED_STEPS);
     }
@@ -880,7 +916,7 @@ mod tests {
         let mut clock = GameClock::new(None);
         for dts in [0.0, -FIXED_DT, f32::INFINITY, f32::NAN] {
             let error = clock
-                .apply(TimeCommand::Advance { dts, frames: 1 })
+                .apply(TimeCommand::Advance { dts, frames: 1 }, None)
                 .expect_err("invalid dts must not reach the queue");
             assert!(error.contains("finite positive"), "{error}");
             assert_eq!(clock.pending_steps(), 0);
@@ -970,5 +1006,74 @@ mod tests {
         clock.resume();
         clock.fixed_frames(0.0);
         assert!(clock.alpha() > 0.0);
+    }
+
+    #[test]
+    fn a_pause_remembers_who_asked_until_the_clock_runs() {
+        use crate::debug_protocol::TimeCommand;
+        let advance = TimeCommand::Advance {
+            dts: FIXED_DT,
+            frames: 1,
+        };
+        let mut clock = GameClock::new(None);
+        assert_eq!(clock.paused_by(), None);
+        for command in [advance, TimeCommand::Set { tts: 1.0 }, TimeCommand::Cancel] {
+            clock.apply(command, Some(PausedBy::Agent)).unwrap();
+            assert_eq!(clock.paused_by(), Some(PausedBy::Agent), "{command:?}");
+            clock.apply(TimeCommand::Resume, Some(PausedBy::Agent)).unwrap();
+            assert_eq!(clock.paused_by(), None, "resumed after {command:?}");
+        }
+        // The user's pause takes an agent's over; an agent's step on a game
+        // the user paused, or a request without `by`, leaves it the user's.
+        clock.apply(advance, Some(PausedBy::Agent)).unwrap();
+        clock.apply(advance, Some(PausedBy::User)).unwrap();
+        assert_eq!(clock.paused_by(), Some(PausedBy::User));
+        clock.apply(advance, Some(PausedBy::Agent)).unwrap();
+        clock.apply(TimeCommand::Cancel, None).unwrap();
+        assert_eq!((clock.is_paused(), clock.paused_by()), (true, Some(PausedBy::User)));
+        clock.resume();
+        // Without `by` from running, or claiming to be the start: paused,
+        // no cause.
+        for by in [None, Some(PausedBy::Start)] {
+            clock.apply(advance, by).unwrap();
+            assert_eq!((clock.is_paused(), clock.paused_by()), (true, None));
+            clock.resume();
+        }
+        clock.apply(advance, None).unwrap();
+        clock.resume();
+        // The shell's own pause (a seek) keeps the cause it found.
+        clock.apply(advance, Some(PausedBy::Agent)).unwrap();
+        clock.pause();
+        clock.step_frames(2);
+        assert_eq!(clock.paused_by(), Some(PausedBy::Agent));
+        // Whatever runs the clock again forgets it.
+        for run in [GameClock::resume as fn(&mut GameClock), GameClock::toggle_pause, GameClock::restart] {
+            clock.apply(advance, Some(PausedBy::Agent)).unwrap();
+            run(&mut clock);
+            assert_eq!((clock.is_paused(), clock.paused_by()), (false, None));
+        }
+        // The shell's own pause from running names no cause.
+        clock.toggle_pause();
+        assert_eq!((clock.is_paused(), clock.paused_by()), (true, None));
+        // A refused command changes nothing.
+        let mut pinned = GameClock::new(Some(1.0));
+        assert!(pinned.apply(advance, Some(PausedBy::Agent)).is_err());
+        assert_eq!(pinned.paused_by(), None);
+    }
+
+    #[test]
+    fn a_clock_paused_as_the_game_opens_says_so() {
+        let mut clock = GameClock::new(None);
+        clock.pause_at_start();
+        assert_eq!((clock.is_paused(), clock.paused_by()), (true, Some(PausedBy::Start)));
+        // An agent stepping it does not make the pause the agent's.
+        let step = crate::debug_protocol::TimeCommand::Advance {
+            dts: FIXED_DT,
+            frames: 1,
+        };
+        clock.apply(step, Some(PausedBy::Agent)).unwrap();
+        assert_eq!(clock.paused_by(), Some(PausedBy::Start));
+        clock.resume();
+        assert_eq!(clock.paused_by(), None);
     }
 }
