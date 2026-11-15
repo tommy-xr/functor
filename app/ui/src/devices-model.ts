@@ -146,6 +146,9 @@ export function loading(lines: string[] | undefined): [string, string] | null {
   switch (kind) {
     case "receiving":
       return ["Sending to headset", detail];
+    case "up_to_date":
+      // Nothing crossed: the headset already held the project ("71.0 MB already on the headset").
+      return ["Up to date", rest[1] ?? rest[0] ?? ""];
     case "starting":
       return ["Starting", detail];
     case "assets":

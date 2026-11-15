@@ -227,6 +227,8 @@ pub fn kind(step: &Step) -> &'static str {
     match step {
         Step::Waiting => "waiting",
         Step::Connected(_) => "connected",
+        // A push the device already holds all of.
+        Step::Receiving { of: Some(Push { files: 0, from_manifest: true, .. }), .. } => "up_to_date",
         Step::Receiving { .. } => "receiving",
         Step::Checking => "starting",
         Step::Assets { .. } => "assets",
@@ -445,6 +447,29 @@ mod tests {
         assert_eq!(shown, vec![Some(Step::Connected(None)), up_to_date.clone(), up_to_date.clone(), up_to_date]);
         let empty = Step::Receiving { files: 0, bytes: 0, of: Some(Push { files: 1, bytes: 0, held_bytes: 0, from_manifest: true }) };
         assert_eq!(lines(&empty)[1].text, "0 of 1 file");
+    }
+
+    #[test]
+    fn each_step_has_its_name_on_the_wire() {
+        let push = |files, from_manifest| Some(Push { files, bytes: 0, held_bytes: 9, from_manifest });
+        let receiving = |of| kind(&Step::Receiving { files: 0, bytes: 0, of });
+        assert_eq!(receiving(push(0, true)), "up_to_date");
+        // Something still to send, or a sender's own count of nothing: receiving.
+        assert_eq!(receiving(push(1, true)), "receiving");
+        assert_eq!(receiving(push(0, false)), "receiving");
+        assert_eq!(receiving(None), "receiving");
+        let others = [
+            (Step::Waiting, "waiting"),
+            (Step::Connected(None), "connected"),
+            (Step::Checking, "starting"),
+            (Step::Assets { settled: 0, total: 1 }, "assets"),
+            (Step::Running, "running"),
+            (Step::Reloading, "reloading"),
+            (Step::Failed("x".into()), "failed"),
+        ];
+        for (step, name) in others {
+            assert_eq!(kind(&step), name);
+        }
     }
 
     #[test]
