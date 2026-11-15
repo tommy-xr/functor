@@ -284,6 +284,8 @@ pub fn lines(pairing: &PairingState) -> Vec<Line> {
 pub const METER: u8 = 12;
 /// How long an outcome shows, and the fade after.
 const OUTCOME: Duration = Duration::from_secs(4);
+/// How long an answer shows: it is read, not glanced at.
+const ANSWER: Duration = Duration::from_secs(10);
 const FADE: Duration = Duration::from_millis(500);
 /// The least time a desktop stage, and the transcript, stay on screen before
 /// the next one replaces them: arriving together, each is still seen.
@@ -347,6 +349,7 @@ impl Toast {
         self.fade_at = match stage {
             VoiceStage::Listening { .. } => None,
             ref s if in_flight(s) => Some(now + STALE),
+            VoiceStage::Answered { .. } => Some(now + ANSWER),
             _ => Some(now + OUTCOME),
         };
         self.since = Some(arrived);
@@ -501,6 +504,12 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         VoiceStage::Heard => vec![line(&going("HEARD"), HEADING, CYAN)],
         VoiceStage::Working => vec![line(&going("WORKING..."), HEADING, CYAN)],
         VoiceStage::Reloaded => vec![line("RELOADED", HEADING, CYAN)],
+        VoiceStage::Answered { text } => {
+            let mut lines = vec![line("ANSWERED", HEADING, CYAN)];
+            let wrapped = overlay_font::wrap(text, BODY, WRAP, WRAP_LINES);
+            lines.extend(wrapped.iter().map(|l| line(l, BODY, WHITE)));
+            lines
+        }
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
         }
@@ -508,7 +517,10 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
             vec![line("NOT SENT", HEADING, PINK), line(reason, BODY, WHITE)]
         }
     };
-    if let Some(text) = &toast.transcript {
+    // An answer has the toast to itself: the question was just asked.
+    let transcript = (toast.transcript.as_ref())
+        .filter(|_| !matches!(toast.stage, VoiceStage::Answered { .. }));
+    if let Some(text) = transcript {
         let quoted = format!("\u{201c}{text}\u{201d}");
         out.extend(
             overlay_font::wrap(&quoted, BODY, WRAP, WRAP_LINES)
@@ -1280,6 +1292,32 @@ mod tests {
             assert!(lines[WRAP_LINES].text.ends_with('\u{2026}'));
             assert!(lines.iter().all(|l| overlay_font::width(&l.text, l.size) <= WRAP));
         }
+    }
+
+    /// The desktop clears the toast before an answer (for a headset that
+    /// cannot read one): the answer still shows, as a success, long enough
+    /// to read.
+    #[test]
+    fn an_answer_shows_after_the_clear_that_precedes_it() {
+        let t = Instant::now();
+        let at = |s: f32| t + Duration::from_secs_f32(s);
+        let mut toast = Toast::default();
+        toast.show(VoiceStage::Working, at(0.0));
+        toast.progress(Progress::Idle, at(5.0));
+        let text = "The ball is red already, so there was nothing to change.".to_string();
+        let answer = VoiceStage::Answered { text };
+        toast.progress(Progress::Stage(answer.clone()), at(5.0));
+        let (shown, alpha) = toast.look(at(9.0)).unwrap();
+        assert_eq!((&shown.stage, alpha), (&answer, 1.0));
+        let lines = toast_lines(shown);
+        assert_eq!((lines[0].text.as_str(), lines[0].color), ("ANSWERED", CYAN));
+        assert!(lines.len() > 1 && lines[1].text.starts_with("The ball is red"));
+        assert!(lines.iter().all(|l| overlay_font::width(&l.text, l.size) <= WRAP));
+        let mut asked = shown.clone();
+        asked.transcript = Some("is the ball red?".into());
+        assert_eq!(toast_lines(&asked), lines, "without what was asked");
+        assert!(toast.look(at(14.0)).is_some());
+        assert!(toast.look(at(16.0)).is_none(), "then it fades");
     }
 
     #[test]

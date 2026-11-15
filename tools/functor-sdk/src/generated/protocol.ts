@@ -1099,7 +1099,7 @@ export type VoiceToast = { transcript: string | null,
  * Seconds the current step has been going, once it is long enough to
  * say so (v46).
  */
-waiting?: number, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "microphone_allowed" } | { "stage": "microphone_denied" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
+waiting?: number, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "microphone_allowed" } | { "stage": "microphone_denied" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "answered", text: string, } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 export type WristLight = { stance: TaskStance, 
 /**

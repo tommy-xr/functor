@@ -265,7 +265,9 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 48 adds `stalls` on `GET /spikes`
 /// ([`crate::frame_telemetry::StallRecord`]): frames over 250 ms since
 /// launch, each with the debug requests the shell served around it.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
+///
+/// 49 adds the `answered` voice stage.
+pub const DEBUG_PROTOCOL_VERSION: u32 = 49;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -846,6 +848,8 @@ pub enum VoiceStage {
     Heard,
     Working,
     Reloaded,
+    /// The agent answered without changing the game: its answer's first line.
+    Answered { text: String },
     /// The desktop could not act on it.
     Failed { reason: String },
     /// It never reached the desktop whole: cancelled, or the link failed.
