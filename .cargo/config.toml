@@ -1,0 +1,6 @@
+# whisper.cpp (`functor-stt --features whisper`) would use sccache or ccache
+# from PATH as its compiler launcher. A sccache server first started by that
+# build inherits its make jobserver and takes its tokens, so the build hangs
+# at the end. Off: the C++ build is a minute, and only cold.
+[env]
+GGML_CCACHE = "OFF"

@@ -12,7 +12,7 @@ mod whisper;
 use std::path::PathBuf;
 
 #[cfg(feature = "whisper")]
-pub use whisper::{ensure_model, Whisper};
+pub use whisper::{ensure_model, Tuning, Whisper};
 
 /// The sample rate every transcriber takes.
 pub const SAMPLE_RATE: u32 = 16_000;
