@@ -4244,10 +4244,6 @@ impl Scene3D {
                 // extent acquires the list's buffer, so a culled list stays
                 // resident. CPU-expanded templates cull per leaf instead.
                 let culled = |renderer: &mut InstancedRenderer, template: Option<Aabb>| {
-                    // Keeps a culled or hidden node's paints resident too.
-                    if let Some(paints) = paints {
-                        renderer.paint_buffer(render_context.gl, paints);
-                    }
                     if scene_context.portal_hidden.get() {
                         renderer.instance_extent(render_context.gl, instances);
                         return true;
@@ -4285,6 +4281,11 @@ impl Scene3D {
                             _ => None,
                         };
                         let mut renderer = scene_context.instanced_renderer(render_context);
+                        // Before the cull, so a culled or hidden node's paints
+                        // stay resident too. A model template ignores paints.
+                        if let Some(paints) = paints {
+                            renderer.paint_buffer(render_context.gl, paints);
+                        }
                         if culled(&mut renderer, bounds) {
                             if let Some(texture) = texture {
                                 scene_context.keep_texture(render_context.gl, texture, true);
