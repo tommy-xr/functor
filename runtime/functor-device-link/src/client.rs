@@ -53,20 +53,23 @@ const FORWARDED: [&str; 3] = ["content-type", "accept", "origin"];
 pub const OUTBOX_LIMIT: usize = 256 * 1024;
 /// Channel messages from the desktop kept until the shell takes them (it
 /// takes them every frame; more wait while it renders nothing). Room for
-/// the longest spoken reply, which is sent whole (62 messages).
+/// the longest spoken reply, which is sent whole (61 messages).
 const INBOX_LIMIT: usize = 96;
 
 /// Keeps `data` for the shell. Full, the oldest message of the busiest
 /// channel goes: a burst on one (panel snapshots while the headset sleeps)
-/// never pushes out another's few (voice statuses).
+/// never pushes out another's few (voice statuses). A spoken reply goes
+/// last, as a lost `Start` loses all of it: only another reply (which
+/// replaces it) fills the inbox with speech alone.
 fn admit(inbox: &mut VecDeque<(u16, Vec<u8>)>, channel: u16, data: Vec<u8>) {
     if inbox.len() >= INBOX_LIMIT {
         let count = |c: u16| inbox.iter().filter(|(x, _)| *x == c).count();
         let busiest = inbox
             .iter()
             .map(|(c, _)| *c)
+            .filter(|c| *c != crate::voice::SPEECH_CHANNEL)
             .max_by_key(|c| count(*c))
-            .expect("full");
+            .unwrap_or(crate::voice::SPEECH_CHANNEL);
         let oldest = inbox.iter().position(|(c, _)| *c == busiest).expect("there");
         inbox.remove(oldest);
     }
@@ -1046,6 +1049,18 @@ mod tests {
             "the statuses stay, in order"
         );
         assert!(inbox.contains(&(3, vec![99])), "the latest snapshot");
+
+        // A whole spoken reply stays, its start included.
+        let speech = crate::voice::SPEECH_CHANNEL;
+        let mut inbox = VecDeque::new();
+        for i in 0..61u8 {
+            admit(&mut inbox, speech, vec![i]);
+        }
+        for i in 0..100u8 {
+            admit(&mut inbox, 3, vec![i]);
+        }
+        let reply: Vec<_> = inbox.iter().filter(|(c, _)| *c == speech).collect();
+        assert_eq!((reply.len(), reply[0]), (61, &(speech, vec![0])));
     }
 
     #[test]

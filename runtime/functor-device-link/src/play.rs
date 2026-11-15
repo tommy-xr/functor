@@ -1,14 +1,15 @@
 //! A spoken reply on the headset: [`Speech`] messages in, samples for the
 //! audio output out. Pure: the shell owns the output stream and the link.
 //! One reply at a time: a `Start` replaces the reply before it, and a gap,
-//! another reply's audio or more than [`MAX_SECONDS`] drops it.
+//! another reply's audio or more than [`crate::voice::MAX_SECONDS`]
+//! drops it.
 
 use crate::talk::Resampler;
-use crate::voice::{Speech, MAX_SECONDS};
+use crate::voice::{Speech, MAX_CLIP, SAMPLE_RATE};
 
 #[derive(Default)]
 pub struct Player {
-    /// The reply arriving or playing out.
+    /// The reply arriving, playing out or last played out.
     reply: Option<u64>,
     /// While more of it may arrive.
     open: Option<Open>,
@@ -29,13 +30,13 @@ impl Player {
     /// per second.
     pub fn receive(&mut self, speech: Speech, rate: u32) {
         match speech {
-            Speech::Start { reply, rate: from } => {
+            Speech::Start { reply } => {
                 self.stop();
                 self.reply = Some(reply);
                 self.open = Some(Open {
                     seq: 0,
-                    room: MAX_SECONDS as usize * from as usize * 2,
-                    resampler: Resampler::new(from, rate),
+                    room: MAX_CLIP,
+                    resampler: Resampler::new(SAMPLE_RATE, rate),
                 });
             }
             Speech::Chunk { reply, seq, data } => {
@@ -75,6 +76,12 @@ impl Player {
         *self = Player::default();
     }
 
+    /// The reply arriving, playing out or last played out (the output may
+    /// still hold its end), until [`Player::stop`].
+    pub fn reply(&self) -> Option<u64> {
+        self.reply
+    }
+
     /// A reply is arriving or has samples left to play.
     pub fn playing(&self) -> bool {
         self.open.is_some() || !self.pending().is_empty()
@@ -90,7 +97,10 @@ impl Player {
         self.at = (self.at + count).min(self.samples.len());
         // Played out: free it.
         if self.open.is_none() && self.at == self.samples.len() {
-            self.stop();
+            *self = Player {
+                reply: self.reply,
+                ..Player::default()
+            };
         }
     }
 }
@@ -98,12 +108,12 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voice::SAMPLE_RATE;
+    use crate::voice::MAX_SECONDS;
 
     const RATE: u32 = SAMPLE_RATE;
 
     fn start(reply: u64) -> Speech {
-        Speech::Start { reply, rate: RATE }
+        Speech::Start { reply }
     }
 
     fn chunk(reply: u64, seq: u32, samples: &[i16]) -> Speech {
@@ -140,6 +150,10 @@ mod tests {
         assert!(player.playing());
         player.played(9);
         assert!(!player.playing() && player.pending().is_empty());
+        // Still known: the output may hold its end, which a stop silences.
+        assert_eq!(player.reply(), Some(1));
+        player.receive(Speech::Stop { reply: 1 }, RATE);
+        assert_eq!(player.reply(), None);
     }
 
     fn player_ended() -> Player {

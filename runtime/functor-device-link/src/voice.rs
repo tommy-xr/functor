@@ -10,10 +10,10 @@
 //!   `Working` → `Reloaded` or `Answered`, or `Failed` at any point; `Idle`
 //!   clears.
 //! - [`SPEECH_CHANNEL`] carries [`Speech`] messages for one spoken reply at
-//!   a time, for the headset to play ([`crate::play`]): `Start` (with the
-//!   sample rate), `Chunk`s of 16-bit little-endian mono PCM numbered from
-//!   0, then `End`; `Stop` silences it. A headset from before this channel
-//!   drops it.
+//!   a time, for the headset to play ([`crate::play`]): `Start`, `Chunk`s
+//!   of audio as a clip's numbered from 0, then `End`; `Stop` silences it.
+//!   A headset that plays them says so first ([`PLAYS`]); one from before
+//!   this channel never does, and its replies are said on the desktop.
 //!
 //! Every message starts with [`VERSION`]. `decode` refuses another version
 //! and anything over the per-message limits below; the receiver enforces
@@ -31,8 +31,12 @@ pub const VERSION: u8 = 1;
 pub const CLIP_CHANNEL: u16 = 1;
 /// Desktop → headset: [`Status`] messages.
 pub const STATUS_CHANNEL: u16 = 2;
-/// Desktop → headset: [`Speech`] messages. (3 and 4 are the panel's.)
+/// Desktop → headset: [`Speech`] messages; headset → desktop: [`PLAYS`].
+/// (3 and 4 are the panel's.)
 pub const SPEECH_CHANNEL: u16 = 5;
+/// Headset → desktop on [`SPEECH_CHANNEL`], once a link: it plays
+/// [`Speech`].
+pub const PLAYS: [u8; 2] = [VERSION, 0];
 
 /// The audio's sample rate: what speech-to-text takes without resampling.
 pub const SAMPLE_RATE: u32 = 16_000;
@@ -43,8 +47,6 @@ pub const MAX_CLIP: usize = MAX_SECONDS as usize * SAMPLE_RATE as usize * 2;
 /// Most audio bytes in one `Chunk` (about a second), so each fits one
 /// [`crate::MAX_MESSAGE`] with room to spare.
 pub const MAX_CHUNK: usize = 32 * 1024;
-/// The sample rates a spoken reply may have.
-pub const SPEECH_RATES: std::ops::RangeInclusive<u32> = 8_000..=48_000;
 /// Most bytes of capsule JSON.
 pub const MAX_CAPSULE: usize = 16 * 1024;
 /// Most bytes of `Capsule::pointing_at`; longer is cut, so a capsule
@@ -270,8 +272,8 @@ impl Status {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Speech {
     /// A new reply, in place of any other; `reply` is the desktop's number
-    /// for it, `rate` its samples per second.
-    Start { reply: u64, rate: u32 },
+    /// for it.
+    Start { reply: u64 },
     /// Audio, `seq` counting from 0 with no gaps.
     Chunk { reply: u64, seq: u32, data: Vec<u8> },
     /// The reply is complete.
@@ -283,7 +285,7 @@ pub enum Speech {
 impl Speech {
     pub fn reply(&self) -> u64 {
         match self {
-            Speech::Start { reply, .. }
+            Speech::Start { reply }
             | Speech::Chunk { reply, .. }
             | Speech::End { reply }
             | Speech::Stop { reply } => *reply,
@@ -295,10 +297,9 @@ impl Speech {
         let mut w = Writer::default();
         w.u8(VERSION);
         match self {
-            Speech::Start { reply, rate } => {
+            Speech::Start { reply } => {
                 w.u8(1);
                 w.u64(*reply);
-                w.u32(*rate);
             }
             Speech::Chunk { reply, seq, data } => {
                 if data.len() > MAX_CHUNK {
@@ -329,18 +330,12 @@ impl Speech {
         })
     }
 
-    /// Refuses other versions, a rate outside [`SPEECH_RATES`] and a chunk
-    /// over [`MAX_CHUNK`].
+    /// Refuses other versions and a chunk over [`MAX_CHUNK`].
     pub fn decode(bytes: &[u8]) -> Result<Speech, Error> {
         let mut r = Reader::new(bytes);
         version(&mut r)?;
         let speech = match r.u8()? {
-            1 => Speech::Start {
-                reply: r.u64()?,
-                rate: Some(r.u32()?)
-                    .filter(|rate| SPEECH_RATES.contains(rate))
-                    .ok_or(Error::Malformed("speech rate"))?,
-            },
+            1 => Speech::Start { reply: r.u64()? },
             2 => Speech::Chunk {
                 reply: r.u64()?,
                 seq: r.u32()?,
@@ -366,8 +361,7 @@ impl Speech {
                 seq: seq as u32,
                 data: chunk.iter().flat_map(|s| s.to_le_bytes()).collect(),
             });
-        let rate = SAMPLE_RATE;
-        [Speech::Start { reply, rate }]
+        [Speech::Start { reply }]
             .into_iter()
             .chain(chunks)
             .chain([Speech::End { reply }])
@@ -476,10 +470,7 @@ mod tests {
             assert_eq!(Clip::decode(&clip.encode().unwrap()).unwrap(), clip);
         }
         let speech = [
-            Speech::Start {
-                reply: 3,
-                rate: SAMPLE_RATE,
-            },
+            Speech::Start { reply: 3 },
             Speech::Chunk {
                 reply: 3,
                 seq: 0,
@@ -578,11 +569,9 @@ mod tests {
             data: vec![0; MAX_CHUNK + 1],
         };
         assert_eq!(big.encode(), Err(Error::TooLarge));
-        for rate in [0, 7_999, 48_001] {
-            let start = Speech::Start { reply: 1, rate }.encode().unwrap();
-            assert_eq!(Speech::decode(&start), Err(Error::Malformed("speech rate")));
-        }
         assert!(Speech::decode(&[VERSION, 9]).is_err());
+        // The headset's word on the same channel is not speech.
+        assert!(Speech::decode(&PLAYS).is_err());
         let mut trailing = Speech::Stop { reply: 1 }.encode().unwrap();
         trailing.push(0);
         assert!(Speech::decode(&trailing).is_err());
@@ -608,8 +597,7 @@ mod tests {
             })
             .collect();
         assert!(speech.iter().all(|s| s.reply() == 9));
-        let rate = SAMPLE_RATE;
-        assert_eq!(speech[0], Speech::Start { reply: 9, rate });
+        assert_eq!(speech[0], Speech::Start { reply: 9 });
         assert_eq!(speech[3], Speech::End { reply: 9 });
         let (
             Speech::Chunk {

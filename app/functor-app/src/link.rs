@@ -197,6 +197,8 @@ struct Conn {
     cmds: UnboundedSender<ConnCmd>,
     /// Hex id, once linked.
     linked: Option<String>,
+    /// Its headset said it plays spoken replies ([`voice::PLAYS`]).
+    plays: bool,
 }
 
 enum ConnCmd {
@@ -460,11 +462,12 @@ impl Hub {
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
             }
-            // In the headset that asked while it is linked, else here.
+            // In the headset that asked while it is linked and plays
+            // replies, else here.
             LinkCommand::Say { device, text } => {
                 if let Some(replies) = self.0.replies.clone() {
                     let reply = replies.next();
-                    let headset = self.link_of(&device).map(|link| Headset { link, reply });
+                    let headset = self.speaker_of(&device).map(|link| Headset { link, reply });
                     tokio::task::spawn_blocking(move || {
                         let said = match &headset {
                             Some(headset) => replies.say_on(reply, &text, headset),
@@ -639,6 +642,16 @@ impl Hub {
             .map(|c| c.cmds.clone())
     }
 
+    /// [`Hub::link_of`], if its headset plays spoken replies.
+    fn speaker_of(&self, device: &str) -> Option<UnboundedSender<ConnCmd>> {
+        let s = self.0.state.lock().unwrap();
+        s.conns
+            .values()
+            .find(|c| c.linked.as_deref() == Some(device))
+            .filter(|c| c.plays)
+            .map(|c| c.cmds.clone())
+    }
+
     /// Serves one connection until it ends, reporting to the core.
     async fn connection(self, stream: TcpStream, ip: IpAddr) {
         let config = WebSocketConfig::default()
@@ -660,7 +673,14 @@ impl Hub {
             let mut s = self.0.state.lock().unwrap();
             s.next_conn += 1;
             let id = s.next_conn;
-            s.conns.insert(id, Conn { cmds, linked: None });
+            s.conns.insert(
+                id,
+                Conn {
+                    cmds,
+                    linked: None,
+                    plays: false,
+                },
+            );
             id
         };
         let mut link = Connection {
@@ -1074,6 +1094,14 @@ impl Connection {
                 }
                 if let Some(heard) = heard {
                     self.heard(heard);
+                }
+            }
+            desktop::Event::Channel {
+                channel: voice::SPEECH_CHANNEL,
+                data,
+            } if data == voice::PLAYS => {
+                if let Some(c) = hub.0.state.lock().unwrap().conns.get_mut(&self.id) {
+                    c.plays = true;
                 }
             }
             desktop::Event::Channel {

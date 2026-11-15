@@ -186,6 +186,12 @@ impl PushToTalk {
         self.since.is_some() || self.talking || self.keep_b
     }
 
+    /// Held to talk, whether or not the shell's utterance started (no
+    /// link, the microphone prompt), until released.
+    pub fn talking(&self) -> bool {
+        self.talking || self.done
+    }
+
     /// The shell ended the utterance itself (its time limit, a lost link):
     /// the button must be released before it talks again.
     pub fn stop(&mut self) {
@@ -1180,10 +1186,13 @@ mod tests {
         ptt.step(Some(&stick(true, false)), true, t);
         ptt.step(Some(&stick(true, false)), true, t + TALK_HOLD);
         ptt.stop();
+        // Still held to talk (a reply waits) until released.
+        assert!(ptt.talking());
         assert_eq!(
             ptt.step(Some(&stick(false, false)), true, t + TALK_HOLD * 2),
             None
         );
+        assert!(!ptt.talking());
     }
 
     #[test]
