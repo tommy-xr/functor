@@ -133,7 +133,7 @@ timeline, a fusing room or head tracking keeps the usual 60 Hz.
 | `GET /scene` | current frame as JSON: `camera` + `scene` + `lights` |
 | `GET /mirror` | the frame on screen, the view it was seen from and its clock, compact, for `run native --mirror` — see [below](#get-mirror-and---mirror--draw-another-sessions-frames-protocol-v44) (protocol v44) |
 | `GET /frames` | the shell's last `?last=N` frames (default the whole 600-frame ring) as `{stats, frames}` — see [Frame telemetry](#frame-telemetry-get-frames-and-get-spikes-protocol-v30) (protocol v30) |
-| `GET /spikes` | frames over the spike threshold, each with the stage that dominated and its neighbours (protocol v30) |
+| `GET /spikes` | frames over the spike threshold, each with the stage that dominated and its neighbours (protocol v30); and `stalls`: the newest 16 frames over 250 ms since launch, each with its dominant stage and `during`, the debug requests served in that frame and the one before, e.g. `["POST /capture"]` (protocol v48) |
 | `GET /trace` | paused-inspector trace: the last real frame's entry-point invocations plus a synthesized `draw` pass, replayed while paused. Each site (binders AND variable reads, `site`) carries the full `value`, a depth-limited `preview`, and `kind` (primitive/composite — the editor's inline-vs-hover policy); `{ "paused": false, "invocations": [] }` while playing. Each invocation carries its returned value both as text (`result`, `result_preview`) and as STRUCTURE (`result_json`, the same grammar as `/state`'s `model` — so a client can tree it instead of parsing a rendering), under a 1 MiB budget shared by the document's structured results (the `result`/`preview` TEXT is not bounded by it): a value that would exceed the remaining budget is emitted as `{"$truncated": "trace budget"}` with `result_json_truncated: true` on that invocation, and the first refusal spends the rest of the budget. Paused docs also carry `coverage` (per-file span starts with the frame OFFSETS they executed on, over a ±120-frame journal ring — positive offsets appear when scrubbed behind the live head) and `runnable` (the static could-run set) — the recency gutter's data |
 | `POST /input` | inject input (see below) |
 | `POST /time` | control the frame clock (see below) |
@@ -261,8 +261,15 @@ untimed shell work), and keeps the
 newest 8 in `GET /spikes` with up to 4 frames either side. At most one line
 is logged per second; the next notes how many went unlogged.
 
+A frame over 250 ms is a **stall**: the view froze. It always logs —
+`STALL frame 2194: 1274.4 ms (sim.other 1260.1 ms) during POST /reload-source` —
+naming the debug requests served in that frame and the one before, and
+`GET /spikes` keeps the newest 16 in `stalls` for the life of the process, so
+one is still there after the spikes around it have cycled out.
+
 Recording costs a few clock reads per stage and one fixed-size copy per frame;
-it never allocates, so it is always on. On Android each sim stage is also an
+it allocates only on a frame that served a debug request or stalled, so it is
+always on. On Android each sim stage is also an
 ATrace section (`functor.tick`, `functor.physics.reconcile`, …) that Perfetto
 shows under the `app` category.
 
