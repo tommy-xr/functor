@@ -312,10 +312,15 @@ too), and a left press over a `Ui` widget the UI pass wanted belongs to the
 widget — it clicks the button under the pointer, and the game's hooks and
 `mouse.pressed` never see it. The same holds over the webview's interactive
 elements and the timeline scrubber. So an agent can click UI by coordinates, and
-a click on a button no longer leaks into the game below it. Whether an overlay
-wants the pointer is only known after a rendered frame has seen the new
-position, so left edges sent right after a `mouse_move` wait for the next frame
-and are then routed in order — a move and a click can be sent back to back.
+a click on a button no longer leaks into the game below it. The overlays see
+one pointer state per rendered frame, so while one is shown, a left edge sent
+right after a `mouse_move` or another left edge, and a `mouse_move` right after
+a left edge, is answered on the next frame, with every request queued behind it
+kept in order. A burst like `move A; down; up; move B; step` can be sent back to
+back: it clicks at A, and the step still sees the press. While the clock is
+pinned (paused) the game UI sees no pointer, so an injected left press over a
+`Ui` widget reaches the game; one over the webview's interactive elements or
+the scrubber still does not.
 Once a pointer has been injected, a `--hidden` window keeps it parked there for
 the rest of the session (hover shows in captures). `--input-script` replays do
 not follow this routing yet: scripted clicks always reach the game.
