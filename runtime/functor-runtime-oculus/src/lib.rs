@@ -2637,7 +2637,11 @@ images cannot be posed"
         let status = status.map(|(step, alpha)| (functor_runtime_common::load_status::lines(&step), alpha));
         let status_lines = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
         if status_lines != debug.status_lines {
-            log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+            // Logged per step, not per count: a push's count moves every frame.
+            let heading = |lines: &Option<Vec<String>>| lines.as_ref().and_then(|lines| lines.first().cloned());
+            if heading(&status_lines) != heading(&debug.status_lines) {
+                log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+            }
             debug.status_lines = status_lines;
         }
         let panel = match (panel, status, tracked_center) {
