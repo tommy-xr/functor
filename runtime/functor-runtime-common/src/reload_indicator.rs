@@ -123,6 +123,8 @@ pub struct ReloadIndicator {
     /// The pulse runs from here, on through a retry: when the last push in
     /// flight settled, or when the mark has faded in if that is later.
     pulse_from: Option<Instant>,
+    /// How the last push to settle ended, until taken.
+    outcome: Option<Result<(), String>>,
 }
 
 impl ReloadIndicator {
@@ -146,6 +148,7 @@ impl ReloadIndicator {
     pub fn poll(&mut self, now: Instant, rendered_frames: u64) {
         let mut last = self.last;
         let mut settled = false;
+        let mut ended = None;
         self.in_flight.retain(|push| {
             let answer = match push.answer.try_recv() {
                 Ok(result) => Some(result),
@@ -162,15 +165,30 @@ impl ReloadIndicator {
             last = Some((outcome, now));
             settled = true;
             if let Some(result) = answer {
+                ended = Some(result.as_ref().map(|_| ()).map_err(String::clone));
                 let _ = push.reply.send(result);
             }
             false
         });
+        if ended.is_some() {
+            self.outcome = ended;
+        }
         if settled && self.in_flight.is_empty() {
             // Not before it has faded in: a quick reload still pulses in view.
             self.pulse_from = Some(self.fade_in_from.map_or(now, |from| now.max(from + FADE)));
         }
         self.last = last;
+    }
+
+    /// How the last push to settle since the last call ended: `Err` is why
+    /// it was rejected.
+    pub fn take_outcome(&mut self) -> Option<Result<(), String>> {
+        self.outcome.take()
+    }
+
+    /// A push has not answered yet.
+    pub fn in_progress(&self) -> bool {
+        !self.in_flight.is_empty()
     }
 
     /// What to draw at `now`; `None` when hidden.
