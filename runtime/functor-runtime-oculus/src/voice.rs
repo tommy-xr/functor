@@ -310,6 +310,7 @@ impl Voice {
             Stage::Reloaded => Progress::Stage(VoiceStage::Reloaded),
             Stage::Failed { reason } => Progress::Stage(VoiceStage::Failed { reason }),
             Stage::Idle => Progress::Idle,
+            Stage::Answered { text } => Progress::Stage(VoiceStage::Answered { text }),
         };
         self.toast.progress(step, now);
     }

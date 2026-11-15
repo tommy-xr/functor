@@ -146,6 +146,20 @@ struct HubState {
     unsent: HashMap<String, voice::Status>,
 }
 
+/// `status` as the frames a headset is sent. One from before `Answered`
+/// drops that stage unread, so `Idle` goes first: its toast clears rather
+/// than stays on Working.
+fn status_frames(status: &voice::Status) -> Vec<wire::Frame> {
+    let clear = matches!(status.stage, voice::Stage::Answered { .. }).then(|| {
+        voice::Status {
+            utterance: status.utterance,
+            stage: voice::Stage::Idle,
+        }
+        .frame()
+    });
+    clear.into_iter().chain([status.frame()]).collect()
+}
+
 struct Conn {
     cmds: UnboundedSender<ConnCmd>,
     /// Hex id, once linked.
@@ -424,19 +438,18 @@ impl Hub {
                 let stage = match stage {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
-                    // No stage of its own on the wire (an older headset could
-                    // not read one): the toast clears. The answer is in the
-                    // request's record (`AppState::requests`) for the panel.
-                    Core::Answered(_) => voice::Stage::Idle,
+                    Core::Answered(text) => voice::Stage::Answered { text },
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {
                     utterance: Some(utterance),
                     stage,
                 };
-                let sent = self
-                    .link_of(&device)
-                    .is_some_and(|link| link.send(ConnCmd::Send(status.frame())).is_ok());
+                let sent = self.link_of(&device).is_some_and(|link| {
+                    status_frames(&status)
+                        .into_iter()
+                        .all(|frame| link.send(ConnCmd::Send(frame)).is_ok())
+                });
                 if !sent {
                     self.0.state.lock().unwrap().unsent.insert(device, status);
                 }
@@ -963,7 +976,7 @@ impl Connection {
                 self.unpend();
                 hub.seen(&device);
                 if let Some(status) = hub.0.state.lock().unwrap().unsent.remove(&device) {
-                    self.outgoing.push(status.frame());
+                    self.outgoing.extend(status_frames(&status));
                 }
                 self.linked = Some(device.clone());
                 hub.send(LinkEvent::Connected {
