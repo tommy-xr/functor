@@ -50,6 +50,7 @@
 //! cargo run -q --release -p functor_runtime_common --example frame_bench
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- 40 80   # grid sides
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- paints  # instance paints
+//! cargo run -q --release -p functor_runtime_common --example frame_bench -- raycast # Instance.raycast
 //! ```
 //!
 //! Always `--release` — a debug interpreter is many times slower and not
@@ -568,6 +569,52 @@ fn bench_paints() {
     }
 }
 
+/// The pick workload: `queries` `Instance.raycast`s per frame against a
+/// `side`×`side` grid of boxes held in a top-level list.
+fn raycast_workload(side: u32, queries: u32) -> String {
+    format!(
+        r#"
+let side = {side}.0
+let boxes = List.range(side * side) |> List.map((i) =>
+  Instance.trs(Vec3.make(Math.mod(i, side), 0.5, Math.floor(i / side)), Angle.degrees(0.0), 0.8, 1.0, 0.8))
+let rays = List.range({queries}.0) |> List.map((k) =>
+  {{ origin: Vec3.make(k * 0.37, 50.0, k * 0.21), direction: Vec3.make(0.1, -1.0, 0.05) }})
+let init = 0.0
+let tick = (m: float, dt: float, tts: float) => m
+let draw = (m: float, tts: float) =>
+  let hits = rays |> List.map((r) => Instance.raycast(r, boxes)) in
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(0.0, 5.0, -5.0), Vec3.make(0.0, 0.0, 0.0)),
+    Scene.cube() |> Scene.translate(Vec3.make(List.length(hits) * 0.0, 0.0, 0.0)))
+"#
+    )
+}
+
+/// The pick table: time per `Instance.raycast` against N boxes.
+fn bench_raycast() {
+    println!("frame_bench: Instance.raycast — one ray against every box (brute force)");
+    println!("workload: 100 queries per frame against a held side×side grid of boxes");
+    println!();
+    println!(
+        "{:>7} {:>15} {:>12} {:>13} {:>12}",
+        "boxes", "us/query(min)", "ns/box", "allocs/frame", "bytes/frame"
+    );
+    let queries = 100;
+    for side in [32, 100, 317] {
+        let boxes = side * side;
+        let m = bench_source(&raycast_workload(side, queries));
+        let per_query = m.min_us / queries as f64;
+        println!(
+            "{:>7} {:>15.2} {:>12.2} {:>13} {:>12}",
+            boxes,
+            per_query,
+            per_query * 1000.0 / boxes as f64,
+            m.allocs_per_frame,
+            m.bytes_per_frame,
+        );
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("========================================================================");
@@ -593,6 +640,10 @@ fn main() {
     }
     if args.first().is_some_and(|a| a == "paints") {
         bench_paints();
+        return;
+    }
+    if args.first().is_some_and(|a| a == "raycast") {
+        bench_raycast();
         return;
     }
 
