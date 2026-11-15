@@ -38,6 +38,7 @@ pub mod desktop;
 pub mod device;
 #[cfg(feature = "file")]
 pub mod file;
+pub mod load;
 pub mod panel;
 pub mod talk;
 pub mod voice;
