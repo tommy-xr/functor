@@ -59,9 +59,13 @@ const INBOX_LIMIT: usize = 96;
 /// Keeps `data` for the shell. Full, the oldest message of the busiest
 /// channel goes: a burst on one (panel snapshots while the headset sleeps)
 /// never pushes out another's few (voice statuses). A spoken reply goes
-/// last, as a lost `Start` loses all of it: only another reply (which
-/// replaces it) fills the inbox with speech alone.
+/// last, as a lost `Start` loses all of it; a new reply's `Start` drops any
+/// queued one (it replaces it), so speech never holds more than one reply.
 fn admit(inbox: &mut VecDeque<(u16, Vec<u8>)>, channel: u16, data: Vec<u8>) {
+    use crate::voice::{Speech, SPEECH_CHANNEL};
+    if channel == SPEECH_CHANNEL && matches!(Speech::decode(&data), Ok(Speech::Start { .. })) {
+        inbox.retain(|(c, _)| *c != SPEECH_CHANNEL);
+    }
     if inbox.len() >= INBOX_LIMIT {
         let count = |c: u16| inbox.iter().filter(|(x, _)| *x == c).count();
         let busiest = inbox
@@ -1061,6 +1065,18 @@ mod tests {
         }
         let reply: Vec<_> = inbox.iter().filter(|(c, _)| *c == speech).collect();
         assert_eq!((reply.len(), reply[0]), (61, &(speech, vec![0])));
+
+        // A newer reply's start replaces a queued one whole: the others' stay.
+        use crate::voice::Speech;
+        let start = |reply| Speech::Start { reply }.encode().unwrap();
+        let mut inbox = VecDeque::new();
+        admit(&mut inbox, 2, b"heard".to_vec());
+        admit(&mut inbox, speech, start(1));
+        for i in 0..60u8 {
+            admit(&mut inbox, speech, vec![i]);
+        }
+        admit(&mut inbox, speech, start(2));
+        assert_eq!(inbox, [(2, b"heard".to_vec()), (speech, start(2))]);
     }
 
     #[test]
