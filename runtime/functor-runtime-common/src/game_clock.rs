@@ -466,9 +466,11 @@ past the {MAX_QUEUED_STEPS} step cap. Advance in smaller batches, or POST \
             }
         }
         // The user's own pause is theirs. An agent's (its `step` on a game
-        // already paused) or an unnamed one keeps the cause it found.
+        // already paused) or an unnamed one keeps the cause it found. No
+        // request is the start: that names nobody.
         self.paused_by = match by {
             Some(PausedBy::User) => by,
+            Some(PausedBy::Start) => self.paused_by,
             _ => self.paused_by.or(by),
         };
         Ok(())
@@ -1030,9 +1032,14 @@ mod tests {
         clock.apply(TimeCommand::Cancel, None).unwrap();
         assert_eq!((clock.is_paused(), clock.paused_by()), (true, Some(PausedBy::User)));
         clock.resume();
-        // Without `by` from running: paused, no cause.
+        // Without `by` from running, or claiming to be the start: paused,
+        // no cause.
+        for by in [None, Some(PausedBy::Start)] {
+            clock.apply(advance, by).unwrap();
+            assert_eq!((clock.is_paused(), clock.paused_by()), (true, None));
+            clock.resume();
+        }
         clock.apply(advance, None).unwrap();
-        assert_eq!((clock.is_paused(), clock.paused_by()), (true, None));
         clock.resume();
         // The shell's own pause (a seek) keeps the cause it found.
         clock.apply(advance, Some(PausedBy::Agent)).unwrap();
