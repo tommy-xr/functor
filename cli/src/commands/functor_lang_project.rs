@@ -2119,7 +2119,7 @@ impl AssetSyncReport {
 }
 
 /// The debug protocol with `POST /push-manifest`.
-const PUSH_MANIFEST_PROTOCOL_VERSION: u64 = 49;
+const PUSH_MANIFEST_PROTOCOL_VERSION: u64 = 50;
 
 /// `POST /push-manifest` for `files` (hashed as `hashes`): the hashes the
 /// headset lacks, or `None` from a runtime without the route (send all).

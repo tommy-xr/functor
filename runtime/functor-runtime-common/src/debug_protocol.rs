@@ -262,16 +262,20 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
 ///
-/// 48 adds `load_status` on `GET /state`: the lines of the headset's load
+/// 48 adds `stalls` on `GET /spikes`
+/// ([`crate::frame_telemetry::StallRecord`]): frames over 250 ms since
+/// launch, each with the debug requests the shell served around it.
+///
+/// 49 adds `load_status` on `GET /state`: the lines of the headset's load
 /// status card ([`crate::load_status`]) while it shows. `POST /reload-asset` takes
 /// `push_files` and `push_bytes` in its query: what the push in flight will
 /// send in all, for that card's count; an older runtime ignores them.
 ///
-/// 49 adds `POST /push-manifest` and `POST /clear-push-cache`: a push names
+/// 50 adds `POST /push-manifest` and `POST /clear-push-cache`: a push names
 /// its files by content hash first and uploads only those the device's
-/// pushed-file cache lacks ([`crate::push_cache`]). A pre-v49 runtime
+/// pushed-file cache lacks ([`crate::push_cache`]). A pre-v50 runtime
 /// answers 404: send everything.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 49;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 50;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -689,7 +693,7 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::audio::AudioCounts>,
-    /// The headset's load status card (v48, [`crate::load_status`]): its
+    /// The headset's load status card (v49, [`crate::load_status`]): its
     /// lines, heading first. Omitted while it is hidden and on desktop.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1740,6 +1744,41 @@ pub enum DebugRequest {
         Vec<crate::net::DeliveredEvent>,
         Sender<Result<String, String>>,
     ),
+}
+
+impl DebugRequest {
+    /// The route that made this request, for a stall's record.
+    pub fn route(&self) -> &'static str {
+        match self {
+            DebugRequest::Capture(..) => "POST /capture",
+            DebugRequest::Stream(..) => "GET /stream",
+            DebugRequest::State(true, _) => "GET /state",
+            DebugRequest::State(false, _) => "GET /state?model=0",
+            DebugRequest::Scene(..) => "GET /scene",
+            DebugRequest::Mirror(..) => "GET /mirror",
+            DebugRequest::Trace(..) => "GET /trace",
+            DebugRequest::Frames(..) => "GET /frames",
+            DebugRequest::Spikes(..) => "GET /spikes",
+            DebugRequest::InputLog(..) => "GET /input-log",
+            DebugRequest::Input(..) => "POST /input",
+            DebugRequest::Time(..) => "POST /time",
+            DebugRequest::Project(..) => "GET /project",
+            DebugRequest::ReloadSource(..) => "POST /reload-source",
+            DebugRequest::ReloadProject(..) => "POST /reload-project",
+            DebugRequest::LoadProject(..) => "POST /load-project",
+            DebugRequest::ProjectFileRequests(..) => "GET /project-files",
+            DebugRequest::ProjectFileReply(..) => "POST /project-files",
+            DebugRequest::ReloadAsset(..) => "POST /reload-asset",
+            DebugRequest::SyncAssets(..) => "POST /sync-assets",
+            DebugRequest::Rewind(..) => "POST /rewind",
+            DebugRequest::Seek(..) => "POST /seek",
+            DebugRequest::Camera(..) => "POST /camera",
+            DebugRequest::Preview(..) => "POST /preview",
+            DebugRequest::DisplayRefreshRate(..) => "POST /display-refresh-rate",
+            DebugRequest::NetOutbound(..) => "GET /net/outbound",
+            DebugRequest::NetDeliver(..) => "POST /net/deliver",
+        }
+    }
 }
 
 #[cfg(test)]
