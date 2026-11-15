@@ -708,18 +708,19 @@ fn stance_word(stance: TaskStance) -> &'static str {
     }
 }
 
-// Metres: about 0.74 m wide at 0.9 m (the mockup's proportions). Body
-// capitals are about 0.8 degrees tall, its x-height about 0.6.
-pub const WIDTH: f32 = 0.76;
-pub const HEIGHT: f32 = 0.54;
-const PAD: f32 = 0.024;
-const HEADER: f32 = 0.05;
-const NAV: f32 = 0.17;
-const ROW: f32 = 0.045;
-const TITLE: f32 = 0.018;
-const BODY: f32 = 0.0135;
-const SMALL: f32 = 0.011;
-const BUTTON: f32 = 0.042;
+// Metres: 50° by 43° at 0.9 m, its text on the overlay's scale
+// ([`overlay_font::BODY`]: body x-height 0.78° at the panel's centre; the
+// upright panel's lowest rows, 26° below the eyes, are about a fifth smaller).
+pub const WIDTH: f32 = 0.84;
+pub const HEIGHT: f32 = 0.70;
+const PAD: f32 = 0.028;
+const HEADER: f32 = 0.062;
+const NAV: f32 = 0.19;
+const ROW: f32 = 0.06;
+const TITLE: f32 = overlay_font::TITLE * DISTANCE;
+const BODY: f32 = overlay_font::BODY * DISTANCE;
+const SMALL: f32 = overlay_font::SMALL * DISTANCE;
+const BUTTON: f32 = 0.054;
 const RING: f32 = 0.0025;
 
 fn outline(out: &mut Vec<Shape>, [x, y, w, h]: [f32; 4], c: [f32; 3]) {
@@ -751,17 +752,22 @@ fn text(out: &mut Vec<Shape>, at: [f32; 2], size: f32, color: [f32; 3], s: &str)
     });
 }
 
-/// The content column, laid out top down.
+/// The content column, laid out top down above `floor` (the buttons, the
+/// notice): a line that would cross it is not drawn, a paragraph is cut
+/// to the lines that fit.
 struct Col<'a> {
     out: &'a mut Vec<Shape>,
     x: f32,
     w: f32,
     y: f32,
+    floor: f32,
 }
 
 impl Col<'_> {
     fn line(&mut self, s: &str, size: f32, color: [f32; 3]) {
-        text(self.out, [self.x, self.y], size, color, &fit(s, size, self.w));
+        if self.room(size) > 0 {
+            text(self.out, [self.x, self.y], size, color, &fit(s, size, self.w));
+        }
         self.y -= advance(size);
     }
 
@@ -769,7 +775,7 @@ impl Col<'_> {
     /// be all caps is not set as a label.
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
         let style = overlay_font::Style::of(s);
-        for l in overlay_font::wrap_in(s, size, style, self.w, lines) {
+        for l in overlay_font::wrap_in(s, size, style, self.w, lines.min(self.room(size))) {
             self.out.push(Shape::Text {
                 at: [self.x, self.y],
                 size,
@@ -779,6 +785,15 @@ impl Col<'_> {
             });
             self.y -= advance(size);
         }
+    }
+
+    /// How many lines of `size` fit above the floor.
+    fn room(&self, size: f32) -> usize {
+        let free = self.y - size - self.floor;
+        if free < 0.0 {
+            return 0;
+        }
+        1 + (free / advance(size)) as usize
     }
 
     fn gap(&mut self, h: f32) {
@@ -861,6 +876,7 @@ impl Panel {
             x,
             w: cw,
             y: top - HEADER - PAD,
+            floor: notice_top(bottom),
         };
         let hint = match (connection, data) {
             (Connection::Connected { .. }, Some(data)) => {
@@ -898,7 +914,8 @@ impl Panel {
                     out: &mut out,
                     x,
                     w: cw,
-                    y: bottom + SMALL * 1.6,
+                    y: notice_top(bottom),
+                    floor: bottom,
                 };
                 note.line(&format!("Not done: {reason}"), SMALL, DANGER);
             }
@@ -949,6 +966,9 @@ impl Panel {
                     );
                     return None;
                 };
+                if t.decision.is_some() || running(t.stance) {
+                    col.floor = buttons_top(bottom);
+                }
                 self.conversation_row(col, data, t.id);
                 col.para(&t.title, TITLE, TEXT, 2);
                 col.line(stance_word(t.stance), SMALL, stance_color(t.stance));
@@ -975,6 +995,9 @@ impl Panel {
                 self.buttons(col, &[label], 1, bottom)
             }
             Section::Talk => {
+                // Room for every move's row, which the stick can focus.
+                let moves = data.route.as_ref().map_or(0, |r| r.moves.len());
+                col.floor = notice_top(bottom) + moves as f32 * (ROW + 0.006);
                 col.line("TALK", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
@@ -986,7 +1009,7 @@ impl Panel {
                 if let Some(toast) = toast {
                     col.gap(0.008);
                     for l in toast_lines(toast) {
-                        col.line(&l.text, l.size * 0.8, l.color);
+                        col.line(&l.text, l.size * DISTANCE, l.color);
                     }
                 }
                 // Where the request in flight is (D43).
@@ -1009,6 +1032,7 @@ impl Panel {
                         .map_or("", |(l, _)| l);
                     return confirm(col, &format!("{label}?"), bottom);
                 }
+                col.floor = notice_top(bottom);
                 for (i, (label, _)) in route.moves.iter().enumerate() {
                     self.row(col, self.focus == Some(i), label, "", TEXT, "");
                 }
@@ -1062,7 +1086,11 @@ impl Panel {
     /// A task's page: its decision (D35) with Keep and Revert, or its run
     /// with Stop.
     fn page_of(&self, col: &mut Col, t: &PanelTask, bottom: f32) -> Option<&'static str> {
-        col.para(&t.title, TITLE, TEXT, 2);
+        if t.decision.is_some() || running(t.stance) {
+            col.floor = buttons_top(bottom);
+        }
+        // One line: the decision needs the room.
+        col.line(&t.title, TITLE, TEXT);
         let stance = match t.decision {
             Some(_) => "READY FOR YOUR DECISION",
             None => stance_word(t.stance),
@@ -1081,7 +1109,6 @@ impl Panel {
             }
             return self.buttons(col, &["Stop"], 1, bottom);
         };
-        col.line("SIZE OF THE CHANGE", SMALL, FAINT);
         col.line(&d.size, BODY, TEXT);
         col.gap(0.004);
         verdict(col, d);
@@ -1090,8 +1117,9 @@ impl Panel {
             col.line("SUMMARY", SMALL, FAINT);
             col.para(&d.summary, BODY, TEXT, 3);
         }
-        if !d.notes.is_empty() {
-            col.gap(0.004);
+        // The heading only with room for a note under it.
+        col.gap(0.004);
+        if !d.notes.is_empty() && col.room(SMALL) >= 2 {
             col.line("THINGS TO NOTE", SMALL, FAINT);
             for note in &d.notes {
                 col.line(&format!("- {note}"), SMALL, MUTED);
@@ -1110,6 +1138,9 @@ impl Panel {
 
     /// A list row: `title` with `word` at its right, `sub` under it.
     fn row(&self, col: &mut Col, focus: bool, title: &str, word: &str, color: [f32; 3], sub: &str) {
+        if col.y - ROW < col.floor {
+            return;
+        }
         let rect = [col.x, col.y - ROW, col.w, ROW];
         fill(col.out, rect, if focus { SELECTED } else { SUNK });
         if focus {
@@ -1170,19 +1201,11 @@ impl Panel {
         };
         col.line(&c.title, TITLE, TEXT);
         col.line(stance_word(c.stance), SMALL, stance_color(c.stance));
-        if let Some(q) = asked(c).map(|i| &c.items[i]) {
-            col.gap(0.004);
-            col.line("THE AGENT ASKS", SMALL, WARN);
-            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
-            col.para(&q.text, BODY, WARN, most);
-            col.line("Hold the right stick to answer", SMALL, TEXT);
-        }
-        col.gap(0.006);
         // Under the messages: push-to-talk's stages, then the work.
         let mut tail: Vec<(String, f32, [f32; 3])> = toast
             .map(|t| {
                 (toast_lines(t).into_iter())
-                    .map(|l| (l.text, l.size * 0.8, l.color))
+                    .map(|l| (l.text, l.size * DISTANCE, l.color))
                     .collect()
             })
             .unwrap_or_default();
@@ -1198,7 +1221,18 @@ impl Panel {
             }
             None => {}
         }
-        let floor = bottom + SMALL * 1.6 + tail.iter().map(|l| advance(l.1)).sum::<f32>();
+        let floor = notice_top(bottom) + tail.iter().map(|l| advance(l.1)).sum::<f32>();
+        // The question too stays above the tail.
+        col.floor = floor;
+        if let Some(q) = asked(c).map(|i| &c.items[i]) {
+            col.gap(0.004);
+            col.line("THE AGENT ASKS", SMALL, WARN);
+            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
+            col.para(&q.text, BODY, WARN, most);
+            col.line("Hold the right stick to answer", SMALL, TEXT);
+        }
+        col.gap(0.006);
+        col.floor = notice_top(bottom);
         let lines = conversation_lines(c, self.expanded);
         // From the lines just laid out: has_more's cost, every frame, saved.
         let cut = lines.iter().any(|l| l.0.starts_with(SHOW_ALL)) || asked_long(c);
@@ -1395,9 +1429,21 @@ fn verdict(col: &mut Col, d: &PanelDecision) {
     col.para(&d.reason, BODY, MUTED, 2);
 }
 
+/// Where the refusal notice's line starts, above the footer at `bottom`.
+fn notice_top(bottom: f32) -> f32 {
+    bottom + SMALL * 1.6
+}
+
+/// The top of the buttons above the footer at `bottom`, with a gap: the
+/// floor of a page that has them.
+fn buttons_top(bottom: f32) -> f32 {
+    bottom + SMALL * 3.0 + BUTTON + 0.006
+}
+
 /// The confirm prompt where the buttons were.
 fn confirm(col: &mut Col, question: &str, bottom: f32) -> Option<&'static str> {
     col.y = bottom + SMALL * 3.0 + BUTTON;
+    col.floor = notice_top(bottom);
     col.line(question, BODY, WARN);
     col.line("A  Yes        B  No", BODY, TEXT);
     Some("A yes   B no")
@@ -2000,8 +2046,28 @@ mod tests {
     }
 
     #[test]
-    fn every_view_fits_inside_the_panel_in_the_fonts_glyphs() {
+    fn every_view_fits_inside_the_panel_in_the_fonts_glyphs_and_no_line_overlaps() {
         let d = data();
+        // As much as the desktop sends: six tasks, a full decision.
+        let mut full = d.clone();
+        for id in 4..=6 {
+            full.tasks.push(task(id, TaskStance::Queued, false));
+        }
+        for t in &mut full.tasks {
+            t.title = "Make the left wall bounce the ball back much higher".into();
+            t.activity = "Reading physics.fun and the wall's collider".into();
+        }
+        if let Some(d) = &mut full.tasks[0].decision {
+            d.reason = "It changes how every wall bounces, not only the left one. ".repeat(4);
+            d.summary = "Raised the wall restitution and added a short trail. ".repeat(12);
+            d.notes = vec!["Not tried with two balls at once, or at the highest speed.".into(); 3];
+        }
+        let route = full.route.as_mut().unwrap();
+        route.line = "Queued behind the task that adds a score counter above the net. ".repeat(3);
+        route.moves.push(("Make it a new task, after the others".into(), Destination::New));
+        let c = full.conversation.as_mut().unwrap();
+        c.question = true;
+        c.items.last_mut().unwrap().text = "Which wall should bounce higher? ".repeat(30);
         let mut long = d.clone();
         long.tasks[0].title = "é".repeat(300);
         long.tasks[0].activity = "\u{201c}x\u{201d} ".repeat(100);
@@ -2012,11 +2078,21 @@ mod tests {
         for item in &mut c.items {
             item.text = "word ".repeat(120);
         }
-        let toast = VoiceToast {
-            stage: crate::debug_protocol::VoiceStage::Heard,
-            transcript: Some("word ".repeat(80)),
-            waiting: None,
-        };
+        let toasts = [
+            VoiceToast {
+                stage: crate::debug_protocol::VoiceStage::Heard,
+                transcript: Some("word ".repeat(80)),
+                waiting: None,
+            },
+            VoiceToast {
+                stage: crate::debug_protocol::VoiceStage::Listening {
+                    level: 7,
+                    seconds_left: Some(3),
+                },
+                transcript: None,
+                waiting: None,
+            },
+        ];
         let now = Instant::now();
         let conns = [
             Connection::NotPaired,
@@ -2037,30 +2113,50 @@ mod tests {
                     None,
                     Some(Item::Keep(1, "tree-1".into())),
                     Some(Item::Stop(2)),
+                    Some(Item::Move(9, Destination::New)),
                 ] {
-                    let mut p = Panel {
-                        open: true,
-                        section,
-                        page,
-                        focus: Some(0),
-                        confirm,
-                        notice: Some(("x".repeat(400), now + NOTICE)),
-                        conversation: (section == Section::Talk).then_some(1),
-                        scroll: (page == Some(2)).then_some((2, 1)),
-                        ..Panel::default()
-                    };
-                    for data in [&d, &long] {
-                        for c in &conns {
-                            views.push(p.shapes(Some(data), c, Some(&toast), now));
+                    for (conversation, expanded) in [(None, false), (Some(1), false), (Some(1), true)] {
+                        let mut p = Panel {
+                            open: true,
+                            section,
+                            page,
+                            focus: Some(0),
+                            confirm: confirm.clone(),
+                            notice: Some(("x".repeat(400), now + NOTICE)),
+                            conversation,
+                            expanded,
+                            scroll: (page == Some(2)).then_some((2, 1)),
+                            ..Panel::default()
+                        };
+                        for data in [&d, &long, &full] {
+                            for c in &conns {
+                                for toast in &toasts {
+                                    views.push(p.shapes(Some(data), c, Some(toast), now));
+                                }
+                            }
                         }
+                        p.focus = None;
+                        views.push(p.shapes(None, &conns[3], None, now));
                     }
-                    p.focus = None;
-                    views.push(p.shapes(None, &conns[3], None, now));
                 }
+            }
+        }
+        // Talk keeps a row for every move the stick can focus, under any toast.
+        let talk = Panel {
+            open: true,
+            section: Section::Talk,
+            ..Panel::default()
+        };
+        for toast in &toasts {
+            let shapes = talk.shapes(Some(&full), &conns[3], Some(toast), now);
+            for (label, _) in &full.route.as_ref().unwrap().moves {
+                let drawn = |s: &Shape| matches!(s, Shape::Text { text, .. } if text == label);
+                assert!(shapes.iter().any(drawn), "{label} not drawn");
             }
         }
         let (hw, hh) = (WIDTH / 2.0 + 1e-4, HEIGHT / 2.0 + 1e-4);
         for shapes in views {
+            let mut boxes = Vec::new();
             for s in shapes {
                 match s {
                     Shape::Rect {
@@ -2076,7 +2172,15 @@ mod tests {
                         let right = at[0] + overlay_font::width(&text, size);
                         assert!(at[0] >= -hw && right <= hw, "{text}: {right}");
                         assert!(at[1] <= hh && at[1] - size >= -hh, "{text}: {}", at[1]);
+                        boxes.push((text, [at[0], at[1] - size, right, at[1]]));
                     }
+                }
+            }
+            // No line runs into another (each line's box: its top, one size down).
+            for (i, (a, [ax0, ay0, ax1, ay1])) in boxes.iter().enumerate() {
+                for (b, [bx0, by0, bx1, by1]) in &boxes[i + 1..] {
+                    let apart = ax1 <= bx0 || bx1 <= ax0 || ay1 <= by0 || by1 <= ay0;
+                    assert!(apart || a.is_empty() || b.is_empty(), "{a:?} overlaps {b:?}");
                 }
             }
         }
