@@ -1978,6 +1978,7 @@ fn run_headless(
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
+                telemetry.note(req.route());
                 let state_input = desktop_input_snapshot(
                     &held_keys,
                     mouse_pos,
@@ -4411,6 +4412,7 @@ Escape again to quit"
             loop {
                 if let Some(rx) = &debug_requests {
                     while let Some(req) = woken.take().or_else(|| rx.try_recv().ok()) {
+                        telemetry.note(req.route());
                         // A mirror's snapshot is self-contained: no lockstep for it.
                         debug_active |= !matches!(req, debug_server::DebugRequest::Mirror(_));
                         picture_request |= !leaves_picture(&req);
