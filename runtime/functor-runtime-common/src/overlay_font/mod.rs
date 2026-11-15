@@ -5,10 +5,13 @@
 //! sharp from arm's length to across the room; this module measures and
 //! lays out lines for it.
 //!
-//! A line's style follows its copy: an all-caps line is a label, set
-//! semibold and tracked; a line of figures (the pairing code) gets tabular
-//! digits, tracked wide; anything else is regular. A character the font
-//! lacks draws as a box with its own advance; whitespace draws as a space.
+//! A line is set in a [`Style`]. By default (the overlay's) it follows the
+//! copy: an all-caps line is a label, set semibold and tracked; a line of
+//! figures (the pairing code) gets tabular digits, tracked wide; anything
+//! else is regular. Callers whose copy says nothing of its role (game text
+//! like "HP 100") pass a style instead, through the `_in` functions. A
+//! character the font lacks draws as a box with its own advance; whitespace
+//! draws as a space.
 //!
 //! `size` is a line's box height in metres, as the callers lay lines out:
 //! capitals fill it from the top; descenders hang below it.
@@ -28,6 +31,50 @@ use metrics::{CAP_HEIGHT, REGULAR, REGULAR_KERNING, SEMIBOLD, SEMIBOLD_KERNING};
 
 /// The atlas: RGB, top row first.
 pub const ATLAS_PNG: &[u8] = include_bytes!("atlas.png");
+
+/// The weight correction's exponent (see [`msdf_glsl`]).
+const GAMMA: f32 = 1.6;
+
+/// The field's coverage in GLSL, shared by every painter of this font
+/// (prepend it to a fragment shader). It defines:
+///
+/// - `highp vec2 functorMsdfTexels(highp vec2 uv)`: atlas texels per screen
+///   pixel. Call it outside any branch: derivatives need uniform control
+///   flow.
+/// - `float functorMsdfCoverage(sampler2D atlas, highp vec2 uv, highp vec2
+///   texels, vec3 linearColor, bool linearBlend)`: the median of the three
+///   channels is the distance to the outline, scaled to screen pixels so the
+///   edge is one pixel wide at any distance or angle (at least one, so small
+///   text softens rather than aliases). `linearBlend` when the target blends
+///   in linear light (an sRGB attachment): that fattens light strokes on
+///   dark and thins dark ones on light, and the coverage is curved by the
+///   text colour's luminance to restore the weight a gamma-space blend gives.
+pub fn msdf_glsl() -> String {
+    format!(
+        r#"
+    const float FUNCTOR_MSDF_RANGE = {range:?};
+    const highp vec2 FUNCTOR_MSDF_ATLAS = vec2({w:?}, {h:?});
+    const float FUNCTOR_MSDF_GAMMA = {GAMMA:?};
+    highp vec2 functorMsdfTexels(highp vec2 uv) {{
+        return fwidth(uv) * FUNCTOR_MSDF_ATLAS;
+    }}
+    float functorMsdfCoverage(sampler2D atlas, highp vec2 uv, highp vec2 texels, vec3 linearColor, bool linearBlend) {{
+        vec3 s = textureLod(atlas, uv, 0.0).rgb;
+        float field = max(min(s.r, s.g), min(max(s.r, s.g), s.b)) - 0.5;
+        float px = 0.5 * FUNCTOR_MSDF_RANGE * (1.0 / max(texels.x, 1e-6) + 1.0 / max(texels.y, 1e-6));
+        float coverage = clamp(field * max(px, 1.0) + 0.5, 0.0, 1.0);
+        if (linearBlend) {{
+            float light = smoothstep(0.02, 0.2, dot(linearColor, vec3(0.2126, 0.7152, 0.0722)));
+            coverage = pow(coverage, mix(1.0 / FUNCTOR_MSDF_GAMMA, FUNCTOR_MSDF_GAMMA, light));
+        }}
+        return coverage;
+    }}
+"#,
+        range = RANGE,
+        w = ATLAS_WIDTH as f32,
+        h = ATLAS_HEIGHT as f32,
+    )
+}
 
 /// Em per `size`: capitals a little taller than the old 8x8 font's.
 const EM_PER_SIZE: f32 = 1.25;
@@ -53,31 +100,60 @@ pub struct Glyph {
     pub cell: [u16; 4],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Weight {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Weight {
     Regular,
     Semibold,
 }
 
+/// How a line is set.
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Style {
-    weight: Weight,
-    tracking: f32,
-    tabular: bool,
+pub struct Style {
+    pub weight: Weight,
+    /// Letter-spacing, in em.
+    pub tracking: f32,
+    /// Figures of one width.
+    pub tabular: bool,
 }
 
-fn style(text: &str) -> Style {
-    let letters = text.chars().any(char::is_alphabetic);
-    let lower = text.chars().any(char::is_lowercase);
-    // Only digits and spaces, like the pairing code; "0.85" stays prose.
-    let figures = text.chars().any(|c| c.is_ascii_digit())
-        && text.chars().all(|c| c.is_ascii_digit() || c == ' ');
-    let (weight, tracking, tabular) = match (letters && !lower, figures) {
-        (true, _) => (Weight::Semibold, CAPS_TRACKING, false),
-        (_, true) => (Weight::Regular, FIGURE_TRACKING, true),
-        _ => (Weight::Regular, 0.0, false),
+impl Style {
+    pub const REGULAR: Style = Style {
+        weight: Weight::Regular,
+        tracking: 0.0,
+        tabular: false,
     };
-    Style { weight, tracking, tabular }
+    /// An all-caps label: semibold, tracked.
+    pub const LABEL: Style = Style {
+        weight: Weight::Semibold,
+        tracking: CAPS_TRACKING,
+        tabular: false,
+    };
+    /// A code of figures: tabular, tracked wide.
+    pub const FIGURES: Style = Style {
+        weight: Weight::Regular,
+        tracking: FIGURE_TRACKING,
+        tabular: true,
+    };
+
+    /// The overlay's default, from the copy: an all-caps line is a label
+    /// (scripts without case are not); only digits and spaces ("482 913",
+    /// not "0.85") are figures.
+    pub fn of(text: &str) -> Style {
+        let letters = text.chars().any(|c| c.is_uppercase() || c.is_lowercase());
+        let lower = text.chars().any(char::is_lowercase);
+        let figures = text.chars().any(|c| c.is_ascii_digit())
+            && text.chars().all(|c| c.is_ascii_digit() || c == ' ');
+        match (letters && !lower, figures) {
+            (true, _) => Style::LABEL,
+            (_, true) => Style::FIGURES,
+            _ => Style::REGULAR,
+        }
+    }
+
+    /// A memo key: the floats as bits.
+    fn key(self) -> (Weight, u32, bool) {
+        (self.weight, self.tracking.to_bits(), self.tabular)
+    }
 }
 
 fn glyph(weight: Weight, key: u32) -> &'static Glyph {
@@ -110,10 +186,10 @@ fn kerning(weight: Weight, left: u32, right: u32) -> f32 {
         .map_or(0.0, |i| table[i].1 as f32 / 2048.0)
 }
 
-/// Walks `text` as one line: each glyph with its pen position in em, and
-/// the line's advance in em.
-fn layout(text: &str, mut each: impl FnMut(&'static Glyph, f32)) -> f32 {
-    let style = style(text);
+/// Walks `text` as one line in `style` (else its own, [`Style::of`]): each
+/// glyph with its pen position in em, and the line's advance in em.
+fn layout(text: &str, style: Option<Style>, mut each: impl FnMut(&'static Glyph, f32)) -> f32 {
+    let style = style.unwrap_or_else(|| Style::of(text));
     let mut pen = 0.0;
     let mut previous: Option<u32> = None;
     for c in text.chars() {
@@ -143,33 +219,74 @@ pub fn em(size: f32) -> f32 {
 
 /// `text`'s advance as one line `size` tall, in metres.
 pub fn width(text: &str, size: f32) -> f32 {
-    layout(text, |_, _| {}) * em(size)
+    measure(text, size, None)
+}
+
+/// [`width`] in `style`.
+pub fn width_in(text: &str, size: f32, style: Style) -> f32 {
+    measure(text, size, Some(style))
+}
+
+fn measure(text: &str, size: f32, style: Option<Style>) -> f32 {
+    layout(text, style, |_, _| {}) * em(size)
 }
 
 /// Each glyph of `text` as one line `size` tall with its top-left at
 /// `at` (metres, y up), with its pen on the baseline.
-pub fn place(text: &str, size: f32, at: [f32; 2], mut each: impl FnMut(&'static Glyph, [f32; 2])) {
+pub fn place(text: &str, size: f32, at: [f32; 2], each: impl FnMut(&'static Glyph, [f32; 2])) {
+    place_with(text, size, None, at, each)
+}
+
+/// [`place`] in `style`.
+pub fn place_in(
+    text: &str,
+    size: f32,
+    style: Style,
+    at: [f32; 2],
+    each: impl FnMut(&'static Glyph, [f32; 2]),
+) {
+    place_with(text, size, Some(style), at, each)
+}
+
+fn place_with(
+    text: &str,
+    size: f32,
+    style: Option<Style>,
+    at: [f32; 2],
+    mut each: impl FnMut(&'static Glyph, [f32; 2]),
+) {
     let em = em(size);
     let baseline = at[1] - BASELINE * size;
-    layout(text, |g, pen| each(g, [at[0] + pen * em, baseline]));
+    layout(text, style, |g, pen| each(g, [at[0] + pen * em, baseline]));
 }
 
 /// `text` as one line `size` tall at most `max` metres wide, cut with an
 /// ellipsis if it is longer.
 pub fn fit(text: &str, size: f32, max: f32) -> String {
-    let fitted = remembered(text, size, max, None, || vec![fit_uncached(text, size, max)]);
+    fit_with(text, size, max, None)
+}
+
+/// [`fit`] in `style`.
+pub fn fit_in(text: &str, size: f32, style: Style, max: f32) -> String {
+    fit_with(text, size, max, Some(style))
+}
+
+fn fit_with(text: &str, size: f32, max: f32, style: Option<Style>) -> String {
+    let fitted = remembered(text, size, max, None, style, || {
+        vec![fit_uncached(text, size, max, style)]
+    });
     fitted.into_iter().next().unwrap_or_default()
 }
 
-fn fit_uncached(text: &str, size: f32, max: f32) -> String {
-    if width(text, size) <= max {
+fn fit_uncached(text: &str, size: f32, max: f32, style: Option<Style>) -> String {
+    if measure(text, size, style) <= max {
         return text.to_string();
     }
     let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
     let cut = |n: usize| format!("{}{ELLIPSIS}", text[..ends[n]].trim_end());
-    match longest(ends.len() - 1, |n| width(&cut(n), size) <= max) {
+    match longest(ends.len() - 1, |n| measure(&cut(n), size, style) <= max) {
         // Not even the ellipsis fits.
-        0 if width(&cut(0), size) > max => String::new(),
+        0 if measure(&cut(0), size, style) > max => String::new(),
         n => cut(n),
     }
 }
@@ -191,9 +308,21 @@ fn longest(most: usize, fits: impl Fn(usize) -> bool) -> usize {
 
 /// `text` in lines `size` tall and at most `max` metres wide, broken at
 /// spaces where it can be and inside a word too long for a line; at most
-/// `lines` of them, the last cut with an ellipsis.
+/// `lines` of them, the last cut with an ellipsis. Each line measures in
+/// its own style ([`Style::of`]).
 pub fn wrap(text: &str, size: f32, max: f32, lines: usize) -> Vec<String> {
-    remembered(text, size, max, Some(lines), || wrap_uncached(text, size, max, lines))
+    wrap_with(text, size, max, lines, None)
+}
+
+/// [`wrap`], every line in `style`: draw them in it too.
+pub fn wrap_in(text: &str, size: f32, style: Style, max: f32, lines: usize) -> Vec<String> {
+    wrap_with(text, size, max, lines, Some(style))
+}
+
+fn wrap_with(text: &str, size: f32, max: f32, lines: usize, style: Option<Style>) -> Vec<String> {
+    remembered(text, size, max, Some(lines), style, || {
+        wrap_uncached(text, size, max, lines, style)
+    })
 }
 
 /// `make`'s lines for these arguments (`lines` is `wrap`'s; `None` for
@@ -204,13 +333,14 @@ fn remembered(
     size: f32,
     max: f32,
     lines: Option<usize>,
+    style: Option<Style>,
     make: impl FnOnce() -> Vec<String>,
 ) -> Vec<String> {
-    type Key = (String, u32, u32, Option<usize>);
+    type Key = (String, u32, u32, Option<usize>, Option<(Weight, u32, bool)>);
     thread_local! {
         static MEMO: RefCell<HashMap<Key, Vec<String>>> = RefCell::default();
     }
-    let key = (text.to_string(), size.to_bits(), max.to_bits(), lines);
+    let key = (text.to_string(), size.to_bits(), max.to_bits(), lines, style.map(Style::key));
     if let Some(hit) = MEMO.with_borrow(|memo| memo.get(&key).cloned()) {
         return hit;
     }
@@ -224,28 +354,29 @@ fn remembered(
     out
 }
 
-fn wrap_uncached(text: &str, size: f32, max: f32, lines: usize) -> Vec<String> {
+fn wrap_uncached(text: &str, size: f32, max: f32, lines: usize, style: Option<Style>) -> Vec<String> {
     let mut words: std::collections::VecDeque<String> =
         text.split_whitespace().map(String::from).collect();
     let mut out = Vec::new();
     while !words.is_empty() && out.len() < lines {
         if out.len() + 1 == lines {
             let rest: Vec<String> = words.drain(..).collect();
-            out.push(fit(&rest.join(" "), size, max));
+            out.push(fit_with(&rest.join(" "), size, max, style));
             break;
         }
         let mut line = words.pop_front().unwrap();
         let ends: Vec<usize> = line.char_indices().map(|(i, _)| i).skip(1).collect();
-        if !ends.is_empty() && width(&line, size) > max {
+        if !ends.is_empty() && measure(&line, size, style) > max {
             // A word longer than a line: split it where it overflows, after
             // at least one character.
-            let n = longest(ends.len(), |n| n == 0 || width(&line[..ends[n - 1]], size) <= max);
+            let fits = |n: usize| n == 0 || measure(&line[..ends[n - 1]], size, style) <= max;
+            let n = longest(ends.len(), fits);
             let split = ends[n.max(1) - 1];
             words.push_front(line.split_off(split));
         } else {
             while let Some(next) = words.front() {
                 let candidate = format!("{line} {next}");
-                if width(&candidate, size) > max {
+                if measure(&candidate, size, style) > max {
                     break;
                 }
                 line = candidate;
@@ -321,12 +452,44 @@ mod tests {
     }
 
     #[test]
+    fn a_given_style_overrides_the_copy() {
+        // Game text: caps and figures that are not labels or codes.
+        for text in ["HP 100", "2048"] {
+            assert_ne!(width(text, SIZE), width_in(text, SIZE, Style::REGULAR), "{text}");
+        }
+        assert_eq!(width_in("HP 100", SIZE, Style::LABEL), width("HP 100", SIZE));
+        let mut keys = Vec::new();
+        place_in("2048", SIZE, Style::REGULAR, [0.0, 0.0], |g, _| keys.push(g.key));
+        assert_eq!(keys, ['2' as u32, '0' as u32, '4' as u32, '8' as u32], "proportional");
+        // Wrapped in a style, every line measures in it: here a fragment
+        // that is all caps keeps the paragraph's regular weight.
+        let text = "Press the button marked OK OK OK OK OK OK OK OK OK OK OK OK OK";
+        let max = width_in("Press the button marked", SIZE, Style::REGULAR);
+        let lines = wrap_in(text, SIZE, Style::REGULAR, max, 10);
+        assert!(lines.len() > 1 && lines.iter().any(|l| Style::of(l) == Style::LABEL));
+        assert!(lines.iter().all(|l| width_in(l, SIZE, Style::REGULAR) <= max));
+        // Inferred, those lines would draw wider: semibold and tracked.
+        assert!(lines.iter().any(|l| width(l, SIZE) > width_in(l, SIZE, Style::REGULAR)));
+        let cut = fit_in("HP 100 of 250", SIZE, Style::REGULAR, width_in("HP 100", SIZE, Style::REGULAR));
+        assert!(cut.ends_with(ELLIPSIS) && width_in(&cut, SIZE, Style::REGULAR) <= width_in("HP 100", SIZE, Style::REGULAR));
+    }
+
+    #[test]
+    fn the_shared_shader_source_names_its_functions() {
+        let glsl = msdf_glsl();
+        assert!(glsl.contains("functorMsdfTexels") && glsl.contains("functorMsdfCoverage"));
+        assert!(glsl.contains(&format!("{:?}", ATLAS_WIDTH as f32)));
+        // A script without case is not a label.
+        assert_eq!(Style::of("\u{4E2D}\u{6587}"), Style::REGULAR);
+    }
+
+    #[test]
     fn caps_are_semibold_and_tracked() {
-        let (caps, plain) = (style("PAIRED"), style("Paired"));
+        let (caps, plain) = (Style::of("PAIRED"), Style::of("Paired"));
         assert_eq!((caps.weight, plain.weight), (Weight::Semibold, Weight::Regular));
         assert!(caps.tracking > 0.0 && plain.tracking == 0.0);
-        assert!(style("482 913").tabular && !style("Sending in 3").tabular);
-        assert!(!style("0.85").tabular, "a number in prose stays proportional");
+        assert!(Style::of("482 913").tabular && !Style::of("Sending in 3").tabular);
+        assert!(!Style::of("0.85").tabular, "a number in prose stays proportional");
     }
 
     #[test]
