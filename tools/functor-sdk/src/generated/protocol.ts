@@ -92,7 +92,7 @@ export type ClockState = {
  */
 paused: boolean, 
 /**
- * Who asked for the pause (v48). Omitted while running, and when the
+ * Who asked for the pause (v50). Omitted while running, and when the
  * request did not say (the shell's own scrubber, `POST /seek`, a client
  * that sends no `by`).
  */
@@ -668,7 +668,7 @@ warning?: string,
 camera?: SensorStreamState, };
 
 /**
- * Who paused the clock (v48).
+ * Who paused the clock (v50).
  */
 export type PausedBy = "agent" | "user" | "start";
 
@@ -1001,7 +1001,12 @@ total: number,
 /**
  * Oldest first.
  */
-spikes: Array<SpikeRecord>, };
+spikes: Array<SpikeRecord>, 
+/**
+ * Frames over [`STALL_US`] since launch, oldest first; the newest
+ * [`STALLS`]. `default` because a pre-v48 runtime omits it.
+ */
+stalls: Array<StallRecord>, };
 
 /**
  * One stage's distribution over the ring, µs.
@@ -1016,6 +1021,21 @@ export type StagePercentiles = { p50_us: number, p99_us: number, max_us: number,
  * excludes the buffer swap.
  */
 export type StageTimings = { frames: number, sim_ms: number, render_ms: number, sim_wait_ms: number, frame_ms: number, };
+
+/**
+ * A frame over [`STALL_US`], with what the shell was doing.
+ */
+export type StallRecord = { frame: FrameRecord, 
+/**
+ * The disjoint stage that took longest.
+ */
+stage: string, stage_us: number, 
+/**
+ * What the shell noted during this frame and the one before (work
+ * started in one frame can land in the next): debug requests served,
+ * e.g. `POST /capture`.
+ */
+during: Array<string>, };
 
 /**
  * An agent's stance (D34), as the desktop reports it.

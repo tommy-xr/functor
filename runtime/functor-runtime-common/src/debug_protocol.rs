@@ -262,10 +262,15 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 47 adds the `microphone_allowed` and `microphone_denied` voice stages,
 /// and the toast's `waiting` seconds.
 ///
-/// 48 adds who paused the clock ([`PausedBy`]): an optional `by` on `POST
-/// /time`, reported back as `clock.paused_by` on `GET /state`. Additive: a
-/// pre-v48 runtime ignores `by` and omits `paused_by`.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 48;
+/// 48 adds `stalls` on `GET /spikes`
+/// ([`crate::frame_telemetry::StallRecord`]): frames over 250 ms since
+/// launch, each with the debug requests the shell served around it.
+///
+/// 50 adds who paused the clock ([`PausedBy`]): an optional `by` on `POST
+/// /time`, reported back as `clock.paused_by` on `GET /state`. Additive: an
+/// earlier runtime ignores `by` and omits `paused_by`. (49 is the `answered`
+/// voice stage.)
+pub const DEBUG_PROTOCOL_VERSION: u32 = 50;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -881,7 +886,7 @@ pub struct ClockState {
     /// Pinned by `POST /time` (`set`, `advance`, `cancel`), `POST /seek`, or
     /// the shell's own scrubber. Steps an `advance` queued still run.
     pub paused: bool,
-    /// Who asked for the pause (v48). Omitted while running, and when the
+    /// Who asked for the pause (v50). Omitted while running, and when the
     /// request did not say (the shell's own scrubber, `POST /seek`, a client
     /// that sends no `by`).
     #[cfg_attr(feature = "ts", ts(optional))]
@@ -899,7 +904,7 @@ pub struct ClockState {
     pub program_revision: u64,
 }
 
-/// Who paused the clock (v48).
+/// Who paused the clock (v50).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -1175,7 +1180,7 @@ fn one_frame() -> u32 {
     1
 }
 
-/// `POST /time`'s body: a [`TimeCommand`], and who sends it (v48).
+/// `POST /time`'s body: a [`TimeCommand`], and who sends it (v50).
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 pub struct TimeRequest {
     #[serde(flatten)]
@@ -1748,6 +1753,41 @@ pub enum DebugRequest {
         Vec<crate::net::DeliveredEvent>,
         Sender<Result<String, String>>,
     ),
+}
+
+impl DebugRequest {
+    /// The route that made this request, for a stall's record.
+    pub fn route(&self) -> &'static str {
+        match self {
+            DebugRequest::Capture(..) => "POST /capture",
+            DebugRequest::Stream(..) => "GET /stream",
+            DebugRequest::State(true, _) => "GET /state",
+            DebugRequest::State(false, _) => "GET /state?model=0",
+            DebugRequest::Scene(..) => "GET /scene",
+            DebugRequest::Mirror(..) => "GET /mirror",
+            DebugRequest::Trace(..) => "GET /trace",
+            DebugRequest::Frames(..) => "GET /frames",
+            DebugRequest::Spikes(..) => "GET /spikes",
+            DebugRequest::InputLog(..) => "GET /input-log",
+            DebugRequest::Input(..) => "POST /input",
+            DebugRequest::Time(..) => "POST /time",
+            DebugRequest::Project(..) => "GET /project",
+            DebugRequest::ReloadSource(..) => "POST /reload-source",
+            DebugRequest::ReloadProject(..) => "POST /reload-project",
+            DebugRequest::LoadProject(..) => "POST /load-project",
+            DebugRequest::ProjectFileRequests(..) => "GET /project-files",
+            DebugRequest::ProjectFileReply(..) => "POST /project-files",
+            DebugRequest::ReloadAsset(..) => "POST /reload-asset",
+            DebugRequest::SyncAssets(..) => "POST /sync-assets",
+            DebugRequest::Rewind(..) => "POST /rewind",
+            DebugRequest::Seek(..) => "POST /seek",
+            DebugRequest::Camera(..) => "POST /camera",
+            DebugRequest::Preview(..) => "POST /preview",
+            DebugRequest::DisplayRefreshRate(..) => "POST /display-refresh-rate",
+            DebugRequest::NetOutbound(..) => "GET /net/outbound",
+            DebugRequest::NetDeliver(..) => "POST /net/deliver",
+        }
+    }
 }
 
 #[cfg(test)]

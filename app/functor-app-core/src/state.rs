@@ -37,6 +37,7 @@ use crate::tasks::{
 use crate::transport::{PausedBy, SessionCall, Timeline, Transport, TransportCall};
 use crate::progress;
 use crate::voice::{self, HearingStage, Route, Stage, Utterance};
+use crate::voice_timing::VoiceTiming;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -529,6 +530,8 @@ pub enum Command {
     SaveRecents { recents: Vec<Recent> },
     /// Keep the context windows seen (`AppState::context_windows`).
     SaveContextWindows { windows: BTreeMap<String, u64> },
+    /// Append a spoken request's stage times to the voice log (one line).
+    LogVoice { line: String },
     /// Start an agent run, answering with `Event::Run`s that end in `Ended`.
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
@@ -823,8 +826,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             utterance,
             text,
             context,
+            timing,
         }) => (
-            heard(&mut state, conn, utterance, text, context, &mut commands),
+            heard(&mut state, conn, utterance, text, context, timing, &mut commands),
             false,
         ),
         Event::Link(LinkEvent::Hearing {
@@ -2321,6 +2325,7 @@ fn create_task(
         review: None,
         created_at: stamp(state.now),
         updated_at: None,
+        voice: None,
         transcript: vec![Item::User {
             text: message,
             spoken,
@@ -2436,6 +2441,7 @@ fn steer(
     match task.run.take() {
         Some(run) if !run.started => {
             commands.push(Command::StopRun { task: id, run: run.id });
+            voice_ended(task, run.id, stamp(state.now), commands);
             // What it left (a snapshot only) is measured as the next run ends.
             task.change = None;
         }
@@ -2532,6 +2538,11 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         playing,
         ..Default::default()
     });
+    // A spoken request that waited its turn: timed from here.
+    if let Some(timing) = task.voice.as_mut().filter(|t| t.run.is_none()) {
+        timing.run = Some(run);
+        timing.reach(|t| &mut t.run_started, stamp(state.now));
+    }
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
     drop_review(task, commands);
@@ -2568,6 +2579,7 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     };
     commands.push(Command::StopRun { task: id, run });
     task.updated_at = stamp(state.now).or(task.updated_at);
+    voice_ended(task, run, stamp(state.now), commands);
     let changed = stop_run(task);
     // A stopped run reports no change of its own: what it left is measured
     // now, and unknown until then.
@@ -2593,6 +2605,7 @@ fn heard(
     utterance: u64,
     text: String,
     context: Option<String>,
+    timing: VoiceTiming,
     commands: &mut Vec<Command>,
 ) -> bool {
     let Some(device) = state.devices.list.iter().find(|d| d.conn == Some(conn)) else {
@@ -2610,6 +2623,7 @@ fn heard(
         by: By::Rule,
         title: None,
         project: state.active.clone().unwrap_or_default(),
+        timing: Some(timing),
     };
     progress::transcribed(state, &u.device, utterance, &u.text);
     let rule = match rule_place(state, &u) {
@@ -2695,6 +2709,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
             let landed = Landed::Steered {
                 run: run.expect("steered").id,
             };
+            time_utterance(state, id, &u);
             record(state, &u, id, landed, commands);
             voice::follow(state, &u, id, commands);
             true
@@ -2707,6 +2722,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 spoken: Some(u.spoken.clone()),
             });
             task.updated_at = now.or(task.updated_at);
+            time_utterance(state, id, &u);
             // Saved and broadcast with its line.
             record(state, &u, id, Landed::Added, commands);
             voice::follow(state, &u, id, commands);
@@ -2762,6 +2778,35 @@ fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, comman
     });
 }
 
+/// Task `id` keeps `u`'s stage times, placed now and following the run
+/// it started, if it did.
+fn time_utterance(state: &mut AppState, id: u64, u: &Utterance) {
+    let (Some(mut timing), now) = (u.timing.clone(), state.now) else {
+        return;
+    };
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+        return;
+    };
+    timing.reach(|t| &mut t.routed, stamp(now));
+    if let Some(run) = &task.run {
+        timing.run = Some(run.id);
+        timing.reach(|t| &mut t.run_started, stamp(now));
+    }
+    task.voice = Some(timing);
+}
+
+/// Run `run` of `task` ended, stopped or was cut: its spoken request's
+/// last stage, logged once.
+fn voice_ended(task: &mut Task, run: u64, now: Option<u64>, commands: &mut Vec<Command>) {
+    let id = task.id;
+    let Some(t) = task.voice.as_mut().filter(|t| t.run == Some(run)) else {
+        return;
+    };
+    if t.reach(|t| &mut t.finished, now) {
+        commands.push(Command::LogVoice { line: t.log_line(id) });
+    }
+}
+
 /// Said to a task whose run was cut by a steer that is moved away before
 /// its agent started.
 pub const RESUMED: &str = "Carry on with what you were doing.";
@@ -2787,6 +2832,12 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         return reject(commands, "that message cannot go there now".to_string());
     }
     state.routed.retain(|o| o.id != id);
+    // Its stage times go with it (untimed), not stay on the task it left.
+    if let Some(t) = state.tasks.iter_mut().find(|t| t.id == open.task) {
+        if t.voice.as_ref().is_some_and(|v| v.utterance == open.utterance) {
+            t.voice = None;
+        }
+    }
     // Followed again where it lands, not failed where it was.
     (state.voice).retain(|j| !(j.device == open.device && j.utterance == open.utterance));
     let root = PathBuf::from(&state.repo_root);
@@ -2862,6 +2913,7 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         },
         by: By::You,
         title: None,
+        timing: None,
     };
     let place = match to {
         Destination::Steer { task } => Place::Steer(task),
@@ -2914,6 +2966,7 @@ fn voice_task(
     };
     match started {
         Ok((id, landed)) => {
+            time_utterance(state, id, &u);
             record(state, &u, id, landed, commands);
             voice::follow(state, &u, id, commands);
             true
@@ -3359,7 +3412,19 @@ fn on_run(
     else {
         return false;
     };
+    // Its spoken request's stages, when this is the run it started.
+    let timed = (task.voice.as_mut()).filter(|t| t.run == Some(run));
+    let stamped = timed.is_some_and(|t| match &event {
+        RunEvent::Spawned => t.reach(|t| &mut t.agent_spawned, now),
+        RunEvent::Agent(e) => {
+            let first = t.reach(|t| &mut t.agent_event, now);
+            let text = matches!(e, AgentEvent::Text { .. } | AgentEvent::TextDelta { .. });
+            first | (text && t.reach(|t| &mut t.first_text, now))
+        }
+        RunEvent::Ended { .. } | RunEvent::Baseline { .. } | RunEvent::Moment(_) => false,
+    });
     match event {
+        RunEvent::Spawned => stamped,
         RunEvent::Baseline { tree } => {
             task.baseline = Some(tree);
             task.change = None;
@@ -3383,13 +3448,14 @@ fn on_run(
             let settled = changed
                 .iter()
                 .any(|&i| !matches!(task.transcript[i], Item::Agent { partial: true, .. }));
-            if summary || settled {
+            if summary || settled || stamped {
                 commands.push(save(&root, task));
             }
             broadcast_items(commands, task, changed);
-            summary
+            summary || stamped
         }
         RunEvent::Ended { error } => {
+            voice_ended(task, run, now, commands);
             task.updated_at = now.or(task.updated_at);
             let playing = task.run.as_ref().and_then(|r| r.playing);
             let changed = end_run(task, error);
@@ -8050,7 +8116,76 @@ mod tests {
             utterance,
             text: text.to_string(),
             context: Some("at frame 7".to_string()),
+            timing: VoiceTiming {
+                utterance,
+                start: 1_000,
+                end: 4_000,
+                audio_ms: 3_000,
+                transcribe_start: 4_000,
+                transcribe_end: 5_000,
+                ..VoiceTiming::default()
+            },
         })
+    }
+
+    fn logged(commands: &[Command]) -> usize {
+        (commands.iter())
+            .filter(|c| matches!(c, Command::LogVoice { .. }))
+            .count()
+    }
+
+    /// A spoken request's stages on its task: placed and started as it
+    /// lands, then its run's spawn, first event, first text and end, each
+    /// once; logged once, as the run ends.
+    #[test]
+    fn a_spoken_request_is_timed_through_its_run() {
+        let s = voice_task_running_at(5_500);
+        let v = task(&s, 4).voice.clone().expect("timed");
+        assert_eq!((v.utterance, v.run, v.transcribe_end), (1, Some(0), 5_000));
+        assert_eq!((v.routed, v.run_started), (Some(5_500), Some(5_500)));
+        let spawned = Event::Run { task: 4, run: 0, event: RunEvent::Spawned };
+        let (s, _) = update(at(6_000, s), spawned);
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, _) = update(at(8_000, s), agent(4, 0, AgentEvent::Text { text: "Hi".into() }));
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "again".into() }));
+        let (s, commands) = update(at(20_000, s), ended(4, 0));
+        assert_eq!(logged(&commands), 1);
+        let v = task(&s, 4).voice.clone().unwrap();
+        assert_eq!(
+            (v.agent_spawned, v.agent_event, v.first_text, v.finished),
+            (Some(6_000), Some(7_000), Some(8_000), Some(20_000))
+        );
+        assert_eq!(
+            v.line,
+            "heard 0.0 s · transcribed 1.0 s · agent started 3.0 s · first reply 4.0 s · done 16.0 s"
+        );
+        // A typed follow-up's run is not the spoken one's: nothing changes.
+        let typed = client(ClientMsg::SendMessage { task: 4, message: "more".into() });
+        let (s, _) = update(at(21_000, s), typed);
+        let (s, commands) = update(at(30_000, s), ended(4, 2));
+        assert_eq!(logged(&commands), 0);
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(20_000));
+    }
+
+    /// A steer ends the old utterance's stages (logged, as cut) and times
+    /// the new one from the run it starts; the old run's late events land
+    /// on nothing. A stop ends them too.
+    #[test]
+    fn a_steer_times_the_new_utterance() {
+        let s = voice_task_running_at(5_500);
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, commands) = update(at(8_000, s), said("bigger", 2));
+        assert_eq!(logged(&commands), 1);
+        let v = task(&s, 4).voice.clone().unwrap();
+        assert_eq!((v.utterance, v.run, v.routed), (2, Some(2), Some(8_000)));
+        assert_eq!(v.agent_event, None);
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "late".into() }));
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().first_text, None);
+        let (s, commands) = update(at(10_000, s), client(ClientMsg::StopTask { task: 4 }));
+        assert_eq!(logged(&commands), 1);
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(10_000));
+        let (_, commands) = update(at(11_000, s), ended(4, 2));
+        assert_eq!(logged(&commands), 0, "once");
     }
 
     fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
@@ -8077,7 +8212,13 @@ mod tests {
 
     /// `s` after utterance 1, "go", started task 4.
     fn voice_task_running() -> AppState {
+        voice_task_running_at(0)
+    }
+
+    /// [`voice_task_running`], its task started at wall clock `now`.
+    fn voice_task_running_at(now: u64) -> AppState {
         let (s, commands) = update(voice_ready(), said("go", 1));
+        let s = at(now, s);
         let Some(Command::ReserveTask { voice, .. }) = commands
             .into_iter()
             .find(|c| matches!(c, Command::ReserveTask { .. }))
@@ -8697,6 +8838,7 @@ mod tests {
             utterance: 3,
             text: "hi".to_string(),
             context: None,
+            timing: VoiceTiming::default(),
         });
         let (_, commands) = update(voice_ready(), stranger);
         assert!(stages(&commands).is_empty());

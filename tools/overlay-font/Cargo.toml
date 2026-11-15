@@ -1,0 +1,18 @@
+# Offline generator for the headset overlay's MSDF font atlas
+# (runtime/functor-runtime-common/src/overlay_font/). Its own workspace: its
+# dependencies never reach the runtime's lockfile or builds.
+[package]
+name = "overlay-font"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+fdsm = "=0.8.0"
+fdsm-ttf-parser = "=0.2.0"
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
+nalgebra = "=0.34.2"
+rustybuzz = "=0.20.1"
+ttf-parser = "=0.25.1"

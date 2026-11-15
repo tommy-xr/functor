@@ -19,7 +19,7 @@ pub struct Transport {
     pub clock: bool,
     /// Pinned: paused, stepped, or parked on a seek.
     pub paused: bool,
-    /// Who paused it, where the runtime says (debug protocol v48).
+    /// Who paused it, where the runtime says (debug protocol v50).
     pub paused_by: Option<PausedBy>,
     /// The recorded steps behind the state shown (`/state.frame`).
     pub frame: u64,

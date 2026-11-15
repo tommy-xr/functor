@@ -160,8 +160,13 @@ same executable again. `npm run build` and `npm run app` build it in on macOS;
 a plain `cargo build` leaves it out. Elsewhere the window does not exist yet:
 `--features app` gives `functor app -- --headless`.
 
-`whisper` compiles whisper.cpp. Its model (about 148 MB) is fetched on first
-use into `~/.functor/models` (`FUNCTOR_MODELS` overrides), not at build time.
+`whisper` compiles whisper.cpp (on the GPU through Metal on macOS). Its model
+(about 148 MB) is fetched on first use into `~/.functor/models`
+(`FUNCTOR_MODELS` overrides), not at build time; once it is there, the app
+loads it in the background as it starts. Each spoken request's stage times
+are on its task and in `~/.functor/app/voice.log`; to time them here, see
+the `stt_bench` example and `voice_stages_on_this_machine`
+(`FUNCTOR_VOICE_BENCH=1`).
 `npm run app:debug` and `--features app` leave it out: the composer shows no
 mic, and a headset's voice clip is answered with "speech-to-text is not in this
 build".

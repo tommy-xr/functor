@@ -3086,6 +3086,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// request survives the branch, and drops a request the branch cut.
     #[test]
     fn arrivals_while_scrubbed_park_until_the_branch_and_follow_it() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let kept = request(&mut game, 0);
@@ -3105,6 +3106,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// response lands.
     #[test]
     fn a_reload_keeps_requests_in_flight() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let token = request(&mut game, 0);
@@ -3118,6 +3120,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// issued after it.
     #[test]
     fn a_rewind_keeps_only_requests_issued_before_it() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let kept = request(&mut game, 0);
@@ -3137,6 +3140,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     #[test]
     fn http_workers_deliver_responses_to_the_tagger() {
         let _gauge = crate::net::INBOUND_GAUGE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let token = request(&mut game, 0);
@@ -3167,6 +3171,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// Two producers on one thread keep their own pending requests.
     #[test]
     fn producers_do_not_share_pending_requests() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut a = http_game();
         let mut b = http_game();
