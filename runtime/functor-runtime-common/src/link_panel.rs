@@ -17,7 +17,8 @@ use cgmath::{vec3, Matrix4, One, Quaternion, Vector3};
 
 use crate::debug_protocol::{PanelState, TaskStance, VoiceToast, WristLight};
 use crate::input::XrInputSnapshot;
-use crate::link_overlay::{toast_lines, wrap, Shape};
+use crate::link_overlay::{toast_lines, Shape};
+use crate::overlay_font::{self, fit, wrap};
 use crate::TrackingPose;
 
 /// The desktop's content for the panel.
@@ -233,7 +234,7 @@ pub struct Panel {
     /// all the task's items, so new items do not move it) and a line within
     /// it; `None` follows the newest.
     scroll: Option<(u32, usize)>,
-    /// Long agent messages shown whole.
+    /// Long agent messages shown whole (A), from the top of the one opened.
     expanded: bool,
     /// How many of its lines fit, as last drawn.
     shown: Cell<usize>,
@@ -241,8 +242,10 @@ pub struct Panel {
 
 /// Lines a stick push scrolls the conversation.
 const SCROLL: usize = 3;
-/// An agent message's lines before "more".
+/// An agent message's lines before "A  Show all"; its most lines shown
+/// whole (the desktop sends at most 4000 bytes of it, about 70 lines).
 const AGENT_LINES: usize = 6;
+const WHOLE_LINES: usize = 200;
 
 /// A stick axis as one press per push: past 0.6 fires once, back under 0.3
 /// re-arms.
@@ -422,19 +425,36 @@ impl Panel {
         None
     }
 
-    /// On the conversation page: B goes back, A shows long messages whole
-    /// or cut, the stick scrolls; scrolled to the end it follows again.
+    /// On the conversation page: B goes back; A shows long messages whole,
+    /// from the top of the newest one begun in view, and again cuts them,
+    /// back at the newest; the stick scrolls, and scrolled to the end it
+    /// follows again.
     fn scroll_step(&mut self, data: Option<&PanelData>, id: u64, a: bool, b: bool, y: i8) {
         if b {
             self.conversation = None;
             self.scroll = None;
             return;
         }
-        self.expanded ^= a;
         let conv = data.and_then(|d| d.conversation.as_ref());
-        let Some(c) = conv.filter(|c| c.task == id).filter(|_| y != 0) else {
+        let Some(c) = conv.filter(|c| c.task == id) else {
             return;
         };
+        if a && (self.expanded || has_more(c)) {
+            let opened = (!self.expanded).then(|| self.long_in_view(c)).flatten();
+            self.expanded = !self.expanded;
+            let lines = conversation_lines(c, self.expanded);
+            self.scroll = opened.and_then(|item| {
+                let start = lines.iter().position(|l| l.3 == item)?;
+                // At its header, past the blank above it.
+                let offset = usize::from(lines[start].0.is_empty());
+                // It and all after it fit: keep following the newest.
+                (start + offset + self.shown.get().max(1) < lines.len()).then_some((item, offset))
+            });
+            return;
+        }
+        if y == 0 {
+            return;
+        }
         let lines = conversation_lines(c, self.expanded);
         let shown = self.shown.get().max(1);
         let top = self.top(&lines, shown);
@@ -449,6 +469,23 @@ impl Panel {
                 top - lines.iter().position(|l| l.3 == item).unwrap_or(top),
             )
         });
+    }
+
+    /// The newest long agent message (its item index) begun in view or
+    /// above it, else the newest long one.
+    fn long_in_view(&self, c: &ConversationData) -> Option<u32> {
+        let lines = conversation_lines(c, false);
+        let shown = self.shown.get().max(1);
+        let end = (self.top(&lines, shown) + shown).min(lines.len());
+        let long_item = |item: u32| {
+            let at = item.checked_sub(c.first)? as usize;
+            let said = c.items.get(at)?;
+            let shown = said.role == Role::Agent && Some(at) != asked(c);
+            (shown && long(&said.text)).then_some(item)
+        };
+        // Newest first, among the lines down to the view's end.
+        let newest = |lines: &[Laid]| lines.iter().rev().find_map(|l| long_item(l.3));
+        newest(&lines[..end]).or_else(|| newest(&lines))
     }
 
     /// The conversation's first line in view: the scroll's place, or the
@@ -671,8 +708,8 @@ fn stance_word(stance: TaskStance) -> &'static str {
     }
 }
 
-// Metres: about 0.74 m wide at 0.9 m (the mockup's proportions); a body
-// glyph is about 0.85 degrees.
+// Metres: about 0.74 m wide at 0.9 m (the mockup's proportions). Body
+// capitals are about 0.8 degrees tall, its x-height about 0.6.
 pub const WIDTH: f32 = 0.76;
 pub const HEIGHT: f32 = 0.54;
 const PAD: f32 = 0.024;
@@ -682,35 +719,8 @@ const ROW: f32 = 0.045;
 const TITLE: f32 = 0.018;
 const BODY: f32 = 0.0135;
 const SMALL: f32 = 0.011;
-const LABEL: f32 = 0.0095;
 const BUTTON: f32 = 0.042;
 const RING: f32 = 0.0025;
-
-/// Text in the font's ASCII: typographic marks folded, others `?`.
-fn ascii(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            ' '..='~' => out.push(c),
-            '\u{2018}' | '\u{2019}' => out.push('\''),
-            '\u{201c}' | '\u{201d}' => out.push('"'),
-            '\u{2013}' | '\u{2014}' | '\u{2212}' | '\u{b7}' | '\u{2022}' => out.push('-'),
-            '\u{2026}' => out.push_str("..."),
-            '\u{2192}' => out.push_str("->"),
-            c if c.is_whitespace() => out.push(' '),
-            _ => out.push('?'),
-        }
-    }
-    out
-}
-
-/// `text` in at most `n` characters, cut with `...`.
-fn fit(text: &str, n: usize) -> String {
-    match text.chars().count() {
-        len if len <= n => text.to_string(),
-        _ => text.chars().take(n.saturating_sub(3)).collect::<String>() + "...",
-    }
-}
 
 fn outline(out: &mut Vec<Shape>, [x, y, w, h]: [f32; 4], c: [f32; 3]) {
     let c = [c[0], c[1], c[2], 1.0];
@@ -736,7 +746,7 @@ fn text(out: &mut Vec<Shape>, at: [f32; 2], size: f32, color: [f32; 3], s: &str)
         at,
         size,
         color,
-        text: ascii(s),
+        text: s.to_string(),
     });
 }
 
@@ -750,13 +760,12 @@ struct Col<'a> {
 
 impl Col<'_> {
     fn line(&mut self, s: &str, size: f32, color: [f32; 3]) {
-        let n = (self.w / size) as usize;
-        text(self.out, [self.x, self.y], size, color, &fit(&ascii(s), n));
+        text(self.out, [self.x, self.y], size, color, &fit(s, size, self.w));
         self.y -= advance(size);
     }
 
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
-        for l in wrap(&ascii(s), (self.w / size) as usize, lines) {
+        for l in wrap(s, size, self.w, lines) {
             self.line(&l, size, color);
         }
     }
@@ -786,17 +795,17 @@ impl Panel {
         // Header: the app, the project, the link's state word.
         let y = top - PAD;
         text(&mut out, [left + PAD, y], BODY, ACCENT, "FUNCTOR");
-        if let Some(project) = data.and_then(|d| d.project.as_deref()) {
-            let x = left + PAD + 9.0 * BODY;
-            text(&mut out, [x, y], BODY, MUTED, &fit(project, 24));
-        }
         let (word, color) = match connection {
             Connection::NotPaired => ("NOT PAIRED".to_string(), FAINT),
             Connection::NotConnected { .. } => ("CANNOT REACH".to_string(), WARN),
             Connection::Outdated { .. } => ("NEEDS AN UPDATE".to_string(), WARN),
-            Connection::Connected { desktop } => (fit(&ascii(desktop), 22), OK),
+            Connection::Connected { desktop } => (fit(desktop, SMALL, 22.0 * SMALL), OK),
         };
-        let wx = w / 2.0 - PAD - word.chars().count() as f32 * SMALL;
+        let wx = w / 2.0 - PAD - overlay_font::width(&word, SMALL);
+        if let Some(project) = data.and_then(|d| d.project.as_deref()) {
+            let x = left + PAD + overlay_font::width("FUNCTOR", BODY) + BODY;
+            text(&mut out, [x, y], BODY, MUTED, &fit(project, BODY, wx - x - BODY));
+        }
         text(&mut out, [wx, y], SMALL, color, &word);
         fill(&mut out, [left, top - HEADER, w, 0.002], SELECTED);
 
@@ -915,7 +924,7 @@ impl Panel {
                         true => "NOW  -  RUNNING IN THIS HEADSET",
                         false => "NOW  -  ITS GAME RUNS ON THE DESKTOP",
                     },
-                    LABEL,
+                    SMALL,
                     FAINT,
                 );
                 col.gap(0.004);
@@ -955,7 +964,7 @@ impl Panel {
                 self.buttons(col, &[label], 1, bottom)
             }
             Section::Talk => {
-                col.line("TALK", LABEL, FAINT);
+                col.line("TALK", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
                     "Hold the right thumbstick to talk; let go to send. B cancels.",
@@ -972,14 +981,14 @@ impl Panel {
                 // Where the request in flight is (D43).
                 if let Some(p) = &data.progress {
                     col.gap(0.008);
-                    col.line("WHERE IT IS", LABEL, FAINT);
+                    col.line("WHERE IT IS", SMALL, FAINT);
                     col.para(&p.text(), BODY, if p.failed { DANGER } else { SOFT }, 2);
                 }
                 let Some(route) = &data.route else {
                     return None;
                 };
                 col.gap(0.008);
-                col.line("WHERE IT WENT", LABEL, FAINT);
+                col.line("WHERE IT WENT", SMALL, FAINT);
                 col.para(&route.line, BODY, TEXT, 2);
                 if let Some(Item::Move(_, to)) = &self.confirm {
                     let label = route
@@ -995,7 +1004,7 @@ impl Panel {
                 None
             }
             Section::Tasks => {
-                col.line("TASKS", LABEL, FAINT);
+                col.line("TASKS", SMALL, FAINT);
                 if !data.waiting.is_empty() {
                     col.line(&data.waiting, SMALL, WARN);
                 }
@@ -1026,7 +1035,7 @@ impl Panel {
                 None
             }
             Section::GameMenu => {
-                col.line("GAME MENU", LABEL, FAINT);
+                col.line("GAME MENU", SMALL, FAINT);
                 col.gap(0.004);
                 col.para(
                     "A closes this panel and opens the game's own menu.",
@@ -1061,18 +1070,18 @@ impl Panel {
             }
             return self.buttons(col, &["Stop"], 1, bottom);
         };
-        col.line("SIZE OF THE CHANGE", LABEL, FAINT);
+        col.line("SIZE OF THE CHANGE", SMALL, FAINT);
         col.line(&d.size, BODY, TEXT);
         col.gap(0.004);
         verdict(col, d);
         if !d.summary.is_empty() {
             col.gap(0.004);
-            col.line("SUMMARY", LABEL, FAINT);
+            col.line("SUMMARY", SMALL, FAINT);
             col.para(&d.summary, BODY, TEXT, 3);
         }
         if !d.notes.is_empty() {
             col.gap(0.004);
-            col.line("THINGS TO NOTE", LABEL, FAINT);
+            col.line("THINGS TO NOTE", SMALL, FAINT);
             for note in &d.notes {
                 col.line(&format!("- {note}"), SMALL, MUTED);
             }
@@ -1096,25 +1105,23 @@ impl Panel {
             outline(col.out, rect, ACCENT);
         }
         let inset = 0.01;
-        let wx = col.x + col.w - inset - word.len() as f32 * SMALL;
-        let title_n = ((wx - col.x - 2.0 * inset) / BODY) as usize;
+        let wx = col.x + col.w - inset - overlay_font::width(word, SMALL);
         let ty = col.y - 0.008;
         text(
             col.out,
             [col.x + inset, ty],
             BODY,
             TEXT,
-            &fit(&ascii(title), title_n),
+            &fit(title, BODY, wx - col.x - 2.0 * inset),
         );
         text(col.out, [wx, ty], SMALL, color, word);
-        let n = ((col.w - 2.0 * inset) / SMALL) as usize;
         let sy = ty - BODY - 0.006;
         text(
             col.out,
             [col.x + inset, sy],
             SMALL,
             FAINT,
-            &fit(&ascii(sub), n),
+            &fit(sub, SMALL, col.w - 2.0 * inset),
         );
         col.gap(ROW + 0.006);
     }
@@ -1144,19 +1151,19 @@ impl Panel {
         toast: Option<&VoiceToast>,
         bottom: f32,
     ) -> Option<&'static str> {
-        let hint = Some("Stick scroll  A more  B back  Hold stick: talk");
+        let mut hint = Some("Stick scroll   B back   Hold stick: talk");
         let Some(c) = data.conversation.as_ref().filter(|c| c.task == id) else {
-            col.line("CONVERSATION", LABEL, FAINT);
+            col.line("CONVERSATION", SMALL, FAINT);
             col.para("Waiting for the desktop to send it...", BODY, MUTED, 2);
             return hint;
         };
         col.line(&c.title, TITLE, TEXT);
         col.line(stance_word(c.stance), SMALL, stance_color(c.stance));
-        let asked = c.items.iter().rev().find(|i| i.role == Role::Agent);
-        if let Some(q) = asked.filter(|_| c.question) {
+        if let Some(q) = asked(c).map(|i| &c.items[i]) {
             col.gap(0.004);
             col.line("THE AGENT ASKS", SMALL, WARN);
-            col.para(&q.text, BODY, WARN, 3);
+            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
+            col.para(&q.text, BODY, WARN, most);
             col.line("Hold the right stick to answer", SMALL, TEXT);
         }
         col.gap(0.006);
@@ -1182,6 +1189,13 @@ impl Panel {
         }
         let floor = bottom + SMALL * 1.6 + tail.iter().map(|l| advance(l.1)).sum::<f32>();
         let lines = conversation_lines(c, self.expanded);
+        // From the lines just laid out: has_more's cost, every frame, saved.
+        let cut = lines.iter().any(|l| l.0.starts_with(SHOW_ALL)) || asked_long(c);
+        if self.expanded {
+            hint = Some("Stick scroll   A shorten   B back   Hold stick: talk");
+        } else if cut {
+            hint = Some("Stick scroll   A show all   B back   Hold stick: talk");
+        }
         let room = col.y - floor;
         // How many lines fit from `from`, walking `lines` in `order`.
         let fit = |order: &mut dyn Iterator<Item = &Laid>| {
@@ -1236,7 +1250,7 @@ impl Panel {
                     TEXT,
                 );
             }
-            let tx = rect[0] + (bw - label.len() as f32 * BODY) / 2.0;
+            let tx = rect[0] + (bw - overlay_font::width(label, BODY)) / 2.0;
             let ty = y + (BUTTON + BODY) / 2.0;
             text(
                 col.out,
@@ -1269,22 +1283,18 @@ const SPACE: f32 = 0.005;
 /// message past [`AGENT_LINES`] is cut unless `expanded`. A question the
 /// agent waits on shows above them instead.
 fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
-    let chars = |size: f32| (CONTENT_W / size) as usize;
     let mut out: Vec<Laid> = Vec::new();
     if c.first > 0 {
         let earlier = "Earlier messages are on the desktop.".into();
         out.push((earlier, SMALL, FAINT, c.first));
     }
-    let asked = c
-        .question
-        .then(|| c.items.iter().rposition(|i| i.role == Role::Agent))
-        .flatten();
+    let asked = asked(c);
     for (i, item) in c.items.iter().enumerate() {
         if Some(i) == asked {
             continue;
         }
         let at = c.first + i as u32;
-        let text = ascii(&item.text);
+        let text = &item.text;
         let mut push = |text: String, size: f32, color: [f32; 3]| out.push((text, size, color, at));
         // A little air above each message's header.
         if item.role != Role::App && (i > 0 || c.first > 0) {
@@ -1296,34 +1306,73 @@ fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
                     true => ("YOU, SPOKEN", SOFT),
                     false => ("YOU", MUTED),
                 };
-                push(head.into(), LABEL, color);
+                push(head.into(), SMALL, color);
                 let body = if item.spoken { SOFT } else { TEXT };
-                for l in wrap(&text, chars(BODY), 40) {
+                for l in wrap(text, BODY, CONTENT_W, 40) {
                     push(l, BODY, body);
                 }
             }
             Role::Agent => {
-                push("AGENT".into(), LABEL, FAINT);
-                let lines = wrap(&text, chars(BODY), 40);
+                push("AGENT".into(), SMALL, FAINT);
+                let lines = agent_lines(text);
+                let more = lines.len().saturating_sub(AGENT_LINES);
                 let shown = if expanded { lines.len() } else { AGENT_LINES };
-                let more = lines.len() > shown;
-                for l in lines.into_iter().take(shown) {
-                    push(l, BODY, TEXT);
+                for l in lines.iter().take(shown) {
+                    push(l.clone(), BODY, TEXT);
                 }
-                if more {
-                    push("... more (A)".into(), SMALL, FAINT);
-                } else if item.cut {
-                    push("... the rest is on the desktop".into(), SMALL, FAINT);
+                if more > 0 && !expanded {
+                    let s = if more == 1 { "" } else { "s" };
+                    push(format!("{SHOW_ALL} ({more} more line{s})"), SMALL, FAINT);
+                } else if item.cut && (expanded || more == 0) {
+                    let rest = "The rest is on the desktop: too long for the headset";
+                    push(rest.into(), SMALL, FAINT);
                 }
             }
             Role::App => {
-                for l in wrap(&format!("- {text}"), chars(SMALL), 2) {
+                for l in wrap(&format!("- {text}"), SMALL, CONTENT_W, 2) {
                     push(l, SMALL, FAINT);
                 }
             }
         }
     }
     out
+}
+
+/// An agent message's lines, to [`WHOLE_LINES`].
+fn agent_lines(text: &str) -> Vec<String> {
+    wrap(text, BODY, CONTENT_W, WHOLE_LINES)
+}
+
+/// An agent message longer than [`AGENT_LINES`].
+fn long(text: &str) -> bool {
+    agent_lines(text).len() > AGENT_LINES
+}
+
+/// The marker under a cut agent message.
+const SHOW_ALL: &str = "A  Show all";
+/// Lines of the question the agent waits on, cut and whole.
+const ASKED_LINES: usize = 3;
+const ASKED_WHOLE: usize = 12;
+
+/// The question the agent waits on: its newest message, as an index into
+/// `c.items`.
+fn asked(c: &ConversationData) -> Option<usize> {
+    c.question
+        .then(|| c.items.iter().rposition(|i| i.role == Role::Agent))
+        .flatten()
+}
+
+/// The question is longer than [`ASKED_LINES`].
+fn asked_long(c: &ConversationData) -> bool {
+    asked(c).is_some_and(|i| wrap(&c.items[i].text, BODY, CONTENT_W, ASKED_WHOLE).len() > ASKED_LINES)
+}
+
+/// Whether A has something to show whole: a long agent message, or a long
+/// question.
+fn has_more(c: &ConversationData) -> bool {
+    let asked = asked(c);
+    let long_said = |(i, s): (usize, &SaidLine)| s.role == Role::Agent && Some(i) != asked && long(&s.text);
+    c.items.iter().enumerate().any(long_said) || asked_long(c)
 }
 
 /// "Approve at a glance" or "look into this", and why.
@@ -1626,8 +1675,6 @@ mod tests {
             text: "new".into(),
         });
         assert_eq!(first_line(&p, &d), held);
-        press(&mut p, &d, P::A);
-        assert!(p.expanded, "A shows long messages whole");
         // Down to the end: it follows again.
         for _ in 0..20 {
             press(&mut p, &d, P::Down);
@@ -1685,7 +1732,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{t}: {texts:?}"))
         };
         assert!(at("THE AGENT ASKS") < at("AGENT"), "asked first");
-        assert!(texts.contains(&"... more (A)"));
+        assert!(texts.iter().any(|t| t.starts_with("A  Show all (")), "{texts:?}");
         // The request's step (D43) at the bottom; without one, the work.
         assert!(texts.contains(&"AGENT  working: editing game.fun"));
         d.progress = None;
@@ -1703,7 +1750,145 @@ mod tests {
         let lines = conversation_lines(d.conversation.as_ref().unwrap(), true);
         assert!(lines
             .iter()
-            .any(|l| l.0 == "... the rest is on the desktop"));
+            .any(|l| l.0 == "The rest is on the desktop: too long for the headset"));
+    }
+
+    #[test]
+    fn a_shows_a_long_message_whole_from_its_top_and_the_stick_reads_to_its_end() {
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        let long = (1..=40)
+            .map(|i| format!("Sentence {i} of the long answer."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for text in [long.as_str(), "Short reply."] {
+            c.items.push(SaidLine {
+                role: Role::Agent,
+                spoken: false,
+                cut: false,
+                text: text.into(),
+            });
+        }
+        let item = c.first + c.items.len() as u32 - 2;
+        let whole = agent_lines(&long);
+        assert!(whole.len() > 2 * AGENT_LINES, "{}", whole.len());
+        let connected = Connection::Connected {
+            desktop: "Mac".into(),
+        };
+        // As drawn (which also tells the panel how many lines fit).
+        let texts = |p: &Panel, d: &PanelData| -> Vec<String> {
+            (p.shapes(Some(d), &connected, None, Instant::now()).into_iter())
+                .filter_map(|s| match s {
+                    Shape::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        let shown = texts(&p, &d);
+        assert!(shown.iter().any(|t| t.starts_with("A  Show all (")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("A show all")), "the hint says so");
+
+        // A: every line of it, from its top.
+        press(&mut p, &d, P::A);
+        assert!(p.expanded && p.scroll.map(|s| s.0) == Some(item));
+        let shown = texts(&p, &d);
+        assert!(shown.contains(&whole[0]) && shown.iter().any(|t| t.contains("A shorten")));
+        assert!(!shown.iter().any(|t| t.starts_with("A  Show all")));
+        // The stick reads on to its last line, then follows again.
+        let mut last = false;
+        for _ in 0..whole.len() {
+            press(&mut p, &d, P::Down);
+            last |= texts(&p, &d).contains(whole.last().unwrap());
+        }
+        assert!(last && p.debug(Some(&d), None).following);
+        // A again: cut, at the newest; B: back.
+        press(&mut p, &d, P::A);
+        assert!(!p.expanded && p.scroll.is_none());
+        press(&mut p, &d, P::B);
+        assert_eq!(p.conversation, None);
+
+        // Nothing long: A does nothing, and the hint does not offer it.
+        let mut short = data();
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &short, P::A);
+        press(&mut p, &short, P::A);
+        press(&mut p, &short, P::A);
+        assert!(!p.expanded);
+        assert!(!texts(&p, &short).iter().any(|t| t.contains("A s")));
+        short.conversation.as_mut().unwrap().items.clear();
+        press(&mut p, &short, P::A);
+        assert!(!p.expanded, "an empty conversation has nothing to open");
+    }
+
+    #[test]
+    fn a_opens_the_long_message_begun_in_view_and_a_long_question_whole() {
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        let long = |tag: &str| (1..=90).map(|i| format!("{tag} {i}.")).collect::<Vec<_>>().join(" ");
+        for text in [long("Older"), "Short.".into(), long("Newer"), "Short again.".into()] {
+            c.items.push(SaidLine {
+                role: Role::Agent,
+                spoken: false,
+                cut: false,
+                text,
+            });
+        }
+        let (older, newer) = (c.first + c.items.len() as u32 - 4, c.first + c.items.len() as u32 - 2);
+        let connected = Connection::Connected {
+            desktop: "Mac".into(),
+        };
+        let draw = |p: &Panel, d: &PanelData| p.shapes(Some(d), &connected, None, Instant::now());
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        // Up until the newer message has not begun in view.
+        let lines = conversation_lines(d.conversation.as_ref().unwrap(), false);
+        let newer_at = lines.iter().position(|l| l.3 == newer).unwrap();
+        for _ in 0..lines.len() {
+            draw(&p, &d);
+            let shown = p.shown.get();
+            if p.top(&lines, shown) + shown <= newer_at {
+                break;
+            }
+            press(&mut p, &d, P::Up);
+        }
+        press(&mut p, &d, P::A);
+        assert_eq!(p.scroll.map(|s| s.0), Some(older), "the one begun in view");
+
+        // A long question: A shows it whole, where it is.
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        c.question = true;
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: false,
+            text: long("Which"),
+        });
+        let question = wrap(&long("Which"), BODY, CONTENT_W, ASKED_WHOLE);
+        assert!(question.len() > ASKED_LINES);
+        let texts = |p: &Panel, d: &PanelData| -> Vec<String> {
+            (draw(p, d).into_iter())
+                .filter_map(|s| match s {
+                    Shape::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        let before = texts(&p, &d);
+        assert!(before.iter().any(|t| t.contains("A show all")) && !before.contains(&question[ASKED_LINES]));
+        press(&mut p, &d, P::A);
+        assert!(p.expanded && texts(&p, &d).contains(&question[ASKED_LINES]));
     }
 
     #[test]
@@ -1804,7 +1989,7 @@ mod tests {
     }
 
     #[test]
-    fn every_view_fits_inside_the_panel_in_the_fonts_characters() {
+    fn every_view_fits_inside_the_panel_in_the_fonts_glyphs() {
         let d = data();
         let mut long = d.clone();
         long.tasks[0].title = "é".repeat(300);
@@ -1876,14 +2061,71 @@ mod tests {
                         )
                     }
                     Shape::Text { at, size, text, .. } => {
-                        assert!(text.chars().all(|c| (' '..='~').contains(&c)), "{text}");
-                        let right = at[0] + text.chars().count() as f32 * size;
+                        assert!(text.chars().all(overlay_font::has_glyph), "{text}");
+                        let right = at[0] + overlay_font::width(&text, size);
                         assert!(at[0] >= -hw && right <= hw, "{text}: {right}");
                         assert!(at[1] <= hh && at[1] - size >= -hh, "{text}: {}", at[1]);
                     }
                 }
             }
         }
+    }
+
+    /// The overlay's layout as text (each rect, each line with its measured
+    /// width) against `link_panel.layout.golden`; `UPDATE_GOLDENS=1`
+    /// rewrites it. Metrics, not pixels: it catches a font or layout change.
+    #[test]
+    fn the_layout_matches_its_golden() {
+        use crate::link_overlay::{card, lines};
+        use std::fmt::Write;
+        let d = data();
+        let mac = Connection::Connected {
+            desktop: "MacBook-Air".into(),
+        };
+        let code = crate::debug_protocol::PairingState::Code {
+            desktop: "MacBook-Air".into(),
+            code: "482913".into(),
+            confirmed: false,
+        };
+        let heard = VoiceToast {
+            stage: crate::debug_protocol::VoiceStage::Heard,
+            transcript: Some("make the ball bounce a little higher off the left wall, please".into()),
+            waiting: None,
+        };
+        let page = Panel {
+            open: true,
+            section: Section::Tasks,
+            page: Some(1),
+            focus: Some(0),
+            ..Panel::default()
+        };
+        let views = [
+            ("pairing", card(&lines(&code))),
+            ("toast", card(&toast_lines(&heard))),
+            ("decision", page.shapes(Some(&d), &mac, None, Instant::now())),
+        ];
+        let mut out = String::new();
+        for (name, shapes) in views {
+            writeln!(out, "== {name}").unwrap();
+            for shape in shapes {
+                match shape {
+                    Shape::Rect { rect: [x, y, w, h], .. } => {
+                        writeln!(out, "rect {x:.4} {y:.4} {w:.4} {h:.4}").unwrap()
+                    }
+                    Shape::Text { at, size, text, .. } => {
+                        let w = overlay_font::width(&text, size);
+                        writeln!(out, "text {:.4} {:.4} {size:.4} w={w:.4} {text:?}", at[0], at[1])
+                            .unwrap()
+                    }
+                }
+            }
+        }
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/link_panel.layout.golden");
+        if std::env::var_os("UPDATE_GOLDENS").is_some() {
+            std::fs::write(path, &out).unwrap();
+        }
+        let want = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(out == want, "layout changed (UPDATE_GOLDENS=1 to accept):\n{out}");
     }
 
     /// The panel's views as PNGs in `FUNCTOR_PANEL_PNGS`, painted on the CPU
@@ -1895,55 +2137,61 @@ mod tests {
         let Some(dir) = std::env::var_os("FUNCTOR_PANEL_PNGS") else {
             return;
         };
-        let font = crate::sprite_font::atlas_texture_data();
+        let atlas = image::load_from_memory(overlay_font::ATLAS_PNG).unwrap().to_rgb8();
         let scale = 1600.0;
         let (w, h) = ((WIDTH * scale) as usize, (HEIGHT * scale) as usize);
+        // The field's median at atlas pixel `(u, v)`, bilinear like the GPU.
+        let field = |u: f32, v: f32| {
+            let (x, y) = (u - 0.5, v - 0.5);
+            let (x0, y0) = (x.floor(), y.floor());
+            let tap = |dx: f32, dy: f32| {
+                let px = (x0 + dx).clamp(0.0, atlas.width() as f32 - 1.0) as u32;
+                let py = (y0 + dy).clamp(0.0, atlas.height() as f32 - 1.0) as u32;
+                atlas.get_pixel(px, py).0.map(|c| c as f32 / 255.0)
+            };
+            let (fx, fy) = (x - x0, y - y0);
+            let mut c = [0.0; 3];
+            for (dx, dy, k) in [
+                (0.0, 0.0, (1.0 - fx) * (1.0 - fy)),
+                (1.0, 0.0, fx * (1.0 - fy)),
+                (0.0, 1.0, (1.0 - fx) * fy),
+                (1.0, 1.0, fx * fy),
+            ] {
+                let t = tap(dx, dy);
+                (0..3).for_each(|i| c[i] += t[i] * k);
+            }
+            c[0].min(c[1]).max(c[0].max(c[1]).min(c[2]))
+        };
+        // The overlay's own mesh, one quad (six vertices) at a time.
         let paint = |shapes: &[Shape]| {
             let mut px = vec![[30u8, 24, 40]; w * h];
-            let mut blend = |x: f32, y: f32, c: [f32; 3], a: f32| {
-                let ix = (x * scale + w as f32 / 2.0) as usize;
-                let iy = (h as f32 / 2.0 - y * scale) as usize;
-                if ix < w && iy < h {
-                    let p = &mut px[iy * w + ix];
-                    for k in 0..3 {
-                        p[k] = (p[k] as f32 * (1.0 - a) + c[k] * 255.0 * a) as u8;
-                    }
-                }
-            };
-            for s in shapes {
-                match s {
-                    Shape::Rect {
-                        rect: [x, y, rw, rh],
-                        color,
-                    } => {
-                        for j in 0..(rh * scale).ceil() as usize {
-                            for i in 0..(rw * scale).ceil() as usize {
-                                let c = [color[0], color[1], color[2]];
-                                blend(x + i as f32 / scale, y + j as f32 / scale, c, color[3]);
-                            }
+            let mesh = crate::link_overlay::mesh(shapes);
+            for quad in mesh.chunks(6 * 8) {
+                let (lo, hi) = (&quad[..8], &quad[2 * 8..3 * 8]);
+                let srgb = |c: f32| crate::color_space::linear_to_srgb(c) * 255.0;
+                let color = [srgb(lo[4]), srgb(lo[5]), srgb(lo[6])];
+                let [x0, y0] = [lo[0] * scale + w as f32 / 2.0, h as f32 / 2.0 - hi[1] * scale];
+                let [x1, y1] = [hi[0] * scale + w as f32 / 2.0, h as f32 / 2.0 - lo[1] * scale];
+                // Atlas texels per pixel, and the uv at the quad's top-left.
+                let texels = (hi[2] - lo[2]) * atlas.width() as f32 / (x1 - x0);
+                let (u0, v0) = (lo[2] * atlas.width() as f32, hi[3] * atlas.height() as f32);
+                let range = (overlay_font::RANGE / texels).max(1.0);
+                for iy in y0.max(0.0) as usize..(y1.ceil() as usize).min(h) {
+                    for ix in x0.max(0.0) as usize..(x1.ceil() as usize).min(w) {
+                        let (fx, fy) = (ix as f32 + 0.5 - x0, iy as f32 + 0.5 - y0);
+                        if fx < 0.0 || fy < 0.0 || fx > x1 - x0 || fy > y1 - y0 {
+                            continue;
                         }
-                    }
-                    Shape::Text {
-                        at,
-                        size,
-                        color,
-                        text,
-                    } => {
-                        let n = (size * scale).ceil() as usize;
-                        for (k, ch) in text.chars().enumerate() {
-                            let Some((cx, cy, ..)) = crate::sprite_font::glyph_cell(ch) else {
-                                continue;
-                            };
-                            for j in 0..n {
-                                for i in 0..n {
-                                    let gx = cx as usize + i * 8 / n;
-                                    let gy = cy as usize + j * 8 / n;
-                                    if font.bytes[(gy * font.width as usize + gx) * 4 + 3] > 0 {
-                                        let x = at[0] + k as f32 * size + i as f32 / scale;
-                                        blend(x, at[1] - j as f32 / scale, *color, 1.0);
-                                    }
-                                }
+                        let a = match lo[2] < 0.0 {
+                            true => lo[7],
+                            false => {
+                                let m = field(u0 + fx * texels, v0 + fy * texels);
+                                ((m - 0.5) * range + 0.5).clamp(0.0, 1.0)
                             }
+                        };
+                        let p = &mut px[iy * w + ix];
+                        for k in 0..3 {
+                            p[k] = (p[k] as f32 * (1.0 - a) + color[k] * a) as u8;
                         }
                     }
                 }

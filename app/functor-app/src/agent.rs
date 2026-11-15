@@ -38,7 +38,7 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 const TAIL_LINES: usize = 20;
 
 /// Told to the agent at the start of each new agent session, then
-/// [`ATTACHED`] or [`NO_GAME`], then [`VIEWS`] when the run can show views:
+/// [`ATTACHED`], [`away`] or [`NO_GAME`], then [`VIEWS`] when the run can show views:
 /// it names only tools the run is offered. The ones it calls loaded are the
 /// tool server's `ALWAYS_LOADED` (`cli/src/commands/mcp.rs`): keep the two
 /// lists together, or each missing one costs a tool-search turn.
@@ -57,6 +57,18 @@ tools, not shell scripts.";
 /// The app's game, attached by the tool server before anything else.
 const ATTACHED: &str = "The game is running as session `s1`. It opens paused on its first \
 frame (`clock.paused`): `step` or `resume` it to run it, as input lands only when it does.";
+
+/// The app's game, on `headset`, which is away as the run starts: the tool
+/// server keeps its session and each game tool says it is away until it
+/// is back (`functor mcp --attach`).
+fn away(headset: &str) -> String {
+    format!(
+        "The game runs on {headset} as session `s1`, but that headset is away right \
+now: game tools answer that it is away until it reconnects, and `list_sessions` shows `alive: \
+true` once it is back. Read and edit the code meanwhile: an edit you save loads on the headset \
+when it is back."
+    )
+}
 
 /// No game session when the run started.
 const NO_GAME: &str = "No game is running: `launch_game` starts one.";
@@ -108,13 +120,36 @@ pub fn review_permissions(repo_root: &Path) -> Permissions {
     permissions(repo_root)
 }
 
+/// The game a run is attached to.
+#[derive(Clone, Copy)]
+enum Game<'a> {
+    None,
+    Attached,
+    /// On this headset, which is away.
+    Away(&'a str),
+}
+
+impl<'a> Game<'a> {
+    fn of(spec: &'a RunSpec) -> Self {
+        match (&spec.attach, &spec.away) {
+            (None, _) => Self::None,
+            (Some(_), None) => Self::Attached,
+            (Some(_), Some(headset)) => Self::Away(headset),
+        }
+    }
+}
+
 /// The prompt for `message`: a new agent session gets the [`PREAMBLE`],
-/// with the parts for whether it is `attached` to a game and has `views`.
-fn prompt(message: &str, resumed: bool, attached: bool, views: bool) -> String {
+/// with the parts for its `game` and whether it has `views`.
+fn prompt(message: &str, resumed: bool, game: Game, views: bool) -> String {
     if resumed {
         return message.to_string();
     }
-    let game = if attached { ATTACHED } else { NO_GAME };
+    let game = match game {
+        Game::None => NO_GAME.to_string(),
+        Game::Attached => ATTACHED.to_string(),
+        Game::Away(headset) => away(headset),
+    };
     let views = if views {
         format!(" {VIEWS}")
     } else {
@@ -531,12 +566,7 @@ async fn run(
     let permissions = permissions(&spec.repo_root);
     let cwd = spec.dir.to_string_lossy();
     let resumed = spec.resume.is_some();
-    let prompt = prompt(
-        &spec.message,
-        resumed,
-        spec.attach.is_some(),
-        secret.is_some(),
-    );
+    let prompt = prompt(&spec.message, resumed, Game::of(spec), secret.is_some());
     let opts = RunOpts {
         cwd: Some(&cwd),
         mcp: Some(&mcp),
@@ -1231,8 +1261,8 @@ mod tests {
 
     #[test]
     fn the_preamble_starts_only_new_sessions() {
-        assert_eq!(prompt("And now?", true, true, true), "And now?");
-        let first = prompt("What is the count?", false, false, false);
+        assert_eq!(prompt("And now?", true, Game::Attached, true), "And now?");
+        let first = prompt("What is the count?", false, Game::None, false);
         assert!(first.starts_with(PREAMBLE), "{first}");
         assert!(first.ends_with("\n\nWhat is the count?"), "{first}");
         assert!(first.contains("app_context"), "{first}");
@@ -1241,19 +1271,29 @@ mod tests {
     /// `task` has no view route: the agent is not told of tools it lacks.
     #[test]
     fn the_preamble_names_only_the_tools_a_run_has() {
-        let bare = prompt("hi", false, false, false);
+        let bare = prompt("hi", false, Game::None, false);
         assert!(
             !bare.contains("present") && !bare.contains("`s1`"),
             "{bare}"
         );
         assert!(bare.contains(NO_GAME), "{bare}");
-        let app = prompt("hi", false, true, true);
+        let app = prompt("hi", false, Game::Attached, true);
         assert!(app.contains(ATTACHED) && app.contains(VIEWS), "{app}");
-        let task = prompt("hi", false, true, false);
+        let task = prompt("hi", false, Game::Attached, false);
         assert!(
             task.contains(ATTACHED) && !task.contains("present"),
             "{task}"
         );
+    }
+
+    /// A game on a headset that is away: said, with the tool that tells
+    /// when it is back, and not that it is running here.
+    #[test]
+    fn the_preamble_says_the_headset_is_away() {
+        let away = prompt("hi", false, Game::Away("Quest 3"), false);
+        assert!(away.contains("runs on Quest 3 as session `s1`"), "{away}");
+        assert!(away.contains("`list_sessions`") && away.contains("when it is back"), "{away}");
+        assert!(!away.contains(ATTACHED) && !away.contains(NO_GAME), "{away}");
     }
 
     #[test]
@@ -1361,6 +1401,7 @@ mod tests {
             snapshot: false,
             baseline: None,
             attach: None,
+            away: None,
             moment: false,
             context: functor_app_core::agent_view::app_context(
                 &functor_app_core::AppState::none(),
