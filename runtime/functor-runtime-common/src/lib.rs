@@ -107,6 +107,7 @@ pub mod protocol;
 pub mod link_overlay;
 pub mod link_panel;
 pub mod load_status;
+pub mod overlay_font;
 pub mod push_cache;
 pub mod reload_indicator;
 pub mod render;
