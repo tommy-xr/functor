@@ -4159,8 +4159,11 @@ Escape again to quit"
             } else {
                 1.0
             };
+            // Whether the overlays get a pointer this frame; without one they
+            // own no injected press either.
+            let pointer_shown = !cursor_captured && (!hidden || pointer_injected);
             let pointer = functor_runtime_common::ui::PointerState {
-                pos: (!cursor_captured && (!hidden || pointer_injected)).then_some((
+                pos: pointer_shown.then_some((
                     mouse_pos.0 as f32 * dpi_scale,
                     mouse_pos.1 as f32 * dpi_scale,
                 )),
@@ -4652,12 +4655,13 @@ Escape again to quit"
                                     .map_err(debug_server::CaptureError::Failed)
                             },
                             Some(OverlayPointer {
-                                wants_pointer: overlay_owns_primary_press(
-                                    scrubber_wants_pointer,
-                                    ui_wants_pointer,
-                                    &webview_overlay,
-                                    mouse_pos,
-                                ),
+                                wants_pointer: pointer_shown
+                                    && overlay_owns_primary_press(
+                                        scrubber_wants_pointer,
+                                        ui_wants_pointer,
+                                        &webview_overlay,
+                                        mouse_pos,
+                                    ),
                                 pos: &mut mouse_pos,
                                 injected: &mut pointer_injected,
                                 moved: &mut pointer_moved,

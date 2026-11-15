@@ -317,7 +317,9 @@ one pointer state per rendered frame, so while one is shown, a left edge sent
 right after a `mouse_move` or another left edge, and a `mouse_move` right after
 a left edge, is answered on the next frame, with every request queued behind it
 kept in order. A burst like `move A; down; up; move B; step` can be sent back to
-back: it clicks at A, and the step still sees the press. While the clock is
+back: it clicks at A, and a press off the UI still reaches that step. A key
+sent right after a click that focuses a webview field may still reach the game:
+wait a frame (or read `/state`) before typing into it. While the clock is
 pinned (paused) the game UI sees no pointer, so an injected left press over a
 `Ui` widget reaches the game; one over the webview's interactive elements or
 the scrubber still does not.
