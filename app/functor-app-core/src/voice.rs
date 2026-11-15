@@ -77,6 +77,9 @@ pub struct Job {
     /// Since when (`AppState::clock`) the run has ended ok with the
     /// headset linked.
     ended: Option<u64>,
+    /// The task's change when the run started: the same one at its end is
+    /// an earlier run's, not one waiting to load.
+    pub(crate) before: Option<crate::changes::Change>,
 }
 
 /// Where an utterance goes.
@@ -161,6 +164,7 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
         revision,
         reloaded: false,
         ended: None,
+        before: t.change.clone(),
     });
     if run.is_some() {
         status(commands, &u.device, u.utterance, Stage::Working);
@@ -169,8 +173,9 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
 
 /// After every event: each followed run's outcome, once known, goes to its
 /// headset — `Reloaded` once the run ended ok and the game reloaded since
-/// it started; `Failed` if the run failed, was stopped, or the game left
-/// the headset or did not reload in time. A headset that is away is waited
+/// it started; `Answered` if it ended ok with nothing to reload; `Failed`
+/// if the run failed, was stopped, or the game left the headset or did not
+/// reload its change in time. A headset that is away is waited
 /// for: the shell delivers what it missed when it relinks.
 pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     let mut jobs = std::mem::take(&mut state.voice);
@@ -196,6 +201,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             (None, Some(run)) => {
                 job.run = Some(run.id);
                 job.revision = revision;
+                job.before = task.change.clone();
                 status(commands, &job.device, job.utterance, Stage::Working);
                 return true;
             }
@@ -230,11 +236,17 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             }
             Some(Item::Finished { ok: true, .. }) => {
                 let ended = *job.ended.get_or_insert(state.clock);
-                match state.clock.saturating_sub(ended) >= RELOAD_GRACE_MS {
+                if state.clock.saturating_sub(ended) < RELOAD_GRACE_MS {
+                    return true;
+                }
+                // A failure only when a change is known to be waiting;
+                // otherwise (changes untracked) it is the agent's answer.
+                let waiting = crate::tasks::has_change(task) && task.change != job.before;
+                match state.tracks_changes && waiting {
                     true => end(Stage::Failed(
                         "the agent finished, but the game did not reload".to_string(),
                     )),
-                    false => true,
+                    false => end(Stage::Answered(answer(&task.transcript, run))),
                 }
             }
             Some(Item::Finished { ok: false, summary }) => end(Stage::Failed(
