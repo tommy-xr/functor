@@ -58,11 +58,13 @@ pub struct PushCache {
     /// Path → hash for the push in flight: what an upload must hash to.
     expected: Mutex<HashMap<String, String>>,
     writer: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>>>,
+    /// Bytes held, once counted.
+    held: Mutex<Option<u64>>,
 }
 
 impl PushCache {
     pub fn new(dir: PathBuf, cap: u64) -> PushCache {
-        PushCache { dir, cap, expected: Mutex::new(HashMap::new()), writer: Mutex::new(None) }
+        PushCache { dir, cap, expected: Mutex::new(HashMap::new()), writer: Mutex::new(None), held: Mutex::new(None) }
     }
 
     fn entry(&self, hash: &str) -> Option<PathBuf> {
@@ -70,7 +72,8 @@ impl PushCache {
     }
 
     /// The bytes with `hash`, marking them used; `None` when not held (or
-    /// its file is not the size the push says: a truncated entry).
+    /// its file is not the size the push says: a truncated entry). Trusted
+    /// by size: entries are written whole and checked then, not re-hashed.
     pub fn get(&self, hash: &str, size: u64) -> Option<Vec<u8>> {
         let path = self.entry(hash)?;
         let bytes = std::fs::read(&path).ok()?;
@@ -100,7 +103,13 @@ impl PushCache {
             std::fs::rename(&partial, &path)
         };
         write().map_err(|e| format!("could not cache the file: {e}"))?;
-        self.evict(hash);
+        // Listing the cache costs a stat per entry: only once it may be over.
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        let now = match *held {
+            Some(before) => before + bytes.len() as u64,
+            None => self.size(),
+        };
+        *held = Some(if now > self.cap { self.evict(hash) } else { now });
         Ok(())
     }
 
@@ -126,8 +135,8 @@ impl PushCache {
     }
 
     /// Drop the least recently used entries until the cache fits its cap,
-    /// never `keep` (the one just written).
-    fn evict(&self, keep: &str) {
+    /// never `keep` (the one just written). The bytes left.
+    fn evict(&self, keep: &str) -> u64 {
         let mut entries = self.entries();
         let mut held: u64 = entries.iter().map(|(_, len, _)| len).sum();
         entries.sort_by_key(|(_, _, used)| *used);
@@ -142,33 +151,44 @@ impl PushCache {
                 held -= len;
             }
         }
+        held
     }
 
-    /// Forget everything held; the bytes freed.
-    pub fn clear(&self) -> u64 {
-        let freed = self.size();
-        let _ = std::fs::remove_dir_all(&self.dir);
+    /// Forget everything held, once the writes queued before it are done;
+    /// the bytes freed.
+    pub fn clear(self: &Arc<Self>) -> u64 {
+        let (done, freed) = std::sync::mpsc::channel();
+        let cache = self.clone();
+        self.later(Box::new(move || {
+            let bytes = cache.size();
+            let _ = std::fs::remove_dir_all(&cache.dir);
+            *cache.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(0);
+            let _ = done.send(bytes);
+        }));
         self.expected.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        freed
+        freed.recv().unwrap_or(0)
     }
 
-    /// Begin a push of `manifest`: the files held, as `(path, bytes)` to
-    /// install, and the hashes to ask for. Its uploads are then checked
-    /// ([`Self::accept`]).
-    pub fn begin(&self, manifest: &Manifest) -> (Vec<(String, Vec<u8>)>, ManifestAnswer) {
+    /// Whether an entry of `size` bytes is held under `hash`.
+    fn holds(&self, hash: &str, size: u64) -> bool {
+        let len = self.entry(hash).and_then(|path| std::fs::metadata(path).ok()).map(|meta| meta.len());
+        len == Some(size)
+    }
+
+    /// Begin a push of `manifest` (one at a time per device): the files
+    /// held, to install with [`Self::get`], and the hashes to ask for. Its
+    /// uploads are then checked ([`Self::accept_later`]).
+    pub fn begin(&self, manifest: &Manifest) -> (Vec<ManifestFile>, ManifestAnswer) {
         let mut held = Vec::new();
         let mut missing = Vec::new();
         let mut asked = HashSet::new();
         let mut expected = HashMap::new();
         for file in &manifest.files {
             expected.insert(file.path.clone(), file.hash.clone());
-            match self.get(&file.hash, file.size) {
-                Some(bytes) => held.push((file.path.clone(), bytes)),
-                None => {
-                    if asked.insert(file.hash.clone()) {
-                        missing.push(file.hash.clone());
-                    }
-                }
+            if self.holds(&file.hash, file.size) {
+                held.push(file.clone());
+            } else if asked.insert(file.hash.clone()) {
+                missing.push(file.hash.clone());
             }
         }
         *self.expected.lock().unwrap_or_else(|e| e.into_inner()) = expected;
@@ -176,23 +196,14 @@ impl PushCache {
     }
 
     /// An upload of `path` arrived: keep it when the push in flight named
-    /// it. `Err` when its bytes are not the ones named.
-    pub fn accept(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+    /// it and it hashes to what was named (else it is logged). Off the
+    /// caller's thread: hashing and writing a large file takes seconds on a
+    /// device, which the upload need not wait for.
+    pub fn accept_later(self: &Arc<Self>, path: &str, bytes: &[u8]) {
         let hash = self.expected.lock().unwrap_or_else(|e| e.into_inner()).get(path).cloned();
-        match hash {
-            Some(hash) => self.put(&hash, bytes).map_err(|e| format!("{path}: {e}")),
-            // Unnamed (a sender without manifests): not cached.
-            None => Ok(()),
-        }
-    }
-
-    /// [`Self::accept`], off the caller's thread: hashing and writing a
-    /// large file takes seconds on a device, which the upload need not wait
-    /// for. A file that is not the one named is logged and not kept.
-    pub fn accept_later(self: &Arc<Self>, path: String, bytes: Vec<u8>) {
-        let hash = self.expected.lock().unwrap_or_else(|e| e.into_inner()).get(&path).cloned();
+        // Unnamed (a sender without manifests): not cached.
         let Some(hash) = hash else { return };
-        let cache = self.clone();
+        let (cache, path, bytes) = (self.clone(), path.to_string(), bytes.to_vec());
         self.later(Box::new(move || {
             if let Err(error) = cache.put(&hash, &bytes) {
                 log::warn!("push cache: {path}: {error}");
@@ -254,80 +265,74 @@ mod tests {
         ManifestFile { path: path.into(), size: bytes.len() as u64, hash: sha256_hex(bytes) }
     }
 
+    fn cache(dir: &Path, cap: u64) -> Arc<PushCache> {
+        Arc::new(PushCache::new(dir.to_path_buf(), cap))
+    }
+
+    /// What a push of `manifest` finds: the paths held, and the hashes asked for.
+    fn push(cache: &PushCache, manifest: &Manifest) -> (Vec<String>, Vec<String>) {
+        let (held, answer) = cache.begin(manifest);
+        (held.into_iter().map(|file| file.path).collect(), answer.missing)
+    }
+
     #[test]
     fn a_push_asks_only_for_what_the_cache_lacks() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = PushCache::new(dir.path().join("push"), 1 << 20);
+        let cache = cache(&dir.path().join("push"), 1 << 20);
         let (fish, game, edited) = (b"fish".as_slice(), b"let init = 0".as_slice(), b"let init = 1".as_slice());
         let manifest = Manifest { files: vec![file("fish.glb", fish), file("copy/fish.glb", fish), file("game.fun", game)] };
         // Nothing held: both hashes asked for, the shared one once.
-        let (held, answer) = cache.begin(&manifest);
-        assert!(held.is_empty());
-        assert_eq!(answer.missing, [sha256_hex(fish), sha256_hex(game)]);
-        cache.accept("fish.glb", fish).unwrap();
-        cache.accept("game.fun", game).unwrap();
+        assert_eq!(push(&cache, &manifest), (vec![], vec![sha256_hex(fish), sha256_hex(game)]));
+        cache.accept_later("fish.glb", fish);
+        cache.accept_later("game.fun", game);
         // An upload the push did not name is not kept.
-        cache.accept("stray.bin", b"stray").unwrap();
+        cache.accept_later("stray.bin", b"stray");
+        cache.settle();
         assert_eq!(cache.size(), (fish.len() + game.len()) as u64);
         cache.end();
 
         // The same project again: everything installs from the cache.
-        let (held, answer) = cache.begin(&manifest);
-        assert!(answer.missing.is_empty());
-        let paths: Vec<&str> = held.iter().map(|(path, _)| path.as_str()).collect();
-        assert_eq!(paths, ["fish.glb", "copy/fish.glb", "game.fun"]);
-        assert_eq!(held[1].1, fish);
+        let (held, missing) = push(&cache, &manifest);
+        assert!(missing.is_empty());
+        assert_eq!(held, ["fish.glb", "copy/fish.glb", "game.fun"]);
+        assert_eq!(cache.get(&sha256_hex(fish), 4).as_deref(), Some(fish));
 
         // A one-line edit, and another project with the same model: one file to send.
         let other = Manifest { files: vec![file("models/shark.glb", fish), file("game.fun", edited)] };
-        let (held, answer) = cache.begin(&other);
-        assert_eq!(held.len(), 1);
-        assert_eq!(answer.missing, [sha256_hex(edited)]);
+        assert_eq!(push(&cache, &other), (vec!["models/shark.glb".to_string()], vec![sha256_hex(edited)]));
     }
 
     #[test]
     fn a_file_is_kept_only_when_it_hashes_to_what_the_push_named() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = PushCache::new(dir.path().to_path_buf(), 1 << 20);
+        let cache = cache(dir.path(), 1 << 20);
         let whole = b"the whole file".as_slice();
         let manifest = Manifest { files: vec![file("a.bin", whole)] };
+        let asked = vec![sha256_hex(whole)];
         cache.begin(&manifest);
-        // Cut short, or other bytes: refused, and nothing is left behind.
-        let error = cache.accept("a.bin", &whole[..5]).unwrap_err();
-        assert!(error.contains("a.bin") && error.contains("hashes to"), "{error}");
-        assert_eq!(cache.size(), 0);
-        assert_eq!(cache.begin(&manifest).1.missing.len(), 1, "still asked for: the push resumes");
-        // A write that never finished is not an entry.
-        std::fs::write(dir.path().join(format!("{}.partial", sha256_hex(whole))), b"the wh").unwrap();
-        assert_eq!(cache.begin(&manifest).1.missing.len(), 1);
-        cache.accept("a.bin", whole).unwrap();
-        assert!(cache.begin(&manifest).1.missing.is_empty());
-        // An entry truncated behind the cache's back is dropped, not served.
-        std::fs::write(dir.path().join(sha256_hex(whole)), b"the wh").unwrap();
-        let (held, answer) = cache.begin(&manifest);
-        assert!(held.is_empty() && answer.missing.len() == 1);
-        assert!(cache.put("../escape", b"x").is_err());
-    }
-
-    #[test]
-    fn an_upload_is_kept_off_the_callers_thread() {
-        let dir = tempfile::tempdir().unwrap();
-        let cache = Arc::new(PushCache::new(dir.path().to_path_buf(), 1 << 20));
-        let manifest = Manifest { files: vec![file("a.bin", b"aaaa"), file("b.bin", b"bbbb")] };
-        cache.begin(&manifest);
-        cache.accept_later("a.bin".into(), b"aaaa".to_vec());
-        // Not the bytes named: logged, not kept.
-        cache.accept_later("b.bin".into(), b"other".to_vec());
-        cache.accept_later("unnamed.bin".into(), b"cccc".to_vec());
+        // Cut short, or other bytes: not kept, and nothing is left behind.
+        cache.accept_later("a.bin", &whole[..5]);
         cache.settle();
-        assert_eq!(cache.begin(&manifest).1.missing, [sha256_hex(b"bbbb")]);
-        assert_eq!(cache.size(), 4);
+        assert_eq!(cache.size(), 0);
+        assert_eq!(push(&cache, &manifest).1, asked, "still asked for: the push resumes");
+        assert!(cache.put(&asked[0], b"other bytes").unwrap_err().contains("hashes to"));
+        // A write that never finished is not an entry.
+        std::fs::write(dir.path().join(format!("{}.partial", asked[0])), b"the wh").unwrap();
+        assert_eq!(push(&cache, &manifest).1, asked);
+        cache.accept_later("a.bin", whole);
+        cache.settle();
+        assert!(push(&cache, &manifest).1.is_empty());
+        // An entry truncated behind the cache's back is asked for again, not served.
+        std::fs::write(dir.path().join(&asked[0]), b"the wh").unwrap();
+        assert_eq!(push(&cache, &manifest), (vec![], asked.clone()));
+        assert!(cache.get(&asked[0], whole.len() as u64).is_none());
+        assert!(cache.put("../escape", b"x").is_err());
     }
 
     #[test]
     fn the_least_recently_used_go_first_and_clear_empties_it() {
         let dir = tempfile::tempdir().unwrap();
-        let cache = PushCache::new(dir.path().to_path_buf(), 25);
+        let cache = cache(dir.path(), 25);
         let blobs: Vec<Vec<u8>> = (0..3u8).map(|n| vec![n; 10]).collect();
         let hashes: Vec<String> = blobs.iter().map(|blob| sha256_hex(blob)).collect();
         let age = |hash: &str, secs: u64| {
@@ -348,7 +353,12 @@ mod tests {
         let big = vec![9u8; 40];
         cache.put(&sha256_hex(&big), &big).unwrap();
         assert_eq!(cache.size(), 40);
-        assert_eq!(cache.clear(), 40);
+        // A clear waits for what was being written, then nothing is held.
+        cache.begin(&Manifest { files: vec![file("late.bin", b"late")] });
+        cache.accept_later("late.bin", b"late");
+        assert_eq!(cache.clear(), 4, "the write landed (evicting the big one) before the clear");
         assert_eq!(cache.size(), 0);
+        cache.put(&hashes[0], &blobs[0]).unwrap();
+        assert_eq!(cache.size(), 10);
     }
 }

@@ -72,6 +72,8 @@ struct Burst {
     bytes: u64,
     began: Instant,
     last: Instant,
+    /// What the push said it will send, kept once it stops saying.
+    announced: Option<Push>,
 }
 
 #[derive(Default)]
@@ -120,8 +122,17 @@ impl LoadStatus {
         // A push with nothing to send still begins: it says so.
         let announced = facts.announced.is_some() && facts.announced != seen.announced;
         if ((facts.files, facts.bytes) != (seen.files, seen.bytes) || announced) && !dozed {
-            let burst = self.burst.get_or_insert(Burst { files: seen.files, bytes: seen.bytes, began: now, last: now });
+            let burst = self.burst.get_or_insert(Burst {
+                files: seen.files,
+                bytes: seen.bytes,
+                began: now,
+                last: now,
+                announced: None,
+            });
             burst.last = now;
+        }
+        if let Some(burst) = self.burst.as_mut() {
+            burst.announced = facts.announced.or(burst.announced);
         }
         if self.burst.as_ref().is_some_and(|burst| since(burst.last) > BURST) {
             self.burst = None;
@@ -151,7 +162,9 @@ impl LoadStatus {
         }
         if let Some(burst) = self.burst.as_ref().filter(|burst| !facts.game || since(burst.began) >= SYNC) {
             let (files, bytes) = (facts.files - burst.files, facts.bytes - burst.bytes);
-            return Some((Step::Receiving { files, bytes, of: facts.announced }, 1.0));
+            // A push's count outlasts its last file (until the load begins).
+            let of = facts.announced.or(burst.announced);
+            return Some((Step::Receiving { files, bytes, of }, 1.0));
         }
         if let Some((message, at)) = &self.failed {
             if !facts.game || since(*at) < FAILED {
@@ -217,7 +230,11 @@ pub fn lines(step: &Step) -> Vec<Line> {
                     let sent = format!("{:.1} of {:.1} MB ({percent}%)", mb(bytes), mb(*total));
                     card("RECEIVING PROJECT", &format!("{sent}, {} of {}", (*files).min(*all), count(*all)))
                 }
-                Some(Push { from_manifest: true, .. }) => card("UP TO DATE", "Nothing to send"),
+                Some(Push { files: 0, from_manifest: true, .. }) => card("UP TO DATE", "Nothing to send"),
+                // Only empty files to send.
+                Some(Push { files: all, .. }) if *all > 0 => {
+                    card("RECEIVING PROJECT", &format!("{} of {}", (*files).min(*all), count(*all)))
+                }
                 _ => card("RECEIVING PROJECT", &format!("{}, {:.1} MB", count(*files), mb(*bytes))),
             };
             out.extend(held);
@@ -394,9 +411,12 @@ mod tests {
         let idle = Facts { linked: true, ..Facts::default() };
         let held = Some(Push { files: 0, bytes: 0, held_bytes: 71 << 20, from_manifest: true });
         let pushed = Facts { announced: held, ..idle.clone() };
-        let shown = run(&mut status, start, &[(0, idle), (10, pushed.clone()), (500, pushed)]);
+        // It still says so once the push has ended, until the load begins.
+        let shown = run(&mut status, start, &[(0, idle.clone()), (10, pushed.clone()), (500, pushed), (600, idle)]);
         let up_to_date = Some(Step::Receiving { files: 0, bytes: 0, of: held });
-        assert_eq!(shown, vec![Some(Step::Connected(None)), up_to_date.clone(), up_to_date]);
+        assert_eq!(shown, vec![Some(Step::Connected(None)), up_to_date.clone(), up_to_date.clone(), up_to_date]);
+        let empty = Step::Receiving { files: 0, bytes: 0, of: Some(Push { files: 1, bytes: 0, held_bytes: 0, from_manifest: true }) };
+        assert_eq!(lines(&empty)[1].text, "0 of 1 file");
     }
 
     #[test]

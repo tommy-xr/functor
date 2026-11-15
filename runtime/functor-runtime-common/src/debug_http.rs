@@ -745,7 +745,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             // Kept by content when the push named it and its bytes are the
             // ones named.
             if let Some(cache) = crate::push_cache::installed() {
-                cache.accept_later(asset.path.clone(), asset.bytes.clone());
+                cache.accept_later(&asset.path, &asset.bytes);
             }
             ASSET_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (resp_tx, resp_rx) = mpsc::channel();
@@ -855,36 +855,55 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 return Some(());
             }
             // Without a cache (desktop), everything is asked for.
-            let (held, answer) = match crate::push_cache::installed() {
+            let cache = crate::push_cache::installed();
+            let (held, mut answer) = match &cache {
                 Some(cache) => cache.begin(&manifest),
-                None => {
-                    let mut missing: Vec<String> = manifest.files.iter().map(|file| file.hash.clone()).collect();
-                    missing.sort();
-                    missing.dedup();
-                    (Vec::new(), crate::push_cache::ManifestAnswer { missing })
-                }
+                None => (Vec::new(), Default::default()),
             };
-            let lacks = |file: &&crate::push_cache::ManifestFile| answer.missing.contains(&file.hash);
-            let sending: Vec<_> = manifest.files.iter().filter(lacks).collect();
-            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Push {
-                files: sending.len() as u64,
-                bytes: sending.iter().map(|file| file.size).sum(),
-                held_bytes: held.iter().map(|(_, bytes)| bytes.len() as u64).sum(),
-                from_manifest: true,
-            });
-            // What it holds installs as an upload would, without counting as one.
-            for (path, bytes) in held {
+            // What it holds installs as an upload would, without counting as
+            // one. Sent ahead of their answers (the shell takes a frame for
+            // each batch, not each file), a few at a time (they are in
+            // memory until it does).
+            let mut installing = Vec::new();
+            let mut pending = 0;
+            let mut installed = true;
+            for file in &manifest.files {
+                let bytes = held.contains(file).then(|| cache.as_ref()?.get(&file.hash, file.size)).flatten();
+                let Some(bytes) = bytes else {
+                    // Not held, or gone since it was listed.
+                    if !answer.missing.contains(&file.hash) {
+                        answer.missing.push(file.hash.clone());
+                    }
+                    continue;
+                };
+                pending += bytes.len();
                 let (resp_tx, resp_rx) = mpsc::channel();
-                let asset = debug_protocol::ProjectAsset { path, bytes };
+                let asset = debug_protocol::ProjectAsset { path: file.path.clone(), bytes };
                 if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
                     return runtime_gone(&mut stream, cors_origin);
                 }
-                if !matches!(recv(resp_rx), Ok(Ok(_))) {
-                    let message = "the runtime did not install a cached file";
-                    respond_text(&mut stream, cors_origin, 503, "Service Unavailable", message);
-                    return Some(());
+                installing.push(resp_rx);
+                if pending > MANIFEST_BATCH_BYTES {
+                    installed &= installing.drain(..).all(|answer| matches!(recv(answer), Ok(Ok(_))));
+                    pending = 0;
                 }
             }
+            installed &= installing.into_iter().all(|answer| matches!(recv(answer), Ok(Ok(_))));
+            if !installed {
+                // The sender falls back to sending everything.
+                *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                let message = "the runtime did not install a cached file";
+                respond_text(&mut stream, cors_origin, 503, "Service Unavailable", message);
+                return Some(());
+            }
+            let lacks = |file: &&crate::push_cache::ManifestFile| answer.missing.contains(&file.hash);
+            let (sending, have): (Vec<_>, Vec<_>) = manifest.files.iter().partition(lacks);
+            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Push {
+                files: sending.len() as u64,
+                bytes: sending.iter().map(|file| file.size).sum(),
+                held_bytes: have.iter().map(|file| file.size).sum(),
+                from_manifest: true,
+            });
             let body = serde_json::to_vec(&answer).unwrap_or_default();
             respond_bytes(&mut stream, cors_origin, 200, "OK", "application/json", &body)
         }
@@ -1024,6 +1043,9 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
 }
 
 static ASSET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Held files a manifest installs before waiting for the shell to take them.
+const MANIFEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
 static ASSET_FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

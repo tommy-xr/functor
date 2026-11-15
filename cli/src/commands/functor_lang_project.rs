@@ -1494,7 +1494,7 @@ project root, not from {}/",
         let report = sync_project_assets(&addr, &attempted_assets, None, parts, manifests)?;
         let mut observed_assets = attempted_assets.clone();
         emit(Event::Info {
-            message: report.synced(),
+            message: report.synced("project"),
         });
 
         // Load only after every initial file is resident, so top-level
@@ -1665,11 +1665,7 @@ project root, not from {}/",
                 match sync_project_assets(&addr, &current_assets, Some(&attempted_assets), parts, manifests) {
                     Ok(report) => {
                         emit(Event::Info {
-                            message: format!(
-                                "synced {} changed file(s) ({:.1} MB) to the headset",
-                                report.files,
-                                report.bytes as f64 / (1024.0 * 1024.0)
-                            ),
+                            message: report.synced("changed"),
                         });
                         attempted_assets = current_assets.clone();
                         observed_assets = current_assets;
@@ -2109,9 +2105,9 @@ struct AssetSyncReport {
 impl AssetSyncReport {
     /// `synced 3 project file(s) (1.2 MB) to the headset`, and what it
     /// already held.
-    fn synced(&self) -> String {
+    fn synced(&self, what: &str) -> String {
         let sent = format!(
-            "synced {} project file(s) ({:.1} MB) to the headset",
+            "synced {} {what} file(s) ({:.1} MB) to the headset",
             self.files,
             self.bytes as f64 / (1024.0 * 1024.0)
         );
@@ -2148,8 +2144,8 @@ fn post_push_manifest(
             let answer: ManifestAnswer = serde_json::from_str(&answer).map_err(Error::other)?;
             Ok(Some(answer.missing))
         }
-        (404, _) => Ok(None),
-        (status, response) => Err(Error::other(format!("push manifest rejected ({status}): {response}"))),
+        // No such route, or it could not install what it holds: send everything.
+        _ => Ok(None),
     }
 }
 
@@ -2170,8 +2166,8 @@ fn push_hashes_path() -> Option<PathBuf> {
 #[derive(Default)]
 struct PushHashes {
     path: Option<PathBuf>,
-    /// Disk path → (size, modified ns, sha256).
-    known: std::collections::BTreeMap<String, (u64, u128, String)>,
+    /// Disk path → (size, modified ns, changed ns, sha256).
+    known: std::collections::BTreeMap<String, (u64, u128, i128, String)>,
     changed: bool,
 }
 
@@ -2187,13 +2183,24 @@ impl PushHashes {
 
     fn of(&mut self, asset: &ProjectAssetFile) -> Result<String, Error> {
         let key = asset.disk_path.to_string_lossy().to_string();
-        if let Some((len, modified, hash)) = self.known.get(&key) {
-            if (*len, *modified) == (asset.len, asset.modified_ns) {
+        // The inode's change time moves on every write and cannot be set
+        // back, unlike the modified time (a copy that keeps it, a coarse
+        // filesystem clock).
+        #[cfg(unix)]
+        let changed = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&asset.disk_path)?;
+            i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec())
+        };
+        #[cfg(not(unix))]
+        let changed = 0;
+        if let Some((len, modified, at, hash)) = self.known.get(&key) {
+            if (*len, *modified, *at) == (asset.len, asset.modified_ns, changed) {
                 return Ok(hash.clone());
             }
         }
         let hash = functor_runtime_common::push_cache::sha256_hex(&std::fs::read(&asset.disk_path)?);
-        self.known.insert(key, (asset.len, asset.modified_ns, hash.clone()));
+        self.known.insert(key, (asset.len, asset.modified_ns, changed, hash.clone()));
         self.changed = true;
         Ok(hash)
     }
@@ -2202,8 +2209,12 @@ impl PushHashes {
     fn save(&mut self) {
         let Some(path) = self.path.as_ref().filter(|_| std::mem::take(&mut self.changed)) else { return };
         if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec(&self.known)) {
+            // Whole or not at all: another `run vr` may read it meanwhile.
+            let partial = path.with_extension(format!("{}.partial", std::process::id()));
             let _ = std::fs::create_dir_all(dir);
-            let _ = std::fs::write(path, json);
+            if std::fs::write(&partial, json).is_ok() {
+                let _ = std::fs::rename(&partial, path);
+            }
         }
     }
 }
@@ -3358,7 +3369,7 @@ mod tests {
 
         let first = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
         assert_eq!((first.files, first.held), (2, 0));
-        assert_eq!(first.synced(), "synced 2 project file(s) (0.0 MB) to the headset");
+        assert_eq!(first.synced("project"), "synced 2 project file(s) (0.0 MB) to the headset");
         assert_eq!(installs(), ["fish.glb", "game.fun"]);
 
         push_cache::installed().unwrap().settle();
@@ -3367,7 +3378,7 @@ mod tests {
         let again = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
         assert_eq!(announced(), None, "a finished push announces nothing");
         assert_eq!((again.files, again.bytes, again.held), (0, 0, 2));
-        assert_eq!(again.synced(), "synced 0 project file(s) (0.0 MB) to the headset; it already had 2");
+        assert_eq!(again.synced("project"), "synced 0 project file(s) (0.0 MB) to the headset; it already had 2");
         assert_eq!(installs(), ["fish.glb", "game.fun"]);
 
         // One file edited: one file sent.
