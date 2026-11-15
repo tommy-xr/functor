@@ -221,6 +221,21 @@ impl LoadStatus {
 const WRAP: f32 = 0.5;
 const WRAP_LINES: usize = 6;
 
+/// A step's name on the wire (the device link's load channel): stable,
+/// where the card's wording is not.
+pub fn kind(step: &Step) -> &'static str {
+    match step {
+        Step::Waiting => "waiting",
+        Step::Connected(_) => "connected",
+        Step::Receiving { .. } => "receiving",
+        Step::Checking => "starting",
+        Step::Assets { .. } => "assets",
+        Step::Running => "running",
+        Step::Reloading => "reloading",
+        Step::Failed(_) => "failed",
+    }
+}
+
 /// The card's lines.
 pub fn lines(step: &Step) -> Vec<Line> {
     let line = |text: &str, size, color| Line { text: text.to_string(), size, color };

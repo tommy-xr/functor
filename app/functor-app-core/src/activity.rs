@@ -28,6 +28,9 @@ pub struct Activity {
     /// How full the main agent's context is, once both its use and its
     /// model's window are known.
     pub context: Option<ContextFill>,
+    /// Its run is in flight and an agent's tools hold its project's game
+    /// paused: it is checking the change.
+    pub game_paused: bool,
 }
 
 /// A subagent at work, under the call that started it.
@@ -90,12 +93,21 @@ pub struct Call {
 }
 
 /// Every task's activity, by id, but a queued one's (it has no agent yet);
-/// `windows` are the context windows seen, by [`window_key`].
-pub fn activities(tasks: &[Task], windows: &BTreeMap<String, u64>) -> BTreeMap<u64, Activity> {
+/// `windows` are the context windows seen, by [`window_key`]; `paused` is
+/// the project whose game an agent's tools hold paused.
+pub fn activities(
+    tasks: &[Task],
+    windows: &BTreeMap<String, u64>,
+    paused: Option<&str>,
+) -> BTreeMap<u64, Activity> {
     tasks
         .iter()
         .filter(|t| t.queued.is_none())
-        .map(|t| (t.id, activity(t, windows)))
+        .map(|t| {
+            let mut activity = activity(t, windows);
+            activity.game_paused = t.run.is_some() && paused == Some(t.project.as_str());
+            (t.id, activity)
+        })
         .collect()
 }
 
@@ -196,6 +208,7 @@ pub fn activity(task: &Task, windows: &BTreeMap<String, u64>) -> Activity {
         error,
         subagents,
         context: context(task, windows),
+        game_paused: false,
     }
 }
 

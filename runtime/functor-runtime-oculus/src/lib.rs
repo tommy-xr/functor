@@ -919,6 +919,11 @@ struct DebugLoopState {
     /// and where it sits.
     load_status: functor_runtime_common::load_status::LoadStatus,
     status_lines: Option<Vec<String>>,
+    /// What the desktop last heard of it (its kind, then its lines), on
+    /// which link, and when.
+    status_said: Vec<String>,
+    status_link: Option<u64>,
+    status_said_at: Option<Instant>,
     status_follow: functor_runtime_common::link_overlay::Follow,
     /// The load in flight is a game (not the boot scene), and one is running.
     loading_game: bool,
@@ -926,6 +931,37 @@ struct DebugLoopState {
 }
 
 impl DebugLoopState {
+    /// Tell the linked desktop what the status card says (`said`: its kind,
+    /// then its lines; empty when hidden): a new step at once, a count that
+    /// moves at most four times a second, and all of it again on a new link.
+    fn tell_desktop(&mut self, said: Vec<String>, now: Instant) {
+        let Some((client, link)) = self.link.as_ref().and_then(|client| Some((client, client.link()?))) else {
+            return;
+        };
+        let relinked = self.status_link != Some(link);
+        if said == self.status_said && !relinked {
+            return;
+        }
+        let stepped = said.first() != self.status_said.first();
+        let due = self.status_said_at.is_none_or(|at| now.duration_since(at) >= std::time::Duration::from_millis(250));
+        if !(relinked || stepped || due) {
+            return;
+        }
+        // Small and never resent by the link: unbounded, and tried again
+        // next frame if the link went.
+        let data = functor_device_link::load::encode(&said);
+        if client.send_channel(link, functor_device_link::load::CHANNEL, data, false) {
+            (self.status_said, self.status_link, self.status_said_at) = (said, Some(link), Some(now));
+        }
+    }
+
+    /// No frame renders (the headset dozes): the card is not showing, and
+    /// the desktop must not keep its last word.
+    fn status_hidden(&mut self) {
+        self.status_lines = None;
+        self.tell_desktop(Vec::new(), Instant::now());
+    }
+
     /// A `/load-project` ended: which program runs now, or why it failed.
     fn loaded(&mut self, result: &Result<String, String>) {
         match result {
@@ -1119,12 +1155,13 @@ fn service_debug_request(
             let mut input = debug.input.clone();
             apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
-            let (frame, rendered_frames, tts, pending_steps, paused) = (
+            let (frame, rendered_frames, tts, pending_steps, paused, paused_by) = (
                 debug.frame_count,
                 debug.rendered_frames,
                 clock.current_tts(),
                 clock.pending_steps(),
                 clock.is_paused(),
+                clock.paused_by(),
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
@@ -1169,7 +1206,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: if with_model {
@@ -1352,8 +1389,8 @@ desktop runtime's --headless/--debug-port path"
             }
             let _ = response.send(result);
         }
-        DebugRequest::Time(command, response) => {
-            let _ = response.send(clock.apply(command));
+        DebugRequest::Time(request, response) => {
+            let _ = response.send(clock.apply(request.command, request.by));
         }
         DebugRequest::Project(response) => {
             sim.post(move |g| {
@@ -2131,6 +2168,7 @@ pub fn android_main(app: AndroidApp) {
             // A doze is not frame time.
             last_rendered = Instant::now();
             last_display_ns = None;
+            debug.status_hidden();
             debug.telemetry.idle();
             continue;
         }
@@ -2184,6 +2222,7 @@ pub fn android_main(app: AndroidApp) {
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
             last_display_ns = None;
+            debug.status_hidden();
             debug.telemetry.idle();
             last_rendered = Instant::now();
             continue;
@@ -2300,6 +2339,7 @@ pub fn android_main(app: AndroidApp) {
             last_rendered = Instant::now();
             // A declined frame is the compositor's choice, not a miss.
             last_display_ns = None;
+            debug.status_hidden();
             debug.telemetry.idle();
             continue;
         }
@@ -2593,9 +2633,12 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
-        // The pairing card, else the open panel, else the voice toast:
-        // shapes, opacity and placement, worked out once for both eyes.
-        use functor_runtime_common::link_overlay::{card, toast_lines};
+        // The pairing card, else the open panel, else the voice toast, else
+        // the paused marker: shapes, opacity and placement, worked out once
+        // for both eyes.
+        use functor_runtime_common::link_overlay::{
+            card, paused_lines, paused_marker_transform, toast_lines,
+        };
         use functor_runtime_common::link_panel::{placement, pose_matrix, wrist_shapes};
         let panel = match (&pairing, &debug.link) {
             (Some(pairing), _) => {
@@ -2611,12 +2654,20 @@ images cannot be posed"
                     debug.panel.shapes(panel::connection(&client.view()), toast, Instant::now());
                 (shapes, 1.0, Place::Head(world * anchor))
             }),
-            _ => tracked_center.and_then(|head| {
-                let (toast, alpha) = debug.voice.toast(Instant::now())?;
-                let shapes = card(&toast_lines(toast));
-                let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
-            }),
+            _ => tracked_center
+                .and_then(|head| {
+                    let (toast, alpha) = debug.voice.toast(Instant::now())?;
+                    let shapes = card(&toast_lines(toast));
+                    let place = debug.voice.follow.transform(head.orientation, real_delta);
+                    Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+                })
+                .or_else(|| {
+                    // A capture shows the game, not the marker.
+                    let head = tracked_center.filter(|_| !capture_due)?;
+                    let shapes = card(&paused_lines(clock.is_paused(), clock.paused_by())?);
+                    let place = paused_marker_transform(head.orientation);
+                    Some((std::rc::Rc::new(shapes), 1.0, Place::Head(place)))
+                }),
         };
         // The load status, where the toast sits, when nothing above shows.
         let link_view = debug.link.as_ref().filter(|_| !debug.game).map(|client| client.view());
@@ -2634,16 +2685,20 @@ images cannot be posed"
             },
             Instant::now(),
         );
+        let kind = status.as_ref().map(|(step, _)| functor_runtime_common::load_status::kind(step));
         let status = status.map(|(step, alpha)| (functor_runtime_common::load_status::lines(&step), alpha));
-        let status_lines = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
+        let status_lines: Option<Vec<String>> = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
         if status_lines != debug.status_lines {
             // Logged per step, not per count: a push's count moves every frame.
             let heading = |lines: &Option<Vec<String>>| lines.as_ref().and_then(|lines| lines.first().cloned());
             if heading(&status_lines) != heading(&debug.status_lines) {
                 log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
             }
-            debug.status_lines = status_lines;
+            debug.status_lines = status_lines.clone();
         }
+        // The desktop hears it too: its kind, then its lines.
+        let said = kind.into_iter().map(str::to_string).chain(status_lines.into_iter().flatten()).collect();
+        debug.tell_desktop(said, Instant::now());
         let panel = match (panel, status, tracked_center) {
             (None, Some((lines, alpha)), Some(head)) => {
                 let shapes = card(&lines);

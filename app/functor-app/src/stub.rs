@@ -352,6 +352,14 @@ async fn session(
                         r.id, &r.method, &r.target, &r.body, &args.name, served, runtime,
                     );
                     let mut frames = vec![Frame::Response(response)];
+                    // `POST /stub-loading` (lines as text): its status card
+                    // says that, as a headset's does while it loads.
+                    if (r.method.as_str(), r.target.as_str()) == ("POST", "/stub-loading") {
+                        frames.push(Frame::Channel {
+                            channel: functor_device_link::load::CHANNEL,
+                            data: r.body.clone(),
+                        });
+                    }
                     // Spoken once a game runs here: the desktop polls its state.
                     if let (Some(pcm), false, "/state") =
                         (clip, *said, r.target.split('?').next().unwrap_or(""))

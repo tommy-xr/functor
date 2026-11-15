@@ -20,7 +20,7 @@ const task = (id: number, status: TaskStatus, over: Partial<Task> = {}): Task =>
   ...over,
 });
 
-const act = (stance: Activity["stance"], over: Partial<Activity> = {}): Activity => ({ stance, calls: [], error: null, subagents: [], context: null, ...over });
+const act = (stance: Activity["stance"], over: Partial<Activity> = {}): Activity => ({ stance, calls: [], error: null, subagents: [], context: null, game_paused: false, ...over });
 
 const running = { id: 0, usage: null, views: 0 };
 
@@ -39,6 +39,18 @@ test("the bubble shows the first running call and how many run", () => {
   // A question shows over an earlier call still running.
   const ask = { kind: "ask" as const, label: "asking: Ten or twenty?" };
   assert.equal(bubble(t, act("waiting", { calls: [calls[0]!, ask] })).text, "asking: Ten or twenty?");
+});
+
+test("an agent holding the game paused says so, under a question", () => {
+  const t = task(1, { kind: "in_progress" }, { run: running });
+  const paused = "checking the change, game paused";
+  assert.deepEqual(bubble(t, act("thinking", { game_paused: true })), { kind: "game", text: paused, count: 0, error: false });
+  const step = { kind: "game" as const, label: "stepping the game" };
+  assert.equal(bubble(t, act("working", { calls: [step], game_paused: true })).text, paused);
+  assert.match(cardLabel(t, act("working", { calls: [step], game_paused: true })), /game paused/);
+  const ask = { kind: "ask" as const, label: "asking: Ten or twenty?" };
+  assert.equal(bubble(t, act("waiting", { calls: [step, ask], game_paused: true })).text, "asking: Ten or twenty?");
+  assert.equal(bubble(t, act("working", { calls: [step] })).text, "stepping the game");
 });
 
 test("with nothing running, the bubble says whose turn it is", () => {

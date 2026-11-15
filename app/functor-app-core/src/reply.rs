@@ -6,14 +6,14 @@
 use crate::tasks::Item;
 use crate::voice::Stage;
 
-/// What marks the agent's line for the ear.
-const MARK: &str = "spoken:";
+/// What marks the agent's line for the ear, before its colon.
+const MARK: &str = "spoken";
 /// The most said.
 const MAX_CHARS: usize = 280;
 const MAX_SENTENCES: usize = 2;
 
 /// Added to a spoken request's prompt: asks for the line.
-pub const ASK: &str = "(Your answer is also read aloud in the headset. End your last message \
+pub const ASK: &str = "(Your answer is also read aloud. End your last message \
 with one line that starts with `Spoken:`, then one or two short sentences saying what you did \
 or the answer, as you would say it to someone not looking at a screen: plain words, no file \
 names, paths, code or markdown.)";
@@ -33,8 +33,17 @@ pub fn spoken(items: &[Item], run: u64, stage: &Stage, review: bool) -> Option<S
     };
     // The last reply's line for the ear, else that reply.
     let last = replies().last();
+    // Not a `Spoken:` inside fenced code.
     let marked = last.and_then(|reply| {
-        let lines = reply.lines().filter_map(|l| strip_mark(l.trim()));
+        let mut fenced = false;
+        let prose = reply.lines().filter(move |l| {
+            if l.trim_start().starts_with("```") {
+                fenced = !fenced;
+                return false;
+            }
+            !fenced
+        });
+        let lines = prose.filter_map(|l| strip_mark(l.trim()));
         lines.filter(|l| !l.is_empty()).last()
     });
     let line = marked.or(last).map(for_the_ear);
@@ -56,12 +65,14 @@ pub fn spoken(items: &[Item], run: u64, stage: &Stage, review: bool) -> Option<S
     }
 }
 
-/// `line` after its `Spoken:` mark, whatever its case or emphasis.
+/// `line` after its `Spoken:` mark, whatever its case or emphasis
+/// (`**Spoken:**`, `**Spoken**:`, `*Spoken:*`).
 pub(crate) fn strip_mark(line: &str) -> Option<&str> {
     let line = line.trim_start_matches(['*', '_', '>', '-', ' ']);
     let head = line.get(..MARK.len())?;
-    head.eq_ignore_ascii_case(MARK)
-        .then(|| line[MARK.len()..].trim_start_matches(['*', '_', ' ']))
+    let rest = line[MARK.len()..].trim_start_matches(['*', '_']);
+    let rest = rest.strip_prefix(':').filter(|_| head.eq_ignore_ascii_case(MARK))?;
+    Some(rest.trim_start_matches(['*', '_', ' ']))
 }
 
 /// `text` as it is said: no code blocks, markdown marks, links, paths or
@@ -150,15 +161,16 @@ fn path(word: &str) -> bool {
     word.contains('\\') || (word.contains('/') && names)
 }
 
-/// `game.fun`, `Cargo.toml`: a name, a dot and a file extension. Not
-/// `Color.red` or `functor.games`.
+/// `game.fun`, `Cargo.toml`, `Ball.PNG`: a name, a dot and a file
+/// extension. Not `Color.red` or `functor.games`.
 fn file_name(word: &str) -> bool {
-    const EXTENSIONS: [&str; 24] = [
-        "fun", "funi", "rs", "toml", "json", "md", "txt", "ts", "tsx", "js", "mjs", "css",
-        "html", "png", "jpg", "jpeg", "hdr", "glb", "gltf", "wav", "ogg", "mp3", "lock", "yml",
-    ];
-    word.rsplit_once('.')
-        .is_some_and(|(stem, ext)| !stem.is_empty() && EXTENSIONS.contains(&ext))
+    use crate::decision::{ASSETS, CONFIG};
+    const CODE: [&str; 12] =
+        ["fun", "funi", "rs", "md", "txt", "ts", "tsx", "js", "mjs", "css", "html", "lock"];
+    crate::decision::extension(word).is_some_and(|ext| {
+        let ext = ext.as_str();
+        CODE.contains(&ext) || ASSETS.contains(&ext) || CONFIG.contains(&ext)
+    })
 }
 
 #[cfg(test)]
@@ -248,11 +260,26 @@ It bounces slower now. A third sentence is not said.";
     #[test]
     fn a_failure_is_said_and_work_in_progress_is_not() {
         let items = run(&["Spoken: All done."]);
-        let failed = Stage::Failed("the game stopped on the headset".to_string());
+        let failed = Stage::Failed("the agent failed".to_string());
         assert_eq!(
             spoken(&items, 0, &failed, false).as_deref(),
-            Some("That did not work: the game stopped on the headset")
+            Some("That did not work: the agent failed")
         );
         assert_eq!(spoken(&items, 0, &Stage::Working, false), None);
+    }
+
+    #[test]
+    fn the_mark_takes_emphasis_and_is_not_read_from_code() {
+        for line in ["**Spoken**: It is red.", "*Spoken:* It is red.", "__SPOKEN:__ It is red."] {
+            assert_eq!(strip_mark(line), Some("It is red."), "{line}");
+        }
+        assert_eq!(strip_mark("Spokenly: no"), None);
+        let fenced = run(&["Spoken: It is red.\n\n```\nSpoken: a code line\n```"]);
+        assert_eq!(
+            spoken(&fenced, 0, &Stage::Reloaded, false).as_deref(),
+            Some("It is red.")
+        );
+        // A file name whatever its case or kind.
+        assert_eq!(for_the_ear("See Ball.PNG and notes.yaml."), "See a file and a file.");
     }
 }

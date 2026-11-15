@@ -21,7 +21,12 @@ subagents: Array<Subagent>,
  * How full the main agent's context is, once both its use and its
  * model's window are known.
  */
-context: ContextFill | null, };
+context: ContextFill | null, 
+/**
+ * Its run is in flight and an agent's tools hold its project's game
+ * paused: it is checking the change.
+ */
+game_paused: boolean, };
 
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -329,6 +334,13 @@ build: string | null,
  * The project it runs.
  */
 project: string | null, 
+/**
+ * What it is loading: the step's kind, then its status card's lines
+ * (`["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of
+ * 9 files"]`; see `functor_device_link::load`). Empty when its card
+ * is hidden, and from a headset that does not say.
+ */
+loading: Array<string>, 
 /**
  * The last ping's round trip.
  */
@@ -659,6 +671,11 @@ tabs: Array<View>,
  * Index of the shown tab in `tabs` (0 when empty).
  */
 active: number, };
+
+/**
+ * Who paused the clock, as the request that paused it said.
+ */
+export type PausedBy = "agent" | "user" | "start";
 
 /**
  * Where the project's one game view shows (D21).
@@ -1117,6 +1134,10 @@ clock: boolean,
  * Pinned: paused, stepped, or parked on a seek.
  */
 paused: boolean, 
+/**
+ * Who paused it, where the runtime says (debug protocol v52).
+ */
+paused_by: PausedBy | null, 
 /**
  * The recorded steps behind the state shown (`/state.frame`).
  */

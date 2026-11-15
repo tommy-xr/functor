@@ -16,7 +16,7 @@ use cgmath::Matrix4;
 use glow::HasContext;
 
 use crate::color_space::{OutputAlpha, OutputEncodeUniform};
-use crate::debug_protocol::{PairingState, VoiceStage, VoiceToast};
+use crate::debug_protocol::{PairingState, PausedBy, VoiceStage, VoiceToast};
 use crate::input::{XrControllerSnapshot, XrInputSnapshot};
 use crate::overlay_font;
 use crate::shader::{Shader, ShaderType};
@@ -529,6 +529,29 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         );
     }
     out
+}
+
+/// The paused marker's lines: `PAUSED` while the game clock holds, and why
+/// when an agent's tools hold it. `None` while the clock runs. It stays as
+/// long as the pause does, and gives its place to the pairing card, the open
+/// panel and the toast.
+pub fn paused_lines(paused: bool, by: Option<PausedBy>) -> Option<Vec<Line>> {
+    let line = |text: &str, size, color| Line {
+        text: text.to_string(),
+        size,
+        color,
+    };
+    let mut out = vec![line("PAUSED", HEADING, CYAN)];
+    if by == Some(PausedBy::Agent) {
+        out.push(line("Agent is checking its change", BODY, WHITE));
+    }
+    paused.then_some(out)
+}
+
+/// Head space from the paused marker's own, for `head`: in front and low,
+/// where the toast appears.
+pub fn paused_marker_transform(head: [f32; 4]) -> Matrix4<f32> {
+    Follow::default().transform(head, 0.0)
 }
 
 /// Where the toast sits: a metre out and low in the view, following the
@@ -1318,6 +1341,33 @@ mod tests {
         assert_eq!(toast_lines(&asked), lines, "without what was asked");
         assert!(toast.look(at(14.0)).is_some());
         assert!(toast.look(at(16.0)).is_none(), "then it fades");
+    }
+
+    #[test]
+    fn the_paused_marker_says_paused_and_when_an_agent_holds_it() {
+        let texts = |paused, by| {
+            paused_lines(paused, by).map(|lines| {
+                lines.into_iter().map(|l| l.text).collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            texts(true, Some(PausedBy::Agent)),
+            Some(vec!["PAUSED".to_string(), "Agent is checking its change".to_string()])
+        );
+        for by in [Some(PausedBy::User), Some(PausedBy::Start), None] {
+            assert_eq!(texts(true, by), Some(vec!["PAUSED".to_string()]), "{by:?}");
+        }
+        // Running: no marker, whatever the cause last was.
+        assert_eq!(texts(false, None), None);
+        assert_eq!(texts(false, Some(PausedBy::Agent)), None);
+        // It sits where the toast appears, whichever way the head faces.
+        let turned = [0.0, 0.5f32.sin(), 0.0, 0.5f32.cos()];
+        assert_eq!(
+            paused_marker_transform(turned),
+            Follow::default().transform(turned, 0.01)
+        );
+        let at = paused_marker_transform(turned) * cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+        assert!(at.x.abs() < 1e-6 && (at.y + 0.3).abs() < 1e-6 && (at.z + 1.0).abs() < 1e-6);
     }
 
     #[test]
