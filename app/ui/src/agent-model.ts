@@ -15,13 +15,17 @@ export const STANCE_WORDS: Record<Stance, string> = {
 
 export const ENGINE_WORDS: Record<Task["harness"], string> = { claude: "Claude", codex: "Codex" };
 
-/** What the bubble shows: the running question, else the first call (and how many run), else the error, else the stance. */
+/** What an agent holding the game paused is doing: the core's words for the headset (`panel.rs`). */
+export const GAME_PAUSED = "checking the change, game paused";
+
+/** What the bubble shows: the running question, else that the agent holds the game paused, else the first call (and how many run), else the error, else the stance. */
 export type Bubble = { kind: CallKind | null; text: string; count: number; error: boolean };
 
 export function bubble(task: Task, activity: Activity): Bubble {
   const error = activity.error !== null;
   // A question is what the user is waiting on.
   const call = activity.calls.find((c) => c.kind === "ask") ?? activity.calls[0];
+  if (activity.game_paused && call?.kind !== "ask") return { kind: "game", text: GAME_PAUSED, count: activity.calls.length, error };
   if (call) return { kind: call.kind, text: call.label, count: activity.calls.length, error };
   if (activity.error) return { kind: null, text: activity.error, count: 0, error };
   const text =

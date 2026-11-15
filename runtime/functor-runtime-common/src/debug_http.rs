@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 
 use crate::debug_protocol::{
     self, CaptureError, DebugRequest, InputCommand, LoadHost, ProjectAssetPaths, ProjectSources,
-    RewindCommand, RuntimeState, TimeCommand,
+    RewindCommand, RuntimeState, TimeRequest,
 };
 use crate::frame_stream;
 
@@ -455,7 +455,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("POST", "/time") => {
-            let command = match parse_json::<TimeCommand>(&mut reader, content_length) {
+            let command = match parse_json::<TimeRequest>(&mut reader, content_length) {
                 Ok(command) => command,
                 Err(error) => {
                     respond_text(
@@ -1411,6 +1411,7 @@ mod tests {
     use std::net::Shutdown;
 
     use super::*;
+    use crate::debug_protocol::{PausedBy, TimeCommand};
 
     fn connect(listener: &TcpListener, request: String) -> std::thread::JoinHandle<String> {
         let address = listener.local_addr().unwrap();
@@ -1824,7 +1825,7 @@ Content-Length: {}\r\n\r\n{body}",
     #[test]
     fn a_time_command_the_runtime_refuses_is_a_conflict_not_an_ok() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let body = r#"{"type":"advance","dts":0.016,"frames":4}"#;
+        let body = r#"{"type":"advance","dts":0.016,"frames":4,"by":"agent"}"#;
         let request = format!(
             "POST /time HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
@@ -1837,9 +1838,12 @@ Content-Length: {}\r\n\r\n{body}",
             DebugRequest::Time(command, response) => {
                 assert_eq!(
                     command,
-                    TimeCommand::Advance {
-                        dts: 0.016,
-                        frames: 4
+                    TimeRequest {
+                        command: TimeCommand::Advance {
+                            dts: 0.016,
+                            frames: 4
+                        },
+                        by: Some(PausedBy::Agent),
                     }
                 );
                 response.send(Err("pinned by --fixed-time".into())).unwrap();

@@ -2132,6 +2132,13 @@ blockquote {
   pointer-events: none;
 }
 
+/* Why the game holds, beside the buttons. */
+.transport-paused {
+  color: var(--tl-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 /* 33px tall with the mini card's top border: MINI_TRANSPORT (Canvas.tsx). */
 .transport-compact {
   gap: 4px;

@@ -21,7 +21,12 @@ subagents: Array<Subagent>,
  * How full the main agent's context is, once both its use and its
  * model's window are known.
  */
-context: ContextFill | null, };
+context: ContextFill | null, 
+/**
+ * Its run is in flight and an agent's tools hold its project's game
+ * paused: it is checking the change.
+ */
+game_paused: boolean, };
 
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -668,6 +673,11 @@ tabs: Array<View>,
 active: number, };
 
 /**
+ * Who paused the clock, as the request that paused it said.
+ */
+export type PausedBy = "agent" | "user" | "start";
+
+/**
  * Where the project's one game view shows (D21).
  */
 export type Placement = "pane" | "mini" | "window" | "headset";
@@ -1124,6 +1134,10 @@ clock: boolean,
  * Pinned: paused, stepped, or parked on a seek.
  */
 paused: boolean, 
+/**
+ * Who paused it, where the runtime says (debug protocol v52).
+ */
+paused_by: PausedBy | null, 
 /**
  * The recorded steps behind the state shown (`/state.frame`).
  */

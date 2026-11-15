@@ -59,6 +59,19 @@ export function follow(state: TimelineState, transport: Transport): TimelineStat
   return next;
 }
 
+/** Why the game holds, beside the bar's buttons; null while it plays. */
+export function pausedLabel(transport: Transport): string | null {
+  if (!transport.paused) return null;
+  switch (transport.paused_by) {
+    case "agent":
+      return "Paused by the agent";
+    case "start":
+      return "Paused at start";
+    default:
+      return "Paused";
+  }
+}
+
 /**
  * Whether `transport` lands an edit the page should peek at (the web
  * scrubber's rule): a hot reload since revision `seen`, paused, with the

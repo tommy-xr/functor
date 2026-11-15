@@ -34,7 +34,7 @@ use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
-use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
+use crate::transport::{PausedBy, SessionCall, Timeline, Transport, TransportCall};
 use crate::progress;
 use crate::voice::{self, HearingStage, Route, Stage, Utterance};
 use crate::voice_timing::VoiceTiming;
@@ -1220,7 +1220,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     voice::progress(&mut state, &mut commands);
     progress::refresh(&mut state);
     prune_highlight(&mut state);
-    let activity = activities(&state.tasks, &state.context_windows);
+    let activity = activities(&state.tasks, &state.context_windows, agent_paused(&state));
     let decided = decisions(&state.tasks);
     let queues = queue::queues(&state.tasks, state.tracks_changes, state.active.as_deref());
     let mut open = std::mem::take(&mut state.routed);
@@ -1332,6 +1332,24 @@ fn playing(state: &AppState) -> Option<u64> {
     }
 }
 
+/// Who paused the running session's clock, as last polled.
+fn paused_by(state: &AppState) -> Option<PausedBy> {
+    match &state.session {
+        Some(Session {
+            status: SessionStatus::Running { timeline, .. },
+            ..
+        }) => timeline.clock.and_then(|c| c.paused_by),
+        _ => None,
+    }
+}
+
+/// The active project, while an agent's tools hold its game paused.
+fn agent_paused(state: &AppState) -> Option<&str> {
+    // Not once a resume is on its way (`playing`).
+    let agent = paused_by(state) == Some(PausedBy::Agent) && playing(state).is_none();
+    state.active.as_deref().filter(|_| agent)
+}
+
 /// What the active project's run in flight leaves behind: session
 /// `playing` playing, or the game as it is.
 fn set_playing(state: &mut AppState, playing: Option<u64>) {
@@ -1344,9 +1362,11 @@ fn set_playing(state: &mut AppState, playing: Option<u64>) {
 }
 
 /// A run that took session `playing` while it played is over: the session
-/// plays again, as the agent's `step` left it paused.
+/// plays again, as the agent's `step` left it paused. A pause the runtime
+/// puts down to someone else is theirs, and stays.
 fn play_again(state: &mut AppState, playing: Option<u64>, commands: &mut Vec<Command>) {
-    if playing.is_some() && state.session.as_ref().map(|s| s.id) == playing {
+    let theirs = matches!(paused_by(state), Some(PausedBy::User | PausedBy::Start));
+    if playing.is_some() && state.session.as_ref().map(|s| s.id) == playing && !theirs {
         transport_call(state, TransportCall::Resume, commands);
     }
 }
@@ -3677,6 +3697,7 @@ mod tests {
         Transport {
             clock: true,
             paused: clock.paused,
+            paused_by: clock.paused_by,
             frame,
             recorded: clock.recorded,
             generation: clock.generation,
@@ -4733,7 +4754,7 @@ mod tests {
 
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
-        s.activity = activities(&s.tasks, &s.context_windows);
+        s.activity = activities(&s.tasks, &s.context_windows, agent_paused(&s));
         s.decisions = decisions(&s.tasks);
         s.queues = queue::queues(&s.tasks, s.tracks_changes, s.active.as_deref());
         s
@@ -4999,6 +5020,61 @@ mod tests {
         let (s, _) = update(s, session(1, polled_clock(1, paused)));
         let (_, commands) = update(s, ended(1, 0));
         assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+    }
+
+    /// A clock paused by `by`.
+    fn paused_by_clock(by: Option<PausedBy>) -> PolledClock {
+        PolledClock {
+            paused: true,
+            paused_by: by,
+            ..PolledClock::default()
+        }
+    }
+
+    #[test]
+    fn a_run_whose_agent_paused_the_game_says_so_until_it_plays() {
+        let s = with_session(1, Some(9), running(Some(3)));
+        let (s, _) = update(s, new_task("hi"));
+        assert!(!s.activity[&1].game_paused);
+        // The agent's `step` pauses it: the state goes out with the word,
+        // and the bar is told who.
+        let stepped = paused_by_clock(Some(PausedBy::Agent));
+        let (s, commands) = update(s, session(1, polled_clock(4, stepped)));
+        assert!(s.activity[&1].game_paused);
+        assert!(commands.contains(&broadcast(&s)));
+        assert!(commands.contains(&transport(Some(shown(4, stepped)))));
+        let panel = crate::panel::panel(&s, "quest");
+        assert_eq!(panel.tasks[0].activity, "checking the change, game paused");
+        // A pause that is the user's, or nobody's, is not the agent's.
+        for by in [Some(PausedBy::User), Some(PausedBy::Start), None] {
+            let (s, _) = update(s.clone(), session(1, polled_clock(5, paused_by_clock(by))));
+            assert!(!s.activity[&1].game_paused, "{by:?}");
+        }
+        // It plays again: the word goes.
+        let (playing, _) = update(s.clone(), session(1, polled_clock(5, PolledClock::default())));
+        assert!(!playing.activity[&1].game_paused);
+        // The run ends with the game still paused: the task is not at work.
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, ended(1, 0));
+        assert!(!s.activity[&1].game_paused);
+    }
+
+    /// The run's end resumes a pause the runtime puts down to the agent, or
+    /// to nobody (a runtime before `paused_by`); not one that is the user's.
+    #[test]
+    fn a_runs_end_leaves_a_pause_that_is_not_the_agents() {
+        for (by, calls) in [
+            (Some(PausedBy::Agent), vec![&TransportCall::Resume]),
+            (None, vec![&TransportCall::Resume]),
+            (Some(PausedBy::User), vec![]),
+            (Some(PausedBy::Start), vec![]),
+        ] {
+            let s = with_session(1, Some(9), running(Some(3)));
+            let (s, _) = update(s, new_task("hi"));
+            let (s, _) = update(s, session(1, polled_clock(4, paused_by_clock(by))));
+            let (_, commands) = update(s, ended(1, 0));
+            assert_eq!(transport_calls(&commands), calls, "{by:?}");
+        }
     }
 
     #[test]

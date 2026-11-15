@@ -1155,12 +1155,13 @@ fn service_debug_request(
             let mut input = debug.input.clone();
             apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
-            let (frame, rendered_frames, tts, pending_steps, paused) = (
+            let (frame, rendered_frames, tts, pending_steps, paused, paused_by) = (
                 debug.frame_count,
                 debug.rendered_frames,
                 clock.current_tts(),
                 clock.pending_steps(),
                 clock.is_paused(),
+                clock.paused_by(),
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
@@ -1205,7 +1206,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: if with_model {
@@ -1388,8 +1389,8 @@ desktop runtime's --headless/--debug-port path"
             }
             let _ = response.send(result);
         }
-        DebugRequest::Time(command, response) => {
-            let _ = response.send(clock.apply(command));
+        DebugRequest::Time(request, response) => {
+            let _ = response.send(clock.apply(request.command, request.by));
         }
         DebugRequest::Project(response) => {
             sim.post(move |g| {
@@ -2632,9 +2633,12 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
-        // The pairing card, else the open panel, else the voice toast:
-        // shapes, opacity and placement, worked out once for both eyes.
-        use functor_runtime_common::link_overlay::{card, toast_lines};
+        // The pairing card, else the open panel, else the voice toast, else
+        // the paused marker: shapes, opacity and placement, worked out once
+        // for both eyes.
+        use functor_runtime_common::link_overlay::{
+            card, paused_lines, paused_marker_transform, toast_lines,
+        };
         use functor_runtime_common::link_panel::{placement, pose_matrix, wrist_shapes};
         let panel = match (&pairing, &debug.link) {
             (Some(pairing), _) => {
@@ -2650,12 +2654,20 @@ images cannot be posed"
                     debug.panel.shapes(panel::connection(&client.view()), toast, Instant::now());
                 (shapes, 1.0, Place::Head(world * anchor))
             }),
-            _ => tracked_center.and_then(|head| {
-                let (toast, alpha) = debug.voice.toast(Instant::now())?;
-                let shapes = card(&toast_lines(toast));
-                let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
-            }),
+            _ => tracked_center
+                .and_then(|head| {
+                    let (toast, alpha) = debug.voice.toast(Instant::now())?;
+                    let shapes = card(&toast_lines(toast));
+                    let place = debug.voice.follow.transform(head.orientation, real_delta);
+                    Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+                })
+                .or_else(|| {
+                    // A capture shows the game, not the marker.
+                    let head = tracked_center.filter(|_| !capture_due)?;
+                    let shapes = card(&paused_lines(clock.is_paused(), clock.paused_by())?);
+                    let place = paused_marker_transform(head.orientation);
+                    Some((std::rc::Rc::new(shapes), 1.0, Place::Head(place)))
+                }),
         };
         // The load status, where the toast sits, when nothing above shows.
         let link_view = debug.link.as_ref().filter(|_| !debug.game).map(|client| client.view());

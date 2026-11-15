@@ -2637,7 +2637,7 @@ let draw = (model, tts) =>
         use crate::debug_protocol::{RecordedFrames, TimelineMark};
         use crate::protocol::{clock_state, input_log, seek_to_state_frame};
         let mut game = parked_input_game();
-        assert_eq!(clock_state(&game, false).recorded, None);
+        assert_eq!(clock_state(&game, false, None).recorded, None);
         let dt = 1.0 / 60.0;
         for frame in 1..=3 {
             if frame == 2 {
@@ -2645,7 +2645,7 @@ let draw = (model, tts) =>
             }
             game.tick(frame_time(frame as f32 * dt, dt));
         }
-        let clock = clock_state(&game, true);
+        let clock = clock_state(&game, true, None);
         assert!(clock.paused);
         assert_eq!(
             clock.recorded,
@@ -2675,7 +2675,7 @@ let draw = (model, tts) =>
         );
         assert_eq!(game.state_frame(), Some(2));
         // The future is kept: seek forward again.
-        assert_eq!(clock_state(&game, true).recorded, clock.recorded);
+        assert_eq!(clock_state(&game, true, None).recorded, clock.recorded);
         assert_eq!(
             seek_to_state_frame(&mut game, 99).as_deref(),
             Ok("showing frame 3 (requested 99, clamped to the recorded window)")
@@ -2683,7 +2683,7 @@ let draw = (model, tts) =>
         seek_to_state_frame(&mut game, 1).unwrap();
         // The next step branches: frames 2 and 3 are replaced.
         game.tick(frame_time(2.0 * dt, dt));
-        let branched = clock_state(&game, true);
+        let branched = clock_state(&game, true, None);
         assert_eq!(
             branched.recorded,
             Some(RecordedFrames {
