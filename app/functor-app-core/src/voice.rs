@@ -183,7 +183,8 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     jobs.retain_mut(|job| {
         let mut end = |stage: Stage| {
             status(commands, &job.device, job.utterance, stage.clone());
-            ended.push((job.device.clone(), job.utterance, stage));
+            let run = (job.task, job.run, job.before.clone());
+            ended.push((job.device.clone(), job.utterance, stage, run));
             false
         };
         let revision = match on_headset(state, &job.device) {
@@ -259,9 +260,40 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
     });
     state.voice = jobs;
-    for (device, utterance, stage) in ended {
+    for (device, utterance, stage, (task, run, before)) in ended {
         crate::progress::voice_ended(state, &device, utterance, &stage);
+        // Its reply, aloud (D47).
+        let said = (state.speak.then(|| said(state, task, run, &before, &stage))).flatten();
+        if let Some(text) = said {
+            commands.push(Command::Link(LinkCommand::Say { device, text }));
+        }
     }
+}
+
+/// What is said aloud as `task`'s run ends as `stage`; `before` is its
+/// change when the run started. A failure is said only when the run
+/// finished (it failed, or its change did not reload): not one the user
+/// stopped, nor one this job lost track of (the game left the headset
+/// mid-run, the task was deleted or never started).
+fn said(
+    state: &AppState,
+    task: u64,
+    run: Option<u64>,
+    before: &Option<crate::changes::Change>,
+    stage: &Stage,
+) -> Option<String> {
+    let task = state.tasks.iter().find(|t| t.id == task);
+    let items = task.map_or(&[][..], |t| &t.transcript[..]);
+    let ended = run.and_then(|r| outcome(items, r));
+    let finished = matches!(ended, Some(Item::Finished { .. }));
+    if matches!(stage, Stage::Failed(_)) && !finished {
+        return None;
+    }
+    let fresh = |t: &crate::tasks::Task| crate::tasks::has_change(t) && t.change != *before;
+    let review = state.tracks_changes && task.is_some_and(fresh);
+    // A run that never started has no replies: past the end.
+    let run = run.unwrap_or(items.len() as u64);
+    crate::reply::spoken(items, run, stage, review)
 }
 
 /// Run `run`'s answer, as a headset's toast says it: its last reply's
@@ -272,11 +304,13 @@ pub(crate) fn answer(items: &[Item], run: u64) -> String {
         .skip(run as usize + 1)
         .take_while(|i| !matches!(i, Item::User { .. }))
         .filter_map(|i| match i {
-            Item::Agent { text, .. } => text.lines().find(|l| !l.trim().is_empty()),
+            Item::Agent { text, .. } => text.lines().map(str::trim).find(|l| !l.is_empty()),
             _ => None,
         })
         .last();
-    reply.map_or("Answered: see the conversation".to_string(), |l| crate::activity::cut(l.trim()))
+    // The line for the ear (D47) without its mark.
+    let reply = reply.map(|l| crate::reply::strip_mark(l).filter(|s| !s.is_empty()).unwrap_or(l));
+    reply.map_or("Answered: see the conversation".to_string(), crate::activity::cut)
 }
 
 /// How run `run` (its user message's index) of a transcript ended.

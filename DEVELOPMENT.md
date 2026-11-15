@@ -216,6 +216,13 @@ if stale). `cargo test -p functor-stt --features whisper` builds whisper.cpp but
 fetches no model; its real transcription test runs only with
 `FUNCTOR_STT_REAL=1`.
 
+**Hearing a spoken reply (D47).** `functor-app say` (or `functor app say`) says
+a sample reply on this Mac's speakers as the app does after a spoken request,
+and waits until it has played; `functor-app say "any text"` says that instead.
+`FUNCTOR_APP_SPEAK=off` mutes replies in the app. Tests never make sound: under
+a fake agent or transcript the voice is off unless `FUNCTOR_APP_FAKE_VOICE=<file>`
+logs it.
+
 **Tests pass `--no-device-link`.** Every test that starts the app does, unless
 it is about the link: a test run must not open a port on the LAN, advertise the
 machine by mDNS, or talk to a headset that happens to be plugged in. The tests

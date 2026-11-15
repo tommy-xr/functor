@@ -2768,7 +2768,12 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
         functor.to_str().unwrap(),
     ];
     let real = std::env::var_os("FUNCTOR_STT_REAL").is_some();
-    let mut envs = vec![("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap())];
+    let voice = tempfile::tempdir().unwrap();
+    let voice_log = voice.path().join("said");
+    let mut envs = vec![
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_VOICE", voice_log.to_str().unwrap()),
+    ];
     if !real {
         envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
     }
@@ -2828,6 +2833,13 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // The agent's edit is pushed, as `functor run vr` does after a save.
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    // Its reply is said aloud (D47), and not before the first clip started.
+    let spoke = until("the reply is said", || {
+        let spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
+        spoke.contains("play ").then_some(spoke)
+    })
+    .await;
+    assert!(spoke.starts_with("play "), "{spoke:?}");
     // Its one record (D43) went through every step to the reload.
     let reloaded = |s: &Value| {
         s["requests"].as_array().and_then(|r| r.last()).cloned().filter(|r| r["outcome"]["reload"] == "reloaded")

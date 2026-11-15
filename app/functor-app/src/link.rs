@@ -122,6 +122,8 @@ struct Inner {
     cable_written: AtomicU64,
     /// Turns headsets' clips into text.
     speech: Speech,
+    /// Says replies aloud (D47); `None`: off, or no voice here.
+    replies: Option<Arc<crate::reply::Replies>>,
     /// One transcription at a time, app-wide, held until it finishes: a
     /// headset that reconnects cannot start more.
     transcribing: Arc<tokio::sync::Semaphore>,
@@ -215,6 +217,7 @@ impl Hub {
             cable_writes: tokio::sync::Mutex::new(()),
             cable_written: AtomicU64::new(0),
             speech: Speech::from_env(),
+            replies: crate::reply::Replies::from_env(),
             transcribing: Arc::new(tokio::sync::Semaphore::new(1)),
         })))
     }
@@ -385,6 +388,11 @@ impl Hub {
         self.0.speech.available()
     }
 
+    /// Whether replies are said aloud (D47).
+    pub fn replies(&self) -> bool {
+        self.0.replies.is_some()
+    }
+
     /// `pcm`'s text, waiting for any transcription in progress first (the
     /// composer's user sees "Transcribing…"; a headset is refused instead).
     pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
@@ -420,6 +428,17 @@ impl Hub {
             }
             LinkCommand::PairByCable { serial, replace } => {
                 tokio::spawn(self.clone().pair_by_cable(serial, replace));
+            }
+            // On this machine's speakers for now, whichever headset asked.
+            LinkCommand::Say { text, .. } => {
+                if let Some(replies) = self.0.replies.clone() {
+                    let reply = replies.next();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = replies.say(reply, &text) {
+                            eprintln!("functor-app: cannot say the reply: {e}");
+                        }
+                    });
+                }
             }
             LinkCommand::Panel { conn, panel } => to(
                 conn,
@@ -873,7 +892,9 @@ impl Connection {
                     if let Some(e) = self.machine.check(now_ms()) {
                         return Err(e);
                     }
+                    let before = self.voice.arriving();
                     if let Some(heard) = self.voice.check(now_ms()) {
+                        self.talking(before);
                         self.heard(heard);
                     }
                     desktop_output(Vec::new())
@@ -1011,6 +1032,7 @@ impl Connection {
             } => {
                 let before = self.voice.arriving();
                 let heard = self.voice.receive(&data, now_ms());
+                self.talking(before);
                 if let Some(utterance) = self.voice.arriving().filter(|u| before != Some(*u)) {
                     self.hearing(utterance, HearingStage::Arriving);
                 }
@@ -1158,6 +1180,15 @@ impl Connection {
         self.outgoing.push(status.frame());
     }
 
+    /// While a clip arrives the user is talking: no reply plays over them
+    /// (D47). `before`: the clip arriving before this step.
+    fn talking(&self, before: Option<u64>) {
+        let now = self.voice.arriving();
+        if let (Some(replies), true) = (&self.hub.0.replies, before != now) {
+            replies.talking(now.is_some());
+        }
+    }
+
     fn hearing(&self, utterance: u64, stage: HearingStage) {
         self.hub.send(LinkEvent::Hearing {
             conn: self.id,
@@ -1174,6 +1205,10 @@ impl Connection {
 
     fn finish(&mut self, end: Ending) {
         let hub = self.hub.clone();
+        // A clip cut off by the disconnect: no longer talking.
+        if let (Some(replies), Some(_)) = (&hub.0.replies, self.voice.arriving()) {
+            replies.talking(false);
+        }
         for (_, reply) in self.waiting.drain() {
             let _ = reply.send(Err("the headset disconnected".into()));
         }

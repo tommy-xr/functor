@@ -349,6 +349,8 @@ pub enum LinkCommand {
     Panel { conn: u64, panel: Box<Panel> },
     /// Tell the panel on `conn` its last action was refused.
     PanelRefused { conn: u64, reason: String },
+    /// Say `text` aloud: the reply to what was said in `device` (D47).
+    Say { device: String, text: String },
     /// Tell `device` how its utterance is going.
     Voice {
         device: String,

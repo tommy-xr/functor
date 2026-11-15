@@ -12,6 +12,7 @@ mod folders;
 mod link;
 #[cfg(target_os = "macos")]
 mod pointer;
+mod reply;
 #[cfg(target_os = "macos")]
 mod popouts;
 mod router;
@@ -172,6 +173,12 @@ enum Cmd {
     /// answer canned debug requests.
     #[command(hide = true)]
     DeviceStub(stub::StubArgs),
+    /// Say a reply aloud on this machine as the app does (D47), and wait
+    /// until it has played: a way to hear the voice.
+    Say {
+        /// What to say; default: a sample reply.
+        text: Option<String>,
+    },
     /// Print the voice capsule (plan 4.1) a running game's state makes: its
     /// frame, game time and, on a headset, head and controller poses, as JSON.
     Capsule {
@@ -241,6 +248,16 @@ pub fn run(argv: impl IntoIterator<Item = OsString>, host: Host) -> std::io::Res
             unreachable!("just matched");
         };
         return Ok(runtime()?.block_on(stub::run(stub)));
+    }
+    if let Some(Cmd::Say { text }) = &args.command {
+        let sample = "The ball is red now, and it bounces slower. It's ready for you to look at.";
+        return Ok(match reply::Replies::hear(text.as_deref().unwrap_or(sample)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("functor-app: {e}");
+                ExitCode::FAILURE
+            }
+        });
     }
     if let Some(Cmd::Capsule { from_session }) = &args.command {
         let read = session::request(from_session, "GET", "/state?model=0", &[], "");
@@ -345,6 +362,7 @@ async fn app(
     let (tx, events) = mpsc::unbounded_channel();
     let hub = link::Hub::new(home.clone(), tx.clone())?;
     state.speech = hub.speaks();
+    state.speak = hub.replies();
     let views = std::sync::Arc::new(agent::ViewRoute::default());
     let router = router::Router::from_env(&agents);
     state.router = router.is_some();

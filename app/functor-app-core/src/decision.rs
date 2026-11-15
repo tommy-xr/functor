@@ -142,23 +142,27 @@ pub enum Kind {
     Other,
 }
 
-const ASSETS: &[&str] = &[
+pub(crate) const ASSETS: &[&str] = &[
     "png", "jpg", "jpeg", "webp", "gif", "hdr", "ktx2", "glb", "gltf", "bin", "obj", "wav", "ogg",
     "mp3", "flac", "ttf", "otf",
 ];
 
-/// `file`'s kind in a change to the project at `prefix` ([`project_prefix`]).
-pub fn kind(file: &FileChange, prefix: &str) -> Kind {
-    let ext = file
-        .path
-        .rsplit_once('.')
+pub(crate) const CONFIG: &[&str] = &["json", "toml", "yaml", "yml"];
+
+/// `path`'s extension, lowercased: `Ball.PNG` → `png`; none for `.gitignore`.
+pub(crate) fn extension(path: &str) -> Option<String> {
+    path.rsplit_once('.')
         .filter(|(stem, _)| !stem.ends_with('/') && !stem.is_empty())
         .map(|(_, ext)| ext.to_ascii_lowercase())
-        .unwrap_or_default();
+}
+
+/// `file`'s kind in a change to the project at `prefix` ([`project_prefix`]).
+pub fn kind(file: &FileChange, prefix: &str) -> Kind {
+    let ext = extension(&file.path).unwrap_or_default();
     match ext.as_str() {
         "fun" | "funi" if file.path.starts_with(prefix) => Kind::GameLogic,
         _ if file.binary || ASSETS.contains(&ext.as_str()) => Kind::Assets,
-        "json" | "toml" | "yaml" | "yml" => Kind::Config,
+        e if CONFIG.contains(&e) => Kind::Config,
         _ => Kind::Other,
     }
 }
