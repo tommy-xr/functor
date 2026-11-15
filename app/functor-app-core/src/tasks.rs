@@ -182,6 +182,12 @@ pub struct Run {
     /// The agent reported its start, so it has the run's messages.
     #[serde(default)]
     pub started: bool,
+    /// The game session that was playing when the run took it (or that the
+    /// user set playing since): resumed when the run ends, as the agent's
+    /// `step` leaves it paused.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub playing: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
