@@ -2284,22 +2284,28 @@ fn sync_project_assets(
     parts: bool,
 ) -> Result<AssetSyncReport, Error> {
     let mut report = AssetSyncReport::default();
-    for asset in current {
-        let unchanged = previous.is_some_and(|files| {
+    let unchanged = |asset: &ProjectAssetFile| {
+        previous.is_some_and(|files| {
             files.iter().any(|old| {
                 old.locator == asset.locator
                     && old.len == asset.len
                     && old.modified_ns == asset.modified_ns
             })
-        });
-        if unchanged {
-            continue;
-        }
+        })
+    };
+    // What this push will send, for the headset's progress.
+    let sending: Vec<&ProjectAssetFile> = current.iter().filter(|asset| !unchanged(asset)).collect();
+    let announce = format!(
+        "push_files={}&push_bytes={}",
+        sending.len(),
+        sending.iter().map(|asset| asset.len).sum::<u64>()
+    );
+    for asset in sending {
         let bytes = std::fs::read(&asset.disk_path)?;
         let body =
             functor_runtime_common::debug_protocol::encode_project_asset(&asset.locator, &bytes)
                 .map_err(Error::other)?;
-        let (status, response) = post_asset(addr, &body, parts)?;
+        let (status, response) = post_asset(addr, &body, parts, &announce)?;
         if status != 200 {
             return Err(Error::other(format!(
                 "asset {} rejected ({status}): {response}",
@@ -2330,13 +2336,18 @@ const ASSET_PART_BYTES: usize = 8 * 1024 * 1024;
 /// `POST /reload-asset` with one asset envelope; with `parts`, one larger
 /// than [`ASSET_PART_BYTES`] goes in order in parts of that size. The last
 /// answer.
-fn post_asset(addr: &str, envelope: &[u8], parts: bool) -> Result<(u16, String), Error> {
+fn post_asset(
+    addr: &str,
+    envelope: &[u8],
+    parts: bool,
+    announce: &str,
+) -> Result<(u16, String), Error> {
     let post = |path: &str, body: &[u8]| {
         let timeout = std::time::Duration::from_secs(30);
         http_post_bytes(addr, path, "application/octet-stream", body, timeout)
     };
     if !parts || envelope.len() <= ASSET_PART_BYTES {
-        return post("/reload-asset", envelope);
+        return post(&format!("/reload-asset?{announce}"), envelope);
     }
     // Unique enough: one upload at a time per runtime, and a stale one is
     // replaced by the next part at offset 0.
@@ -2349,7 +2360,7 @@ fn post_asset(addr: &str, envelope: &[u8], parts: bool) -> Result<(u16, String),
     for (i, part) in envelope.chunks(ASSET_PART_BYTES).enumerate() {
         let offset = i * ASSET_PART_BYTES;
         answer = post(
-            &format!("/reload-asset?upload={id}&offset={offset}&total={total}"),
+            &format!("/reload-asset?upload={id}&offset={offset}&total={total}&{announce}"),
             part,
         )?;
         if answer.0 != 200 {
@@ -3162,9 +3173,11 @@ mod tests {
         assert!(bytes.len() < MAX_ASSET_BYTES);
         let envelope = encode_project_asset("models/big.glb", &bytes).unwrap();
         assert_eq!(
-            super::post_asset(&addr, &envelope, true).unwrap(),
+            super::post_asset(&addr, &envelope, true, "push_files=3&push_bytes=99").unwrap(),
             (200, "reloaded".into())
         );
+        // What the push said it will send reaches the runtime with its parts.
+        assert_eq!(functor_runtime_common::debug_http::push_announced(), Some((3, 99)));
         let asset = received.recv().unwrap();
         assert_eq!(asset.path, "models/big.glb");
         assert!(asset.bytes == bytes, "the parts make the whole file");
@@ -3172,7 +3185,10 @@ mod tests {
 
         let small = encode_project_asset("a.png", &[1, 2, 3]).unwrap();
         for parts in [true, false] {
-            assert_eq!(super::post_asset(&addr, &small, parts).unwrap().0, 200);
+            let announce = format!("push_files=1&push_bytes={}", 3 + u64::from(parts));
+            assert_eq!(super::post_asset(&addr, &small, parts, &announce).unwrap().0, 200);
+            let announced = functor_runtime_common::debug_http::push_announced();
+            assert_eq!(announced, Some((1, 3 + u64::from(parts))));
             assert_eq!(received.recv().unwrap().bytes, vec![1, 2, 3]);
         }
     }

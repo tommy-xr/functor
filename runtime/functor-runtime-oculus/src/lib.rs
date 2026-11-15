@@ -915,6 +915,32 @@ struct DebugLoopState {
     panel: panel::HeadsetPanel,
     /// The wrist light's place in head space, from the overlay's sample.
     wrist_at: Option<[f32; 3]>,
+    /// The load status card, the lines it last showed (`/state.load_status`),
+    /// and where it sits.
+    load_status: functor_runtime_common::load_status::LoadStatus,
+    status_lines: Option<Vec<String>>,
+    status_follow: functor_runtime_common::link_overlay::Follow,
+    /// Project files received (`/reload-asset`).
+    received_files: u64,
+    /// The load in flight is a game (not the boot scene), and one is running.
+    loading_game: bool,
+    game: bool,
+}
+
+impl DebugLoopState {
+    /// A `/load-project` ended: which program runs now, or why it failed.
+    fn loaded(&mut self, result: &Result<String, String>) {
+        match result {
+            Ok(_) => {
+                self.game = self.loading_game;
+                match self.game {
+                    true => self.load_status.launched(Instant::now()),
+                    false => self.load_status.succeeded(),
+                }
+            }
+            Err(message) => self.load_status.fail(message.clone(), Instant::now()),
+        }
+    }
 }
 
 /// Where a link overlay is drawn: head-locked, or by a matrix from its
@@ -1131,6 +1157,7 @@ fn service_debug_request(
                 link::state(client, toast, debug.panel.debug(client.linked()))
             });
             let reload = debug.reload.state(Instant::now());
+            let load_status = debug.status_lines.clone();
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -1178,6 +1205,7 @@ fn service_debug_request(
                     }),
                     // No audio host on device yet.
                     audio: None,
+                    load_status,
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link,
@@ -1357,6 +1385,7 @@ desktop runtime's --headless/--debug-port path"
             // An empty load unloads: the boot scene, under the plain
             // contract, and no uploads (a desktop app stopping the game here).
             // Reported over the link once the load lands.
+            debug.loading_game = !files.is_empty();
             let (files, role, name) = if files.is_empty() {
                 let removed = asset_cache.retain_uploaded(&HashSet::new());
                 for path in &removed {
@@ -1399,11 +1428,13 @@ desktop runtime's --headless/--debug-port path"
                     if result.is_ok() {
                         link::set_project(name);
                     }
+                    debug.loaded(&result);
                     let _ = response.send(result);
                 }
             }
         }
         DebugRequest::ReloadAsset(asset, response) => {
+            debug.received_files += 1;
             let changed = asset_cache.replace_uploaded(&asset.path, asset.bytes);
             if changed {
                 scene_context.evict_asset(&asset.path);
@@ -2070,10 +2101,23 @@ pub fn android_main(app: AndroidApp) {
                 if result.is_ok() {
                     link::set_project(name);
                 }
+                debug.loaded(&result);
                 let _ = response.send(result);
             }
         }
         debug.reload.poll(Instant::now(), debug.rendered_frames);
+        // A newer push answers for a superseded one.
+        match debug.reload.take_outcome() {
+            // A reload replaces the boot scene too (`/reload-source`).
+            Some(Ok(())) => {
+                debug.game = true;
+                debug.load_status.succeeded();
+            }
+            Some(Err(message)) if !message.starts_with("superseded") => {
+                debug.load_status.fail(message, Instant::now())
+            }
+            _ => {}
+        }
 
         if !session_running {
             if let Some(client) = &debug.link {
@@ -2277,6 +2321,7 @@ pub fn android_main(app: AndroidApp) {
             caps = sim.caps();
         }
         let progress = asset_cache.progress();
+        let assets_settled = (progress.loaded + progress.failed.len(), progress.total);
         let pushed_progress = sim.is_threaded().then(|| progress.clone());
         sim.post(move |g| g.push_asset_progress(progress));
         let mut feedback = false;
@@ -2568,6 +2613,44 @@ images cannot be posed"
                 let place = debug.voice.follow.transform(head.orientation, real_delta);
                 Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
             }),
+        };
+        // The load status, where the toast sits, when nothing above shows.
+        let link_view = debug.link.as_ref().filter(|_| !debug.game).map(|client| client.view());
+        let status = debug.load_status.step(
+            &functor_runtime_common::load_status::Facts {
+                linked: link_view.as_ref().is_some_and(|view| view.linked),
+                desktop: link_view.and_then(|view| view.paired),
+                game: debug.game,
+                files: debug.received_files,
+                bytes: functor_runtime_common::debug_http::asset_bytes_received(),
+                announced: functor_runtime_common::debug_http::push_announced(),
+                loading: debug.pending_load.is_some() && debug.loading_game,
+                reloading: debug.reload.in_progress(),
+                assets: assets_settled,
+            },
+            Instant::now(),
+        );
+        let status = status.map(|(step, alpha)| (functor_runtime_common::load_status::lines(&step), alpha));
+        let status_lines = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
+        if status_lines != debug.status_lines {
+            // Logged per step, not per count: a push's count moves every frame.
+            let heading = |lines: &Option<Vec<String>>| lines.as_ref().and_then(|lines| lines.first().cloned());
+            if heading(&status_lines) != heading(&debug.status_lines) {
+                log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+            }
+            debug.status_lines = status_lines;
+        }
+        let panel = match (panel, status, tracked_center) {
+            (None, Some((lines, alpha)), Some(head)) => {
+                let shapes = card(&lines);
+                let place = debug.status_follow.transform(head.orientation, real_delta);
+                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+            }
+            (panel, ..) => {
+                // Hidden: it appears in front next time.
+                debug.status_follow.reset();
+                panel
+            }
         };
         // The wrist light, while the panel is closed.
         let wrist = debug
