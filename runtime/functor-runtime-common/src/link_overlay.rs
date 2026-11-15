@@ -221,10 +221,11 @@ const PINK: [f32; 3] = [1.0, 0.36, 0.72];
 const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
 const DIM: [f32; 3] = [0.65, 0.65, 0.75];
 const BACKGROUND: [f32; 4] = [0.06, 0.04, 0.12, 0.92];
-/// Text sizes: a heading, the code, the rest.
-const HEADING: f32 = 0.022;
+/// Text sizes for a card a metre away ([`overlay_font`]'s scale): a
+/// heading, the rest, and the pairing code.
+pub(crate) const HEADING: f32 = overlay_font::TITLE;
+pub(crate) const BODY: f32 = overlay_font::BODY;
 const CODE: f32 = 0.07;
-const BODY: f32 = 0.016;
 
 /// `482913` as `482 913`.
 pub fn spaced(code: &str) -> String {
@@ -296,9 +297,9 @@ const HOLD_TRANSCRIPT: Duration = Duration::from_secs(4);
 const STILL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(120);
 const UNHEARD: Duration = Duration::from_secs(15);
-/// The transcript's measure in metres (about 45 characters), and its most
+/// The transcript's measure in metres (about 40 characters), and its most
 /// lines.
-const WRAP: f32 = 0.42;
+const WRAP: f32 = 0.5;
 const WRAP_LINES: usize = 3;
 
 /// What the desktop said about an utterance, in the order it said it.
@@ -582,12 +583,14 @@ pub enum Shape {
     /// `rect` is `[x, y, w, h]` from its bottom-left corner.
     Rect { rect: [f32; 4], color: [f32; 4] },
     /// One line from its top-left corner `at`; `size` is its box height
-    /// ([`overlay_font`]: capitals fill it, descenders hang below).
+    /// ([`overlay_font`]: capitals fill it, descenders hang below). `style`
+    /// sets it; `None` follows the copy ([`overlay_font::Style::of`]).
     Text {
         at: [f32; 2],
         size: f32,
         color: [f32; 3],
         text: String,
+        style: Option<overlay_font::Style>,
     },
 }
 
@@ -609,6 +612,7 @@ pub fn card(lines: &[Line]) -> Vec<Shape> {
             size: line.size,
             color: line.color,
             text: line.text.clone(),
+            style: None,
         });
         top -= line.size + GAP;
     }
@@ -635,10 +639,12 @@ pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
                 size,
                 color,
                 text,
+                style,
             } => {
                 let [r, g, b] = linear(*color);
                 let em = overlay_font::em(*size);
-                overlay_font::place(text, *size, *at, |glyph, [x, y]| {
+                let style = style.unwrap_or_else(|| overlay_font::Style::of(text));
+                overlay_font::place_in(text, *size, style, *at, |glyph, [x, y]| {
                     let [cx, cy, cw, ch] = glyph.cell.map(f32::from);
                     if cw == 0.0 {
                         return;
@@ -730,10 +736,8 @@ const VERTEX_SHADER: &str = r#"
     }
 "#;
 
-/// Glyphs sample the font's MSDF: the median of its channels is the
-/// distance to the outline, scaled to screen pixels by the derivatives so
-/// the edge is one pixel wide at any distance or angle. A negative `v_uv`
-/// is a solid fill.
+/// Glyphs sample the font's field ([`overlay_font::msdf_glsl`]); a
+/// negative `v_uv` is a solid fill.
 const FRAGMENT_SHADER: &str = r#"
     uniform sampler2D u_atlas;
     uniform float u_alpha;
@@ -742,46 +746,23 @@ const FRAGMENT_SHADER: &str = r#"
     in highp vec2 v_uv;
     in vec4 v_color;
     out vec4 frag_color;
-    float median(vec3 v) { return max(min(v.r, v.g), min(max(v.r, v.g), v.b)); }
     void main() {
-        // Atlas texels per pixel, before the branch: derivatives need
-        // uniform control flow.
-        highp vec2 texels = fwidth(v_uv) * ATLAS;
+        highp vec2 texels = functorMsdfTexels(v_uv);
         float coverage = 1.0;
         if (v_uv.x >= 0.0) {
-            float field = median(textureLod(u_atlas, v_uv, 0.0).rgb) - 0.5;
-            // Screen pixels the field's range spans; at least one, so small
-            // text softens rather than aliases.
-            float px_range = max(0.5 * RANGE * (1.0 / max(texels.x, 1e-6) + 1.0 / max(texels.y, 1e-6)), 1.0);
-            coverage = clamp(field * px_range + 0.5, 0.0, 1.0);
-            // Blending in linear light (an sRGB target) fattens light
-            // strokes on dark and thins dark ones on light; this restores
-            // the weight a gamma-space blend gives.
-            if (u_linear_blend) {
-                float light = smoothstep(0.02, 0.2, dot(v_color.rgb, vec3(0.2126, 0.7152, 0.0722)));
-                coverage = pow(coverage, mix(1.0 / GAMMA, GAMMA, light));
-            }
+            coverage = functorMsdfCoverage(u_atlas, v_uv, texels, v_color.rgb, u_linear_blend);
         }
         frag_color = functorOutput(vec4(v_color.rgb, v_color.a * coverage * u_alpha));
     }
 "#;
 
-/// The weight correction's exponent (see the fragment shader).
-const GAMMA: f32 = 1.6;
-
 impl LinkOverlayPainter {
     pub fn new(gl: &glow::Context, shader_version: &str) -> Self {
         let vertex = Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER, shader_version);
-        let constants = format!(
-            "const float RANGE = {:.1};\nconst vec2 ATLAS = vec2({:.1}, {:.1});\nconst float GAMMA = {GAMMA:.2};\n",
-            overlay_font::RANGE,
-            overlay_font::ATLAS_WIDTH as f32,
-            overlay_font::ATLAS_HEIGHT as f32,
-        );
         let fragment = Shader::build(
             gl,
             ShaderType::Fragment,
-            &format!("{constants}{FRAGMENT_SHADER}"),
+            &format!("{}{FRAGMENT_SHADER}", overlay_font::msdf_glsl()),
             shader_version,
         );
         let program = ShaderProgram::link(gl, &vertex, &fragment);

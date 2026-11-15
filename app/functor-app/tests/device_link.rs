@@ -2816,6 +2816,15 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
         })
         .await;
     let task = state["tasks"][0]["id"].clone();
+    // Its stages, timed from the clip to the run's end.
+    let state = app
+        .state_where("the run's end, timed", 10, |s| {
+            s["tasks"][0]["voice"]["finished"].is_u64()
+        })
+        .await;
+    let line = state["tasks"][0]["voice"]["line"].as_str().unwrap();
+    assert!(line.starts_with("heard ") && line.contains(" · transcribed "), "{line}");
+    assert!(line.contains(" · agent started ") && line.contains(" · done "), "{line}");
     // A long one is cut to a title.
     let title = state["tasks"][0]["title"].as_str().unwrap();
     assert!(said.starts_with(title.trim_end_matches('…')), "{title}");
@@ -2995,6 +3004,89 @@ async fn quest_shows_every_voice_step_from_the_real_app() {
         seen.iter().any(|(_, s)| s.starts_with("failed") || s.starts_with("reloaded")),
         "an outcome: {seen:?}"
     );
+}
+
+/// Voice latency on this machine, stage by stage (`FUNCTOR_VOICE_BENCH=1`;
+/// the real model with `--features whisper`, else the fake transcriber):
+/// the stub headset says each fixture clip in turn, all at once, over
+/// loopback, and each task's stage line prints. The agent is the fake one,
+/// answering at once, so "agent started" is the app's own kick-off.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn voice_stages_on_this_machine() {
+    if std::env::var_os("FUNCTOR_VOICE_BENCH").is_none() {
+        eprintln!("SKIPPED: set FUNCTOR_VOICE_BENCH=1 to time voice here");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":0,\"event\":{\"type\":\"text\",\"text\":\"ok\"}}\n\
+         {\"ms\":0,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let mut envs = vec![("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap())];
+    if !cfg!(feature = "whisper") {
+        envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
+    }
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../functor-stt/fixtures/");
+    let clips = ["jump-twice-as-high.wav", "make-the-ball-red.wav", "crates-sky-and-coin.wav"];
+    for (n, clip) in clips.iter().enumerate() {
+        let path = format!("{fixtures}{clip}");
+        let quest = stub(&app.link, store.path(), "Test Quest", &["--say", &path]);
+        if n == 0 {
+            let devices = app
+                .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+                .await;
+            let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+            app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+                .await;
+        }
+        let said = loop {
+            match quest.line("voice 1 ") {
+                l if l.starts_with("voice 1 heard") || l.starts_with("voice 1 transcribed") => {}
+                l => break l,
+            }
+        };
+        assert_eq!(said, "voice 1 working", "{clip}");
+        let state = app
+            .state_where("the run's end", 60, |s| {
+                (s["tasks"].as_array().into_iter().flatten())
+                    .filter(|t| t["voice"]["finished"].is_u64())
+                    .count()
+                    > n
+            })
+            .await;
+        let tasks = state["tasks"].as_array().unwrap();
+        let task = (tasks.iter())
+            .filter(|t| t["voice"]["finished"].is_u64())
+            .max_by_key(|t| t["id"].as_u64())
+            .unwrap();
+        eprintln!("{clip}: {}", task["voice"]["line"].as_str().unwrap());
+        eprintln!("{clip}: {}", task["voice"]);
+        drop(quest);
+    }
 }
 
 /// The router (D29) end to end on loopback, under the fake agent,

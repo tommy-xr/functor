@@ -435,6 +435,8 @@ async fn app(
     let (listener, origin) = server::bind(args.port).await?;
     // Runs started from here on can show views (`task` and `--print` have no route).
     views.listen(&origin, false);
+    // The first spoken request should not wait for the model.
+    hub.preload_speech();
     // The rest of the app works without the link; why it is off is said
     // after the `listening on` line, which launchers read first.
     let link = match args.no_device_link {

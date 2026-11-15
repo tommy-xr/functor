@@ -28,6 +28,7 @@ pub mod state;
 pub mod tasks;
 pub mod transport;
 pub mod voice;
+pub mod voice_timing;
 
 pub use agent_view::AppContext;
 pub use changes::Change;
