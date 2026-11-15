@@ -1475,6 +1475,7 @@ fn service_debug_request(
                         depth_stream,
                     ),
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
+                    load_status: None,
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link: None,

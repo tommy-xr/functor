@@ -1128,7 +1128,7 @@ clock: boolean,
  */
 paused: boolean, 
 /**
- * Who paused it, where the runtime says (debug protocol v50).
+ * Who paused it, where the runtime says (debug protocol v52).
  */
 paused_by: PausedBy | null, 
 /**

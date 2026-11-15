@@ -8453,7 +8453,8 @@ mod tests {
     /// The headset goes away mid-run: its utterance is still followed. A
     /// run that ends ok meanwhile waits for it however long, then for the
     /// push `functor run vr` holds until it is back: `Reloaded` once it
-    /// lands, or `Failed` only past the grace counted from the relink.
+    /// lands, or (changes untracked) `Answered` only past the grace counted
+    /// from the relink.
     #[test]
     fn an_away_headset_is_waited_for_not_failed() {
         let (s, commands) = update(voice_task_running(), link(0, false));
@@ -8484,7 +8485,7 @@ mod tests {
             ..s
         };
         let (_, commands) = update(later, Event::Link(LinkEvent::Tick));
-        assert!(matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("did not reload")));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Answered(_))]));
     }
 
     /// The headset app restarted while away: `run vr` loads the game
@@ -8845,7 +8846,7 @@ mod tests {
     }
 
     /// A run that fails, is stopped, or ends ok without the game reloading
-    /// in time is `Failed`; so is the game leaving the headset.
+    /// its change in time is `Failed`; so is the game leaving the headset.
     #[test]
     fn a_followed_run_that_does_not_reload_fails() {
         let error = Event::Run {
@@ -8872,11 +8873,26 @@ mod tests {
             clock: 1_000 + voice::RELOAD_GRACE_MS,
             ..s
         };
-        let (_, commands) = update(late, Event::Link(LinkEvent::Tick));
+        // Changes untracked: nothing says a change is waiting, so it is
+        // the agent's answer, not a failure.
+        let (_, commands) = update(late.clone(), Event::Link(LinkEvent::Tick));
+        let answered = Stage::Answered("Answered: see the conversation".to_string());
+        assert_eq!(stages(&commands), [(1, answered)]);
+        // A change that did not load is one.
+        let mut changed = late;
+        changed.tracks_changes = true;
+        changed.tasks[0].baseline = Some("t0".to_string());
+        changed.tasks[0].change = Some(one_file(1));
+        let (_, commands) = update(changed.clone(), Event::Link(LinkEvent::Tick));
         assert!(
-            matches!(&stages(&commands)[..], [(1, Stage::Failed(_))]),
+            matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("did not reload")),
             "{commands:?}"
         );
+        // The same change as when the run started (a question about an
+        // earlier run's change): nothing new is waiting.
+        changed.voice[0].before = changed.tasks[0].change.clone();
+        let (_, commands) = update(changed, Event::Link(LinkEvent::Tick));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Answered(_))]));
 
         let reason = "the game stopped on the headset".to_string();
         let gone = [(1, Stage::Failed(reason))];

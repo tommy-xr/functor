@@ -1043,7 +1043,7 @@ fn parse_state(body: &str) -> Result<Polled, String> {
         let recorded = &c["recorded"];
         PolledClock {
             paused: c["paused"].as_bool().unwrap_or(false),
-            // Absent before debug protocol v50, and when nobody is named.
+            // Absent before debug protocol v52, and when nobody is named.
             paused_by: match c["paused_by"].as_str() {
                 Some("agent") => Some(PausedBy::Agent),
                 Some("user") => Some(PausedBy::User),

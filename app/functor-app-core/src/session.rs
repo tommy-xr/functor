@@ -186,7 +186,7 @@ pub struct Polled {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PolledClock {
     pub paused: bool,
-    /// `paused_by` (debug protocol v50); `None` when it names nobody.
+    /// `paused_by` (debug protocol v52); `None` when it names nobody.
     pub paused_by: Option<crate::transport::PausedBy>,
     /// `[oldest, newest]`, numbered as `frame`.
     pub recorded: Option<[u64; 2]>,

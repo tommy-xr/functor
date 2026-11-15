@@ -62,6 +62,23 @@ threads: the headset keeps rendering, and each shows its stand-in (nothing
 for a model, a checkerboard for a texture) until its decode lands. The pieces
 also work individually:
 
+A card low in the view says where a load is: `WAITING FOR A DESKTOP` or
+`CONNECTED` on the boot scene, then `RECEIVING PROJECT` (MB and files so
+far, of the totals `run vr` announces), `STARTING` (checking code), `LOADING ASSETS` (n of m) and `RUNNING`.
+Over a running game it shows only work that lasts: `RELOADING...` after
+150 ms, assets still loading, files still arriving. A rejected load or
+reload shows `LOAD FAILED` with the error (10 s over a running game, until
+the next push otherwise). `GET /state` reports its lines as `load_status`.
+
+The headset keeps what is pushed by content hash (`push-cache/` in its app
+storage, 2 GiB, least recently used evicted): `run vr` sends a manifest of
+paths, sizes and sha256 first (`POST /push-manifest`) and uploads only the
+files the headset lacks, so running the same project again, or another one
+that shares a model, sends only what changed. The status card says `UP TO
+DATE` or how much is already there. `curl -X POST …/clear-push-cache` empties
+it. `run vr` remembers each file's hash by path, size and modified time
+(`~/.functor/cache/push-hashes.json`).
+
 Sound bytes are synchronized into the device cache, but Quest audio playback
 is still pending its Android audio host; the shell currently drains audio
 commands without playing them. Sounds therefore do not yet drive

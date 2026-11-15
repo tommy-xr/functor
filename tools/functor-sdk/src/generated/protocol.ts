@@ -92,7 +92,7 @@ export type ClockState = {
  */
 paused: boolean, 
 /**
- * Who asked for the pause (v50). Omitted while running, and when the
+ * Who asked for the pause (v52). Omitted while running, and when the
  * request did not say (the shell's own scrubber, `POST /seek`, a client
  * that sends no `by`).
  */
@@ -668,7 +668,7 @@ warning?: string,
 camera?: SensorStreamState, };
 
 /**
- * Who paused the clock (v50).
+ * Who paused the clock (v52).
  */
 export type PausedBy = "agent" | "user" | "start";
 
@@ -900,6 +900,11 @@ xr?: XrState,
  */
 audio?: AudioCounts, 
 /**
+ * The headset's load status card (v50, [`crate::load_status`]): its
+ * lines, heading first. Omitted while it is hidden and on desktop.
+ */
+load_status?: Array<string>, 
+/**
  * Controller pulses (`Effect.haptic`) sent and dropped since launch
  * (v34, [`crate::haptics::HapticCounts`]). Omitted by runtimes that don't
  * count them.
@@ -1110,7 +1115,7 @@ export type VoiceToast = { transcript: string | null,
  * Seconds the current step has been going, once it is long enough to
  * say so (v46).
  */
-waiting?: number, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "microphone_allowed" } | { "stage": "microphone_denied" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
+waiting?: number, } & ({ "stage": "not_connected" } | { "stage": "allow_microphone" } | { "stage": "microphone_allowed" } | { "stage": "microphone_denied" } | { "stage": "listening", level: number, seconds_left: number | null, } | { "stage": "sending" } | { "stage": "heard" } | { "stage": "working" } | { "stage": "reloaded" } | { "stage": "answered", text: string, } | { "stage": "failed", reason: string, } | { "stage": "not_sent", reason: string, });
 
 export type WristLight = { stance: TaskStance, 
 /**
