@@ -221,10 +221,11 @@ pub(crate) const PINK: [f32; 3] = [1.0, 0.36, 0.72];
 pub(crate) const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
 const DIM: [f32; 3] = [0.65, 0.65, 0.75];
 const BACKGROUND: [f32; 4] = [0.06, 0.04, 0.12, 0.92];
-/// Text sizes: a heading, the code, the rest.
-pub(crate) const HEADING: f32 = 0.022;
+/// Text sizes for a card a metre away ([`overlay_font`]'s scale): a
+/// heading, the rest, and the pairing code.
+pub(crate) const HEADING: f32 = overlay_font::TITLE;
+pub(crate) const BODY: f32 = overlay_font::BODY;
 const CODE: f32 = 0.07;
-pub(crate) const BODY: f32 = 0.016;
 
 /// `482913` as `482 913`.
 pub fn spaced(code: &str) -> String {
@@ -294,9 +295,9 @@ const HOLD_TRANSCRIPT: Duration = Duration::from_secs(4);
 const STILL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(120);
 const UNHEARD: Duration = Duration::from_secs(15);
-/// The transcript's measure in metres (about 45 characters), and its most
+/// The transcript's measure in metres (about 40 characters), and its most
 /// lines.
-const WRAP: f32 = 0.42;
+const WRAP: f32 = 0.5;
 const WRAP_LINES: usize = 3;
 
 /// What the desktop said about an utterance, in the order it said it.
