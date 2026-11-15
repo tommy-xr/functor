@@ -3342,9 +3342,14 @@ impl Scene3D {
             SceneObject::Cells(node, items) => SceneObject::Cells(node, map(items)),
             SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(casts, map(items)),
             SceneObject::Resident(items) => SceneObject::Resident(map(items)),
-            SceneObject::Instanced { template, instances } => SceneObject::Instanced {
+            SceneObject::Instanced {
+                template,
+                instances,
+                paints,
+            } => SceneObject::Instanced {
                 template: Box::new(template.facing()),
                 instances,
+                paints,
             },
             leaf @ (SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)) => leaf,
             SceneObject::Shared(_) => unreachable!("resolved"),
