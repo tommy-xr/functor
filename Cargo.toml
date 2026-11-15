@@ -89,6 +89,7 @@ opt-level = 3
 opt-level = 3
 
 # The speech model's SHA-256 check at load: ~10 s unoptimized, ~1 s optimized.
+# Pushed files are hashed with it too.
 [profile.dev.package.sha2]
 opt-level = 3
 

@@ -182,3 +182,7 @@ opt-level = 3
 # frames, so debug APKs build functor-lang at opt-level 1.
 [profile.dev.package.functor-lang]
 opt-level = 1
+
+# Pushed files are hashed (sha256) on both ends of a push.
+[profile.dev.package.sha2]
+opt-level = 3
