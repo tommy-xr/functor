@@ -160,8 +160,13 @@ same executable again. `npm run build` and `npm run app` build it in on macOS;
 a plain `cargo build` leaves it out. Elsewhere the window does not exist yet:
 `--features app` gives `functor app -- --headless`.
 
-`whisper` compiles whisper.cpp. Its model (about 148 MB) is fetched on first
-use into `~/.functor/models` (`FUNCTOR_MODELS` overrides), not at build time.
+`whisper` compiles whisper.cpp (on the GPU through Metal on macOS). Its model
+(about 148 MB) is fetched on first use into `~/.functor/models`
+(`FUNCTOR_MODELS` overrides), not at build time; once it is there, the app
+loads it in the background as it starts. Each spoken request's stage times
+are on its task and in `~/.functor/app/voice.log`; to time them here, see
+the `stt_bench` example and `voice_stages_on_this_machine`
+(`FUNCTOR_VOICE_BENCH=1`).
 `npm run app:debug` and `--features app` leave it out: the composer shows no
 mic, and a headset's voice clip is answered with "speech-to-text is not in this
 build".
@@ -210,6 +215,13 @@ from the core; after changing one, regenerate with
 if stale). `cargo test -p functor-stt --features whisper` builds whisper.cpp but
 fetches no model; its real transcription test runs only with
 `FUNCTOR_STT_REAL=1`.
+
+**Hearing a spoken reply (D47).** `functor-app say` (or `functor app say`) says
+a sample reply on this Mac's speakers as the app does after a spoken request,
+and waits until it has played; `functor-app say "any text"` says that instead.
+`FUNCTOR_APP_SPEAK=off` mutes replies in the app. Tests never make sound: under
+a fake agent or transcript the voice is off unless `FUNCTOR_APP_FAKE_VOICE=<file>`
+logs it.
 
 **Tests pass `--no-device-link`.** Every test that starts the app does, unless
 it is about the link: a test run must not open a port on the LAN, advertise the

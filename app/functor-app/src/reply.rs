@@ -67,20 +67,37 @@ impl Replies {
     }
 
     /// Says reply `mine` on this machine, unless stopped or replaced
-    /// meanwhile. Blocks while it is synthesised: call it off the async
-    /// threads.
-    pub fn say(&self, mine: u64, text: &str) -> Result<(), String> {
+    /// meanwhile: how long it plays for. Blocks while it is synthesised:
+    /// call it off the async threads.
+    pub fn say(&self, mine: u64, text: &str) -> Result<std::time::Duration, String> {
         self.say_on(mine, text, &*self.output)
     }
 
     /// [`Replies::say`], on `output`.
-    pub fn say_on(&self, mine: u64, text: &str, output: &dyn Output) -> Result<(), String> {
+    pub fn say_on(
+        &self,
+        mine: u64,
+        text: &str,
+        output: &dyn Output,
+    ) -> Result<std::time::Duration, String> {
         let pcm = self.synth.synth(text)?;
+        let seconds = pcm.len() as f32 / functor_stt::SAMPLE_RATE as f32;
         let mut now = self.now.lock().unwrap();
         // Stopped, or replaced, while it was synthesised.
         if now.0 == mine {
             now.1 = Some(output.play(pcm)?);
         }
+        Ok(std::time::Duration::from_secs_f32(seconds))
+    }
+
+    /// `functor-app say`: says `text` as a reply is said and waits until
+    /// it has played, to hear the voice without a headset or an agent.
+    pub fn hear(text: &str) -> Result<(), String> {
+        let replies = Replies::from_env().ok_or(
+            "there is no voice here: replies are spoken on macOS, unless FUNCTOR_APP_SPEAK=off",
+        )?;
+        let length = replies.say(replies.next(), text)?;
+        std::thread::sleep(length + std::time::Duration::from_millis(300));
         Ok(())
     }
 

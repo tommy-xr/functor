@@ -472,6 +472,7 @@ mod tests {
             review: None,
             created_at: None,
             updated_at: Some(1),
+            voice: None,
             transcript: vec![Item::User {
                 text: "hi".into(),
                 spoken: None,
@@ -522,6 +523,7 @@ mod tests {
             review: None,
             created_at: None,
             updated_at: Some(1),
+            voice: None,
             transcript: vec![Item::User {
                 text: "hi".into(),
                 spoken: None,

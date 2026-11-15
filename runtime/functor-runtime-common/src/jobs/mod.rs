@@ -268,7 +268,7 @@ fn spawn_worker(
 /// Background work: utility QoS on macOS, so jobs don't contend with the
 /// frame's threads for performance cores; nice 10 on Android, where workers
 /// share the app's three cores with the render (and sim) thread.
-fn lower_priority() {
+pub(crate) fn lower_priority() {
     #[cfg(target_os = "macos")]
     // SAFETY: plain libc call on the calling thread; no pointers involved.
     unsafe {
@@ -316,7 +316,7 @@ impl Dispatch for Pool {
 /// most four workers.
 /// `FUNCTOR_JOB_WORKERS=n` (clamped to 1..=16, read when the pool starts)
 /// overrides it, for benchmarks.
-fn workers() -> usize {
+pub(crate) fn workers() -> usize {
     if let Some(n) = std::env::var("FUNCTOR_JOB_WORKERS").ok().and_then(|n| n.parse().ok()) {
         return usize::clamp(n, 1, 16);
     }

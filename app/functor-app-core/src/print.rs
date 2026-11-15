@@ -819,6 +819,7 @@ recents: 2
                 review: None,
                 created_at: None,
                 updated_at: None,
+                voice: None,
                 transcript: transcript.clone(),
                 scope: Default::default(),
             }],
