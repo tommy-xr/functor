@@ -57,7 +57,10 @@ deletes the block fails naming it and the old program keeps running. A push
 with no role query leaves the role already in force alone. Assets transfer individually through
 `POST /reload-asset`; a final
 `POST /sync-assets` manifest removes deleted uploads and changed render assets
-are decoded again on the next frame. The pieces also work individually:
+are decoded again from the next frame. Models and textures decode on worker
+threads: the headset keeps rendering, and each shows its stand-in (nothing
+for a model, a checkerboard for a texture) until its decode lands. The pieces
+also work individually:
 
 Sound bytes are synchronized into the device cache, but Quest audio playback
 is still pending its Android audio host; the shell currently drains audio
