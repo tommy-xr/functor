@@ -2427,8 +2427,9 @@ Escape releases while captured"
         // pass even in a hidden window (see `OverlayPointer`).
         let mut pointer_injected = false;
         // Injected left edges deferred until an overlay pass has seen the
-        // injected pointer position (`OverlayPointer::pending`).
-        let mut pointer_moved = false;
+        // injected pointer position (`OverlayPointer::pending`). The move flag
+        // is set each frame, before that frame's requests are serviced.
+        let mut pointer_moved: bool;
         let mut pending_primary: Vec<bool> = Vec::new();
         // Press-latch for the frame's pointer SAMPLE: a click whose press and
         // release both land in one poll batch (a fast tap, a slow frame)
