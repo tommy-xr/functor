@@ -1198,6 +1198,21 @@ rebuild every frame; a list whose content changes uploads each frame it
 changes. This is renderer-side caching only — the scene is still a plain
 value.
 
+**Paint that changes every frame goes in `Scene.instancedPaint`, not in the
+instance list.** `template |> Scene.instancedPaint(instances, paints)` is
+`Scene.instanced` plus a second, per-copy stream: `paints` is `Bytes`, 16 per
+instance in order — four little-endian f32 `r, g, b, glow`
+(`Bytes.fromF32le([r0, g0, b0, glow0, r1, …])`). The copy's tint is its
+`Instance.tint` × `(r, g, b)`; `glow` (0–1, clamped) mixes a LIT copy's
+shading toward its unlit colour (1 reads like `Scene.emissive`; no effect on
+unlit materials); `Scene.model` templates ignore paints as they ignore
+tints. A byte count other than 16 × instances, or a non-finite float, is an
+error. Keep `instances` the same value (model or top-level def) and rebuild
+only `paints`: the transforms convert and upload once and each frame uploads
+16 B/copy (vs 52 B/copy and a full rebuild for re-tinted instances). Paint
+bytes held unchanged (the same `Bytes` value) convert and upload once too.
+Per-copy opacity is not a paint: wrap the node in `Scene.opacity`.
+
 **`Scene.memo(key, deps, builder)` skips the rebuild too** — for a subtree
 derived from model data in `draw` (props placed from `model.trees`, a city
 from `model.seed`). It returns `builder(deps)` but runs the builder only when

@@ -48,7 +48,7 @@ mod terrain_materials;
 mod texture_description;
 
 pub use cull::{Aabb, MeshBounds};
-pub use instancing::{InstanceData, InstanceList};
+pub use instancing::{InstanceData, InstanceList, PaintData, PaintList};
 pub use material_description::*;
 
 use instanced_renderer::InstancedRenderer;
@@ -2875,6 +2875,10 @@ pub enum SceneObject {
     Instanced {
         template: Box<Scene3D>,
         instances: InstanceList,
+        /// `Scene.instancedPaint`'s per-copy paints, one per instance; a
+        /// stream apart from `instances` so either can change alone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paints: Option<PaintList>,
     },
     /// `Scene.cells` / `Scene.inCells` — portal culling; see [`CellsNode`].
     /// Otherwise a group.
@@ -2946,12 +2950,14 @@ impl PartialEq for SceneObject {
                 Instanced {
                     template: t,
                     instances: i,
+                    paints: p,
                 },
                 Instanced {
                     template: u,
                     instances: j,
+                    paints: q,
                 },
-            ) => t == u && i == j,
+            ) => t == u && i == j && p == q,
             (Geometry(_), _)
             | (Model(_), _)
             | (Terrain(_), _)
@@ -3269,9 +3275,24 @@ impl Scene3D {
             obj: SceneObject::Instanced {
                 template: Box::new(template),
                 instances: instances.into(),
+                paints: None,
             },
             xform: Matrix4::identity(),
         }
+    }
+
+    /// `Scene.instancedPaint`: [`Scene3D::instanced`] with one paint per
+    /// instance (the caller checks the lengths match).
+    pub fn instanced_painted(
+        template: Scene3D,
+        instances: impl Into<InstanceList>,
+        paints: impl Into<PaintList>,
+    ) -> Self {
+        let mut scene = Scene3D::instanced(template, instances);
+        if let SceneObject::Instanced { paints: slot, .. } = &mut scene.obj {
+            *slot = Some(paints.into());
+        }
+        scene
     }
 
     /// `Scene.keepResident`: keep `items`' GPU resources resident, drawing
@@ -3434,6 +3455,7 @@ impl Scene3D {
             SceneObject::Instanced {
                 template,
                 instances,
+                ..
             } => {
                 let w = world * self.xform;
                 for instance in instances.iter() {
@@ -4153,10 +4175,15 @@ impl Scene3D {
             SceneObject::Instanced {
                 template,
                 instances,
+                paints,
             } => {
                 if instances.is_empty() {
                     return;
                 }
+                // Paints of another length (a hand-built or deserialized
+                // frame; the prelude refuses them) are ignored, never read
+                // past their end.
+                let paints = paints.as_ref().filter(|p| p.len() == instances.len());
                 let recognized = instancing::recognize(template);
                 // A blend template draws in its blend pass, like the Material
                 // arm: a hardware one is wholly blend; an expanded one draws
@@ -4254,6 +4281,11 @@ impl Scene3D {
                             _ => None,
                         };
                         let mut renderer = scene_context.instanced_renderer(render_context);
+                        // Before the cull, so a culled or hidden node's paints
+                        // stay resident too. A model template ignores paints.
+                        if let Some(paints) = paints {
+                            renderer.paint_buffer(render_context.gl, paints);
+                        }
                         if culled(&mut renderer, bounds) {
                             if let Some(texture) = texture {
                                 scene_context.keep_texture(render_context.gl, texture, true);
@@ -4277,6 +4309,7 @@ impl Scene3D {
                             render_context,
                             &recognized,
                             instances,
+                            paints,
                             &xform,
                             projection_matrix,
                             view_matrix,
@@ -4393,7 +4426,7 @@ leaf under transforms)"
                                 },
                             );
                         }
-                        expand_instanced(template, instances).render(
+                        expand_instanced(template, instances, paints).render(
                             render_context,
                             scene_context,
                             &xform,

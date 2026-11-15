@@ -49,6 +49,7 @@
 //! ```sh
 //! cargo run -q --release -p functor_runtime_common --example frame_bench
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- 40 80   # grid sides
+//! cargo run -q --release -p functor_runtime_common --example frame_bench -- paints  # instance paints
 //! ```
 //!
 //! Always `--release` — a debug interpreter is many times slower and not
@@ -495,6 +496,78 @@ fn bench_shapes() {
     }
 }
 
+/// The instanced-paint workload: a `side`×`side` grid of lit cubes whose
+/// light changes every frame, drawn `mode`'s way. The instance list is a
+/// top-level def (built once) in every mode but `rebuild`.
+fn paint_workload(side: u32, mode: &str) -> String {
+    let scene = match mode {
+        // The way without paints: re-tint every instance each frame.
+        "rebuild" => "Scene.instanced(spots |> List.zip(dists) |> List.map((pair) => \
+             match pair with | (spot, d) => \
+               let g = glowAt(d, tts) in spot |> Instance.tint(Color.rgb(g, g, g))))",
+        "paint" => "Scene.instancedPaint(spots, Bytes.fromF32le(dists |> List.concatMap((d) => \
+             [1.0, 1.0, 1.0, glowAt(d, tts)])))",
+        "static" => "Scene.instancedPaint(spots, still)",
+        _ => unreachable!(),
+    };
+    format!(
+        r#"
+let side = {side}.0
+let cells = List.range(side * side)
+let spots = cells |> List.map((i) =>
+  Instance.trs(Vec3.make(Math.mod(i, side), 0.0, Math.floor(i / side)), Angle.degrees(0.0), 0.8, 1.0, 0.8))
+let dists = cells |> List.map((i) =>
+  let x = Math.mod(i, side) - side / 2.0 in
+  let z = Math.floor(i / side) - side / 2.0 in
+  Math.sqrt(x * x + z * z))
+let still = Bytes.fromF32le(dists |> List.concatMap((d) => [1.0, 1.0, 1.0, 0.0]))
+let glowAt = (d: float, tts: float): float => 0.5 + 0.5 * Math.sin(d * 0.5 - tts * 3.0)
+
+let init = 0.0
+let tick = (m: float, dt: float, tts: float) => m
+
+let draw = (m: float, tts: float) =>
+  let city = Scene.cube() |> Scene.lit(Color.rgb(0.3, 0.5, 0.9)) |> {scene} in
+  Frame.create(
+    Camera3D.firstPerson(Vec3.make(0.0, 20.0, -20.0),
+      Angle.radians(0.0), Angle.degrees(-30.0), Angle.degrees(70.0)),
+    city)
+"#
+    )
+}
+
+/// The paint table: per-frame cost of changing every copy's light at N
+/// copies — rebuilding the instance list vs a paint stream vs no change.
+fn bench_paints() {
+    println!("frame_bench: headless per-frame cost under the engine prelude (no GL)");
+    println!("workload: a grid of lit instanced cubes whose light changes every frame");
+    println!("  rebuild = Scene.instanced, every instance re-tinted each frame");
+    println!("  paint   = Scene.instancedPaint, static instances + per-frame paint bytes");
+    println!("  static  = Scene.instancedPaint, static instances + static paints");
+    println!("NOTE: CPU only; GL uploads (52 B/copy for instances, 16 B/copy for paints) not seen.");
+    println!();
+    println!(
+        "{:>7} {:>8} {:>15} {:>15} {:>10} {:>13} {:>12}",
+        "copies", "mode", "us/frame(min)", "us/frame(med)", "us/copy", "allocs/frame", "bytes/frame"
+    );
+    for side in [32, 100] {
+        let copies = side * side;
+        for mode in ["rebuild", "paint", "static"] {
+            let m = bench_source(&paint_workload(side, mode));
+            println!(
+                "{:>7} {:>8} {:>15.1} {:>15.1} {:>10.3} {:>13} {:>12}",
+                copies,
+                mode,
+                m.min_us,
+                m.median_us,
+                m.min_us / copies as f64,
+                m.allocs_per_frame,
+                m.bytes_per_frame,
+            );
+        }
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("========================================================================");
@@ -516,6 +589,10 @@ fn main() {
     }
     if args.first().is_some_and(|a| a == "shapes") {
         bench_shapes();
+        return;
+    }
+    if args.first().is_some_and(|a| a == "paints") {
+        bench_paints();
         return;
     }
 

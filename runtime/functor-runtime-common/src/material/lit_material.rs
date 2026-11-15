@@ -110,6 +110,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform float specularScale;
         // > 0: box-map the texture by world position (WORLD_TEXTURE_GLSL).
         uniform highp float worldTile;
+        // 0–1: how far the shading mixes toward the unlit albedo (an
+        // instance paint's glow on a CPU-stamped copy).
+        uniform float glow;
 
         void main() {
             vec3 n = normalize(worldNormal);
@@ -135,8 +138,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                 albedo = texel * baseColor;
             }
             albedo *= vertexColor;
+            vec3 shaded = albedo.rgb * diffuseLight + specularLight * specularScale;
             fragColor = functorOutput(
-                vec4(applyFog(albedo.rgb * diffuseLight + specularLight * specularScale, worldPos), albedo.a));
+                vec4(applyFog(mix(shaded, albedo.rgb, glow), worldPos), albedo.a));
         }
 "#;
 
@@ -152,6 +156,7 @@ struct Uniforms {
     use_normal_map_loc: UniformLocation,
     specular_scale_loc: UniformLocation,
     world_tile_loc: UniformLocation,
+    glow_loc: UniformLocation,
     lighting: LightingUniforms,
     fog: FogUniforms,
     output: crate::color_space::OutputEncodeUniform,
@@ -169,6 +174,8 @@ pub struct LitMaterial {
     specular_scale: f32,
     /// Metres per repeat of a world box-mapped texture; 0 reads mesh UVs.
     world_tile: f32,
+    /// See `MaterialDescription::Lit::glow`.
+    glow: f32,
 }
 
 use crate::shader::Shader;
@@ -214,6 +221,7 @@ impl Material for LitMaterial {
                     use_normal_map_loc: shader.get_uniform_location(ctx.gl, "useNormalMap"),
                     specular_scale_loc: shader.get_uniform_location(ctx.gl, "specularScale"),
                     world_tile_loc: shader.get_uniform_location(ctx.gl, "worldTile"),
+                    glow_loc: shader.get_uniform_location(ctx.gl, "glow"),
                     lighting: LightingUniforms::get(&shader, ctx.gl),
                     fog: FogUniforms::get(&shader, ctx.gl),
                     output: crate::color_space::OutputEncodeUniform::get(&shader, ctx.gl),
@@ -272,6 +280,7 @@ impl Material for LitMaterial {
                 );
                 p.set_uniform_1f(ctx.gl, &uniforms.specular_scale_loc, self.specular_scale);
                 p.set_uniform_1f(ctx.gl, &uniforms.world_tile_loc, self.world_tile);
+                p.set_uniform_1f(ctx.gl, &uniforms.glow_loc, self.glow.clamp(0.0, 1.0));
 
                 LightingUniforms::bind_shadow_map(ctx);
                 // Per draw: a translucent subtree switches the alpha mode.
@@ -294,6 +303,7 @@ impl LitMaterial {
         use_texture: bool,
         use_normal_map: bool,
         world_tile: f32,
+        glow: f32,
     ) -> Box<dyn Material> {
         Box::new(LitMaterial {
             color,
@@ -301,6 +311,7 @@ impl LitMaterial {
             use_normal_map,
             specular_scale: 1.0,
             world_tile,
+            glow,
         })
     }
 
@@ -316,6 +327,7 @@ impl LitMaterial {
             use_normal_map: false,
             specular_scale: 0.0,
             world_tile: 0.0,
+            glow: 0.0,
         })
     }
 }
