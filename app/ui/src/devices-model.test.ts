@@ -41,7 +41,7 @@ const request = (n: number, expires_at = 10_000): PairRequest => ({
 test("every state has a word and, but connected, a fix", () => {
   assert.equal(Object.keys(WORDS).length, 6);
   assert.match(fixFor(device({ state: "away" })), /reconnects by itself/);
-  assert.equal(fixFor(device({ state: "connected", link: "wifi", battery: null, charging: false, build: null, project: null, latency_ms: null })), "");
+  assert.equal(fixFor(device({ state: "connected", link: "wifi", battery: null, charging: false, build: null, project: null, loading: [], latency_ms: null })), "");
   assert.match(fixFor(device({ state: "needs_update", update: "headset", reason: "", since: 0 })), /on the headset/);
   assert.match(fixFor(device({ state: "needs_update", update: "desktop", reason: "", since: 0 })), /on this computer/);
   assert.match(fixFor(device({ state: "cannot_reach", reason: "timed out", since: 0 })), /same Wi-Fi/);
@@ -71,7 +71,7 @@ test("the prompt waits while the user types or holds a pointer down", () => {
 });
 
 test("a connected card's details", () => {
-  const d = device({ state: "connected", link: "wifi", battery: 80, charging: true, build: "abc", project: "examples/hello", latency_ms: 12 });
+  const d = device({ state: "connected", link: "wifi", battery: 80, charging: true, build: "abc", project: "examples/hello", loading: [], latency_ms: 12 });
   assert.deepEqual(details(d), [
     ["Link", "Wi-Fi · 12 ms"],
     ["Battery", "80%, charging"],
@@ -79,6 +79,26 @@ test("a connected card's details", () => {
     ["Running", "examples/hello"],
   ]);
   assert.deepEqual(details(device({ state: "away" })), []);
+  // What the headset is loading takes the place of what it runs.
+  const row = (loading: string[]) => details({ ...d, state: { ...d.state, loading } as Device["state"] }).at(-1);
+  assert.deepEqual(row(["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), [
+    "Sending to headset",
+    "23.0 of 67.5 MB (34%), 4 of 9 files",
+  ]);
+  assert.deepEqual(row(["RECEIVING PROJECT", "1.0 of 3.0 MB (33%), 0 of 1 file", "68.0 MB already on the headset"]), [
+    "Sending to headset",
+    "1.0 of 3.0 MB (33%), 0 of 1 file · 68.0 MB already on the headset",
+  ]);
+  assert.deepEqual(row(["UP TO DATE", "Nothing to send", "71.0 MB already on the headset"]), [
+    "Sending to headset",
+    "Nothing to send · 71.0 MB already on the headset",
+  ]);
+  assert.deepEqual(row(["STARTING", "Checking code"]), ["Starting", "Checking code"]);
+  assert.deepEqual(row(["LOADING ASSETS", "2 of 6"]), ["Loading assets", "2 of 6"]);
+  assert.deepEqual(row(["LOAD FAILED", "game.fun:3:1: unknown", "name `tik`"]), ["Failed to load", "game.fun:3:1: unknown · name `tik`"]);
+  // Running, or a card this desktop does not know: what it runs.
+  assert.deepEqual(row(["RUNNING"]), ["Running", "examples/hello"]);
+  assert.deepEqual(row(["CONNECTED", "to Studio"]), ["Running", "examples/hello"]);
 });
 
 const onCable = (serial: string, state: Attached["state"]): Attached => ({

@@ -128,6 +128,33 @@ export function details(d: Device): [string, string][] {
   const rows: [string, string][] = [["Link", s.latency_ms === null ? link : `${link} · ${s.latency_ms} ms`]];
   if (s.battery !== null) rows.push(["Battery", `${s.battery}%${s.charging ? ", charging" : ""}`]);
   if (s.build) rows.push(["Build", s.build]);
-  rows.push(["Running", s.project ?? "Nothing"]);
+  const load = loading(s.loading);
+  if (load) rows.push(load);
+  else rows.push(["Running", s.project ?? "Nothing"]);
   return rows;
+}
+
+/**
+ * The headset's status card as a row: what is being sent or loaded, in the
+ * desktop's words. `null` when its card is hidden or only says it runs.
+ */
+export function loading(lines: string[]): [string, string] | null {
+  const [heading, ...rest] = lines;
+  const detail = rest.join(" · ");
+  switch (heading) {
+    case "RECEIVING PROJECT":
+      return ["Sending to headset", detail];
+    case "UP TO DATE":
+      return ["Sending to headset", "Nothing to send" + (rest[1] ? ` · ${rest[1]}` : "")];
+    case "STARTING":
+      return ["Starting", detail];
+    case "LOADING ASSETS":
+      return ["Loading assets", detail];
+    case "RELOADING...":
+      return ["Reloading", ""];
+    case "LOAD FAILED":
+      return ["Failed to load", detail];
+    default:
+      return null;
+  }
 }

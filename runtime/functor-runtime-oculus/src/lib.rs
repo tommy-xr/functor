@@ -917,6 +917,8 @@ struct DebugLoopState {
     /// and where it sits.
     load_status: functor_runtime_common::load_status::LoadStatus,
     status_lines: Option<Vec<String>>,
+    /// The link the desktop last heard them on.
+    status_link: Option<u64>,
     status_follow: functor_runtime_common::link_overlay::Follow,
     /// Project files received (`/reload-asset`).
     received_files: u64,
@@ -2624,9 +2626,18 @@ images cannot be posed"
         );
         let status = status.map(|(step, alpha)| (functor_runtime_common::load_status::lines(&step), alpha));
         let status_lines = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
-        if status_lines != debug.status_lines {
-            log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+        // The desktop hears each change, and where the card is on a new link.
+        let link = debug.link.as_ref().and_then(|client| client.link());
+        if status_lines != debug.status_lines || link != debug.status_link {
+            if status_lines != debug.status_lines {
+                log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+            }
+            if let (Some(client), Some(link)) = (&debug.link, link) {
+                let lines = functor_device_link::load::encode(status_lines.as_deref().unwrap_or_default());
+                client.send_channel(link, functor_device_link::load::CHANNEL, lines, true);
+            }
             debug.status_lines = status_lines;
+            debug.status_link = link;
         }
         let panel = match (panel, status, tracked_center) {
             (None, Some((lines, alpha)), Some(head)) => {

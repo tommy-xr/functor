@@ -330,6 +330,13 @@ build: string | null,
  */
 project: string | null, 
 /**
+ * What it is loading, as its status card says it (heading first):
+ * `["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]`.
+ * Empty when its card is hidden, and from a headset that does not
+ * say.
+ */
+loading: Array<string>, 
+/**
  * The last ping's round trip.
  */
 latency_ms: number | null, } | { "state": "needs_update", update: Side, reason: string, since: number, } | { "state": "cannot_reach", reason: string, since: number, };

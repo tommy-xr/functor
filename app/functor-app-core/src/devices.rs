@@ -148,6 +148,11 @@ pub enum DeviceState {
         build: Option<String>,
         /// The project it runs.
         project: Option<String>,
+        /// What it is loading, as its status card says it (heading first):
+        /// `["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]`.
+        /// Empty when its card is hidden, and from a headset that does not
+        /// say.
+        loading: Vec<String>,
         /// The last ping's round trip.
         latency_ms: Option<u64>,
     },
@@ -244,6 +249,11 @@ pub enum LinkEvent {
         charging: bool,
         build: String,
         project: Option<String>,
+    },
+    /// Its status card changed (empty: hidden).
+    Loading {
+        conn: u64,
+        lines: Vec<String>,
     },
     Latency {
         conn: u64,
@@ -554,6 +564,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                         charging: false,
                         build: None,
                         project: None,
+                        loading: Vec::new(),
                         latency_ms: None,
                     },
                 };
@@ -582,6 +593,11 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 {
                     (*b, *c, *v, *p) = (battery, charging, Some(build), project);
                 }
+            }
+        }
+        LinkEvent::Loading { conn, lines } => {
+            if let Some(DeviceState::Connected { loading, .. }) = devices.by_conn(conn).map(|d| &mut d.state) {
+                *loading = lines;
             }
         }
         LinkEvent::Latency { conn, ms } => {
@@ -936,9 +952,21 @@ mod tests {
                 charging: true,
                 build: Some("abc".into()),
                 project: Some("examples/hello".into()),
+                loading: Vec::new(),
                 latency_ms: Some(12),
             }
         );
+        // Its status card, as it changes; another connection's is not its.
+        let loading = |d: &Devices| match state(d, "a") {
+            DeviceState::Connected { loading, .. } => loading,
+            other => panic!("{other:?}"),
+        };
+        let lines = vec!["RECEIVING PROJECT".to_string(), "23.0 of 67.5 MB (34%), 4 of 9 files".to_string()];
+        on_link(&mut d, LinkEvent::Loading { conn: 9, lines: lines.clone() }, 1006);
+        on_link(&mut d, LinkEvent::Loading { conn: 8, lines: vec!["RUNNING".into()] }, 1006);
+        assert_eq!(loading(&d), lines);
+        on_link(&mut d, LinkEvent::Loading { conn: 9, lines: Vec::new() }, 1006);
+        assert!(loading(&d).is_empty());
         // Another connection's news changes nothing.
         let (changed, _) = on_link(&mut d, LinkEvent::Latency { conn: 8, ms: 1 }, 1007);
         assert!(!changed);
