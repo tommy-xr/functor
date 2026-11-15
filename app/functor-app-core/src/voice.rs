@@ -43,6 +43,8 @@ pub struct Utterance {
     pub title: Option<String>,
     /// The project of the game it was said to: it goes nowhere else.
     pub project: String,
+    /// Its stages so far (`None`: not timed, as one the user moved).
+    pub timing: Option<crate::voice_timing::VoiceTiming>,
 }
 
 /// The stages the core reports.

@@ -10,6 +10,7 @@ use crate::activity::{classify, CallKind};
 use crate::decision::{style_flags, Check, Report};
 use crate::review::{Review, ReviewState};
 use crate::tasks::{Harness, Item, Scope, Task, UsageDetail, Usd};
+use crate::voice_timing::VoiceTiming;
 
 #[derive(Debug, Serialize)]
 pub struct RunMetrics {
@@ -34,6 +35,9 @@ pub struct RunMetrics {
     pub split: Split,
     /// The last agent text block.
     pub answer: Option<String>,
+    /// When the run was started by a spoken request: its stages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceTiming>,
 }
 
 /// A task's review (D31): its outcome, usage and the report it wrote.
@@ -136,6 +140,7 @@ pub fn run_metrics(task: &Task) -> RunMetrics {
         output_tokens: None,
         split: Split::default(),
         answer: None,
+        voice: (task.voice.clone()).filter(|v| v.run.is_some_and(|r| r + 1 == start as u64)),
     };
     for item in &task.transcript[start..] {
         match item {
@@ -195,6 +200,7 @@ mod tests {
             reverting: false,
             created_at: None,
             updated_at: None,
+            voice: None,
             transcript: vec![],
             scope: Default::default(),
         };
@@ -268,8 +274,13 @@ mod tests {
             (&json!(12), &json!(800), &json!(88))
         );
         assert_eq!((&json["turns"], &json["cost_usd"]), (&json!(3), &json!(0.25)));
-        for absent in ["api_ms", "reasoning_output"] {
+        for absent in ["api_ms", "reasoning_output", "voice"] {
             assert!(json.get(absent).is_none(), "{absent}: {json}");
         }
+        // A spoken request's stages, for the run it started only.
+        task.voice = Some(VoiceTiming { run: Some(3), end: 5, ..Default::default() });
+        assert_eq!(run_metrics(&task).voice.map(|v| v.end), Some(5));
+        task.voice = Some(VoiceTiming { run: Some(0), ..Default::default() });
+        assert!(run_metrics(&task).voice.is_none(), "an earlier run's");
     }
 }

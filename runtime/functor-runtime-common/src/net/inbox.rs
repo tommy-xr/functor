@@ -158,6 +158,12 @@ impl<T> MsgQueue<T> {
 static OUTBOUND: Lazy<MsgQueue<NetCommand>> = Lazy::new(MsgQueue::new);
 static INBOX: Lazy<MsgQueue<NetInbound>> = Lazy::new(MsgQueue::new);
 
+/// Serializes tests that read the process-global [`OUTBOUND`] queue, so one
+/// does not drain another's request under parallel scheduling.
+/// `unwrap_or_else(into_inner)` shrugs off a lock poisoned by another test.
+#[cfg(test)]
+pub(crate) static OUTBOUND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Queue a command produced by a networking `Effect` for the host to perform.
 pub fn push_command(cmd: NetCommand) {
     OUTBOUND.push(cmd);

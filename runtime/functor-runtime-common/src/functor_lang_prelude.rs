@@ -17935,6 +17935,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
     /// through the tagger → `update` moves the model to `Done(status, body)`.
     #[test]
     fn http_request_response_round_trip() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands(); // clear the shared queue
         let src = "\
             type Phase = | Loading | Done(status: Float, body: String) | Failed(text: String)\n\
@@ -18017,6 +18018,7 @@ let main = Scene.group([Scene.modelOf(room), Scene.modelOf(bare)]) \
         let _guard = crate::audio::OUTBOUND_TEST_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands(); // clear the shared queues
         let _ = crate::audio::drain_commands();
         let src = "\
