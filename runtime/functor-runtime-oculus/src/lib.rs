@@ -920,8 +920,6 @@ struct DebugLoopState {
     load_status: functor_runtime_common::load_status::LoadStatus,
     status_lines: Option<Vec<String>>,
     status_follow: functor_runtime_common::link_overlay::Follow,
-    /// Project files received (`/reload-asset`).
-    received_files: u64,
     /// The load in flight is a game (not the boot scene), and one is running.
     loading_game: bool,
     game: bool,
@@ -1434,7 +1432,6 @@ desktop runtime's --headless/--debug-port path"
             }
         }
         DebugRequest::ReloadAsset(asset, response) => {
-            debug.received_files += 1;
             let changed = asset_cache.replace_uploaded(&asset.path, asset.bytes);
             if changed {
                 scene_context.evict_asset(&asset.path);
@@ -1814,6 +1811,13 @@ pub fn android_main(app: AndroidApp) {
         functor_runtime_common::device_files::DEFAULT_STORE_BYTES,
     ));
     functor_runtime_common::storage::set_project_reader(Some(device_files.clone()));
+    // Pushed files kept by content hash: a push sends only what is new.
+    if let Some(dir) = app.internal_data_path() {
+        functor_runtime_common::push_cache::install(
+            &dir.join("push-cache"),
+            functor_runtime_common::push_cache::DEFAULT_CAP_BYTES,
+        );
+    }
     let scene_context = SceneContext::new();
     // The eye swapchain is SRGB8_ALPHA8 (COLOR_FORMAT): the hardware encodes
     // on write, so the shared shader epilogue must pass through — see the
@@ -2621,7 +2625,7 @@ images cannot be posed"
                 linked: link_view.as_ref().is_some_and(|view| view.linked),
                 desktop: link_view.and_then(|view| view.paired),
                 game: debug.game,
-                files: debug.received_files,
+                files: functor_runtime_common::debug_http::asset_files_received(),
                 bytes: functor_runtime_common::debug_http::asset_bytes_received(),
                 announced: functor_runtime_common::debug_http::push_announced(),
                 loading: debug.pending_load.is_some() && debug.loading_game,
