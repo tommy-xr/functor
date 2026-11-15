@@ -1409,6 +1409,7 @@ link the headset's loopback ports stay its own"
         // Through the link, an asset must fit a frame: parts need v40. A
         // v40 headset also learns the project's name.
         let parts = version.is_some_and(|v| v >= ASSET_PARTS_PROTOCOL_VERSION);
+        let manifests = version.is_some_and(|v| v >= PUSH_MANIFEST_PROTOCOL_VERSION);
         if linked && !parts {
             return Err(Error::other(format!(
                 "the headset's functor runtime speaks debug protocol v{}; running over the device \
@@ -1490,14 +1491,10 @@ project root, not from {}/",
         }
 
         let mut attempted_assets = scan.files;
-        let report = sync_project_assets(&addr, &attempted_assets, None, parts)?;
+        let report = sync_project_assets(&addr, &attempted_assets, None, parts, manifests)?;
         let mut observed_assets = attempted_assets.clone();
         emit(Event::Info {
-            message: format!(
-                "synced {} project file(s) ({:.1} MB) to the headset",
-                report.files,
-                report.bytes as f64 / (1024.0 * 1024.0)
-            ),
+            message: report.synced("project"),
         });
 
         // Load only after every initial file is resident, so top-level
@@ -1590,7 +1587,7 @@ project root, not from {}/",
             // The files as they are now, and the source that last loaded.
             if restarted {
                 let pushed = project_asset_files(project_root, &external).and_then(|scan| {
-                    sync_project_assets(&addr, &scan.files, None, parts)?;
+                    sync_project_assets(&addr, &scan.files, None, parts, manifests)?;
                     attempted_assets = scan.files;
                     post_project(&addr, "/load-project", &loaded, &role, &load_query)
                 });
@@ -1665,14 +1662,10 @@ project root, not from {}/",
                 continue;
             }
             if current_assets != attempted_assets {
-                match sync_project_assets(&addr, &current_assets, Some(&attempted_assets), parts) {
+                match sync_project_assets(&addr, &current_assets, Some(&attempted_assets), parts, manifests) {
                     Ok(report) => {
                         emit(Event::Info {
-                            message: format!(
-                                "synced {} changed file(s) ({:.1} MB) to the headset",
-                                report.files,
-                                report.bytes as f64 / (1024.0 * 1024.0)
-                            ),
+                            message: report.synced("changed"),
                         });
                         attempted_assets = current_assets.clone();
                         observed_assets = current_assets;
@@ -2105,6 +2098,125 @@ struct ProjectAssetFile {
 struct AssetSyncReport {
     files: usize,
     bytes: u64,
+    /// Files the headset already held (its pushed-file cache), not sent.
+    held: usize,
+}
+
+impl AssetSyncReport {
+    /// `synced 3 project file(s) (1.2 MB) to the headset`, and what it
+    /// already held.
+    fn synced(&self, what: &str) -> String {
+        let sent = format!(
+            "synced {} {what} file(s) ({:.1} MB) to the headset",
+            self.files,
+            self.bytes as f64 / (1024.0 * 1024.0)
+        );
+        match self.held {
+            0 => sent,
+            held => format!("{sent}; it already had {held}"),
+        }
+    }
+}
+
+/// The debug protocol with `POST /push-manifest`.
+const PUSH_MANIFEST_PROTOCOL_VERSION: u64 = 51;
+
+/// `POST /push-manifest` for `files` (hashed as `hashes`): the hashes the
+/// headset lacks, or `None` from a runtime without the route (send all).
+fn post_push_manifest(
+    addr: &str,
+    files: &[&ProjectAssetFile],
+    hashes: &[String],
+) -> Result<Option<Vec<String>>, Error> {
+    use functor_runtime_common::push_cache::{Manifest, ManifestAnswer, ManifestFile};
+    let manifest = Manifest {
+        files: files
+            .iter()
+            .zip(hashes)
+            .map(|(asset, hash)| ManifestFile { path: asset.locator.clone(), size: asset.len, hash: hash.clone() })
+            .collect(),
+    };
+    let body = serde_json::to_vec(&manifest).map_err(Error::other)?;
+    // The headset reads what it holds from its storage before answering.
+    let timeout = std::time::Duration::from_secs(60);
+    match http_post_bytes(addr, "/push-manifest", "application/json", &body, timeout)? {
+        (200, answer) => {
+            let answer: ManifestAnswer = serde_json::from_str(&answer).map_err(Error::other)?;
+            Ok(Some(answer.missing))
+        }
+        // No such route, or it could not install what it holds: send everything.
+        _ => Ok(None),
+    }
+}
+
+/// Where the hashes of pushed files are remembered.
+fn push_hashes_path() -> Option<PathBuf> {
+    let dir = match std::env::var("FUNCTOR_ASSET_CACHE") {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => {
+            let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok()?;
+            Path::new(&home).join(".functor").join("cache")
+        }
+    };
+    Some(dir.join("push-hashes.json"))
+}
+
+/// Content hashes of pushed files, remembered by path, size and modified
+/// time so an unchanged file is hashed once.
+#[derive(Default)]
+struct PushHashes {
+    path: Option<PathBuf>,
+    /// Disk path → (size, modified ns, changed ns, sha256).
+    known: std::collections::BTreeMap<String, (u64, u128, i128, String)>,
+    changed: bool,
+}
+
+impl PushHashes {
+    fn load(path: Option<PathBuf>) -> PushHashes {
+        let known = path
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        PushHashes { path, known, changed: false }
+    }
+
+    fn of(&mut self, asset: &ProjectAssetFile) -> Result<String, Error> {
+        let key = asset.disk_path.to_string_lossy().to_string();
+        // The inode's change time moves on every write and cannot be set
+        // back, unlike the modified time (a copy that keeps it, a coarse
+        // filesystem clock).
+        #[cfg(unix)]
+        let changed = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::metadata(&asset.disk_path)?;
+            i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec())
+        };
+        #[cfg(not(unix))]
+        let changed = 0;
+        if let Some((len, modified, at, hash)) = self.known.get(&key) {
+            if (*len, *modified, *at) == (asset.len, asset.modified_ns, changed) {
+                return Ok(hash.clone());
+            }
+        }
+        let hash = functor_runtime_common::push_cache::sha256_hex(&std::fs::read(&asset.disk_path)?);
+        self.known.insert(key, (asset.len, asset.modified_ns, changed, hash.clone()));
+        self.changed = true;
+        Ok(hash)
+    }
+
+    /// Best effort: without it, files are hashed again next run.
+    fn save(&mut self) {
+        let Some(path) = self.path.as_ref().filter(|_| std::mem::take(&mut self.changed)) else { return };
+        if let (Some(dir), Ok(json)) = (path.parent(), serde_json::to_vec(&self.known)) {
+            // Whole or not at all: another `run vr` may read it meanwhile.
+            let partial = path.with_extension(format!("{}.partial", std::process::id()));
+            let _ = std::fs::create_dir_all(dir);
+            if std::fs::write(&partial, json).is_ok() {
+                let _ = std::fs::rename(&partial, path);
+            }
+        }
+    }
 }
 
 /// Caps on what `run vr` pushes into the headset's memory, in bytes
@@ -2282,6 +2394,7 @@ fn sync_project_assets(
     current: &[ProjectAssetFile],
     previous: Option<&[ProjectAssetFile]>,
     parts: bool,
+    manifests: bool,
 ) -> Result<AssetSyncReport, Error> {
     let mut report = AssetSyncReport::default();
     let unchanged = |asset: &ProjectAssetFile| {
@@ -2294,7 +2407,19 @@ fn sync_project_assets(
         })
     };
     // What this push will send, for the headset's progress.
-    let sending: Vec<&ProjectAssetFile> = current.iter().filter(|asset| !unchanged(asset)).collect();
+    let mut sending: Vec<&ProjectAssetFile> = current.iter().filter(|asset| !unchanged(asset)).collect();
+    // A headset that keeps pushed files by content is asked what it lacks.
+    if manifests && !sending.is_empty() {
+        let mut hashes = PushHashes::load(push_hashes_path());
+        let hashed: Vec<String> = sending.iter().map(|asset| hashes.of(asset)).collect::<Result<_, _>>()?;
+        hashes.save();
+        if let Some(missing) = post_push_manifest(addr, &sending, &hashed)? {
+            let all = sending.len();
+            let mut hashed = hashed.iter();
+            sending.retain(|_| hashed.next().is_some_and(|hash| missing.contains(hash)));
+            report.held = all - sending.len();
+        }
+    }
     let announce = format!(
         "push_files={}&push_bytes={}",
         sending.len(),
@@ -3173,11 +3298,9 @@ mod tests {
         assert!(bytes.len() < MAX_ASSET_BYTES);
         let envelope = encode_project_asset("models/big.glb", &bytes).unwrap();
         assert_eq!(
-            super::post_asset(&addr, &envelope, true, "push_files=3&push_bytes=99").unwrap(),
+            super::post_asset(&addr, &envelope, true, "").unwrap(),
             (200, "reloaded".into())
         );
-        // What the push said it will send reaches the runtime with its parts.
-        assert_eq!(functor_runtime_common::debug_http::push_announced(), Some((3, 99)));
         let asset = received.recv().unwrap();
         assert_eq!(asset.path, "models/big.glb");
         assert!(asset.bytes == bytes, "the parts make the whole file");
@@ -3185,12 +3308,108 @@ mod tests {
 
         let small = encode_project_asset("a.png", &[1, 2, 3]).unwrap();
         for parts in [true, false] {
-            let announce = format!("push_files=1&push_bytes={}", 3 + u64::from(parts));
-            assert_eq!(super::post_asset(&addr, &small, parts, &announce).unwrap().0, 200);
-            let announced = functor_runtime_common::debug_http::push_announced();
-            assert_eq!(announced, Some((1, 3 + u64::from(parts))));
+            assert_eq!(super::post_asset(&addr, &small, parts, "").unwrap().0, 200);
             assert_eq!(received.recv().unwrap().bytes, vec![1, 2, 3]);
         }
+    }
+
+    /// A headset with a pushed-file cache is sent only what it lacks: all of
+    /// a first push, none of a repeat (it installs its own copies), one file
+    /// after an edit; a runtime without manifests gets everything; and an
+    /// upload that is not the bytes its manifest named is not kept.
+    #[test]
+    fn a_push_sends_only_what_the_headset_lacks() {
+        use functor_runtime_common::debug_protocol::{encode_project_asset, DebugRequest};
+        use functor_runtime_common::push_cache;
+        let store = tempfile::tempdir().unwrap();
+        push_cache::install(&store.path().join("push"), 1 << 20);
+        let (bound, rx) = functor_runtime_common::debug_http::spawn(("127.0.0.1", 0)).unwrap();
+        let (got, installed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for request in rx {
+                match request {
+                    DebugRequest::ReloadAsset(asset, response) => {
+                        let _ = got.send(asset.path);
+                        let _ = response.send(Ok("reloaded".into()));
+                    }
+                    DebugRequest::SyncAssets(_, response) => {
+                        let _ = response.send(Ok("synced".into()));
+                    }
+                    _ => panic!("unexpected request"),
+                }
+            }
+        });
+        let addr = bound.to_string();
+        let project = tempfile::tempdir().unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let disk_path = project.path().join(name);
+            std::fs::write(&disk_path, bytes).unwrap();
+            let modified_ns = std::fs::metadata(&disk_path).unwrap().modified().unwrap();
+            let modified_ns = modified_ns.duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            super::ProjectAssetFile { locator: name.into(), disk_path, len: bytes.len() as u64, modified_ns }
+        };
+        let hashes = tempfile::tempdir().unwrap();
+        std::env::set_var("FUNCTOR_ASSET_CACHE", hashes.path());
+        let files = vec![file("fish.glb", &[7u8; 4096]), file("game.fun", b"let init = 0")];
+        let installs = || installed.try_iter().collect::<Vec<String>>();
+        // (The only test that reads the process's push in flight.)
+        let announced = || {
+            functor_runtime_common::debug_http::push_announced()
+                .map(|push| (push.files, push.bytes, push.held_bytes, push.from_manifest))
+        };
+
+        // A sender's own totals reach the runtime, whole and in parts.
+        let big = encode_project_asset("big.bin", &vec![1u8; super::ASSET_PART_BYTES + 9]).unwrap();
+        assert_eq!(super::post_asset(&addr, &big, true, "push_files=3&push_bytes=99").unwrap().0, 200);
+        assert_eq!(announced(), Some((3, 99, 0, false)));
+        let small = encode_project_asset("small.bin", &[1, 2, 3]).unwrap();
+        assert_eq!(super::post_asset(&addr, &small, false, "push_files=1&push_bytes=3").unwrap().0, 200);
+        assert_eq!(announced(), Some((1, 3, 0, false)));
+        assert_eq!(installs(), ["big.bin", "small.bin"]);
+
+        let first = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
+        assert_eq!((first.files, first.held), (2, 0));
+        assert_eq!(first.synced("project"), "synced 2 project file(s) (0.0 MB) to the headset");
+        assert_eq!(installs(), ["fish.glb", "game.fun"]);
+
+        push_cache::installed().unwrap().settle();
+        // The same project again: nothing crosses, and the headset still
+        // installs both from what it holds.
+        let again = super::sync_project_assets(&addr, &files, None, true, true).unwrap();
+        assert_eq!(announced(), None, "a finished push announces nothing");
+        assert_eq!((again.files, again.bytes, again.held), (0, 0, 2));
+        assert_eq!(again.synced("project"), "synced 0 project file(s) (0.0 MB) to the headset; it already had 2");
+        assert_eq!(installs(), ["fish.glb", "game.fun"]);
+
+        // One file edited: one file sent.
+        let edited = vec![files[0].clone(), file("game.fun", b"let init = 1")];
+        let edit = super::sync_project_assets(&addr, &edited, None, true, true).unwrap();
+        assert_eq!((edit.files, edit.held), (1, 1));
+
+        // A runtime without manifests is sent everything.
+        let old = super::sync_project_assets(&addr, &edited, None, true, false).unwrap();
+        assert_eq!((old.files, old.held), (2, 0));
+
+        // Bytes that are not the ones the manifest named are refused.
+        let named = [&edited[0]];
+        let wrong = [push_cache::sha256_hex(b"something else")];
+        assert_eq!(super::post_push_manifest(&addr, &named, &wrong).unwrap(), Some(wrong.to_vec()));
+        // The device counted what that push will send; the sender's own count does not replace it.
+        assert_eq!(announced(), Some((1, 4096, 0, true)));
+        let envelope = encode_project_asset("fish.glb", &[7u8; 4096]).unwrap();
+        assert_eq!(super::post_asset(&addr, &envelope, true, "").unwrap().0, 200);
+        let cache = push_cache::installed().unwrap();
+        cache.settle();
+        assert!(cache.get(&wrong[0], 4096).is_none(), "not kept under a hash it does not have");
+
+        // Hashes are remembered by path, size and modified time.
+        let mut known = super::PushHashes::load(super::push_hashes_path());
+        assert_eq!(known.of(&files[0]).unwrap(), push_cache::sha256_hex(&[7u8; 4096]));
+        assert!(!known.changed, "an unchanged file is not read again");
+        let touched = super::ProjectAssetFile { modified_ns: files[0].modified_ns + 1, ..files[0].clone() };
+        known.of(&touched).unwrap();
+        assert!(known.changed);
+        std::env::remove_var("FUNCTOR_ASSET_CACHE");
     }
 
     #[test]
