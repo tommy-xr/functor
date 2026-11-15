@@ -1350,14 +1350,7 @@ fn transparent_pass<'a>(
             .material
             .map(|description| description.get(&context, scene_context));
         // Text under the deferred node takes the colour and facing around it.
-        let text = crate::scene3d::TextState {
-            color: draw
-                .material
-                .and_then(|m| m.constant_color())
-                .unwrap_or(crate::scene3d::TextState::ROOT.color),
-            facing: draw.facing,
-        };
-        let outer = scene_context.replace_text_state(text);
+        let outer = scene_context.replace_text_state(draw.text);
         Scene3D::render(
             draw.node,
             &context,

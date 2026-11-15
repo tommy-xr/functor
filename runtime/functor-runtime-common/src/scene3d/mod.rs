@@ -3137,8 +3137,9 @@ pub struct TransparentDraw<'a> {
     pub material: Option<&'a MaterialDescription>,
     /// World-space sort key; see [`Scene3D::leaf_centroid`].
     pub centroid: cgmath::Vector3<f32>,
-    /// Whether a `Scene.facing` encloses the node, for its text.
-    pub facing: bool,
+    /// The colour and facing its text takes from the nodes above it (a
+    /// textured material in between keeps an outer `Scene.color`).
+    pub(crate) text: TextState,
 }
 
 /// What a text leaf takes from the nodes above it.
@@ -3647,14 +3648,14 @@ impl Scene3D {
         material: Option<&'a MaterialDescription>,
         out: &mut Vec<TransparentDraw<'a>>,
     ) {
-        self.collect_transparent_in(world, material, false, out)
+        self.collect_transparent_in(world, material, TextState::ROOT, out)
     }
 
     fn collect_transparent_in<'a>(
         &'a self,
         world: &Matrix4<f32>,
         material: Option<&'a MaterialDescription>,
-        facing: bool,
+        text: TextState,
         out: &mut Vec<TransparentDraw<'a>>,
     ) {
         match self.obj.resolved() {
@@ -3665,7 +3666,7 @@ impl Scene3D {
                     parent_world: *world,
                     material,
                     centroid,
-                    facing,
+                    text,
                 });
             }
             SceneObject::Group(items)
@@ -3673,21 +3674,22 @@ impl Scene3D {
             | SceneObject::CastShadows(_, items) => {
                 let w = world * self.xform;
                 for item in items {
-                    item.collect_transparent_in(&w, material, facing, out);
+                    item.collect_transparent_in(&w, material, text, out);
                 }
             }
             SceneObject::Facing(items) => {
                 let w = world * self.xform;
                 for item in items {
-                    item.collect_transparent_in(&w, material, true, out);
+                    item.collect_transparent_in(&w, material, TextState { facing: true, ..text }, out);
                 }
             }
             // A `Material` node's own `xform` is ignored by `Scene3D::render`
             // (see `accumulate_leaf_origins`), so it must be ignored here too.
             SceneObject::Material(next_material, _) if next_material.blend_mode().is_some() => {}
             SceneObject::Material(next_material, items) => {
+                let color = next_material.constant_color().unwrap_or(text.color);
                 for item in items {
-                    item.collect_transparent_in(world, Some(next_material), facing, out);
+                    item.collect_transparent_in(world, Some(next_material), TextState { color, ..text }, out);
                 }
             }
             SceneObject::Geometry(_)
@@ -5367,6 +5369,23 @@ mod opacity_tests {
         let mut draws = Vec::new();
         scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
         assert!(draws.is_empty());
+    }
+
+    #[test]
+    fn deferred_text_keeps_an_outer_colour_through_a_texture() {
+        let material = |m: MaterialDescription, child: Scene3D| Scene3D {
+            obj: SceneObject::Material(m, vec![child]),
+            xform: Matrix4::identity(),
+        };
+        let text = Scene3D::text("a", text_layout::TextLayout::LABEL);
+        let textured = MaterialDescription::Texture(TextureDescription::File("t.png".into()));
+        let scene = material(
+            MaterialDescription::color(1.0, 0.0, 0.0, 1.0),
+            material(textured, opacity(0.5, text)),
+        );
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        assert_eq!(draws[0].text.color, cgmath::vec4(1.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
