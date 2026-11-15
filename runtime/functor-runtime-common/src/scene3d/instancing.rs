@@ -476,7 +476,10 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     Shape::Quad => InstancedPrimitive::Quad,
                     Shape::Billboard => InstancedPrimitive::Billboard,
                     Shape::Plane => InstancedPrimitive::Plane,
-                    Shape::Heightmap { .. } | Shape::ConvexPolygon { .. } | Shape::Mesh { .. } => {
+                    Shape::Heightmap { .. }
+                    | Shape::ConvexPolygon { .. }
+                    | Shape::Mesh { .. }
+                    | Shape::Text { .. } => {
                         return None
                     }
                 };
@@ -581,6 +584,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
                 Shape::Heightmap { .. } => "heightmap",
                 Shape::ConvexPolygon { .. } => "polygon",
                 Shape::Mesh { .. } => "mesh",
+                Shape::Text { .. } => "text",
             }),
             SceneObject::Model(model) => {
                 out.push_str("model(");

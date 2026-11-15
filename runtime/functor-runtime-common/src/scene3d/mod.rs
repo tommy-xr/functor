@@ -47,6 +47,9 @@ mod material_description;
 mod model_description;
 mod terrain_materials;
 mod texture_description;
+pub mod text_layout;
+mod text_renderer;
+pub use text_renderer::{build_vertices as build_text_vertices, TextDraw};
 
 pub use cull::{Aabb, MeshBounds};
 pub use instance_raycast::{raycast_instances, BoxHit};
@@ -86,6 +89,12 @@ pub struct SceneContext {
     // Lazily created: scenes without `Scene.instanced` allocate no instancing
     // GPU resources and take no instancing branch.
     instanced: RefCell<Option<InstancedRenderer>>,
+    /// `Scene.text` leaves the walk queued this pass, drawn as one batch
+    /// after the transparent pass (`draw_texts`); the renderer is lazy.
+    texts: RefCell<Vec<TextDraw>>,
+    text_renderer: RefCell<Option<text_renderer::TextRenderer>>,
+    /// The enclosing material's colour for text leaves (sRGB, as authored).
+    text_color: std::cell::Cell<cgmath::Vector4<f32>>,
     // One persistent mesh per grid size. Animated terrain (heights change every
     // frame) re-uploads its vertex buffer in place instead of rebuilding a fresh
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
@@ -912,6 +921,9 @@ impl SceneContext {
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
             instanced: RefCell::new(None),
+            texts: RefCell::new(Vec::new()),
+            text_renderer: RefCell::new(None),
+            text_color: std::cell::Cell::new(cgmath::vec4(1.0, 1.0, 1.0, 1.0)),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
@@ -2309,6 +2321,37 @@ skybox disabled for this set",
         }
     }
 
+    /// Draw (and clear) the text leaves this pass queued, in one batch.
+    pub fn draw_texts(
+        &self,
+        render_context: &RenderContext,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        let mut texts = self.texts.borrow_mut();
+        if texts.is_empty() {
+            return;
+        }
+        let mut renderer = self.text_renderer.borrow_mut();
+        renderer
+            .get_or_insert_with(|| {
+                text_renderer::TextRenderer::new(render_context.gl, &render_context.shader_version)
+            })
+            .draw(render_context, &mut texts, projection_matrix, view_matrix);
+        texts.clear();
+    }
+
+    /// Forget queued text leaves without drawing them (a pass that draws no
+    /// text, such as the transparent-debug view).
+    pub fn discard_texts(&self) {
+        self.texts.borrow_mut().clear();
+    }
+
+    /// The colour text leaves take until a material inside sets its own.
+    pub(crate) fn set_text_color(&self, color: cgmath::Vector4<f32>) {
+        self.text_color.set(color);
+    }
+
     /// Draw `desc`'s skybox: right after the pass's clear, before
     /// `Scene3D::render`. The unit cube is drawn from the inside (this
     /// engine never enables face culling), glued to the camera by a
@@ -2782,6 +2825,16 @@ pub enum Shape {
     /// every frame neither copies the triangles nor re-uploads them: the
     /// renderer keeps one GPU mesh per live `Arc`.
     Mesh { mesh: Arc<MeshData> },
+    /// `Scene.text`: `text` set in the Inter MSDF atlas by `layout`, one
+    /// line box tall per line, in the XY plane reading from +Z — or, when
+    /// `facing` (`Scene.facing`), turned to the pass's camera like
+    /// [`Shape::Billboard`]. Drawn after the opaque scene in one blended
+    /// batch; it casts no shadow.
+    Text {
+        text: String,
+        layout: text_layout::TextLayout,
+        facing: bool,
+    },
 }
 
 // The unit primitives' local bounds (see `geometry`). The cylinder fits
@@ -3102,6 +3155,25 @@ pub struct TransparentDraw<'a> {
 /// `Scene.rotateZ` spin the quad in the screen plane, exactly like the
 /// hardware instanced path, which rotates the vertex before mapping it onto
 /// the camera axes. Pure — the testable core of billboard placement.
+/// A facing text leaf's placement: its origin where `acc` puts it, its axes
+/// the view's right, up and back, each scaled as `acc` scales it — so no
+/// rotation above it (a turning unit) can turn it away from the camera.
+fn facing_xform(acc: &Matrix4<f32>, view_matrix: &Matrix4<f32>) -> Matrix4<f32> {
+    use cgmath::InnerSpace;
+    let view_rotation_inverse = cgmath::Matrix3::from_cols(
+        view_matrix.x.truncate(),
+        view_matrix.y.truncate(),
+        view_matrix.z.truncate(),
+    )
+    .transpose();
+    let scale = cgmath::Matrix3::from_diagonal(cgmath::vec3(
+        acc.x.truncate().magnitude(),
+        acc.y.truncate().magnitude(),
+        acc.z.truncate().magnitude(),
+    ));
+    Matrix4::from_translation(acc.w.truncate()) * Matrix4::from(view_rotation_inverse * scale)
+}
+
 pub(crate) fn billboard_xform(
     acc: &Matrix4<f32>,
     view_matrix: &Matrix4<f32>,
@@ -3239,6 +3311,45 @@ impl Scene3D {
             obj: SceneObject::Geometry(Shape::Plane),
             xform: Matrix4::identity(),
         }
+    }
+
+    /// `Scene.text` / `Scene.textBlock` — see [`Shape::Text`].
+    pub fn text(text: impl Into<String>, layout: text_layout::TextLayout) -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Text {
+                text: text.into(),
+                layout,
+                facing: false,
+            }),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    /// `Scene.facing`: every text leaf in the subtree turns to the camera.
+    pub fn facing(self) -> Self {
+        let map = |items: Vec<Scene3D>| items.into_iter().map(Scene3D::facing).collect();
+        let obj = match self.obj.into_resolved() {
+            SceneObject::Geometry(Shape::Text { text, layout, .. }) => {
+                SceneObject::Geometry(Shape::Text {
+                    text,
+                    layout,
+                    facing: true,
+                })
+            }
+            SceneObject::Material(material, items) => SceneObject::Material(material, map(items)),
+            SceneObject::Group(items) => SceneObject::Group(map(items)),
+            SceneObject::Opacity(alpha, items) => SceneObject::Opacity(alpha, map(items)),
+            SceneObject::Cells(node, items) => SceneObject::Cells(node, map(items)),
+            SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(casts, map(items)),
+            SceneObject::Resident(items) => SceneObject::Resident(map(items)),
+            SceneObject::Instanced { template, instances } => SceneObject::Instanced {
+                template: Box::new(template.facing()),
+                instances,
+            },
+            leaf @ (SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)) => leaf,
+            SceneObject::Shared(_) => unreachable!("resolved"),
+        };
+        Scene3D { obj, ..self }
     }
 
     /// `Scene.billboard`: a camera-facing unit quad — see [`Shape::Billboard`].
@@ -3936,6 +4047,10 @@ impl Scene3D {
                     }
                 }
                 let material = material_description.get(render_context, scene_context);
+                let outer_text_color = scene_context.text_color.get();
+                if let Some(color) = material_description.constant_color() {
+                    scene_context.text_color.set(color);
+                }
                 // The 3D forward pass is otherwise fully opaque — every shader
                 // already writes an alpha, but nothing blends it. A material
                 // whose constant color is translucent switches blending on for
@@ -4012,6 +4127,7 @@ impl Scene3D {
                 if let Some(resident) = hidden_blend {
                     scene_context.resident_only.set(resident);
                 }
+                scene_context.text_color.set(outer_text_color);
             }
 
             SceneObject::Group(items) => {
@@ -4561,6 +4677,26 @@ leaf under transforms)"
                 };
                 mesh.update(&render_context.gl, heights);
                 mesh.draw(&render_context.gl);
+            }
+            // Queued for the pass's text batch, which draws after the blend
+            // passes: no shadow. Inside a blend material it is queued once,
+            // by that material's own pass.
+            SceneObject::Geometry(Shape::Text {
+                text,
+                layout,
+                facing,
+            }) => {
+                if depth_pass {
+                    return;
+                }
+                let acc = world_matrix * self.xform;
+                let xform = if *facing { facing_xform(&acc, view_matrix) } else { acc };
+                let color = crate::color_space::srgb_to_linear_vec4(scene_context.text_color.get());
+                scene_context.texts.borrow_mut().push(TextDraw {
+                    quads: text_layout::layout(text, *layout),
+                    xform,
+                    color: color.into(),
+                });
             }
             SceneObject::Geometry(Shape::Mesh { mesh }) => {
                 let xform = world_matrix * self.xform;

@@ -1188,6 +1188,18 @@ tap): textured instanced boxes of any size, tinted per instance.
 instanced node instead. `Scene.equals` compares instanced nodes structurally
 (template + every instance's channels).
 
+**Text in the world is `Scene.text(string)`** — a centred leaf in the XY plane
+reading from +Z, each line one unit tall, lines 1.25 apart; `\n` breaks lines.
+`Scene.textBlock(width, lines, string)` wraps to `width` (in line heights),
+left-aligned, the last kept line cut with `…`. Size with `Scene.scale`,
+colour with the enclosing `Scene.color`/`emissive`/`lit` (text is always
+unlit; white with none), and `Scene.facing(scene)` turns every text leaf in a
+subtree to the camera (per eye, whatever rotates above it). Inter from one MSDF atlas: sharp near, far
+and at glancing angles; Latin-1 plus quotes/dashes/`…`/arrows, anything else a
+box. All text in a pass draws in ONE blended batch after the opaque, blend
+and `Scene.opacity` passes, far labels first: depth-tested, writes no depth,
+no shadow, no fog, ignores `Scene.opacity`'s alpha. Layout is cached by content, so static labels lay out once.
+
 **Keep instance lists in the model (or otherwise reuse the same list value)
 and the renderer uploads them once.** Build a static list — trees, rocks,
 props — once in `init` and pass `model.trees` to `Scene.instanced` from

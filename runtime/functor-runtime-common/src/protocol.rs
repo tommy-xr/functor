@@ -112,6 +112,8 @@
 /// Also: instance paints — `paints` on the `Instanced` node
 /// (`Scene.instancedPaint`: `{tint, glow}` per copy) and `glow` on a `Lit`
 /// material, both omitted when absent, so other frames keep their shape.
+/// Also: scene text — the `Shape::Text` variant (`Scene.text`,
+/// `Scene.textBlock`, `Scene.facing`), emitted only by them.
 ///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
