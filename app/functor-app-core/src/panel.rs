@@ -17,9 +17,9 @@ use crate::tasks::{Item, Task, TaskStatus};
 pub const TASKS: usize = 6;
 pub const NOTES: usize = 3;
 /// The conversation's latest items a panel carries, and bytes of each
-/// one's text (longer is cut, and marked).
+/// one's text (longer is cut, and marked): the link's limits.
 pub const SAID: usize = 12;
-pub const SAID_BYTES: usize = 600;
+pub const SAID_BYTES: usize = 4000;
 /// Least time between two panels sent to one headset (streaming agent text
 /// changes it many times a second); a newer one waits for the next update
 /// past it (the link's tick comes every second), and the latest wins.

@@ -234,7 +234,7 @@ pub struct Panel {
     /// all the task's items, so new items do not move it) and a line within
     /// it; `None` follows the newest.
     scroll: Option<(u32, usize)>,
-    /// Long agent messages shown whole.
+    /// Long agent messages shown whole (A), from the top of the one opened.
     expanded: bool,
     /// How many of its lines fit, as last drawn.
     shown: Cell<usize>,
@@ -242,8 +242,10 @@ pub struct Panel {
 
 /// Lines a stick push scrolls the conversation.
 const SCROLL: usize = 3;
-/// An agent message's lines before "more".
+/// An agent message's lines before "A  Show all"; its most lines shown
+/// whole (the desktop sends at most 4000 bytes of it, about 70 lines).
 const AGENT_LINES: usize = 6;
+const WHOLE_LINES: usize = 200;
 
 /// A stick axis as one press per push: past 0.6 fires once, back under 0.3
 /// re-arms.
@@ -423,19 +425,36 @@ impl Panel {
         None
     }
 
-    /// On the conversation page: B goes back, A shows long messages whole
-    /// or cut, the stick scrolls; scrolled to the end it follows again.
+    /// On the conversation page: B goes back; A shows long messages whole,
+    /// from the top of the newest one begun in view, and again cuts them,
+    /// back at the newest; the stick scrolls, and scrolled to the end it
+    /// follows again.
     fn scroll_step(&mut self, data: Option<&PanelData>, id: u64, a: bool, b: bool, y: i8) {
         if b {
             self.conversation = None;
             self.scroll = None;
             return;
         }
-        self.expanded ^= a;
         let conv = data.and_then(|d| d.conversation.as_ref());
-        let Some(c) = conv.filter(|c| c.task == id).filter(|_| y != 0) else {
+        let Some(c) = conv.filter(|c| c.task == id) else {
             return;
         };
+        if a && (self.expanded || has_more(c)) {
+            let opened = (!self.expanded).then(|| self.long_in_view(c)).flatten();
+            self.expanded = !self.expanded;
+            let lines = conversation_lines(c, self.expanded);
+            self.scroll = opened.and_then(|item| {
+                let start = lines.iter().position(|l| l.3 == item)?;
+                // At its header, past the blank above it.
+                let offset = usize::from(lines[start].0.is_empty());
+                // It and all after it fit: keep following the newest.
+                (start + offset + self.shown.get().max(1) < lines.len()).then_some((item, offset))
+            });
+            return;
+        }
+        if y == 0 {
+            return;
+        }
         let lines = conversation_lines(c, self.expanded);
         let shown = self.shown.get().max(1);
         let top = self.top(&lines, shown);
@@ -450,6 +469,23 @@ impl Panel {
                 top - lines.iter().position(|l| l.3 == item).unwrap_or(top),
             )
         });
+    }
+
+    /// The newest long agent message (its item index) begun in view or
+    /// above it, else the newest long one.
+    fn long_in_view(&self, c: &ConversationData) -> Option<u32> {
+        let lines = conversation_lines(c, false);
+        let shown = self.shown.get().max(1);
+        let end = (self.top(&lines, shown) + shown).min(lines.len());
+        let long_item = |item: u32| {
+            let at = item.checked_sub(c.first)? as usize;
+            let said = c.items.get(at)?;
+            let shown = said.role == Role::Agent && Some(at) != asked(c);
+            (shown && long(&said.text)).then_some(item)
+        };
+        // Newest first, among the lines down to the view's end.
+        let newest = |lines: &[Laid]| lines.iter().rev().find_map(|l| long_item(l.3));
+        newest(&lines[..end]).or_else(|| newest(&lines))
     }
 
     /// The conversation's first line in view: the scroll's place, or the
@@ -1115,7 +1151,7 @@ impl Panel {
         toast: Option<&VoiceToast>,
         bottom: f32,
     ) -> Option<&'static str> {
-        let hint = Some("Stick scroll  A more  B back  Hold stick: talk");
+        let mut hint = Some("Stick scroll   B back   Hold stick: talk");
         let Some(c) = data.conversation.as_ref().filter(|c| c.task == id) else {
             col.line("CONVERSATION", SMALL, FAINT);
             col.para("Waiting for the desktop to send it...", BODY, MUTED, 2);
@@ -1123,11 +1159,11 @@ impl Panel {
         };
         col.line(&c.title, TITLE, TEXT);
         col.line(stance_word(c.stance), SMALL, stance_color(c.stance));
-        let asked = c.items.iter().rev().find(|i| i.role == Role::Agent);
-        if let Some(q) = asked.filter(|_| c.question) {
+        if let Some(q) = asked(c).map(|i| &c.items[i]) {
             col.gap(0.004);
             col.line("THE AGENT ASKS", SMALL, WARN);
-            col.para(&q.text, BODY, WARN, 3);
+            let most = if self.expanded { ASKED_WHOLE } else { ASKED_LINES };
+            col.para(&q.text, BODY, WARN, most);
             col.line("Hold the right stick to answer", SMALL, TEXT);
         }
         col.gap(0.006);
@@ -1153,6 +1189,13 @@ impl Panel {
         }
         let floor = bottom + SMALL * 1.6 + tail.iter().map(|l| advance(l.1)).sum::<f32>();
         let lines = conversation_lines(c, self.expanded);
+        // From the lines just laid out: has_more's cost, every frame, saved.
+        let cut = lines.iter().any(|l| l.0.starts_with(SHOW_ALL)) || asked_long(c);
+        if self.expanded {
+            hint = Some("Stick scroll   A shorten   B back   Hold stick: talk");
+        } else if cut {
+            hint = Some("Stick scroll   A show all   B back   Hold stick: talk");
+        }
         let room = col.y - floor;
         // How many lines fit from `from`, walking `lines` in `order`.
         let fit = |order: &mut dyn Iterator<Item = &Laid>| {
@@ -1245,10 +1288,7 @@ fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
         let earlier = "Earlier messages are on the desktop.".into();
         out.push((earlier, SMALL, FAINT, c.first));
     }
-    let asked = c
-        .question
-        .then(|| c.items.iter().rposition(|i| i.role == Role::Agent))
-        .flatten();
+    let asked = asked(c);
     for (i, item) in c.items.iter().enumerate() {
         if Some(i) == asked {
             continue;
@@ -1274,16 +1314,18 @@ fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
             }
             Role::Agent => {
                 push("AGENT".into(), SMALL, FAINT);
-                let lines = wrap(text, BODY, CONTENT_W, 40);
+                let lines = agent_lines(text);
+                let more = lines.len().saturating_sub(AGENT_LINES);
                 let shown = if expanded { lines.len() } else { AGENT_LINES };
-                let more = lines.len() > shown;
-                for l in lines.into_iter().take(shown) {
-                    push(l, BODY, TEXT);
+                for l in lines.iter().take(shown) {
+                    push(l.clone(), BODY, TEXT);
                 }
-                if more {
-                    push("... more (A)".into(), SMALL, FAINT);
-                } else if item.cut {
-                    push("... the rest is on the desktop".into(), SMALL, FAINT);
+                if more > 0 && !expanded {
+                    let s = if more == 1 { "" } else { "s" };
+                    push(format!("{SHOW_ALL} ({more} more line{s})"), SMALL, FAINT);
+                } else if item.cut && (expanded || more == 0) {
+                    let rest = "The rest is on the desktop: too long for the headset";
+                    push(rest.into(), SMALL, FAINT);
                 }
             }
             Role::App => {
@@ -1294,6 +1336,43 @@ fn conversation_lines(c: &ConversationData, expanded: bool) -> Vec<Laid> {
         }
     }
     out
+}
+
+/// An agent message's lines, to [`WHOLE_LINES`].
+fn agent_lines(text: &str) -> Vec<String> {
+    wrap(text, BODY, CONTENT_W, WHOLE_LINES)
+}
+
+/// An agent message longer than [`AGENT_LINES`].
+fn long(text: &str) -> bool {
+    agent_lines(text).len() > AGENT_LINES
+}
+
+/// The marker under a cut agent message.
+const SHOW_ALL: &str = "A  Show all";
+/// Lines of the question the agent waits on, cut and whole.
+const ASKED_LINES: usize = 3;
+const ASKED_WHOLE: usize = 12;
+
+/// The question the agent waits on: its newest message, as an index into
+/// `c.items`.
+fn asked(c: &ConversationData) -> Option<usize> {
+    c.question
+        .then(|| c.items.iter().rposition(|i| i.role == Role::Agent))
+        .flatten()
+}
+
+/// The question is longer than [`ASKED_LINES`].
+fn asked_long(c: &ConversationData) -> bool {
+    asked(c).is_some_and(|i| wrap(&c.items[i].text, BODY, CONTENT_W, ASKED_WHOLE).len() > ASKED_LINES)
+}
+
+/// Whether A has something to show whole: a long agent message, or a long
+/// question.
+fn has_more(c: &ConversationData) -> bool {
+    let asked = asked(c);
+    let long_said = |(i, s): (usize, &SaidLine)| s.role == Role::Agent && Some(i) != asked && long(&s.text);
+    c.items.iter().enumerate().any(long_said) || asked_long(c)
 }
 
 /// "Approve at a glance" or "look into this", and why.
@@ -1596,8 +1675,6 @@ mod tests {
             text: "new".into(),
         });
         assert_eq!(first_line(&p, &d), held);
-        press(&mut p, &d, P::A);
-        assert!(p.expanded, "A shows long messages whole");
         // Down to the end: it follows again.
         for _ in 0..20 {
             press(&mut p, &d, P::Down);
@@ -1655,7 +1732,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{t}: {texts:?}"))
         };
         assert!(at("THE AGENT ASKS") < at("AGENT"), "asked first");
-        assert!(texts.contains(&"... more (A)"));
+        assert!(texts.iter().any(|t| t.starts_with("A  Show all (")), "{texts:?}");
         // The request's step (D43) at the bottom; without one, the work.
         assert!(texts.contains(&"AGENT  working: editing game.fun"));
         d.progress = None;
@@ -1673,7 +1750,145 @@ mod tests {
         let lines = conversation_lines(d.conversation.as_ref().unwrap(), true);
         assert!(lines
             .iter()
-            .any(|l| l.0 == "... the rest is on the desktop"));
+            .any(|l| l.0 == "The rest is on the desktop: too long for the headset"));
+    }
+
+    #[test]
+    fn a_shows_a_long_message_whole_from_its_top_and_the_stick_reads_to_its_end() {
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        let long = (1..=40)
+            .map(|i| format!("Sentence {i} of the long answer."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for text in [long.as_str(), "Short reply."] {
+            c.items.push(SaidLine {
+                role: Role::Agent,
+                spoken: false,
+                cut: false,
+                text: text.into(),
+            });
+        }
+        let item = c.first + c.items.len() as u32 - 2;
+        let whole = agent_lines(&long);
+        assert!(whole.len() > 2 * AGENT_LINES, "{}", whole.len());
+        let connected = Connection::Connected {
+            desktop: "Mac".into(),
+        };
+        // As drawn (which also tells the panel how many lines fit).
+        let texts = |p: &Panel, d: &PanelData| -> Vec<String> {
+            (p.shapes(Some(d), &connected, None, Instant::now()).into_iter())
+                .filter_map(|s| match s {
+                    Shape::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        let shown = texts(&p, &d);
+        assert!(shown.iter().any(|t| t.starts_with("A  Show all (")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("A show all")), "the hint says so");
+
+        // A: every line of it, from its top.
+        press(&mut p, &d, P::A);
+        assert!(p.expanded && p.scroll.map(|s| s.0) == Some(item));
+        let shown = texts(&p, &d);
+        assert!(shown.contains(&whole[0]) && shown.iter().any(|t| t.contains("A shorten")));
+        assert!(!shown.iter().any(|t| t.starts_with("A  Show all")));
+        // The stick reads on to its last line, then follows again.
+        let mut last = false;
+        for _ in 0..whole.len() {
+            press(&mut p, &d, P::Down);
+            last |= texts(&p, &d).contains(whole.last().unwrap());
+        }
+        assert!(last && p.debug(Some(&d), None).following);
+        // A again: cut, at the newest; B: back.
+        press(&mut p, &d, P::A);
+        assert!(!p.expanded && p.scroll.is_none());
+        press(&mut p, &d, P::B);
+        assert_eq!(p.conversation, None);
+
+        // Nothing long: A does nothing, and the hint does not offer it.
+        let mut short = data();
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &short, P::A);
+        press(&mut p, &short, P::A);
+        press(&mut p, &short, P::A);
+        assert!(!p.expanded);
+        assert!(!texts(&p, &short).iter().any(|t| t.contains("A s")));
+        short.conversation.as_mut().unwrap().items.clear();
+        press(&mut p, &short, P::A);
+        assert!(!p.expanded, "an empty conversation has nothing to open");
+    }
+
+    #[test]
+    fn a_opens_the_long_message_begun_in_view_and_a_long_question_whole() {
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        let long = |tag: &str| (1..=90).map(|i| format!("{tag} {i}.")).collect::<Vec<_>>().join(" ");
+        for text in [long("Older"), "Short.".into(), long("Newer"), "Short again.".into()] {
+            c.items.push(SaidLine {
+                role: Role::Agent,
+                spoken: false,
+                cut: false,
+                text,
+            });
+        }
+        let (older, newer) = (c.first + c.items.len() as u32 - 4, c.first + c.items.len() as u32 - 2);
+        let connected = Connection::Connected {
+            desktop: "Mac".into(),
+        };
+        let draw = |p: &Panel, d: &PanelData| p.shapes(Some(d), &connected, None, Instant::now());
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        // Up until the newer message has not begun in view.
+        let lines = conversation_lines(d.conversation.as_ref().unwrap(), false);
+        let newer_at = lines.iter().position(|l| l.3 == newer).unwrap();
+        for _ in 0..lines.len() {
+            draw(&p, &d);
+            let shown = p.shown.get();
+            if p.top(&lines, shown) + shown <= newer_at {
+                break;
+            }
+            press(&mut p, &d, P::Up);
+        }
+        press(&mut p, &d, P::A);
+        assert_eq!(p.scroll.map(|s| s.0), Some(older), "the one begun in view");
+
+        // A long question: A shows it whole, where it is.
+        let mut d = data();
+        let c = d.conversation.as_mut().unwrap();
+        c.question = true;
+        c.items.push(SaidLine {
+            role: Role::Agent,
+            spoken: false,
+            cut: false,
+            text: long("Which"),
+        });
+        let question = wrap(&long("Which"), BODY, CONTENT_W, ASKED_WHOLE);
+        assert!(question.len() > ASKED_LINES);
+        let texts = |p: &Panel, d: &PanelData| -> Vec<String> {
+            (draw(p, d).into_iter())
+                .filter_map(|s| match s {
+                    Shape::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut p = Panel::default();
+        p.toggle();
+        press(&mut p, &d, P::A);
+        press(&mut p, &d, P::A);
+        let before = texts(&p, &d);
+        assert!(before.iter().any(|t| t.contains("A show all")) && !before.contains(&question[ASKED_LINES]));
+        press(&mut p, &d, P::A);
+        assert!(p.expanded && texts(&p, &d).contains(&question[ASKED_LINES]));
     }
 
     #[test]
