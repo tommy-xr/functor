@@ -3,7 +3,7 @@
 // (its input rules are `game-input.ts`).
 
 import type { Device, Mirror, Session, Transport } from "./generated/protocol";
-import { fixFor, WORDS } from "./devices-model.ts";
+import { fixFor, loading, WORDS } from "./devices-model.ts";
 
 export type Size = { w: number; h: number };
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -70,6 +70,13 @@ export function sessionPill(headset: Device | null | undefined, onHeadset: boole
   if (onHeadset && (kind === "running" || kind === "starting") && state && state !== "connected") {
     return { text: `${where} · ${WORDS[state].toLowerCase()}`, word: state };
   }
+  // What the headset is loading, in a word (and how far, when it says).
+  const load = onHeadset && headset?.state.state === "connected" ? loading(headset.state.loading) : null;
+  if (load && kind !== "stopped") {
+    const percent = /\((\d+%)\)/.exec(load[1])?.[1];
+    const doing = load[0] === "Sending to headset" ? "sending" : load[0].toLowerCase();
+    return { text: `${where} · ${doing}${percent ? ` ${percent}` : ""}`, word: kind };
+  }
   return { text: `${where} · ${kind}`, word: kind };
 }
 
@@ -100,6 +107,12 @@ export function headsetNote(device: Device | null, session: Session | null, tran
           : "The game starts there when the headset reconnects.",
       fix: fixFor(device),
     };
+  }
+  // What the headset says it is doing: sending, starting, loading assets, a failure.
+  const load = loading(device.state.loading);
+  if (load) {
+    const title = load[0] === "Sending to headset" ? `Sending to ${name}` : `${load[0]} on ${name}`;
+    return { title, detail: load[1] || null, fix: null };
   }
   if (status.kind === "starting") return { title: `Starting on ${name}…`, detail: null, fix: null };
   const clock = transport?.clock ? `Frame ${transport.frame} · ${transport.paused ? "Paused" : "Playing"}` : null;

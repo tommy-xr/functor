@@ -76,6 +76,23 @@ async function headset(browser, width, height) {
     await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Devices" }).click();
     await expect(card("Quest 3")).toContainText("counter", { timeout: 15_000 });
     await shot(page, `headset-running-${width}`);
+    // What the headset says it is loading shows on its card, the session
+    // pill and the Game tab; when its card hides, they say it runs again.
+    const loading = (lines) => fetch(`${app.state.devices.list[0].tunnel}/stub-loading`, { method: "POST", body: lines.join("\n") });
+    await loading(["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]);
+    await expect(card("Quest 3")).toContainText("Sending to headset");
+    await expect(card("Quest 3")).toContainText("23.0 of 67.5 MB (34%), 4 of 9 files");
+    await expect(page.getByText("Headset session · sending 34%")).toBeVisible();
+    await expect(view).toContainText("Sending to Quest 3");
+    await shot(page, `headset-sending-${width}`);
+    await loading(["LOADING ASSETS", "2 of 6"]);
+    await expect(card("Quest 3")).toContainText("Loading assets");
+    await expect(page.getByText("Headset session · loading assets")).toBeVisible();
+    await shot(page, `headset-loading-assets-${width}`);
+    await loading([]);
+    await expect(page.getByText("Headset session · running")).toBeVisible();
+    await expect(view).toContainText("Running on Quest 3");
+    await expect(card("Quest 3")).toContainText("counter");
     await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Devices" }).click();
 
     // The transport drives the headset through its tunnel.
