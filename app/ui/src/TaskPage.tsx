@@ -162,6 +162,8 @@ export function TaskPage({
           <span className="mono">{task.model ? `${task.harness} · ${task.model}` : task.harness}</span>
           {created && <span>Started {created}</span>}
           {active && <span>Last active {active}</span>}
+          {/* The last spoken request's stages, each since the button was let go. */}
+          {task.voice?.line && <span data-testid="voice-timing">Spoken: {task.voice.line}</span>}
         </p>
         <div className="review-buttons">
           <button type="button" className="button button-small" disabled={!state} onClick={onContinue}>
