@@ -33,9 +33,9 @@ use crate::{DebugRenderMode, RenderContext, RenderPass};
 
 use std::sync::Arc;
 
-use super::instance_cache::InstanceBufferCache;
-use super::instancing::{InstanceData, InstancedPrimitive, RecognizedPrimitive};
-use super::{InstanceList, MaterialDescription};
+use super::instance_cache::{InstanceBufferCache, Records};
+use super::instancing::{InstanceData, InstancedPrimitive, PaintData, RecognizedPrimitive};
+use super::{InstanceList, MaterialDescription, PaintList};
 
 // The instance transform is `translate * rotate * scale` applied on top of
 // the template's internal `local` matrix, all under the node's accumulated
@@ -99,6 +99,11 @@ fn instance_transform_glsl(base: u32) -> String {
 // layouts (4-7 rigid, 6-9 skinned). Primitives pin it white.
 const MODEL_COLOR_LOCATION: u32 = 10;
 
+// `Scene.instancedPaint`'s stream (tint rgb, glow), a buffer of its own so a
+// paint change never re-uploads the transforms. Without paints (and for
+// model templates) the generic value is the identity paint.
+const PAINT_LOCATION: u32 = 11;
+
 // The joint blend shared by the skinned instanced vertex shaders — the same
 // palette blend as `SkinnedMaterial` (200-joint uniform array), evaluated
 // ONCE per node and read by every copy (the shared-pose contract).
@@ -132,6 +137,7 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         layout (location = 3) in vec4 inTangent;
         layout (location = 7) in vec3 instanceTint;
         layout (location = 10) in vec4 inColor; // MODEL_COLOR_LOCATION
+        layout (location = 11) in vec4 instancePaint; // PAINT_LOCATION: tint rgb, glow
 
         uniform vec4 baseColor; // raw sRGB-authored — see FRAGMENT_SHADER_SOURCE
         uniform mat3 normalMatrix;
@@ -143,13 +149,15 @@ const VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldNormal;
         out vec3 worldTangent;
         out vec4 instanceColor; // linear rgb + alpha
+        out float instanceGlow;
 
         void main() {
             vec4 wp = instanceWorld(inPos);
             texCoord = inTex;
             worldPos = wp.xyz;
-            instanceColor =
-                vec4(functorSrgbToLinear(baseColor.rgb * instanceTint), baseColor.a) * inColor;
+            instanceColor = vec4(functorSrgbToLinear(
+                baseColor.rgb * instanceTint * instancePaint.rgb), baseColor.a) * inColor;
+            instanceGlow = clamp(instancePaint.a, 0.0, 1.0);
             vec3 ln = localNormalMatrix * inNormal;
             vec3 safeScale = mix(instanceScale, vec3(1.0),
                 vec3(lessThan(abs(instanceScale), vec3(1e-8))));
@@ -188,6 +196,7 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         in vec3 worldNormal;
         in vec3 worldTangent;
         in vec4 instanceColor;
+        in float instanceGlow;
 
         uniform sampler2D texture1;
         uniform int useTexture;   // albedo on unit 0 (glTF base color, or a world-tiled lit texture)
@@ -195,6 +204,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
         uniform int materialMode; // 0 = unlit (color/emissive/model in an unlit frame), 1 = lit
         uniform int debugMode;    // 0 = authored, 1 = normals, 2 = tangents
         uniform float specularScale; // lit mode's highlight: 0 for rough static models
+        // The template's Lit glow, composed with the paint's: always 0 from
+        // Functor Lang (only stamped copies get one), but a wire frame may carry it.
+        uniform float materialGlow;
 
         void main() {
             // Debug views store their raw value on every surface: decode, so
@@ -223,6 +235,9 @@ const FRAGMENT_SHADER_SOURCE: &str = r#"
                     vec3 specularLight;
                     accumulateLights(n, worldPos, diffuseLight, specularLight);
                     shaded = albedo * diffuseLight + specularLight * specularScale;
+                    // Two glows in turn (see `compose_glow`).
+                    float glow = 1.0 - (1.0 - materialGlow) * (1.0 - instanceGlow);
+                    shaded = mix(shaded, albedo, glow);
                 }
                 fragColor = functorOutput(vec4(applyFog(shaded, worldPos), alpha));
             }
@@ -277,8 +292,10 @@ const SKINNED_VERTEX_SHADER_SOURCE: &str = r#"
         out vec3 worldNormal;
         out vec3 worldTangent;
         out vec4 instanceColor; // linear rgb + alpha
+        out float instanceGlow; // model templates take no paint
 
         void main() {
+            instanceGlow = 0.0;
             mat4 skin = skinMatrix();
             vec3 sp = (skin * vec4(inPos, 1.0)).xyz;
             vec4 wp = world * vec4(instanceLocal(sp), 1.0);
@@ -324,6 +341,7 @@ struct ForwardUniforms {
     material_mode: UniformLocation,
     debug_mode: UniformLocation,
     specular_scale: UniformLocation,
+    material_glow: UniformLocation,
     // The skinned vertex shader never billboards, so its program compiles
     // `billboardMode` out and has no location for it.
     billboard_mode: Option<UniformLocation>,
@@ -546,6 +564,7 @@ pub(super) struct InstancedRenderer {
     reflection: Option<ReflectionProgram>,
     shader_version: String,
     instance_buffers: InstanceBufferCache<glow::Buffer>,
+    paint_buffers: InstanceBufferCache<glow::Buffer, PaintList>,
 }
 
 impl InstancedRenderer {
@@ -582,15 +601,17 @@ impl InstancedRenderer {
             reflection: None,
             shader_version: shader_version.to_string(),
             instance_buffers: InstanceBufferCache::default(),
+            paint_buffers: InstanceBufferCache::default(),
         }
     }
 
     /// Start a frame: release instance buffers no longer drawn and zero the
     /// per-frame upload count. Idempotent per `frame` id.
     pub(super) fn begin_frame(&mut self, gl: &glow::Context, frame: u64) {
-        let Some(released) = self.instance_buffers.begin_frame(frame) else {
+        let Some(mut released) = self.instance_buffers.begin_frame(frame) else {
             return;
         };
+        released.extend(self.paint_buffers.begin_frame(frame).unwrap_or_default());
         let counters = crate::gpu_counters::gpu_counters();
         for buffer in released {
             unsafe { gl.delete_buffer(buffer) };
@@ -631,19 +652,13 @@ impl InstancedRenderer {
         gl: &glow::Context,
         instances: &InstanceList,
     ) -> (glow::Buffer, super::instance_cache::InstanceExtent) {
-        let acquired = self.instance_buffers.acquire(instances, || {
-            crate::gpu_counters::gpu_counters().buffer_created();
-            unsafe { gl.create_buffer().expect("instance data") }
-        });
-        if let Some(capacity) = acquired.upload {
-            let bytes = crate::terrain_renderer::slice_bytes(instances);
-            unsafe {
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(acquired.buffer));
-                upload_instances(gl, bytes, capacity);
-                gl.bind_buffer(glow::ARRAY_BUFFER, None);
-            }
-        }
-        (acquired.buffer, acquired.extent)
+        acquire_buffer(gl, &mut self.instance_buffers, instances)
+    }
+
+    /// The retained buffer holding `paints`, uploaded only when new. Also
+    /// what keeps a culled or hidden node's paints resident.
+    pub(super) fn paint_buffer(&mut self, gl: &glow::Context, paints: &PaintList) -> glow::Buffer {
+        acquire_buffer(gl, &mut self.paint_buffers, paints).0
     }
 
     fn mesh(&mut self, gl: &glow::Context, primitive: InstancedPrimitive) -> &mut MeshBuffers {
@@ -721,6 +736,7 @@ impl InstancedRenderer {
         ctx: &RenderContext,
         template: &RecognizedPrimitive<'_>,
         instances: &InstanceList,
+        paints: Option<&PaintList>,
         world: &Matrix4<f32>,
         projection: &Matrix4<f32>,
         view: &Matrix4<f32>,
@@ -735,6 +751,10 @@ impl InstancedRenderer {
             return;
         }
         let instance_buffer = self.instance_buffer(ctx.gl, instances);
+        // The depth pass reads no paint.
+        let paint_buffer = paints
+            .filter(|_| !depth_pass)
+            .map(|paints| self.paint_buffer(ctx.gl, paints));
         // Scope the mutable mesh borrow: point the VAO at the instance
         // records, then carry only the Copy GL handles into the draw phase.
         let (index_buffer, index_count) = {
@@ -743,6 +763,7 @@ impl InstancedRenderer {
                 ctx.gl.bind_vertex_array(Some(mesh.vao));
                 ctx.gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_buffer));
                 instance_attrib_layout(ctx.gl, 4, true);
+                paint_attrib(ctx.gl, paint_buffer);
                 ctx.gl.bind_buffer(glow::ARRAY_BUFFER, None);
                 // Primitives have no colour array.
                 ctx.gl
@@ -763,20 +784,23 @@ impl InstancedRenderer {
         } else {
             // The textures recognition accepts on a primitive — a world-tiled
             // lit one, or a multiply's — the caller bound to unit 0.
-            let (color, lit, use_texture, world_tile) = match template.material {
+            let (color, lit, use_texture, world_tile, glow) = match template.material {
                 MaterialDescription::Lit {
-                    color, world_tile, ..
-                } => (*color, true, world_tile.is_some(), *world_tile),
+                    color,
+                    world_tile,
+                    glow,
+                    ..
+                } => (*color, true, world_tile.is_some(), *world_tile, *glow),
                 MaterialDescription::Color(color)
                 | MaterialDescription::Emissive { color, .. }
-                | MaterialDescription::Additive { color, .. } => (*color, false, false, None),
+                | MaterialDescription::Additive { color, .. } => (*color, false, false, None, 0.0),
                 MaterialDescription::Multiply { color, texture } => {
-                    (*color, false, texture.is_some(), None)
+                    (*color, false, texture.is_some(), None, 0.0)
                 }
                 // Recognition never accepts these; the arm exists only so
                 // the match stays exhaustive if the enum grows.
                 MaterialDescription::Texture(_) | MaterialDescription::SpriteTexture { .. } => {
-                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false, false, None)
+                    (cgmath::vec4(1.0, 1.0, 1.0, 1.0), false, false, None, 0.0)
                 }
             };
             match template.material {
@@ -803,6 +827,7 @@ impl InstancedRenderer {
                     lit,
                     1.0,
                     billboard,
+                    glow,
                 ),
             }
         }
@@ -873,6 +898,7 @@ impl InstancedRenderer {
         // node is enough.
         unsafe {
             ctx.gl.vertex_attrib_3_f32(7, 1.0, 1.0, 1.0);
+            pin_identity_paint(ctx.gl);
         }
         for ((mesh, live), vao) in model.meshes.iter().zip(handles.iter()).zip(vaos.iter()) {
             if !draws(mesh) {
@@ -909,6 +935,7 @@ impl InstancedRenderer {
                     !ctx.lights.is_empty(),
                     0.0,
                     false,
+                    0.0,
                 );
             }
             unsafe {
@@ -1024,6 +1051,7 @@ impl InstancedRenderer {
                     true,
                     1.0,
                     false,
+                    0.0,
                 );
             }
             unsafe {
@@ -1223,6 +1251,7 @@ fn forward_uniforms_of(program: &ShaderProgram, gl: &glow::Context) -> ForwardUn
         material_mode: program.get_uniform_location(gl, "materialMode"),
         debug_mode: program.get_uniform_location(gl, "debugMode"),
         specular_scale: program.get_uniform_location(gl, "specularScale"),
+        material_glow: program.get_uniform_location(gl, "materialGlow"),
         billboard_mode: program.find_uniform_location(gl, "billboardMode"),
         lighting: LightingUniforms::get(program, gl),
         fog: FogUniforms::get(program, gl),
@@ -1275,6 +1304,7 @@ fn set_forward_uniforms(
     // Multiplies the lit mode's highlight (0 for rough static models).
     specular: f32,
     billboard: bool,
+    glow: f32,
 ) {
     let p = program;
     p.use_program(ctx.gl);
@@ -1290,6 +1320,7 @@ fn set_forward_uniforms(
     p.set_uniform_1f(ctx.gl, &u.world_tile, world_tile);
     p.set_uniform_1i(ctx.gl, &u.material_mode, lit as i32);
     p.set_uniform_1f(ctx.gl, &u.specular_scale, specular);
+    p.set_uniform_1f(ctx.gl, &u.material_glow, glow.clamp(0.0, 1.0));
     let debug_mode = match ctx.debug_render_mode {
         DebugRenderMode::Normals => 1,
         DebugRenderMode::Tangents => 2,
@@ -1345,4 +1376,55 @@ unsafe fn instance_attrib_layout(gl: &glow::Context, base: u32, with_tint: bool)
         );
         gl.vertex_attrib_divisor(location, 1);
     }
+}
+
+/// The buffer `cache` retains for `records`, uploading them when their
+/// content is new to it.
+fn acquire_buffer<L: Records>(
+    gl: &glow::Context,
+    cache: &mut InstanceBufferCache<glow::Buffer, L>,
+    records: &L,
+) -> (glow::Buffer, L::Extent) {
+    let acquired = cache.acquire(records, || {
+        crate::gpu_counters::gpu_counters().buffer_created();
+        unsafe { gl.create_buffer().expect("instance data") }
+    });
+    if let Some(capacity) = acquired.upload {
+        unsafe {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(acquired.buffer));
+            upload_instances(gl, crate::terrain_renderer::slice_bytes(records), capacity);
+            gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+    }
+    (acquired.buffer, acquired.extent)
+}
+
+/// Point [`PAINT_LOCATION`] of the bound VAO at `buffer`'s paints, or (with
+/// none) disable its array and pin the identity paint.
+unsafe fn paint_attrib(gl: &glow::Context, buffer: Option<glow::Buffer>) {
+    match buffer {
+        Some(buffer) => {
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+            gl.enable_vertex_attrib_array(PAINT_LOCATION);
+            gl.vertex_attrib_pointer_f32(
+                PAINT_LOCATION,
+                4,
+                glow::FLOAT,
+                false,
+                size_of::<PaintData>() as i32,
+                0,
+            );
+            gl.vertex_attrib_divisor(PAINT_LOCATION, 1);
+        }
+        None => {
+            gl.disable_vertex_attrib_array(PAINT_LOCATION);
+            pin_identity_paint(gl);
+        }
+    }
+}
+
+/// The paint location's generic value (context state, read wherever its
+/// array is disabled): white tint, no glow.
+unsafe fn pin_identity_paint(gl: &glow::Context) {
+    gl.vertex_attrib_4_f32(PAINT_LOCATION, 1.0, 1.0, 1.0, 0.0);
 }

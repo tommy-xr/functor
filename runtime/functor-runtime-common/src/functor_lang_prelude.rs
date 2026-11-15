@@ -202,7 +202,8 @@ use crate::math::Angle;
 use crate::physics;
 use crate::render_target::RenderTargetDescriptor;
 use crate::scene3d::{
-    InstanceData, InstanceList, MaterialDescription, ModelDescription, ModelHandle, SpriteSampling,
+    InstanceData, InstanceList, MaterialDescription, ModelDescription, ModelHandle, PaintList,
+    SpriteSampling,
     TextureDescription,
 };
 use crate::skybox::SkyboxDescription;
@@ -2580,6 +2581,21 @@ fn register_instance(reg: &mut crate::host_registry::Registry) {
         },
     );
     reg.fn2(
+        "Instance.raycast",
+        "Instance.raycast({ origin, direction }, instances)",
+        |ray: solid::Ray, instances: InstanceListArg| {
+            let hit = crate::scene3d::raycast_instances(ray.origin, ray.direction, &instances.0);
+            crate::input::option_value(hit.map(|hit| {
+                Value::Record(Rc::new(vec![
+                    ("index".to_string(), Value::Number(hit.index as f64)),
+                    ("point".to_string(), solid::vec3_value(hit.point)),
+                    ("normal".to_string(), solid::vec3_value(hit.normal)),
+                    ("distance".to_string(), Value::Number(hit.distance)),
+                ]))
+            }))
+        },
+    );
+    reg.fn2(
         "Instance.tint",
         "Instance.tint(color, instance)",
         |color: FunctorLangColor, instance: FunctorLangInstance| {
@@ -2919,6 +2935,24 @@ instanced node instead: scene |> Scene.instanced(instances) |> Scene.opacity(alp
                 );
             }
             Ok(FunctorLangScene(Scene3D::instanced(scene.0, instances.0)))
+        },
+    );
+    // `Scene.instanced` plus a per-copy paint stream (4 little-endian f32 per
+    // copy: tint r, g, b, glow) held apart from the transforms, so a paint
+    // that changes every frame never re-describes or re-uploads them.
+    reg.fn3(
+        "Scene.instancedPaint",
+        "Scene.instancedPaint(instances, paints, scene)",
+        |instances: InstanceListArg, paints: bytes::FunctorLangBytes, scene: FunctorLangScene| {
+            if scene.0.has_opacity() {
+                return Err(
+                    "Scene.instancedPaint: the template contains Scene.opacity — wrap the whole \
+instanced node instead: scene |> Scene.instancedPaint(instances, paints) |> Scene.opacity(alpha)"
+                        .to_string(),
+                );
+            }
+            let paints = paints_of(&paints.0, instances.0.len())?;
+            Ok(FunctorLangScene(Scene3D::instanced_painted(scene.0, instances.0, paints)))
         },
     );
     // A memoized pure builder (see `scene_memo`).
@@ -5688,6 +5722,53 @@ impl crate::host_registry::FromArg for InstanceListArg {
             );
         });
         Ok(InstanceListArg(converted))
+    }
+}
+
+thread_local! {
+    /// Paint conversions by their bytes' identity, so paints held unchanged
+    /// convert once and keep their `Arc` (sparing the renderer's compare).
+    static PAINTS: std::cell::RefCell<solid::WeakMemo<[u8], PaintList>> = Default::default();
+}
+
+/// `Scene.instancedPaint`'s paint bytes: exactly 16 per copy (f32 le
+/// `r, g, b, glow`), all finite.
+fn paints_of(bytes: &bytes::ByteView, copies: usize) -> Result<PaintList, String> {
+    let raw = bytes.as_slice();
+    if raw.len() != copies * 16 {
+        return Err(format!(
+            "Scene.instancedPaint: {} bytes of paint for {copies} instances — each needs 16 \
+(4 floats: r, g, b, glow), e.g. Bytes.fromF32le([1.0, 0.5, 0.2, 0.0, …])",
+            raw.len()
+        ));
+    }
+    let convert = || {
+        let floats = bytes::entries::<f32, 4>(raw, 4, |b| {
+            f32::from_le_bytes(b.try_into().expect("4 bytes"))
+        })?;
+        if let Some((i, k)) = (0..copies)
+            .flat_map(|i| (0..4).map(move |k| (i, k)))
+            .find(|&(i, k)| !floats[i][k].is_finite())
+        {
+            return Err(format!(
+                "Scene.instancedPaint: paint {i} has a non-finite {} ({})",
+                ["r", "g", "b", "glow"][k],
+                floats[i][k]
+            ));
+        }
+        Ok(floats
+            .into_iter()
+            .map(|[r, g, b, glow]| crate::scene3d::PaintData {
+                tint: [r, g, b],
+                glow,
+            })
+            .collect())
+    };
+    // A slice shares its backing with other ranges: memoize whole buffers only.
+    if raw.len() == bytes.backing().len() {
+        PAINTS.with(|memo| memo.borrow_mut().get_or_try_insert(bytes.backing(), convert))
+    } else {
+        convert()
     }
 }
 
@@ -10721,6 +10802,7 @@ Vec3.make(x, y, z)"
         let SceneObject::Instanced {
             template,
             instances,
+            ..
         } = &scene.obj
         else {
             panic!("expected Instanced, got {:?}", scene.obj);
@@ -10736,6 +10818,91 @@ Vec3.make(x, y, z)"
         assert!((instance.rotation[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert_eq!(instance.rotation[0], 0.0);
         assert_eq!(instance.rotation[2], 0.0);
+    }
+
+    /// `Instance.raycast` answers the nearest box's index and face, or None.
+    #[test]
+    fn instance_raycast_picks_the_nearest_box() {
+        let source = "let boxes = [Instance.at(Vec3.make(0.0, 0.0, 9.0)), \
+             Instance.at(Vec3.make(0.0, 0.0, 4.0)) |> Instance.scale(2.0)] \
+             let ray = (x) => { origin: Vec3.make(x, 0.0, 0.0), direction: Vec3.make(0.0, 0.0, 1.0) } \
+             let pick = (x) => Instance.raycast(ray(x), boxes) ";
+        let some = |value: Value| match value {
+            Value::Variant { args, .. } => args.first().cloned(),
+            other => panic!("expected an Option, got {}", other.kind_name()),
+        };
+        let number = |hit: &Value, name: &str| match field(hit, name) {
+            Value::Number(n) => n,
+            _ => panic!("no number {name}"),
+        };
+        // Index 1 (the nearer, larger box), 3 units away, facing -Z.
+        let hit = some(eval(&format!("{source} let main = () => pick(0.0)"))).expect("a hit");
+        assert_eq!((number(&hit, "index"), number(&hit, "distance")), (1.0, 3.0));
+        let normal = vec3_of(&field(&hit, "normal"), "normal", Span::new(0, 0)).unwrap();
+        assert_eq!(normal, (0.0, 0.0, -1.0));
+        assert!(some(eval(&format!("{source} let main = () => pick(5.0)"))).is_none());
+    }
+
+    /// The same paint bytes convert once: the second call returns the same
+    /// `Arc`, which the renderer's buffer cache takes without a compare.
+    #[test]
+    fn held_paint_bytes_convert_once() {
+        let raw: Vec<u8> = [1.0f32, 0.5, 0.25, 0.75]
+            .repeat(2)
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let held = bytes::ByteView::new(raw);
+        let first = paints_of(&held, 2).unwrap();
+        assert!(first.ptr_eq(&paints_of(&held.clone(), 2).unwrap()));
+        assert_eq!(first[1].glow, 0.75);
+    }
+
+    /// `Scene.instancedPaint` decodes 16 bytes per copy into its paint
+    /// stream beside the untouched instances, and refuses any other length.
+    #[test]
+    fn instanced_paint_decodes_one_paint_per_copy() {
+        let source = "let spots = [Instance.at(Vec3.make(0.0, 0.0, 0.0)), \
+             Instance.at(Vec3.make(1.0, 0.0, 0.0))] \
+             let main = () => Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) \
+             |> Scene.instancedPaint(spots, \
+                Bytes.fromF32le([1.0, 0.5, 0.25, 0.0, 0.0, 1.0, 1.0, 0.75]))";
+        let value = eval(source);
+        let scene = scene_of(&value).expect("a Scene");
+        let SceneObject::Instanced {
+            instances, paints, ..
+        } = &scene.obj
+        else {
+            panic!("expected Instanced, got {:?}", scene.obj);
+        };
+        assert_eq!(instances.len(), 2);
+        let paints = paints.as_ref().expect("paints");
+        assert_eq!(
+            paints[..],
+            [
+                crate::scene3d::PaintData { tint: [1.0, 0.5, 0.25], glow: 0.0 },
+                crate::scene3d::PaintData { tint: [0.0, 1.0, 1.0], glow: 0.75 },
+            ]
+        );
+
+        for (bad, expected) in [
+            ("[1.0, 1.0, 1.0, 0.0]", "16 bytes of paint for 2 instances"),
+            (
+                "[1.0, 1.0, 1.0, 0.0, 1.0, 1.0 / 0.0, 1.0, 0.0]",
+                "paint 1 has a non-finite g (inf)",
+            ),
+        ] {
+            let source = format!(
+                "let main = () => Scene.cube() |> Scene.lit(Color.rgb(1.0, 1.0, 1.0)) \
+                 |> Scene.instancedPaint([Instance.at(Vec3.make(0.0, 0.0, 0.0)), \
+                    Instance.at(Vec3.make(1.0, 0.0, 0.0))], Bytes.fromF32le({bad}))"
+            );
+            let module = functor_lang::lower(functor_lang::parse(&source).unwrap()).unwrap();
+            let failure = functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost)
+                .err()
+                .expect("bad paints fail");
+            assert!(failure.error.message.contains(expected), "{}", failure.error.message);
+        }
     }
 
     /// Non-finite instance data is refused at the host boundary, and a

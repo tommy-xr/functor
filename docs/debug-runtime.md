@@ -306,6 +306,28 @@ game's `mouseButton` hook AND updates the held buttons that later steps'
 game saw the press. Unlike window buttons it ignores cursor capture — a
 headless/hidden session has no capture to acquire.
 
+Injected pointer input follows the window's UI routing (docs/ui-interaction.md):
+`mouse_move` also moves the pointer the game UI sees (in a `--hidden` window
+too), and a left press over a `Ui` widget the UI pass wanted belongs to the
+widget — it clicks the button under the pointer, and the game's hooks and
+`mouse.pressed` never see it. The same holds over the webview's interactive
+elements and the timeline scrubber. So an agent can click UI by coordinates, and
+a click on a button no longer leaks into the game below it. The overlays see
+one pointer state per rendered frame, so while one is shown, a left edge sent
+right after a `mouse_move` or another left edge, and a `mouse_move` right after
+a left edge, is answered on the next frame, with every request queued behind it
+kept in order. A burst like `move A; down; up; move B; step` can be sent back to
+back: it clicks at A, and a press off the UI still reaches that step. A key
+sent right after a click that focuses a webview field may still reach the game:
+wait a frame (or read `/state`) before typing into it. While the clock is
+pinned (paused) the game UI sees no pointer, so an injected left press over a
+`Ui` widget reaches the game; one over the webview's interactive elements or
+the scrubber still does not.
+Once a pointer has been injected, a `--hidden` window keeps it parked there for
+the rest of the session (hover shows in captures). `--input-script` replays do
+not follow this routing yet: scripted clicks always reach the game.
+`ui_event` remains the pixel-free way to drive a widget by slot.
+
 The next fixed step also sees the transition in `pressedKeys`/`releasedKeys` or
 `mouse.pressed`/`mouse.released`. Repeating a down command while it is already
 held preserves the legacy event-hook call but does not create another sampled

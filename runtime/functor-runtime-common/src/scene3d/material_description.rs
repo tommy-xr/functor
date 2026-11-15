@@ -10,6 +10,10 @@ use crate::{
     RenderContext, SceneContext, TextureDescription,
 };
 
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
 /// Texture filtering selected by a lowered sprite image.
 ///
 /// This lives in the serializable material description rather than GPU state
@@ -55,6 +59,10 @@ pub enum MaterialDescription {
         normal_map: Option<TextureDescription>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         world_tile: Option<f32>,
+        /// How far the lit shading mixes toward the unlit albedo, 0–1: only
+        /// a `Scene.instancedPaint` copy's paint sets it.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        glow: f32,
     },
     /// A fullbright sprite image. `source_pixels`, when present, is a
     /// top-left-origin `[x, y, width, height]` rectangle in the source image.
@@ -188,6 +196,7 @@ impl MaterialDescription {
             texture: None,
             normal_map: None,
             world_tile: None,
+            glow: 0.0,
         }
     }
 
@@ -198,6 +207,7 @@ impl MaterialDescription {
             texture: Some(tex),
             normal_map: None,
             world_tile: None,
+            glow: 0.0,
         }
     }
 
@@ -209,6 +219,7 @@ impl MaterialDescription {
             texture: Some(tex),
             normal_map: None,
             world_tile: Some(tile),
+            glow: 0.0,
         }
     }
 
@@ -227,6 +238,7 @@ impl MaterialDescription {
             texture: None,
             normal_map: Some(normal_map),
             world_tile: None,
+            glow: 0.0,
         }
     }
 }
@@ -272,6 +284,7 @@ impl MaterialDescription {
                 texture,
                 normal_map,
                 world_tile,
+                glow,
             } => {
                 // Albedo on unit 0, the normal map on unit 2 (the shadow map
                 // uses unit 1). Albedo decodes through the color (sRGB)
@@ -296,6 +309,7 @@ impl MaterialDescription {
                     use_texture,
                     use_normal_map,
                     world_tile.unwrap_or(0.0),
+                    *glow,
                 );
                 lit_material.initialize(&context);
                 lit_material
