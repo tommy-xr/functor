@@ -54,11 +54,17 @@ pub fn raycast_instances(
 /// One oriented box against a unit ray: the entry distance and face normal.
 fn slab(o: Vector3<f64>, d: Vector3<f64>, instance: &InstanceData) -> Option<(f64, Vector3<f64>)> {
     let p = o - Vector3::from(instance.position).cast::<f64>()?;
-    // Most boxes miss: reject by the bounding sphere before any rotation.
     let half = Vector3::from(instance.scale).cast::<f64>()?.map(|s| s.abs() * 0.5);
+    let finite = |v: Vector3<f64>| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+    if !finite(p) || !finite(half) || !instance.rotation.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    // Most boxes miss: reject by the bounding sphere before any rotation.
+    // The ray's closest approach to the centre is `p + d·along` (not
+    // `|p|² − along²`, which cancels far from the origin).
     let radius2 = half.magnitude2();
     let along = -p.dot(d);
-    if p.magnitude2() - along * along > radius2 || (along < 0.0 && along * along > radius2) {
+    if (p + d * along).magnitude2() > radius2 || (along < 0.0 && along * along > radius2) {
         return None;
     }
     // Builders keep rotations unit length.
@@ -90,8 +96,7 @@ fn slab(o: Vector3<f64>, d: Vector3<f64>, instance: &InstanceData) -> Option<(f6
             return None;
         }
     }
-    // NaN data compares false everywhere above and leaves `near` unbounded:
-    // with a unit ray some axis is never parallel, so finite data bounds it.
+    // With a unit ray some axis is never parallel, so `near` is bounded.
     if !near.is_finite() || far < 0.0 {
         return None;
     }
@@ -158,6 +163,13 @@ mod tests {
         assert_eq!(hit([0.0; 3], [0.0, 0.0, 1.0], &nan).unwrap().index, 1);
         assert!(hit([f64::NAN, 0.0, 0.0], [0.0, 0.0, 1.0], &unit).is_none());
         assert!(hit([0.0, 0.0, -5.0], [0.0, 0.0, f64::INFINITY], &unit).is_none());
+        // A non-finite scale on an axis the ray is parallel to.
+        for s in [f32::NAN, f32::INFINITY] {
+            assert!(hit([0.0, 0.0, -5.0], [0.0, 0.0, 1.0], &[boxed([0.0; 3], [s, 1.0, 1.0])]).is_none());
+        }
+        // Far from the origin, a ray through the centre still hits.
+        let far = hit([1e8, 1e8, 0.0], [-1.0, -1.0, 0.0], &unit).unwrap();
+        assert!((far.distance - (2.0f64.sqrt() * 1e8 - 0.5 * 2.0f64.sqrt())).abs() < 1e-3, "{far:?}");
     }
 
     #[test]

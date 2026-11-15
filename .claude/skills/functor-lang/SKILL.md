@@ -1220,8 +1220,8 @@ position (what an instanced `Scene.cube()` draws). Pure, one call for the whole
 list: pass the SAME list you draw (model or top-level def) and nothing
 converts; a few ns per box on desktop. The ray is in the instances' space; feed it
 `Camera3D.toWorldRay(snapshot.mouse, camera)` or a controller's
-`Camera3D.mapTrackedPose(camera, aim)` (`{ origin: position, direction:
-forward }`). A ray starting inside a box hits it at distance 0; ties go to
+`Camera3D.mapTrackedPose(camera, aim)` (its `position` and `forward`, made
+`Vec3`s). A ray starting inside a box hits it at distance 0; ties go to
 the lower index.
 
 **`Scene.memo(key, deps, builder)` skips the rebuild too** — for a subtree
