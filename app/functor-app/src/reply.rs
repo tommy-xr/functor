@@ -106,13 +106,12 @@ or FUNCTOR_APP_FAKE_AGENT or FUNCTOR_APP_FAKE_TRANSCRIPT is set without FUNCTOR_
     }
 
     /// The user started talking (`true`: the reply playing, and one still
-    /// being synthesised, are silenced, and later ones dropped) or stopped.
+    /// being synthesised, are silenced, and later ones dropped) or stopped
+    /// (`false`: a reply asked for while they talked stays dropped).
     pub fn talking(&self, talking: bool) {
         let mut now = self.lock();
-        if talking {
-            now.reply += 1;
-            now.playing = None;
-        }
+        now.reply += 1;
+        now.playing = None;
         now.talking = talking;
     }
 }
@@ -328,8 +327,12 @@ mod tests {
         // An earlier request's reply, while still talking: not heard.
         replies.say(replies.next(), "late").unwrap();
         assert!(seen.try_recv().is_err(), "said over the user");
-        // Once the clip is in, replies play again.
+        // One asked for while talking, synthesised after: not heard either.
+        let asked = replies.next();
         replies.talking(false);
+        replies.say(asked, "later").unwrap();
+        assert!(seen.try_recv().is_err(), "said after the user's new request");
+        // Once the clip is in, replies play again.
         replies.say(replies.next(), "four").unwrap();
         assert_eq!(seen.try_recv(), Ok(Seen::Play(4)));
     }
