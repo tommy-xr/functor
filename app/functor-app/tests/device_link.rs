@@ -1927,6 +1927,11 @@ async fn quest_runs_a_project_over_the_link() {
     });
     let started = Instant::now();
     let run = run_vr(&functor, &project, &["--device-url", &tunnel], path.path());
+    // The desktop's own card says the same, as the headset reports it.
+    app.devices_where("the desktop says it is sending", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["loading"][0] == "RECEIVING PROJECT")
+    })
+    .await;
     run.line("synced ");
     run.line("[debug-server] listening on");
     eprintln!("pushed and loaded over the link in {:?}", started.elapsed());
