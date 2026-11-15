@@ -6,9 +6,11 @@
 // on examples/primitives: the picture holds still while paused, changes on a
 // step, and a seek back shows the earlier picture again; and one on a weak-jump
 // platformer: Extrapolate draws its path, and an edit landing while paused
-// peeks at the new one, whose arc over the gap is new.
+// peeks at the new one, whose arc over the gap is new. First, against a fake
+// `functor` whose clock the test pauses as an agent and as the user would:
+// the bar and the agent's card say who paused it (D48).
 //
-//   npm run test:app-ui     # needs FUNCTOR_BIN (npm run build:cli:debug); skipped without it
+//   npm run test:app-ui     # but for the first, needs FUNCTOR_BIN (npm run build:cli:debug); skipped without it
 //
 // APP_UI_SHOTS=<dir> saves stills at 1440 and 700 wide and of the mini view,
 // and (with a GPU) the frames of a play → pause → step → drag back → resume loop.
@@ -32,10 +34,6 @@ import {
 const GPU = process.env.FUNCTOR_APP_GPU === "1";
 
 requireBuilt();
-if (!FUNCTOR) {
-  console.log("SKIPPED: transport — set FUNCTOR_BIN (npm run build:cli:debug)");
-  process.exit(0);
-}
 
 /**
  * Opens the app: with no click, the active project's game is there, paused
@@ -70,6 +68,55 @@ async function dragTo(page, bar, unit) {
   await page.mouse.move((head.x + x) / 2, head.y + head.height / 2, { steps: 4 });
   await page.mouse.move(x, head.y + head.height / 2, { steps: 4 });
   await page.mouse.up();
+}
+
+/**
+ * Who paused the game (D48), on a fake `functor`: the bar names the cause,
+ * and a run in flight says "game paused" only while the pause is its agent's.
+ */
+async function pausedBy(browser) {
+  const server = await startServer(0, {
+    dir: tempProject("examples/counter"),
+    functor: `${ROOT}app/ui/e2e/fixtures/fake-functor.mjs`,
+    fakeAgent: `${ROOT}app/ui/e2e/fixtures/slow.jsonl`,
+  });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const app = watchState(page);
+  const errors = watchErrors(page);
+  try {
+    await page.goto(server.url);
+    const bar = page.getByRole("group", { name: "Transport" });
+    const cause = bar.getByTestId("transport-paused");
+    const bubble = page.locator(".chat").getByTestId("agent-bubble");
+    // Opened paused on frame 0 (D37).
+    await expect(cause).toHaveText("Paused at start", { timeout: 60_000 });
+    /** Posts a clock command to the game, as an agent's tools and the bar do. */
+    const time = (command) => fetch(`${app.state.session.status.debug_url}/time`, { method: "POST", body: JSON.stringify(command) });
+
+    await page.locator(".chat").getByLabel("Message the agent").fill("Start the count higher");
+    await page.keyboard.press("Enter");
+    await expect(bubble).toBeVisible();
+    // The agent's step pauses it: the bar and the agent's card say so.
+    await time({ type: "cancel", by: "agent" });
+    await expect(cause).toHaveText("Paused by the agent");
+    await expect(bubble).toHaveText("checking the change, game paused");
+    await shot(page, "transport-paused-agent");
+    // The user's pause is not the agent's.
+    await time({ type: "cancel", by: "user" });
+    await expect(cause).toHaveText("Paused");
+    await expect(bubble).not.toContainText("game paused");
+    await shot(page, "transport-paused-user");
+    // Playing: no cause.
+    await time({ type: "resume" });
+    await expect(bar.getByRole("button", { name: "Pause" })).toBeVisible();
+    await expect(cause).toHaveCount(0);
+    await expect(bubble).not.toContainText("game paused");
+    expect(errors, "console errors").toEqual([]);
+    console.log("ok: transport paused by");
+  } finally {
+    await page.close();
+    await stopServer(server);
+  }
 }
 
 /** Pause, step, seek by drag, click and key, and resume; in a pane, then Mini. */
@@ -456,10 +503,15 @@ async function extrapolate(browser) {
 
 const browser = await chromium.launch();
 try {
-  await noGpu(browser);
-  await marks(browser);
-  await gpu(browser);
-  await extrapolate(browser);
+  await pausedBy(browser);
+  if (FUNCTOR) {
+    await noGpu(browser);
+    await marks(browser);
+    await gpu(browser);
+    await extrapolate(browser);
+  } else {
+    console.log("SKIPPED: transport on a real game — set FUNCTOR_BIN (npm run build:cli:debug)");
+  }
 } finally {
   await browser.close();
 }
