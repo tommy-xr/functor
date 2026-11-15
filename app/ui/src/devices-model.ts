@@ -128,6 +128,34 @@ export function details(d: Device): [string, string][] {
   const rows: [string, string][] = [["Link", s.latency_ms === null ? link : `${link} · ${s.latency_ms} ms`]];
   if (s.battery !== null) rows.push(["Battery", `${s.battery}%${s.charging ? ", charging" : ""}`]);
   if (s.build) rows.push(["Build", s.build]);
-  rows.push(["Running", s.project ?? "Nothing"]);
+  const load = loading(s.loading);
+  if (load) rows.push(load);
+  else rows.push(["Running", s.project ?? "Nothing"]);
   return rows;
+}
+
+/**
+ * The headset's status card as a row: what is being sent or loaded, in the
+ * desktop's words. `lines` is the step's kind, then the card's own lines
+ * (heading first). `null` when its card is hidden, only says it runs or
+ * waits, or is of a kind this desktop does not know.
+ */
+export function loading(lines: string[] | undefined): [string, string] | null {
+  const [kind, , ...rest] = lines ?? [];
+  const detail = rest.join(" · ");
+  switch (kind) {
+    case "receiving":
+      return ["Sending to headset", detail];
+    case "starting":
+      return ["Starting", detail];
+    case "assets":
+      return ["Loading assets", detail];
+    case "reloading":
+      return ["Reloading", "The game is reloading"];
+    case "failed":
+      // The headset wrapped the error for its card: one sentence again.
+      return ["Failed to load", rest.join(" ")];
+    default:
+      return null;
+  }
 }

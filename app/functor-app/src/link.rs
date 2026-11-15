@@ -1018,6 +1018,13 @@ impl Connection {
                     self.heard(heard);
                 }
             }
+            desktop::Event::Channel {
+                channel: functor_device_link::load::CHANNEL,
+                data,
+            } => hub.send(LinkEvent::Loading {
+                conn: self.id,
+                lines: functor_device_link::load::decode(&data),
+            }),
             desktop::Event::Channel { .. } => {}
             desktop::Event::Mismatch(pre) => hub.send(LinkEvent::Mismatch {
                 device: hex(&pre.device),
