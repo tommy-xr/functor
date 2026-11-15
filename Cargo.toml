@@ -65,9 +65,16 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.adler2]
 opt-level = 3
+# png's own inflate, checksums and CRCs.
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
 
-# The device link's cipher: unoptimized, a debug desktop app sends a project
-# to the headset at about 2 MB/s.
+# The device link's cipher (and its handshake): unoptimized, a debug desktop
+# app sends a project to the headset at about 2 MB/s.
 [profile.dev.package.snow]
 opt-level = 3
 [profile.dev.package.chacha20]
