@@ -266,11 +266,13 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// ([`crate::frame_telemetry::StallRecord`]): frames over 250 ms since
 /// launch, each with the debug requests the shell served around it.
 ///
-/// 49 adds `load_status` on `GET /state`: the lines of the headset's load
+/// 49 adds the `answered` voice stage.
+///
+/// 50 adds `load_status` on `GET /state`: the lines of the headset's load
 /// status card ([`crate::load_status`]) while it shows. `POST /reload-asset` takes
 /// `push_files` and `push_bytes` in its query: what the push in flight will
 /// send in all, for that card's count; an older runtime ignores them.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 49;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 50;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -678,7 +680,7 @@ pub struct RuntimeState {
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::audio::AudioCounts>,
-    /// The headset's load status card (v49, [`crate::load_status`]): its
+    /// The headset's load status card (v50, [`crate::load_status`]): its
     /// lines, heading first. Omitted while it is hidden and on desktop.
     #[cfg_attr(feature = "ts", ts(optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -856,6 +858,8 @@ pub enum VoiceStage {
     Heard,
     Working,
     Reloaded,
+    /// The agent answered without changing the game: its answer's first line.
+    Answered { text: String },
     /// The desktop could not act on it.
     Failed { reason: String },
     /// It never reached the desktop whole: cancelled, or the link failed.

@@ -135,6 +135,49 @@ categories = [
     "android.intent.category.LAUNCHER",
 ]
 
+# Same as the root workspace: unoptimized, a debug APK decodes a pushed game's
+# models and textures 10x slower (hello's 71 MB: 10 s against 1 s).
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.zune-inflate]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
+# png's own inflate, checksums and CRCs.
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+# The device link's cipher (and its handshake): unoptimized, a pushed project
+# crosses it at about 2 MB/s.
+[profile.dev.package.snow]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
 # Same as the root workspace: the interpreter's depth cap assumes optimized
 # frames, so debug APKs build functor-lang at opt-level 1.
 [profile.dev.package.functor-lang]
