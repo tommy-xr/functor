@@ -4,8 +4,9 @@
 // choice until one is connected → paired: Headset shows → chosen: the game
 // runs there (the stub gets the load, its card names the project) and the
 // Game tab says so with the clock read through the tunnel; pause works, the
-// Extrapolate switch is not offered → the stub stops: Away with its fix, the
-// choice kept → it relinks: Running again → a second headset: each by name →
+// Extrapolate switch is not offered → the stub stops: Away with its fix (the
+// session pill says away too), the choice kept → it relinks: Running again →
+// a second headset: each by name →
 // Pane: the headset is sent back to its boot scene (once it is back, if it
 // is away) and the game is here
 // again, paused on frame 0 (D37). Runs at 1440×900 and 700×900.
@@ -88,6 +89,10 @@ async function headset(browser, width, height) {
     await quest.stop();
     await expect(view).toContainText("Quest 3: Away");
     await expect(view).toContainText("Put the headset on and open Functor");
+    await expect(view).toContainText("An edit saved meanwhile loads there once it is back.");
+    // One state (D27): the session pill says the headset is away, not "running".
+    await expect(page.getByText("Headset session · away")).toBeVisible();
+    await expect(page.getByText("Headset session · running")).toHaveCount(0);
     await expect(control.getByRole("button", { name: "Headset" })).toHaveAttribute("aria-pressed", "true");
     await expect(transport).toHaveCount(0);
     expect(game().placement).toBe("headset");
@@ -102,6 +107,7 @@ async function headset(browser, width, height) {
     const project = (name) => app.state?.devices.list.find((d) => d.name === name)?.state.project;
     await expect.poll(() => project("Quest 3"), { timeout: 15_000 }).toBe("counter");
     await expect(view).toContainText("Running on Quest 3");
+    await expect(page.getByText("Headset session · running")).toBeVisible();
     await expect(view).toContainText(/Frame \d+ · Playing/);
     expect(app.state.session.id).toBe(session);
 
