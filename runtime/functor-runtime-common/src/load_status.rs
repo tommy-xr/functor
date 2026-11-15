@@ -6,7 +6,6 @@
 
 use std::time::{Duration, Instant};
 
-use crate::debug_http::Push;
 use crate::link_overlay::{wrap, Line, BODY, CYAN, HEADING, PINK, WHITE};
 
 /// Work over a running game shows only once it has taken this long.
@@ -27,6 +26,19 @@ const SETTLE: Duration = Duration::from_millis(300);
 /// Frames this far apart had a doze between them: what arrived meanwhile
 /// is not arriving now.
 const DOZE: Duration = Duration::from_secs(1);
+
+/// What the push in flight will send, and what it need not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Push {
+    /// Files and bytes to upload.
+    pub files: u64,
+    pub bytes: u64,
+    /// Bytes the device already held (`POST /push-manifest`).
+    pub held_bytes: u64,
+    /// Counted by the device from a manifest, not announced by the sender
+    /// (`/reload-asset?push_files=…&push_bytes=…`).
+    pub from_manifest: bool,
+}
 
 /// What the shell knows this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
