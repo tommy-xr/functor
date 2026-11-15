@@ -747,6 +747,7 @@ fn text(out: &mut Vec<Shape>, at: [f32; 2], size: f32, color: [f32; 3], s: &str)
         size,
         color,
         text: s.to_string(),
+        style: None,
     });
 }
 
@@ -764,9 +765,19 @@ impl Col<'_> {
         self.y -= advance(size);
     }
 
+    /// Every line in the paragraph's style, so a fragment that happens to
+    /// be all caps is not set as a label.
     fn para(&mut self, s: &str, size: f32, color: [f32; 3], lines: usize) {
-        for l in wrap(s, size, self.w, lines) {
-            self.line(&l, size, color);
+        let style = overlay_font::Style::of(s);
+        for l in overlay_font::wrap_in(s, size, style, self.w, lines) {
+            self.out.push(Shape::Text {
+                at: [self.x, self.y],
+                size,
+                color,
+                text: l,
+                style: Some(style),
+            });
+            self.y -= advance(size);
         }
     }
 
