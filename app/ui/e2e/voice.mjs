@@ -1,7 +1,8 @@
 // Voice in the chat. A message said in a headset (plan 4.3) shows as
 // spoken: a task's stored first message is marked as said in "Quest 3" with
 // its capsule (as the device link stores one), and after a restart the chat
-// shows where it was said, with what the user was looking at on hover (the
+// shows where it was said, with what the user was looking at on hover, and
+// its task page the request's stage times on one line (the
 // link's side is `cargo test -p functor-app --test device_link
 // a_spoken_clip`). The composer's mic (D15) records (a tone standing in
 // for the microphone), is transcribed by the app (its fake transcriber) and puts
@@ -20,6 +21,7 @@ const PROJECT = tempProject("examples/counter");
 const FAIL = `${ROOT}app/ui/e2e/fixtures/fail.jsonl`;
 const SAID = "Make the ball red";
 const CONTEXT = 'at frame 1234 (20.5 s in), pointing at "ball"';
+const STAGES = "heard 0.0 s · transcribed 0.2 s · agent started 2.1 s · first reply 5.2 s · done 5.8 s";
 
 requireBuilt();
 
@@ -53,6 +55,7 @@ async function spoken(browser, width, height) {
     const file = taskFile(server.home);
     const saved = JSON.parse(readFileSync(file, "utf8"));
     saved.transcript[0].spoken = { headset: "Quest 3", context: CONTEXT };
+    saved.task.voice = { utterance: 1, start: 1, end: 2, run: 0, line: STAGES };
     writeFileSync(file, JSON.stringify(saved));
     server = await startServer(server.port, { dir: PROJECT, fakeAgent: FAIL, home: server.home, token: server.token });
     await reopen(page, server.url);
@@ -63,6 +66,13 @@ async function spoken(browser, width, height) {
     await expect(said).toHaveText(`Said in Quest 3${SAID}`);
     await expect(said.locator(".spoken-from")).toHaveAttribute("title", CONTEXT);
     await shot(page, `voice-spoken-${width}`);
+
+    // Its task page: the stages, on one line.
+    await page.getByRole("navigation", { name: "Views" }).getByRole("button", { name: "Tasks" }).click();
+    const tasks = page.getByRole("complementary", { name: "Tasks" });
+    await tasks.getByTestId("task-row").filter({ hasText: SAID }).locator(".task-main").click();
+    await expect(page.getByTestId("task-page").getByTestId("voice-timing")).toHaveText(`Spoken: ${STAGES}`);
+    await shot(page, `voice-stages-${width}`);
     expect(errors).toEqual([]);
   } finally {
     await page.close();

@@ -12,9 +12,9 @@ use super::{AssetHandle, AssetPipeline, AssetPipelineContext, BuiltAssetPipeline
 /// byte-loads failed (missing file, HTTP error). The "all settled" gate — a
 /// loading screen's dismiss condition — is `total > 0 && loaded +
 /// failed.len() == total`: failures never join `loaded`, and frame one can
-/// deliver `0/0` before anything is referenced. Decode failures are NOT
-/// here: the pipelines fall back (checkerboard / empty model) and count as
-/// loaded.
+/// deliver `0/0` before anything is referenced. Bytes a pipeline cannot
+/// decode are NOT here: the pipelines fall back (checkerboard / empty model)
+/// and count as loaded. A decoder that crashes on a worker thread is.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct AssetProgress {
     pub loaded: usize,
@@ -72,6 +72,8 @@ pub struct AssetCache {
     /// Paths whose bytes came from the debug protocol rather than disk/CDN.
     /// The final manifest of each sync removes uploads deleted on the host.
     uploaded_paths: Mutex<HashSet<String>>,
+    /// Decode on worker threads ([`AssetCache::decode_in_background`]).
+    background: bool,
 }
 
 impl AssetCache {
@@ -80,7 +82,18 @@ impl AssetCache {
             bytes_cache: Arc::new(Mutex::new(HashMap::new())),
             progress: Arc::new(Mutex::new(ProgressState::default())),
             uploaded_paths: Mutex::new(HashSet::new()),
+            background: false,
         }
+    }
+
+    /// Decode assets on worker threads instead of the thread that polls
+    /// their handles (the render thread): a large model takes seconds to
+    /// decode, which an interactive shell must not spend in one frame. An
+    /// asset then shows its fallback for the frames its decode takes, so a
+    /// shell whose captures must be reproducible leaves this off.
+    pub fn decode_in_background(mut self) -> Self {
+        self.background = true;
+        self
     }
 
     /// The current loading snapshot (see [`AssetProgress`]).
@@ -253,7 +266,7 @@ impl AssetCache {
             && !progress.failed.contains_key(path)
     }
 
-    pub fn load_asset_with_pipeline<T: 'static>(
+    pub fn load_asset_with_pipeline<T: Send + 'static>(
         self: &Arc<Self>,
         pipeline: Arc<BuiltAssetPipeline<T>>,
         asset_path: &str,
@@ -284,15 +297,12 @@ impl AssetCache {
             let context = super::AssetPipelineContext {};
             let default_asset = pipeline.unloaded_asset(context);
 
-            let context = super::AssetPipelineContext {};
-            let inner_pipeline = pipeline.clone();
+            let decoder = pipeline.decoder();
             // If bytes are already cached, return a handle immediately
             let future = async move {
                 // Pushed projects (`functor run vr`) pre-seed this cache: resolve a .gltf's files here too.
                 let bytes = super::gltf_externals::embed_externals(&asset_path_owned, bytes).await;
-                let decoded = Arc::new(inner_pipeline.process(bytes, self_arc.as_ref(), context));
-                progress.lock().unwrap().loaded.insert(asset_path_owned);
-                Ok(decoded)
+                decode(decoder, self_arc, asset_path_owned, bytes).await
             };
             let handle = Arc::new(AssetHandle::new(future, Arc::new(default_asset)));
             // Cache the handle like the cold path below does — without this,
@@ -339,16 +349,104 @@ impl AssetCache {
             // .gltf bytes stay in `bytes_cache` (and so in the hot-reload watch set) either way.
             let bytes = super::gltf_externals::embed_externals(&asset_path_owned, bytes).await;
 
-            let pipeline = pipeline.clone();
-            let context = AssetPipelineContext {};
-            let decoded = Arc::new(pipeline.process(bytes, self_arc.as_ref(), context));
-            progress.lock().unwrap().loaded.insert(asset_path_owned);
-            Ok(decoded)
+            decode(pipeline.decoder(), self_arc, asset_path_owned, bytes).await
         };
 
         let handle = Arc::new(AssetHandle::new(bytes_future, Arc::new(default_asset)));
         outer_pipeline.cache(asset_path, handle.clone());
         handle
+    }
+}
+
+impl AssetCache {
+    /// Count `path`'s finished decode as loaded, or failed with `error`.
+    /// Not a path forgotten meanwhile: it would count past the total.
+    fn count_decoded(&self, path: &str, error: Option<&String>) {
+        let mut progress = self.progress.lock().unwrap();
+        if !progress.started.contains(path) {
+            return;
+        }
+        match error {
+            None => progress.loaded.insert(path.to_string()),
+            Some(error) => progress.failed.insert(path.to_string(), error.clone()).is_none(),
+        };
+    }
+}
+
+/// Run `pipeline` over `path`'s `bytes` and count the outcome: on a worker
+/// thread when `cache` decodes in the background (the future is pending until
+/// it answers), else here. The worker counts it, so an asset no longer drawn
+/// (its handle no longer polled) still settles.
+async fn decode<T: Send + 'static>(
+    pipeline: Arc<dyn AssetPipeline<T>>,
+    cache: Arc<AssetCache>,
+    path: String,
+    bytes: Vec<u8>,
+) -> Result<Arc<T>, String> {
+    if !cache.background || cfg!(target_arch = "wasm32") {
+        let decoded = pipeline.process(bytes, &cache, AssetPipelineContext {});
+        cache.count_decoded(&path, None);
+        return Ok(Arc::new(decoded));
+    }
+    let (done, decoded) = futures::channel::oneshot::channel();
+    let counting = cache.clone();
+    let counted = path.clone();
+    decoders().execute(move || {
+        let process = || pipeline.process(bytes, &cache, AssetPipelineContext {});
+        let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(process))
+            .map_err(|_| "the asset's decoder crashed".to_string());
+        cache.count_decoded(&path, decoded.as_ref().err());
+        let _ = done.send(decoded);
+    });
+    match decoded.await {
+        Ok(decoded) => decoded.map(Arc::new),
+        // Never run: no decode worker could start.
+        Err(_) => {
+            let error = "no asset decode thread could start".to_string();
+            counting.count_decoded(&counted, Some(&error));
+            Err(error)
+        }
+    }
+}
+
+/// The process's asset decode workers.
+fn decoders() -> &'static Decoders {
+    static DECODERS: std::sync::OnceLock<Decoders> = std::sync::OnceLock::new();
+    DECODERS.get_or_init(Decoders::start)
+}
+
+type Decode = Box<dyn FnOnce() + Send>;
+
+/// A few threads draining one queue of decodes.
+struct Decoders {
+    queue: std::sync::mpsc::Sender<Decode>,
+}
+
+impl Decoders {
+    fn start() -> Decoders {
+        let (queue, decodes) = std::sync::mpsc::channel::<Decode>();
+        let decodes = Arc::new(Mutex::new(decodes));
+        // As many as the job pool, and below the frame's threads like it.
+        for worker in 0..crate::jobs::workers() {
+            let decodes = decodes.clone();
+            let spawned = std::thread::Builder::new().name(format!("functor-asset-{worker}")).spawn(move || {
+                crate::jobs::lower_priority();
+                loop {
+                    let next = decodes.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    let Ok(decode) = next else { return };
+                    decode();
+                }
+            });
+            if let Err(e) = spawned {
+                log::warn!("couldn't start an asset decode thread: {e}");
+            }
+        }
+        Decoders { queue }
+    }
+
+    fn execute(&self, decode: impl FnOnce() + Send + 'static) {
+        // With no worker left the decode is dropped, and its load fails.
+        let _ = self.queue.send(Box::new(decode));
     }
 }
 
@@ -387,7 +485,7 @@ ignored files aren't pushed"
 /// landed, and even after a hot-reload eviction. An abandoned in-flight
 /// placeholder would otherwise sit in `Sub.assets`' `total` forever and
 /// hold the settled gate (`loaded + failed == total`) open.
-pub fn resolve_while_pending<T: 'static>(
+pub fn resolve_while_pending<T: Send + 'static>(
     cache: &Arc<AssetCache>,
     pipeline: &Arc<super::BuiltAssetPipeline<T>>,
     primary: &AssetHandle<T>,
@@ -410,7 +508,7 @@ pub enum WhilePendingState<T> {
     Failed,
 }
 
-pub fn resolve_while_pending_state<T: 'static>(
+pub fn resolve_while_pending_state<T: Send + 'static>(
     cache: &Arc<AssetCache>,
     pipeline: &Arc<super::BuiltAssetPipeline<T>>,
     primary: &AssetHandle<T>,
@@ -482,6 +580,65 @@ mod tests {
             }
         }
         panic!("asset did not settle");
+    }
+
+    /// Where it ran, or a panic for the bytes `boom`.
+    struct DecodedOn;
+    impl AssetPipeline<Option<std::thread::ThreadId>> for DecodedOn {
+        fn process(&self, bytes: Vec<u8>, _: &AssetCache, _: AssetPipelineContext) -> Option<std::thread::ThreadId> {
+            assert!(bytes != b"boom", "a decoder that panics");
+            Some(std::thread::current().id())
+        }
+        fn unloaded_asset(&self, _: AssetPipelineContext) -> Option<std::thread::ThreadId> {
+            None
+        }
+    }
+
+    /// Poll like a frame loop until the handle settles.
+    fn wait<T>(handle: &AssetHandle<T>) -> AssetPollState<T> {
+        for _ in 0..2000 {
+            match handle.poll_state() {
+                AssetPollState::Loading => std::thread::sleep(std::time::Duration::from_millis(1)),
+                settled => return settled,
+            }
+        }
+        panic!("asset did not settle");
+    }
+
+    #[test]
+    fn a_background_cache_decodes_off_the_polling_thread() {
+        let pipeline = super::super::build_pipeline(Box::new(DecodedOn));
+        let here = std::thread::current().id();
+        let inline = Arc::new(AssetCache::new());
+        inline.replace_uploaded("a.bin", b"a".to_vec());
+        let handle = inline.load_asset_with_pipeline(pipeline.clone(), "a.bin");
+        assert!(matches!(handle.poll_state(), AssetPollState::Loaded(on) if *on == Some(here)));
+
+        let background = Arc::new(AssetCache::new().decode_in_background());
+        background.replace_uploaded("b.bin", b"b".to_vec());
+        background.replace_uploaded("c.bin", b"boom".to_vec());
+        let pipeline = super::super::build_pipeline(Box::new(DecodedOn));
+        let handle = background.load_asset_with_pipeline(pipeline.clone(), "b.bin");
+        assert!(matches!(wait(&handle), AssetPollState::Loaded(on) if on.is_some_and(|on| on != here)));
+        assert_eq!(background.progress().loaded, 1);
+        // An asset no longer drawn (its handle never polled again) settles too.
+        background.replace_uploaded("e.bin", b"e".to_vec());
+        // Polled once (the decode starts), then never again.
+        let _ = background.load_asset_with_pipeline(pipeline.clone(), "e.bin").poll_state();
+        for _ in 0..2000 {
+            if background.progress().loaded == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(background.progress().loaded, 2);
+        // A decoder that panics fails its load; the workers carry on.
+        let crashed = background.load_asset_with_pipeline(pipeline.clone(), "c.bin");
+        assert!(matches!(wait(&crashed), AssetPollState::Failed));
+        assert_eq!(background.progress().failed.len(), 1);
+        background.replace_uploaded("d.bin", b"d".to_vec());
+        let after = background.load_asset_with_pipeline(pipeline, "d.bin");
+        assert!(matches!(wait(&after), AssetPollState::Loaded(_)));
     }
 
     #[test]

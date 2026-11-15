@@ -88,6 +88,10 @@ opt-level = 3
 [profile.dev.package.curve25519-dalek]
 opt-level = 3
 
+# The speech model's SHA-256 check at load: ~10 s unoptimized, ~1 s optimized.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # The interpreter's eval depth cap (functor-lang `MAX_EVAL_DEPTH`) is sized
 # for optimized frames: unoptimized ones are ~10x larger, so deep Functor
 # recursion would overflow a 2 MiB test or worker stack before the cap trips.

@@ -627,3 +627,82 @@ each turn is measured rather than guessed:
   alone: the project level wrote 26k (more than the full level), isolated
   read 42k of its 51k. Comparing costs needs repeated runs.
 - One run each.
+
+### Voice latency (2026-11-14, this MacBook Air M3, 8 cores, shared with other agents' builds)
+
+One real utterance before this work: 2.9 s of speech; release to task
+created 11.0 s; the run 32.2 s (7 turns, 26.4 s API, $1.15). Each spoken
+request now keeps its stage times on its task (`voice`, shown on the task
+page as one line), in `<home>/voice.log` once its run ends, and in
+`--metrics` records:
+
+`heard 0.0 s · transcribed 0.2 s · agent started 2.1 s · first reply 5.2 s · done 5.8 s`
+
+Each stage is since the release, as near as the desktop can tell: the
+headset streams the clip while the button is held, so "heard" is how far
+behind the stream was when it ended.
+
+**Where the 11 s went: speech-to-text on a loaded CPU.** whisper.cpp ran on
+8 threads, every core. Its threads wait for each other at each step, so
+when other processes take cores, one clip stalls. The clip itself was on
+the desktop almost at once.
+
+Speech-to-text, `cargo run --release -p functor-stt --features whisper
+--example stt_bench` (3 fresh processes per row, interleaved; `load` is the
+1-minute load average; ms min / median / max):
+
+| | load | 2.7 s clip | 5.1 s clip | 9.8 s clip |
+| --- | --- | --- | --- | --- |
+| before: CPU, 8 threads | 21–49 | 401 / 490 / 1310 | 442 / 717 / 1057 | 742 / 1607 / 2032 |
+| before: CPU, 8 threads | 51–127 | 1614 / 2412 / 56040 | 4242 / 18777 / 62529 | 948 / 13018 / 89842 |
+| CPU, 4 threads | 35–45 | 395 / 450 / 1058 | 380 / 609 / 972 | 522 / 654 / 1154 |
+| CPU, 4 threads | 65–152 | 396 / 398 / 429 | 440 / 445 / 505 | 450 / 503 / 593 |
+| after: Metal, 4 threads | 33–46 | 112 / 121 / 189 | 136 / 167 / 173 | 220 / 254 / 337 |
+| after: Metal, 4 threads | 54–136 | 115 / 139 / 176 | 151 / 165 / 192 | 206 / 337 / 398 |
+
+The first use also paid, before: the model's SHA-256 check (0.4–1.9 s
+release; 7–13 s in a debug build, now ~1 s) and its load (0.1–0.4 s).
+Metal compiles its shaders on the first load of each new build (7–13 s
+here), then loads in 0.2–0.6 s. Both now happen in the background when the app starts (if the
+model is on disk), with a second of silence transcribed to warm it, so
+the first clip waits only if it comes within a second or two of the start.
+
+Link to task, `FUNCTOR_VOICE_BENCH=1 cargo test -p functor-app --features
+whisper --test device_link voice_stages_on_this_machine -- --nocapture`
+(the stub headset sends each clip over loopback; debug app; load 14–55;
+3 rounds): end of clip to task started 0.2–0.4 s; the first clip, 2 s
+after start, 0.4–0.8 s (0.2–0.7 s of it the preload finishing).
+
+Agent kick-off, three one-turn live runs (Claude, the user's own setup,
+the real `functor mcp --attach` on the stub's tunnel; load 16–20):
+
+| stage | time |
+| --- | --- |
+| task started → tool server listening, agent spawned | 68–75 ms |
+| spawned → Claude Code's first event | 1.8–2.3 s |
+| first event → first text (one API turn) | 2.7–3.4 s |
+| one-word answer, in all | 5.2–6.4 s, $0.37 (39k input, 23k written to cache) |
+
+Not used:
+
+- **Encoding only the clip's length** (`audio_ctx`) instead of 30 s: no
+  faster on Metal (134 against 137 ms), and the 2.7 s clip came back with
+  its sentence twice.
+- **The tiny model**: 58 against 121 ms on the 2.7 s clip, the same words
+  on clips under 6 s ("3" for "three" on the long one), but a second model
+  to fetch for well under 0.1 s.
+- **Transcribing while the clip arrives**: the whole clip takes 0.1–0.3 s.
+
+Also: whisper.cpp's C++ build hung at its end whenever it started the
+`sccache` server (3 of 3 cold builds here; neither of two others, one
+with the server already running, one with `GGML_CCACHE=OFF`). ggml uses `sccache` or `ccache` from
+`PATH` as its compiler launcher; a server started inside the build keeps
+the build's make jobserver pipe and its tokens, so make waits for them
+forever. `.cargo/config.toml` now sets `GGML_CCACHE=OFF`. The Intel
+Homebrew `cmake` first on `PATH` is not the cause.
+
+What is left is the agent: about 2 s for Claude Code to start, then each
+API turn (a one-word answer is about 39k input tokens with the user's own
+setup). The 32 s run was 7 turns; fewer turns for a question, or a smaller
+setup (the project's own or isolated scope, about a third less a turn), are
+what would cut it.
