@@ -66,13 +66,16 @@ test(
       `three steps at Tuning.speed 1.0 should add ~0.3 to ${base}, got ${before}`,
     );
 
+    // A reload has landed once the program revision moves: the log line can
+    // precede the swap, and a step taken before it runs the old program.
+    const revision = async () => (await runner.state()).clock.program_revision;
+    const reloaded = (from: number, description: string) =>
+      waitFor(revision, (now) => now > from, { timeoutMs: 10_000, description });
+
     // Edit the SIBLING module only — the entry file is untouched.
+    const loaded = await revision();
     writeFileSync(tuningPath, config("-5.0"));
-    await waitFor(
-      async () => runner.logs(),
-      (lines) => lines.some((l) => l.includes("hot-reloaded")),
-      { timeoutMs: 10_000, description: "sibling edit observed as hot reload" },
-    );
+    await reloaded(loaded, "sibling edit observed as hot reload");
     await runner.step(DT);
     const after = spinOf((await runner.state()).model_debug);
 
@@ -100,13 +103,9 @@ test(
 
     // Fixing the sibling reloads again, and the model STILL survives —
     // three generations of state across two sibling edits and one break.
+    const edited = await revision();
     writeFileSync(tuningPath, config("2.0"));
-    await waitFor(
-      async () => runner.logs(),
-      (lines) =>
-        lines.filter((l) => l.includes("hot-reloaded")).length >= 2,
-      { timeoutMs: 10_000, description: "fixed sibling reloaded" },
-    );
+    await reloaded(edited, "fixed sibling reloaded");
     await runner.step(DT);
     const fixed = spinOf((await runner.state()).model_debug);
     assert.ok(
