@@ -138,6 +138,8 @@ test("the headset note says where the game runs, its clock, and the fix while aw
     detail: "23.0 of 67.5 MB (34%), 4 of 9 files",
     fix: null,
   });
+  const held = { ...linked, loading: ["up_to_date", "UP TO DATE", "Nothing to send", "71.0 MB already on the headset"] } as Device["state"];
+  assert.equal(headsetNote(quest("a", "Quest 3", held), session({ kind: "starting" }), null).title, "Up to date on Quest 3");
   const assets = { ...linked, loading: ["assets", "LOADING ASSETS", "2 of 6"] } as Device["state"];
   assert.equal(headsetNote(quest("a", "Quest 3", assets), running, clock).title, "Loading assets on Quest 3");
   const refused = { ...linked, loading: ["failed", "LOAD FAILED", "game.fun:3:1: unknown name"] } as Device["state"];

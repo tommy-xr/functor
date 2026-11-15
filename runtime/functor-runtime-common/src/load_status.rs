@@ -41,6 +41,13 @@ pub struct Push {
     pub from_manifest: bool,
 }
 
+impl Push {
+    /// A manifest's push the device already held all of.
+    fn nothing_to_send(&self) -> bool {
+        self.files == 0 && self.from_manifest
+    }
+}
+
 /// What the shell knows this frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Facts {
@@ -228,7 +235,7 @@ pub fn kind(step: &Step) -> &'static str {
         Step::Waiting => "waiting",
         Step::Connected(_) => "connected",
         // A push the device already holds all of.
-        Step::Receiving { of: Some(Push { files: 0, from_manifest: true, .. }), .. } => "up_to_date",
+        Step::Receiving { of: Some(push), .. } if push.nothing_to_send() => "up_to_date",
         Step::Receiving { .. } => "receiving",
         Step::Checking => "starting",
         Step::Assets { .. } => "assets",
@@ -260,7 +267,7 @@ pub fn lines(step: &Step) -> Vec<Line> {
                     let sent = format!("{:.1} of {:.1} MB ({percent}%)", mb(bytes), mb(*total));
                     card("RECEIVING PROJECT", &format!("{sent}, {} of {}", (*files).min(*all), count(*all)))
                 }
-                Some(Push { files: 0, from_manifest: true, .. }) => card("UP TO DATE", "Nothing to send"),
+                Some(push) if push.nothing_to_send() => card("UP TO DATE", "Nothing to send"),
                 // Only empty files to send.
                 Some(Push { files: all, .. }) if *all > 0 => {
                     card("RECEIVING PROJECT", &format!("{} of {}", (*files).min(*all), count(*all)))
