@@ -2834,14 +2834,11 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
     // Its reply is said aloud (D47), and not before the first clip started.
-    let mut spoke = String::new();
-    for _ in 0..50 {
-        spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
-        if spoke.contains("play ") {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    let spoke = until("the reply is said", || {
+        let spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
+        spoke.contains("play ").then_some(spoke)
+    })
+    .await;
     assert!(spoke.starts_with("play "), "{spoke:?}");
     // Its one record (D43) went through every step to the reload.
     let reloaded = |s: &Value| {

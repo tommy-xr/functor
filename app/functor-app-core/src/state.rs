@@ -8933,19 +8933,7 @@ mod tests {
         ready.speak = true;
         ready.tracks_changes = true;
         let (s, commands) = update(ready.clone(), said("go", 1));
-        let Some(Command::ReserveTask { voice, .. }) =
-            commands.into_iter().find(|c| matches!(c, Command::ReserveTask { .. }))
-        else {
-            panic!("reserved");
-        };
-        let reserved = Event::NewTask {
-            id: Ok(4),
-            message: "go".to_string(),
-            harness: Harness::Claude,
-            voice,
-            scope: Default::default(),
-        };
-        let (s, commands) = update(s, reserved);
+        let (s, commands) = reserved(s, commands, 4);
         assert!(spec(&commands).message.ends_with(crate::reply::ASK));
         let baseline = Event::Run {
             task: 4,
@@ -8978,6 +8966,18 @@ mod tests {
         let (answered, _) = update(s.clone(), change(Change::default()));
         let (_, commands) = update(answered, ended(4, 0));
         assert_eq!(said_aloud(&commands), ["The ball is red now."]);
+        // Its change never reloaded: a failure, said.
+        let (waiting, _) = update(AppState { clock: 1_000, ..s }, change(one_file(1)));
+        let (waiting, _) = update(waiting, ended(4, 0));
+        let late = AppState {
+            clock: 1_000 + voice::RELOAD_GRACE_MS,
+            ..waiting
+        };
+        let (_, commands) = update(late, Event::Link(LinkEvent::Tick));
+        assert_eq!(
+            said_aloud(&commands),
+            ["That did not work: the agent finished, but the game did not reload"]
+        );
         // A failure.
         let error = Event::Run {
             task: 4,
@@ -8989,8 +8989,14 @@ mod tests {
         let (_, commands) = update(working.clone(), error);
         assert_eq!(said_aloud(&commands), ["That did not work: boom"]);
         // Stopped by the user: the toast says so; nothing is said.
-        let (_, commands) = update(working, client(ClientMsg::StopTask { task: 4 }));
+        let (_, commands) = update(working.clone(), client(ClientMsg::StopTask { task: 4 }));
         assert_eq!(stages(&commands), [(1, Stage::Failed("stopped".to_string()))]);
+        assert_eq!(said_aloud(&commands), [] as [&str; 0]);
+        // The game left the headset mid-run: the job lost track, but the
+        // run goes on; nothing is said.
+        let (_, commands) = update(working, client(ClientMsg::StopSession));
+        let gone = Stage::Failed("the game stopped on the headset".to_string());
+        assert_eq!(stages(&commands), [(1, gone)]);
         assert_eq!(said_aloud(&commands), [] as [&str; 0]);
         // Typed: no line asked for.
         let (_, commands) = update(ready, nth_task(1, "go"));

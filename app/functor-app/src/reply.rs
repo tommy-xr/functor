@@ -1,7 +1,7 @@
 //! Spoken replies, the shell's half (D47): the core's text turned into
 //! sound here on this machine and played on its speakers. One reply at a
-//! time: a new one replaces one still playing, and [`Replies::stop`] (the
-//! user started talking) silences it. Off with `FUNCTOR_APP_SPEAK=off`.
+//! time: a new one replaces one still playing, and while the user talks
+//! ([`Replies::talking`]) none plays. Off with `FUNCTOR_APP_SPEAK=off`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -20,8 +20,16 @@ pub trait Output: Send + Sync {
 pub struct Replies {
     synth: Box<dyn Synth>,
     output: Box<dyn Output>,
-    /// The reply asked for last (its number), and what is playing.
-    now: Mutex<(u64, Option<Box<dyn Send>>)>,
+    now: Mutex<Now>,
+}
+
+#[derive(Default)]
+struct Now {
+    /// The reply asked for last (its number).
+    reply: u64,
+    playing: Option<Box<dyn Send>>,
+    /// A headset's clip is arriving: replies are dropped.
+    talking: bool,
 }
 
 impl Replies {
@@ -60,21 +68,27 @@ impl Replies {
     /// [`Replies::say`]. Taken where replies are asked for, so the last
     /// asked for is the one heard.
     pub fn next(&self) -> u64 {
-        let mut now = self.now.lock().unwrap();
-        *now = (now.0 + 1, None);
-        now.0
+        let mut now = self.lock();
+        now.reply += 1;
+        now.playing = None;
+        now.reply
     }
 
-    /// Says reply `mine`, unless stopped or replaced meanwhile: how long
-    /// it plays for. Blocks while it is synthesised: call it off the async
+    /// A poisoned lock still holds a usable state: never a panic here.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Now> {
+        self.now.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Says reply `mine`, unless the user is talking or it was replaced
+    /// meanwhile: how long it plays for. Blocks while it is synthesised: call it off the async
     /// threads.
     pub fn say(&self, mine: u64, text: &str) -> Result<std::time::Duration, String> {
         let pcm = self.synth.synth(text)?;
         let seconds = pcm.len() as f32 / functor_stt::SAMPLE_RATE as f32;
-        let mut now = self.now.lock().unwrap();
-        // Stopped, or replaced, while it was synthesised.
-        if now.0 == mine {
-            now.1 = Some(self.output.play(pcm)?);
+        let mut now = self.lock();
+        // Talking, or replaced, while it was synthesised.
+        if now.reply == mine && !now.talking {
+            now.playing = Some(self.output.play(pcm)?);
         }
         Ok(std::time::Duration::from_secs_f32(seconds))
     }
@@ -83,17 +97,23 @@ impl Replies {
     /// it has played, to hear the voice without a headset or an agent.
     pub fn hear(text: &str) -> Result<(), String> {
         let replies = Replies::from_env().ok_or(
-            "there is no voice here: replies are spoken on macOS, unless FUNCTOR_APP_SPEAK=off",
+            "there is no voice here: replies are spoken on macOS, unless FUNCTOR_APP_SPEAK=off, \
+or FUNCTOR_APP_FAKE_AGENT or FUNCTOR_APP_FAKE_TRANSCRIPT is set without FUNCTOR_APP_FAKE_VOICE",
         )?;
         let length = replies.say(replies.next(), text)?;
         std::thread::sleep(length + std::time::Duration::from_millis(300));
         Ok(())
     }
 
-    /// Silences the reply playing, and one still being synthesised.
-    pub fn stop(&self) {
-        let mut now = self.now.lock().unwrap();
-        *now = (now.0 + 1, None);
+    /// The user started talking (`true`: the reply playing, and one still
+    /// being synthesised, are silenced, and later ones dropped) or stopped.
+    pub fn talking(&self, talking: bool) {
+        let mut now = self.lock();
+        if talking {
+            now.reply += 1;
+            now.playing = None;
+        }
+        now.talking = talking;
     }
 }
 
@@ -138,6 +158,7 @@ impl Output for Log {
 mod mac {
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
     use super::{Output, Synth};
 
@@ -149,27 +170,44 @@ mod mac {
     /// download, and nothing leaves the machine.
     pub struct Say;
 
+    /// A `say` that takes longer is killed: a hung one must not hold a
+    /// blocking thread.
+    const SAY_TIMEOUT: Duration = Duration::from_secs(10);
+
     impl Synth for Say {
         fn synth(&self, text: &str) -> Result<Vec<i16>, String> {
             let path = temp();
             let format = format!("--data-format=LEI16@{}", functor_stt::SAMPLE_RATE);
             // After `--`, so none of the text is read as an option.
-            let run = || {
-                Command::new("/usr/bin/say")
+            let run = || -> Result<_, String> {
+                let mut child = Command::new("/usr/bin/say")
                     .arg("-o")
                     .arg(&path)
                     .args([format.as_str(), "--", text])
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
-                    .status()
+                    .spawn()
+                    .map_err(|e| format!("cannot run say: {e}"))?;
+                let deadline = Instant::now() + SAY_TIMEOUT;
+                loop {
+                    if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                        return Ok(status);
+                    }
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!("say took over {} s", SAY_TIMEOUT.as_secs()));
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             };
             let result = match run() {
                 Ok(status) if status.success() => std::fs::read(&path)
                     .map_err(|e| e.to_string())
                     .and_then(|wav| functor_stt::read_wav(&wav)),
                 Ok(status) => Err(format!("say ended with {status}")),
-                Err(e) => Err(format!("cannot run say: {e}")),
+                Err(e) => Err(e),
             };
             let _ = std::fs::remove_file(&path);
             result
@@ -283,10 +321,17 @@ mod tests {
         replies.say(older, "old").unwrap();
         assert_eq!(seen.try_iter().collect::<Vec<_>>(), [Seen::Stop, Seen::Play(5)]);
         // The user starts talking.
-        replies.stop();
+        replies.talking(true);
         assert_eq!(seen.try_iter().collect::<Vec<_>>(), [Seen::Stop]);
-        replies.stop();
+        replies.talking(true);
         assert!(seen.try_recv().is_err(), "nothing left to stop");
+        // An earlier request's reply, while still talking: not heard.
+        replies.say(replies.next(), "late").unwrap();
+        assert!(seen.try_recv().is_err(), "said over the user");
+        // Once the clip is in, replies play again.
+        replies.talking(false);
+        replies.say(replies.next(), "four").unwrap();
+        assert_eq!(seen.try_recv(), Ok(Seen::Play(4)));
     }
 
     #[test]
@@ -303,7 +348,7 @@ mod tests {
         };
         // Talking began before it was ready.
         synthesising.recv().unwrap();
-        replies.stop();
+        replies.talking(true);
         go.send(()).unwrap();
         saying.join().unwrap().unwrap();
         assert!(seen.try_recv().is_err());

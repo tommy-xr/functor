@@ -28,9 +28,6 @@ pub enum HearingStage {
     Failed { reason: String },
 }
 
-/// Why a run the user stopped failed.
-const STOPPED: &str = "stopped";
-
 /// A transcribed utterance from a linked headset.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Utterance {
@@ -258,7 +255,7 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
                     .clone()
                     .unwrap_or_else(|| "the agent failed".to_string()),
             )),
-            Some(Item::Stopped) => end(Stage::Failed(STOPPED.to_string())),
+            Some(Item::Stopped) => end(Stage::Failed("stopped".to_string())),
             _ => end(Stage::Failed("the run ended".to_string())),
         }
     });
@@ -274,7 +271,10 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
 }
 
 /// What is said aloud as `task`'s run ends as `stage`; `before` is its
-/// change when the run started. A run the user stopped is not answered.
+/// change when the run started. A failure is said only when the run
+/// finished (it failed, or its change did not reload): not one the user
+/// stopped, nor one this job lost track of (the game left the headset
+/// mid-run, the task was deleted or never started).
 fn said(
     state: &AppState,
     task: u64,
@@ -282,11 +282,13 @@ fn said(
     before: &Option<crate::changes::Change>,
     stage: &Stage,
 ) -> Option<String> {
-    if matches!(stage, Stage::Failed(reason) if reason == STOPPED) {
-        return None;
-    }
     let task = state.tasks.iter().find(|t| t.id == task);
     let items = task.map_or(&[][..], |t| &t.transcript[..]);
+    let ended = run.and_then(|r| outcome(items, r));
+    let finished = matches!(ended, Some(Item::Finished { .. }));
+    if matches!(stage, Stage::Failed(_)) && !finished {
+        return None;
+    }
     let fresh = |t: &crate::tasks::Task| crate::tasks::has_change(t) && t.change != *before;
     let review = state.tracks_changes && task.is_some_and(fresh);
     // A run that never started has no replies: past the end.
