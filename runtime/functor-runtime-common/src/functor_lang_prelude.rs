@@ -14593,6 +14593,7 @@ size: Vec3.make(1.0, 1.0, 1.0), force: Vec3.make(0.0, 0.0, 0.0), turbulence: 0.0
             build: None,
             xr: None,
             audio: None,
+            load_status: None,
             haptics: None,
             frame_stats: None,
             link: None,
