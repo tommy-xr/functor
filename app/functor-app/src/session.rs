@@ -353,6 +353,15 @@ impl Driver {
             }
             // Without a client to answer there is no one to list for.
             Command::ListDirs { .. } => {}
+            // Best effort, and quiet: stderr may be closed by now.
+            Command::LogVoice { line } => {
+                use std::io::Write;
+                let log = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(self.home.join("voice.log"));
+                let _ = log.and_then(|mut f| writeln!(f, "{line}"));
+            }
             Command::StartRun(spec) => self.runs.start(*spec),
             Command::StopRun { task, run } => self.runs.stop(task, run).await,
             Command::StartReview(spec) => self.runs.start_review(*spec),

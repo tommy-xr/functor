@@ -304,12 +304,14 @@ pub enum LinkEvent {
         action: PanelAction,
     },
     /// `conn`'s headset said `text` (transcribed), as its utterance
-    /// `utterance`; `context` is its capsule, rendered.
+    /// `utterance`; `context` is its capsule, rendered; `timing`, its clip
+    /// and transcription's stages.
     Utterance {
         conn: u64,
         utterance: u64,
         text: String,
         context: Option<String>,
+        timing: crate::voice_timing::VoiceTiming,
     },
     /// Connection `conn`'s request `utterance` before it has text.
     Hearing {
