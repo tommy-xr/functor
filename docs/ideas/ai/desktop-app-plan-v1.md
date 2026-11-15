@@ -158,6 +158,24 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 
 Code city as a rendering of presentations (D33).
 
+### The code city (D46)
+
+Design and budgets: [`docs/code-city.md`](../../code-city.md).
+
+| # | Task | Verify |
+|---|---|---|
+| C1 | `functor-city` crate on `functor-lang`: the analyzer and snapshot v1 (files, definitions with kind, span, size and shape hash, types with members, reference sites, the loop's entry points); `functor city --json`. | Snapshot tests over three examples. |
+| S12 | Spike before C2: replay the history of `examples/vr-lab` and two small examples through the slot layout; measure how far lots move per commit against a weight-sorted treemap. | Findings appended here. |
+| C2 | History per definition from git (shape hash per blob, cached); the model: stable layout, stacks, marks; the skyline pane. | Model unit tests; a pane capture; an edit moves no lot outside its file. |
+| C3 | Execution light and call dots while paused and scrubbing, joined from `/trace` coverage; full speed after S10. | A scripted pause lights the expected definitions; `frame_bench` unchanged. |
+| S10 | Spike before C3's full-speed half: per-definition and per-pair counters at call boundaries behind a flag, against sampled coverage replay. | `frame_bench` on and off; findings appended here. |
+| C4 | Agents and forks as layers, after S8 and the contract's agent and fork steps; kept tasks as events. | Recorded workspace state drives the skyline. |
+| C5 | Tours: a `present` step focuses its definitions. | Core test: step → focus. |
+| S11 | Spike before C6: a generated district of 50, 150 and 500 buildings with dots and labels as a Functor scene on the Quest, under passthrough beside a game. | Legibility and frame time; findings appended here. |
+| C6 | The district in the workshop scene, drawing the same marks (after S6, S11). | Emulator captures; device when attached. |
+| S13 | Spike for the city at scale: 2,000 and 8,000 instances whose tints change every frame — a rebuilt list, two instanced sets, a prototype per-instance attribute buffer. | Interpreter time, `allocs/frame`, device frame time; findings appended here. |
+| C7 | Files may draw themselves: the optional pure `diagram` binding per file or inline module, bounded in time and size, with a fault mark; a picture in the skyline and the editor, a scene in the workshop. Any time after C3. | Core tests for the budgets and the fault; a capture of a diagram above its file. |
+
 Developer menu and build info; agent-authored tuning UI (D7), which needs UI
 render targets wired in VR and the VR gamma fix first; TTS (Kokoro) played in
 the headset; focus mode; places the agent characters walk to (D34).
