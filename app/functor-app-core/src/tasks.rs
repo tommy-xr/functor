@@ -126,6 +126,11 @@ pub struct Task {
     /// Last active, as `created_at`.
     #[serde(default)]
     pub updated_at: Option<u64>,
+    /// Its latest spoken request's stage times (a typed message after it
+    /// leaves them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub voice: Option<crate::voice_timing::VoiceTiming>,
     /// Sent as `ServerMsg::Transcript` and `ServerMsg::Item`, never with the
     /// state, which is resent on every session poll.
     #[serde(skip)]
@@ -186,6 +191,12 @@ pub struct Run {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub switched: bool,
+    /// The game session that was playing when the run took it (or that the
+    /// user set playing since): resumed when the run ends, as the agent's
+    /// `step` leaves it paused.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub playing: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +399,8 @@ pub enum RunEvent {
     },
     /// The game as the baseline was taken (sent with it when asked).
     Moment(Moment),
+    /// The tool server listens and the agent process is being started.
+    Spawned,
     Agent(AgentEvent),
     /// The agent and its tool server are gone; `error` if the run could not
     /// start or broke.
@@ -804,6 +817,7 @@ mod tests {
             review: None,
             created_at: None,
             updated_at: None,
+            voice: None,
             transcript: vec![Item::User {
                 text: message.to_string(),
                 spoken: None,

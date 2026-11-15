@@ -35,8 +35,10 @@ use crate::tasks::{
     apply, derive_status, end_run, has_change, renamed, stop_run, title, AgentEvent, Harness,
     Item, Run, RunEvent, Scope, Spoken, Task, TaskStatus, Usage, UsageDetail,
 };
-use crate::transport::{SessionCall, Timeline, Transport, TransportCall};
-use crate::voice::{self, Route, Stage, Utterance};
+use crate::transport::{PausedBy, SessionCall, Timeline, Transport, TransportCall};
+use crate::progress;
+use crate::voice::{self, HearingStage, Route, Stage, Utterance};
+use crate::voice_timing::VoiceTiming;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -65,6 +67,10 @@ pub struct AppState {
     pub no_gpu: bool,
     /// This app turns speech into text, so the composer has a mic.
     pub speech: bool,
+    /// A spoken request is answered aloud (D47).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub speak: bool,
     /// Opening a project starts its game, paused on frame 0 (D37). Off for
     /// `--print` and `task`, which start one only when asked.
     #[serde(skip)]
@@ -88,6 +94,8 @@ pub struct AppState {
     /// Decisions on where speech went that can still be moved (D29), with
     /// their lines and moves, refreshed after every event.
     pub routes: Vec<Routed>,
+    /// Where each recent request is (D43), oldest first.
+    pub requests: Vec<progress::Request>,
     /// Per project path, the chat's current task (`None`: a new one), the
     /// one the Tasks pane shows selected. Absent until a client first
     /// chooses one for the project; not kept across restarts.
@@ -190,10 +198,15 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub headset_waits: Option<u64>,
-    /// Per connected headset, the connection and panel it was last sent.
+    /// Per connected headset, the connection, panel and clock it was last
+    /// sent on.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
-    pub panels: BTreeMap<String, (u64, Panel)>,
+    pub panels: BTreeMap<String, (u64, Panel, u64)>,
+    /// Per headset, the task it last opened in its panel: its conversation.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub panel_tasks: BTreeMap<String, u64>,
     /// Utterances from headsets whose runs are followed until the game
     /// reloads ([`voice::progress`]).
     #[serde(skip)]
@@ -212,6 +225,10 @@ pub struct AppState {
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]
     pub route_seq: u64,
+    /// The last `progress::Request::id` given out.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub request_seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +262,7 @@ impl AppState {
             session: None,
             no_gpu: false,
             speech: false,
+            speak: false,
             start_on_open: false,
             auto_start: false,
             tasks: Vec::new(),
@@ -252,6 +270,8 @@ impl AppState {
             decisions: BTreeMap::new(),
             queues: BTreeMap::new(),
             routes: Vec::new(),
+            requests: Vec::new(),
+            request_seq: 0,
             current_task: BTreeMap::new(),
             harnesses: Vec::new(),
             harness_choice: BTreeMap::new(),
@@ -284,6 +304,7 @@ impl AppState {
             devices: Devices::default(),
             headset_waits: None,
             panels: BTreeMap::new(),
+            panel_tasks: BTreeMap::new(),
             voice: Vec::new(),
             router: false,
             routing: Vec::new(),
@@ -519,6 +540,8 @@ pub enum Command {
     SaveRecents { recents: Vec<Recent> },
     /// Keep the context windows seen (`AppState::context_windows`).
     SaveContextWindows { windows: BTreeMap<String, u64> },
+    /// Append a spoken request's stage times to the voice log (one line).
+    LogVoice { line: String },
     /// Start an agent run, answering with `Event::Run`s that end in `Ended`.
     StartRun(Box<RunSpec>),
     /// Cancel run `run` of task `task`, waiting until its processes are gone.
@@ -623,6 +646,9 @@ pub struct RunSpec {
     pub baseline: Option<String>,
     /// The game session's debug server, when it runs this task's project.
     pub attach: Option<String>,
+    /// The headset that game runs on, by name, when it is away as the run
+    /// starts: its tools answer once it is back.
+    pub away: Option<String>,
     /// Record the game's moment with the snapshot (`RunEvent::Moment`):
     /// sessions get a GPU, so its paths can be drawn (D38).
     pub moment: bool,
@@ -634,7 +660,15 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     // A headset panel's action is the client message for the same choice.
     let (event, panel) = match event {
         Event::Link(LinkEvent::Panel { conn, action }) => match client_msg(&state, conn, action) {
-            Ok(msg) => (Event::Client(msg), Some(conn)),
+            Ok(msg) => {
+                if let ClientMsg::SelectTask { task: Some(id), .. } = &msg {
+                    let device = state.devices.list.iter().find(|d| d.conn == Some(conn));
+                    if let Some(d) = device {
+                        state.panel_tasks.insert(d.id.clone(), *id);
+                    }
+                }
+                (Event::Client(msg), Some(conn))
+            }
             Err(refused) => {
                 commands.extend(refused.map(|reason| {
                     Command::Link(LinkCommand::PanelRefused { conn, reason })
@@ -655,6 +689,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let shown = transport_shown(&state);
     // A handler may move only the highlight (a step click on a shown tab).
     let highlighted = state.highlight.clone();
+    let requested = state.requests.clone();
     let (changed, from_client) = match event {
         Event::Client(ClientMsg::GetState) => (false, true),
         Event::Client(ClientMsg::SetActiveProject { path }) => {
@@ -697,7 +732,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
         }
         // Shown at once and broadcast as `ServerMsg::Transport` (below).
         Event::Client(ClientMsg::Transport { call }) => {
+            let held = !matches!(call, TransportCall::Extrapolate { .. } | TransportCall::Peek { .. });
             transport_call(&mut state, call, &mut commands);
+            // The user's own call is what the run in flight leaves behind.
+            if held {
+                let playing = playing(&state);
+                set_playing(&mut state, playing);
+            }
             (false, false)
         }
         Event::Client(ClientMsg::WatchTransport { on }) => {
@@ -788,10 +829,33 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             utterance,
             text,
             context,
+            timing,
         }) => (
-            heard(&mut state, conn, utterance, text, context, &mut commands),
+            heard(&mut state, conn, utterance, text, context, timing, &mut commands),
             false,
         ),
+        Event::Link(LinkEvent::Hearing {
+            conn,
+            utterance,
+            stage,
+        }) => match state.devices.list.iter().find(|d| d.conn == Some(conn)) {
+            Some(device) => {
+                let device = device.id.clone();
+                use progress::Step;
+                match stage {
+                    HearingStage::Arriving => progress::heard(&mut state, &device, utterance, Step::Received),
+                    HearingStage::Transcribing => {
+                        progress::heard(&mut state, &device, utterance, Step::Transcribing)
+                    }
+                    HearingStage::Cancelled => progress::stopped(&mut state, &device, utterance, None),
+                    HearingStage::Failed { reason } => {
+                        progress::stopped(&mut state, &device, utterance, Some(&reason))
+                    }
+                }
+                (true, false)
+            }
+            None => (false, false),
+        },
         Event::Review { task, run, event } => {
             (on_review(&mut state, task, run, event, &mut commands), false)
         }
@@ -805,6 +869,13 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
                 commands.push(Command::Broadcast(ServerMsg::Rejected {
                     reason: reason.clone(),
                 }));
+            }
+            // Its requests not yet in a task cannot go on.
+            if let LinkEvent::Disconnected { conn, .. } = &event {
+                let gone = state.devices.list.iter().find(|d| d.conn == Some(*conn));
+                if let Some(device) = gone.map(|d| d.id.clone()) {
+                    progress::unlinked(&mut state, &device);
+                }
             }
             let (changed, link) = on_link(&mut state.devices, event, state.now);
             commands.extend(link.into_iter().map(Command::Link));
@@ -994,19 +1065,25 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
             scope,
             voice: None,
         } => match id {
-            Ok(id) => (
-                new_task(&mut state, id, message, harness, scope, None, &mut commands),
-                false,
-            ),
+            Ok(id) => {
+                let made = new_task(&mut state, id, message, harness, scope, None, &mut commands);
+                if made {
+                    progress::typed(&mut state, id);
+                }
+                (made, false)
+            }
             Err(e) => (
                 reject(&mut commands, format!("cannot reserve a task id: {e}")),
                 false,
             ),
         },
-        Event::Client(ClientMsg::SendMessage { task, message }) => (
-            send_message(&mut state, task, message, &mut commands),
-            false,
-        ),
+        Event::Client(ClientMsg::SendMessage { task, message }) => {
+            let sent = send_message(&mut state, task, message, &mut commands);
+            if sent {
+                progress::typed(&mut state, task);
+            }
+            (sent, false)
+        }
         Event::Client(ClientMsg::StopTask { task }) => {
             (stop_task(&mut state, task, &mut commands), false)
         }
@@ -1144,8 +1221,9 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     };
     let started = starts && start_ready(&mut state, &mut commands);
     voice::progress(&mut state, &mut commands);
+    progress::refresh(&mut state);
     prune_highlight(&mut state);
-    let activity = activities(&state.tasks, &state.context_windows);
+    let activity = activities(&state.tasks, &state.context_windows, agent_paused(&state));
     let decided = decisions(&state.tasks);
     let queues = queue::queues(&state.tasks, state.tracks_changes, state.active.as_deref());
     let mut open = std::mem::take(&mut state.routed);
@@ -1154,6 +1232,7 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let routes = route::routes(&state);
     let changed = changed
         || started
+        || state.requests != requested
         || state.highlight != highlighted
         || state.activity != activity
         || state.decisions != decided
@@ -1241,6 +1320,57 @@ fn send_transport(state: &AppState, before: Shown, get_state: bool, commands: &m
             .map(|(_, t)| t.marks.clone())
             .unwrap_or_default();
         commands.push(send(ServerMsg::Marks { marks }));
+    }
+}
+
+/// The running session's id while its clock plays.
+fn playing(state: &AppState) -> Option<u64> {
+    match &state.session {
+        Some(Session {
+            id,
+            status: SessionStatus::Running { timeline, .. },
+            ..
+        }) if timeline.playing() => Some(*id),
+        _ => None,
+    }
+}
+
+/// Who paused the running session's clock, as last polled.
+fn paused_by(state: &AppState) -> Option<PausedBy> {
+    match &state.session {
+        Some(Session {
+            status: SessionStatus::Running { timeline, .. },
+            ..
+        }) => timeline.clock.and_then(|c| c.paused_by),
+        _ => None,
+    }
+}
+
+/// The active project, while an agent's tools hold its game paused.
+fn agent_paused(state: &AppState) -> Option<&str> {
+    // Not once a resume is on its way (`playing`).
+    let agent = paused_by(state) == Some(PausedBy::Agent) && playing(state).is_none();
+    state.active.as_deref().filter(|_| agent)
+}
+
+/// What the active project's run in flight leaves behind: session
+/// `playing` playing, or the game as it is.
+fn set_playing(state: &mut AppState, playing: Option<u64>) {
+    let active = state.active.as_deref();
+    for task in state.tasks.iter_mut().filter(|t| Some(t.project.as_str()) == active) {
+        if let Some(run) = &mut task.run {
+            run.playing = playing;
+        }
+    }
+}
+
+/// A run that took session `playing` while it played is over: the session
+/// plays again, as the agent's `step` left it paused. A pause the runtime
+/// puts down to someone else is theirs, and stays.
+fn play_again(state: &mut AppState, playing: Option<u64>, commands: &mut Vec<Command>) {
+    let theirs = matches!(paused_by(state), Some(PausedBy::User | PausedBy::Start));
+    if playing.is_some() && state.session.as_ref().map(|s| s.id) == playing && !theirs {
+        transport_call(state, TransportCall::Resume, commands);
     }
 }
 
@@ -1370,6 +1500,8 @@ fn opened(
         decisions: _,
         queues: _,
         routes: _,
+        requests: _,
+        request_seq: _,
         routing: _,
         routed: _,
         route_seq: _,
@@ -1404,8 +1536,10 @@ fn opened(
         devices: _,
         headset_waits: _,
         panels: _,
+        panel_tasks: _,
         voice: _,
         speech: _,
+        speak: _,
     } = *new;
     commands.push(Command::UseWorkspace { id });
     *state = AppState {
@@ -1963,6 +2097,18 @@ pub(crate) fn layout_op(state: &mut AppState, op: LayoutOp, commands: &mut Vec<C
     }
 }
 
+/// The name of the headset `project`'s game is placed on, when it is not
+/// linked now.
+fn headset_away(state: &AppState, project: &str) -> Option<String> {
+    let game = &state.layouts.get(project)?.game;
+    let id = game.headset.as_deref().filter(|_| game.placement == Placement::Headset)?;
+    if connected(&state.devices, id) {
+        return None;
+    }
+    let device = state.devices.list.iter().find(|d| d.id == id);
+    Some(device.map_or("your headset".to_string(), |d| d.name.clone()))
+}
+
 /// Paired device `id` is linked now.
 pub(crate) fn connected(devices: &Devices, id: &str) -> bool {
     devices
@@ -2212,7 +2358,11 @@ fn create_task(
     if let (Some(wait), false) = (&wait, state.auto_start) {
         return Err(wait.reason());
     }
-    state.current_task.insert(project.clone(), Some(id));
+    // A typed task is its page's; a spoken one is shown by each page unless
+    // that would switch under its user (`routes`).
+    if spoken.is_none() {
+        state.current_task.insert(project.clone(), Some(id));
+    }
     // A request after the agent's switch takes it: nothing left to undo.
     state.agent_switch = None;
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
@@ -2236,6 +2386,7 @@ fn create_task(
         review: None,
         created_at: stamp(state.now),
         updated_at: None,
+        voice: None,
         transcript: vec![Item::User {
             text: message,
             spoken,
@@ -2351,6 +2502,7 @@ fn steer(
     match task.run.take() {
         Some(run) if !run.started => {
             commands.push(Command::StopRun { task: id, run: run.id });
+            voice_ended(task, run.id, stamp(state.now), commands);
             // What it left (a snapshot only) is measured as the next run ends.
             task.change = None;
         }
@@ -2429,6 +2581,8 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     // The session is the active project's; another project's task gets none.
     let context = app_context(state, project);
     let attach = context.session.clone();
+    let playing = attach.as_ref().and_then(|_| playing(state));
+    let away = attach.as_ref().and_then(|_| headset_away(state, project));
     state.contexts.insert(id, context.clone());
     let tracks = state.tracks_changes;
     let now = stamp(state.now);
@@ -2439,12 +2593,18 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         .expect("a known task");
     task.updated_at = now.or(task.updated_at);
     let run = task.transcript.len() as u64 - 1;
-    let prompt = queue::prompt(task);
+    let prompt = queue::prompt(task, state.speak);
     task.run = Some(Run {
         id: run,
         started_at: state.clock,
+        playing,
         ..Default::default()
     });
+    // A spoken request that waited its turn: timed from here.
+    if let Some(timing) = task.voice.as_mut().filter(|t| t.run.is_none()) {
+        timing.run = Some(run);
+        timing.reach(|t| &mut t.run_started, stamp(state.now));
+    }
     // The report speaks for the run that made it; this one presents its own.
     task.report = None;
     drop_review(task, commands);
@@ -2461,6 +2621,7 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
         snapshot: tracks && task.baseline.is_none(),
         baseline: task.baseline.clone().filter(|_| tracks),
         attach,
+        away,
         moment: tracks && task.baseline.is_none() && !state.no_gpu,
         context,
     })));
@@ -2475,11 +2636,12 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
         commands.push(Command::Reply(no_task(id)));
         return false;
     };
-    let Some(run) = task.run.as_ref().map(|r| r.id) else {
+    let Some((run, playing)) = task.run.as_ref().map(|r| (r.id, r.playing)) else {
         return reject(commands, format!("task {id} is not running"));
     };
     commands.push(Command::StopRun { task: id, run });
     task.updated_at = stamp(state.now).or(task.updated_at);
+    voice_ended(task, run, stamp(state.now), commands);
     let changed = stop_run(task);
     // A stopped run reports no change of its own: what it left is measured
     // now, and unknown until then.
@@ -2493,6 +2655,7 @@ fn stop_task(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     }
     commands.push(save(&root, task));
     broadcast_items(commands, task, changed);
+    play_again(state, playing, commands);
     true
 }
 
@@ -2504,6 +2667,7 @@ fn heard(
     utterance: u64,
     text: String,
     context: Option<String>,
+    timing: VoiceTiming,
     commands: &mut Vec<Command>,
 ) -> bool {
     let Some(device) = state.devices.list.iter().find(|d| d.conn == Some(conn)) else {
@@ -2521,12 +2685,15 @@ fn heard(
         by: By::Rule,
         title: None,
         project: state.active.clone().unwrap_or_default(),
+        timing: Some(timing),
     };
+    progress::transcribed(state, &u.device, utterance, &u.text);
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
+            progress::stopped(state, &u.device, utterance, Some(&reason));
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
-            return false;
+            return true;
         }
     };
     // With a choice to make, the model router decides, the rule its fallback.
@@ -2573,8 +2740,9 @@ fn routed(
     let rule = match rule_place(state, &u) {
         Ok(place) => place,
         Err(reason) => {
+            progress::stopped(state, &u.device, utterance, Some(&reason));
             voice::status(commands, &u.device, utterance, Stage::Failed(reason));
-            return false;
+            return true;
         }
     };
     let now = route::request(state, &u.project, &u.text);
@@ -2603,6 +2771,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
             let landed = Landed::Steered {
                 run: run.expect("steered").id,
             };
+            time_utterance(state, id, &u);
             record(state, &u, id, landed, commands);
             voice::follow(state, &u, id, commands);
             true
@@ -2615,6 +2784,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 spoken: Some(u.spoken.clone()),
             });
             task.updated_at = now.or(task.updated_at);
+            time_utterance(state, id, &u);
             // Saved and broadcast with its line.
             record(state, &u, id, Landed::Added, commands);
             voice::follow(state, &u, id, commands);
@@ -2632,6 +2802,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 }),
                 None => {
                     let reason = "no agent is installed on the computer".to_string();
+                    progress::stopped(state, &u.device, u.utterance, Some(&reason));
                     voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
                 }
             }
@@ -2652,10 +2823,11 @@ fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, comman
         ..
     } = &mut t.transcript[item]
     {
-        spoken.route = Some(line);
+        spoken.route = Some(line.clone());
     }
     commands.push(save(&root, t));
     broadcast_items(commands, t, vec![item]);
+    progress::placed(state, &u.device, u.utterance, task, item, &line);
     state.route_seq += 1;
     state.routed.push(Open {
         id: state.route_seq,
@@ -2666,6 +2838,35 @@ fn record(state: &mut AppState, u: &Utterance, task: u64, landed: Landed, comman
         device: u.device.clone(),
         utterance: u.utterance,
     });
+}
+
+/// Task `id` keeps `u`'s stage times, placed now and following the run
+/// it started, if it did.
+fn time_utterance(state: &mut AppState, id: u64, u: &Utterance) {
+    let (Some(mut timing), now) = (u.timing.clone(), state.now) else {
+        return;
+    };
+    let Some(task) = state.tasks.iter_mut().find(|t| t.id == id) else {
+        return;
+    };
+    timing.reach(|t| &mut t.routed, stamp(now));
+    if let Some(run) = &task.run {
+        timing.run = Some(run.id);
+        timing.reach(|t| &mut t.run_started, stamp(now));
+    }
+    task.voice = Some(timing);
+}
+
+/// Run `run` of `task` ended, stopped or was cut: its spoken request's
+/// last stage, logged once.
+fn voice_ended(task: &mut Task, run: u64, now: Option<u64>, commands: &mut Vec<Command>) {
+    let id = task.id;
+    let Some(t) = task.voice.as_mut().filter(|t| t.run == Some(run)) else {
+        return;
+    };
+    if t.reach(|t| &mut t.finished, now) {
+        commands.push(Command::LogVoice { line: t.log_line(id) });
+    }
 }
 
 /// Said to a task whose run was cut by a steer that is moved away before
@@ -2693,6 +2894,12 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         return reject(commands, "that message cannot go there now".to_string());
     }
     state.routed.retain(|o| o.id != id);
+    // Its stage times go with it (untimed), not stay on the task it left.
+    if let Some(t) = state.tasks.iter_mut().find(|t| t.id == open.task) {
+        if t.voice.as_ref().is_some_and(|v| v.utterance == open.utterance) {
+            t.voice = None;
+        }
+    }
     // Followed again where it lands, not failed where it was.
     (state.voice).retain(|j| !(j.device == open.device && j.utterance == open.utterance));
     let root = PathBuf::from(&state.repo_root);
@@ -2768,6 +2975,7 @@ fn move_utterance(state: &mut AppState, id: u64, to: Destination, commands: &mut
         },
         by: By::You,
         title: None,
+        timing: None,
     };
     let place = match to {
         Destination::Steer { task } => Place::Steer(task),
@@ -2820,13 +3028,15 @@ fn voice_task(
     };
     match started {
         Ok((id, landed)) => {
+            time_utterance(state, id, &u);
             record(state, &u, id, landed, commands);
             voice::follow(state, &u, id, commands);
             true
         }
         Err(reason) => {
+            progress::stopped(state, &u.device, u.utterance, Some(&reason));
             voice::status(commands, &u.device, u.utterance, Stage::Failed(reason));
-            false
+            true
         }
     }
 }
@@ -3264,7 +3474,19 @@ fn on_run(
     else {
         return false;
     };
+    // Its spoken request's stages, when this is the run it started.
+    let timed = (task.voice.as_mut()).filter(|t| t.run == Some(run));
+    let stamped = timed.is_some_and(|t| match &event {
+        RunEvent::Spawned => t.reach(|t| &mut t.agent_spawned, now),
+        RunEvent::Agent(e) => {
+            let first = t.reach(|t| &mut t.agent_event, now);
+            let text = matches!(e, AgentEvent::Text { .. } | AgentEvent::TextDelta { .. });
+            first | (text && t.reach(|t| &mut t.first_text, now))
+        }
+        RunEvent::Ended { .. } | RunEvent::Baseline { .. } | RunEvent::Moment(_) => false,
+    });
     match event {
+        RunEvent::Spawned => stamped,
         RunEvent::Baseline { tree } => {
             task.baseline = Some(tree);
             task.change = None;
@@ -3288,17 +3510,20 @@ fn on_run(
             let settled = changed
                 .iter()
                 .any(|&i| !matches!(task.transcript[i], Item::Agent { partial: true, .. }));
-            if summary || settled {
+            if summary || settled || stamped {
                 commands.push(save(&root, task));
             }
             broadcast_items(commands, task, changed);
-            summary
+            summary || stamped
         }
         RunEvent::Ended { error } => {
+            voice_ended(task, run, now, commands);
             task.updated_at = now.or(task.updated_at);
+            let playing = task.run.as_ref().and_then(|r| r.playing);
             let changed = end_run(task, error);
             commands.push(save(&root, task));
             broadcast_items(commands, task, changed);
+            play_again(state, playing, commands);
             true
         }
     }
@@ -3400,7 +3625,13 @@ fn on_session(
             let Ok(polled) = result else {
                 return false;
             };
+            let first = timeline.clock.is_none();
             timeline.polled(after, polled.frame, polled.clock);
+            // A game first seen playing (it started, or restarted, during
+            // a run) is one the run leaves playing.
+            if first && timeline.playing() {
+                set_playing(state, Some(id));
+            }
             read_marks(state, commands);
             // The clock goes as `ServerMsg::Transport`; only a new surface or
             // pointer is state.
@@ -3528,6 +3759,7 @@ pub(crate) mod tests {
         Transport {
             clock: true,
             paused: clock.paused,
+            paused_by: clock.paused_by,
             frame,
             recorded: clock.recorded,
             generation: clock.generation,
@@ -4584,7 +4816,7 @@ pub(crate) mod tests {
 
     /// `s` with its tasks' activity derived, as every step leaves it.
     fn derived(mut s: AppState) -> AppState {
-        s.activity = activities(&s.tasks, &s.context_windows);
+        s.activity = activities(&s.tasks, &s.context_windows, agent_paused(&s));
         s.decisions = decisions(&s.tasks);
         s.queues = queue::queues(&s.tasks, s.tracks_changes, s.active.as_deref());
         s
@@ -4625,6 +4857,7 @@ pub(crate) mod tests {
                     snapshot: false,
                     baseline: None,
                     attach: None,
+                    away: None,
                     moment: false,
                     context: crate::agent_view::app_context(&s0, "examples/a"),
                     scope: Default::default(),
@@ -4765,6 +4998,145 @@ pub(crate) mod tests {
         let (s3, commands) = update(s, task_with(Harness::Codex, Some(Scope::Isolated)));
         assert_eq!(spec(&commands).scope, Scope::UserAndProject);
         assert_eq!(task(&s3, 1).scope, Scope::UserAndProject);
+    }
+
+    /// The transport calls posted to the session.
+    fn transport_calls<'a>(commands: &'a [Command]) -> Vec<&'a TransportCall> {
+        let call = |c: &'a Command| match c {
+            Command::Call {
+                call: SessionCall::Transport(call),
+                ..
+            } => Some(call),
+            _ => None,
+        };
+        commands.iter().filter_map(call).collect()
+    }
+
+    #[test]
+    fn a_game_playing_when_a_run_took_it_plays_again_when_the_run_ends() {
+        let playing = PolledClock::default();
+        let paused = PolledClock {
+            paused: true,
+            ..playing
+        };
+        let s = with_session(1, Some(9), running(Some(3)));
+        let (s, _) = update(s, session(1, polled_clock(4, playing)));
+        // The agent's `step` pauses it; the run's end resumes it.
+        let (s, _) = update(s, new_task("hi"));
+        let (s, _) = update(s, session(1, polled_clock(5, paused)));
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, commands) = update(s, ended(1, 0));
+        assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
+        // A follow-up started before a poll shows it running is the same;
+        // stopping it resumes too.
+        let (s, _) = update(s, send(1, "more"));
+        let (s, commands) = update(s, client(ClientMsg::StopTask { task: 1 }));
+        assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
+        // The user paused it during the run: it stays paused.
+        let (s, _) = update(s, session(1, polled_clock(6, playing)));
+        let (s, _) = update(s, send(1, "again"));
+        let (s, _) = update(s, client(ClientMsg::Transport { call: TransportCall::Pause }));
+        let (s, _) = update(s, session(1, polled_clock(7, paused)));
+        let (s, commands) = update(s, ended(1, 4));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+        // Paused when the run took it: left paused, unless the user resumed it.
+        let (s, _) = update(s, send(1, "once more"));
+        let run = task(&s, 1).run.as_ref().unwrap().id;
+        let (s2, commands) = update(s.clone(), ended(1, run));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+        let (s, _) = update(s, client(ClientMsg::Transport { call: TransportCall::Resume }));
+        let (_, commands) = update(s, ended(1, run));
+        assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
+        // Paused by the user, and a run started before a poll shows it:
+        // left paused.
+        let (s2, _) = update(s2, session(1, polled_clock(8, playing)));
+        let (s2, _) = update(s2, client(ClientMsg::Transport { call: TransportCall::Pause }));
+        let (s2, _) = update(s2, send(1, "last"));
+        let run = task(&s2, 1).run.as_ref().unwrap().id;
+        let (_, commands) = update(s2.clone(), ended(1, run));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+        // Another session (the game restarted) that is not playing is left.
+        let mut other = s2;
+        other.session.as_mut().unwrap().id = 2;
+        let (_, commands) = update(other, ended(1, run));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+    }
+
+    /// A run started before the game was first polled (a new project's
+    /// first task, a restart during the run) takes it as first seen.
+    #[test]
+    fn a_game_first_seen_playing_during_a_run_plays_again_after_it() {
+        let s = with_session(1, Some(9), running(None));
+        let (s, _) = update(s, new_task("hi"));
+        assert_eq!(task(&s, 1).run.as_ref().unwrap().playing, None);
+        let (s, _) = update(s, session(1, polled_clock(1, PolledClock::default())));
+        let (_, commands) = update(s.clone(), ended(1, 0));
+        assert_eq!(transport_calls(&commands), [&TransportCall::Resume]);
+        // First seen paused (D37: it opens paused): left paused.
+        let paused = PolledClock {
+            paused: true,
+            ..PolledClock::default()
+        };
+        let s = with_session(1, Some(9), running(None));
+        let (s, _) = update(s, new_task("hi"));
+        let (s, _) = update(s, session(1, polled_clock(1, paused)));
+        let (_, commands) = update(s, ended(1, 0));
+        assert_eq!(transport_calls(&commands), [] as [&TransportCall; 0]);
+    }
+
+    /// A clock paused by `by`.
+    fn paused_by_clock(by: Option<PausedBy>) -> PolledClock {
+        PolledClock {
+            paused: true,
+            paused_by: by,
+            ..PolledClock::default()
+        }
+    }
+
+    #[test]
+    fn a_run_whose_agent_paused_the_game_says_so_until_it_plays() {
+        let s = with_session(1, Some(9), running(Some(3)));
+        let (s, _) = update(s, new_task("hi"));
+        assert!(!s.activity[&1].game_paused);
+        // The agent's `step` pauses it: the state goes out with the word,
+        // and the bar is told who.
+        let stepped = paused_by_clock(Some(PausedBy::Agent));
+        let (s, commands) = update(s, session(1, polled_clock(4, stepped)));
+        assert!(s.activity[&1].game_paused);
+        assert!(commands.contains(&broadcast(&s)));
+        assert!(commands.contains(&transport(Some(shown(4, stepped)))));
+        let panel = crate::panel::panel(&s, "quest");
+        assert_eq!(panel.tasks[0].activity, "checking the change, game paused");
+        // A pause that is the user's, or nobody's, is not the agent's.
+        for by in [Some(PausedBy::User), Some(PausedBy::Start), None] {
+            let (s, _) = update(s.clone(), session(1, polled_clock(5, paused_by_clock(by))));
+            assert!(!s.activity[&1].game_paused, "{by:?}");
+        }
+        // It plays again: the word goes.
+        let (playing, _) = update(s.clone(), session(1, polled_clock(5, PolledClock::default())));
+        assert!(!playing.activity[&1].game_paused);
+        // The run ends with the game still paused: the task is not at work.
+        let (s, _) = update(s, agent(1, 0, finished()));
+        let (s, _) = update(s, ended(1, 0));
+        assert!(!s.activity[&1].game_paused);
+    }
+
+    /// The run's end resumes a pause the runtime puts down to the agent, or
+    /// to nobody (a runtime before `paused_by`); not one that is the user's.
+    #[test]
+    fn a_runs_end_leaves_a_pause_that_is_not_the_agents() {
+        for (by, calls) in [
+            (Some(PausedBy::Agent), vec![&TransportCall::Resume]),
+            (None, vec![&TransportCall::Resume]),
+            (Some(PausedBy::User), vec![]),
+            (Some(PausedBy::Start), vec![]),
+        ] {
+            let s = with_session(1, Some(9), running(Some(3)));
+            let (s, _) = update(s, new_task("hi"));
+            let (s, _) = update(s, session(1, polled_clock(4, paused_by_clock(by))));
+            let (_, commands) = update(s, ended(1, 0));
+            assert_eq!(transport_calls(&commands), calls, "{by:?}");
+        }
     }
 
     #[test]
@@ -7787,12 +8159,17 @@ pub(crate) mod tests {
 
     /// `s` after a poll reporting program revision `revision`.
     fn reloaded_to(s: AppState, revision: u64) -> AppState {
+        polled_revision(s, revision).0
+    }
+
+    /// A poll reporting program revision `revision`: the state and commands.
+    fn polled_revision(s: AppState, revision: u64) -> (AppState, Vec<Command>) {
         let id = s.session.as_ref().unwrap().id;
         let clock = PolledClock {
             program_revision: revision,
             ..PolledClock::default()
         };
-        update(s, session(id, polled_clock(8, clock))).0
+        update(s, session(id, polled_clock(8, clock)))
     }
 
     fn said(text: &str, utterance: u64) -> Event {
@@ -7801,7 +8178,76 @@ pub(crate) mod tests {
             utterance,
             text: text.to_string(),
             context: Some("at frame 7".to_string()),
+            timing: VoiceTiming {
+                utterance,
+                start: 1_000,
+                end: 4_000,
+                audio_ms: 3_000,
+                transcribe_start: 4_000,
+                transcribe_end: 5_000,
+                ..VoiceTiming::default()
+            },
         })
+    }
+
+    fn logged(commands: &[Command]) -> usize {
+        (commands.iter())
+            .filter(|c| matches!(c, Command::LogVoice { .. }))
+            .count()
+    }
+
+    /// A spoken request's stages on its task: placed and started as it
+    /// lands, then its run's spawn, first event, first text and end, each
+    /// once; logged once, as the run ends.
+    #[test]
+    fn a_spoken_request_is_timed_through_its_run() {
+        let s = voice_task_running_at(5_500);
+        let v = task(&s, 4).voice.clone().expect("timed");
+        assert_eq!((v.utterance, v.run, v.transcribe_end), (1, Some(0), 5_000));
+        assert_eq!((v.routed, v.run_started), (Some(5_500), Some(5_500)));
+        let spawned = Event::Run { task: 4, run: 0, event: RunEvent::Spawned };
+        let (s, _) = update(at(6_000, s), spawned);
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, _) = update(at(8_000, s), agent(4, 0, AgentEvent::Text { text: "Hi".into() }));
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "again".into() }));
+        let (s, commands) = update(at(20_000, s), ended(4, 0));
+        assert_eq!(logged(&commands), 1);
+        let v = task(&s, 4).voice.clone().unwrap();
+        assert_eq!(
+            (v.agent_spawned, v.agent_event, v.first_text, v.finished),
+            (Some(6_000), Some(7_000), Some(8_000), Some(20_000))
+        );
+        assert_eq!(
+            v.line,
+            "heard 0.0 s · transcribed 1.0 s · agent started 3.0 s · first reply 4.0 s · done 16.0 s"
+        );
+        // A typed follow-up's run is not the spoken one's: nothing changes.
+        let typed = client(ClientMsg::SendMessage { task: 4, message: "more".into() });
+        let (s, _) = update(at(21_000, s), typed);
+        let (s, commands) = update(at(30_000, s), ended(4, 2));
+        assert_eq!(logged(&commands), 0);
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(20_000));
+    }
+
+    /// A steer ends the old utterance's stages (logged, as cut) and times
+    /// the new one from the run it starts; the old run's late events land
+    /// on nothing. A stop ends them too.
+    #[test]
+    fn a_steer_times_the_new_utterance() {
+        let s = voice_task_running_at(5_500);
+        let (s, _) = update(at(7_000, s), agent(4, 0, started("sess")));
+        let (s, commands) = update(at(8_000, s), said("bigger", 2));
+        assert_eq!(logged(&commands), 1);
+        let v = task(&s, 4).voice.clone().unwrap();
+        assert_eq!((v.utterance, v.run, v.routed), (2, Some(2), Some(8_000)));
+        assert_eq!(v.agent_event, None);
+        let (s, _) = update(at(9_000, s), agent(4, 0, AgentEvent::Text { text: "late".into() }));
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().first_text, None);
+        let (s, commands) = update(at(10_000, s), client(ClientMsg::StopTask { task: 4 }));
+        assert_eq!(logged(&commands), 1);
+        assert_eq!(task(&s, 4).voice.as_ref().unwrap().finished, Some(10_000));
+        let (_, commands) = update(at(11_000, s), ended(4, 2));
+        assert_eq!(logged(&commands), 0, "once");
     }
 
     pub(crate) fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
@@ -7828,7 +8274,13 @@ pub(crate) mod tests {
 
     /// `s` after utterance 1, "go", started task 4.
     pub(crate) fn voice_task_running() -> AppState {
+        voice_task_running_at(0)
+    }
+
+    /// [`voice_task_running`], its task started at wall clock `now`.
+    fn voice_task_running_at(now: u64) -> AppState {
         let (s, commands) = update(voice_ready(), said("go", 1));
+        let s = at(now, s);
         let Some(Command::ReserveTask { voice, .. }) = commands
             .into_iter()
             .find(|c| matches!(c, Command::ReserveTask { .. }))
@@ -7913,6 +8365,219 @@ pub(crate) mod tests {
         let (_, commands) = update(s, session(id, polled_clock(9, clock)));
         assert_eq!(stages(&commands), [(1, Stage::Reloaded)]);
     }
+
+    fn hearing(conn: u64, utterance: u64, stage: HearingStage) -> Event {
+        Event::Link(LinkEvent::Hearing {
+            conn,
+            utterance,
+            stage,
+        })
+    }
+
+    /// `s` stepped with `event` at wall time `now`.
+    fn stepped(s: AppState, now: u64, event: Event) -> (AppState, Vec<Command>) {
+        update(AppState { now, ..s }, event)
+    }
+
+    fn steps(s: &AppState) -> Vec<(progress::Step, u64)> {
+        let r = s.requests.last().expect("a request");
+        r.steps.iter().map(|x| (x.step, x.at)).collect()
+    }
+
+    /// A spoken request's one record (D43) moves through every step with
+    /// when each began: received, transcribing, transcribed (its text),
+    /// processing (where it went), the agent; then its outcome from the
+    /// headset's reload. The page decides whether to show its task.
+    #[test]
+    fn a_spoken_request_moves_through_every_step() {
+        use progress::{Outcome, Reload, Step};
+        let (s, _) = stepped(voice_ready(), 100, hearing(0, 1, HearingStage::Arriving));
+        assert_eq!(s.requests[0].headset.as_deref(), Some("Quest aa"));
+        let (s, _) = stepped(s, 900, hearing(0, 1, HearingStage::Transcribing));
+        let (s, commands) = stepped(s, 2_000, said("go", 1));
+        assert_eq!(s.requests[0].text.as_deref(), Some("go"));
+        let Some(Command::ReserveTask { voice, .. }) = commands
+            .into_iter()
+            .find(|c| matches!(c, Command::ReserveTask { .. }))
+        else {
+            panic!("reserved");
+        };
+        let reserved = Event::NewTask {
+            id: Ok(4),
+            message: "go".to_string(),
+            harness: Harness::Claude,
+            voice,
+            scope: Default::default(),
+        };
+        let (s, _) = stepped(s, 2_100, reserved);
+        let r = &s.requests[0];
+        assert_eq!((r.task, r.line.as_deref()), (Some(4), Some("Started a new task")));
+        assert_eq!(s.current_task.get("examples/a"), None, "each page decides");
+        let (s, _) = stepped(s, 3_000, agent(4, 0, started("a1")));
+        assert_eq!(
+            steps(&s),
+            [
+                (Step::Received, 100),
+                (Step::Transcribing, 900),
+                (Step::Transcribed, 2_000),
+                (Step::Processing, 2_100),
+                (Step::Agent, 3_000),
+            ]
+        );
+        let (s, _) = stepped(s, 5_000, agent(4, 0, finished()));
+        let (s, _) = stepped(s, 5_000, ended(4, 0));
+        let waiting = Outcome::Changed {
+            reload: Reload::Waiting,
+        };
+        assert_eq!(s.requests[0].outcome, Some(waiting));
+        let s = reloaded_to(s, 5);
+        let reloaded = Outcome::Changed {
+            reload: Reload::Reloaded,
+        };
+        assert_eq!(s.requests[0].outcome, Some(reloaded));
+        // Kept a while after its outcome, then gone.
+        let later = AppState {
+            clock: s.clock + progress::KEPT_MS,
+            ..s
+        };
+        let (s, _) = update(later, Event::Link(LinkEvent::Tick));
+        assert!(s.requests.is_empty());
+    }
+
+    /// One that ends before it is a message: cancelled, or failed naming
+    /// the step it reached; a typed one enters at processing.
+    #[test]
+    fn a_request_that_ends_early_says_where() {
+        use progress::{Outcome, Step};
+        let (s, _) = update(voice_ready(), hearing(0, 2, HearingStage::Arriving));
+        let (s, _) = update(s, hearing(0, 2, HearingStage::Cancelled));
+        assert_eq!(s.requests[0].outcome, Some(Outcome::Cancelled));
+        // The same number again (its app restarted): a new request.
+        let (s, _) = update(s, hearing(0, 2, HearingStage::Arriving));
+        assert_eq!((s.requests.len(), s.requests[1].outcome.clone()), (2, None));
+        // Its headset leaves: it cannot go on.
+        let (s, _) = update(s, link(0, false));
+        assert!(matches!(
+            &s.requests[1].outcome,
+            Some(Outcome::Failed { at: Step::Received, reason }) if reason == "the headset disconnected"
+        ));
+        let (s, _) = update(s, link(0, true));
+        let s = AppState { requests: vec![], ..s };
+        let (s, _) = update(s, hearing(0, 3, HearingStage::Arriving));
+        let (s, _) = update(s, hearing(0, 3, HearingStage::Transcribing));
+        let failed = HearingStage::Failed {
+            reason: "heard no words".into(),
+        };
+        let (s, _) = update(s, hearing(0, 3, failed));
+        assert_eq!(
+            s.requests[0].outcome,
+            Some(Outcome::Failed {
+                at: Step::Transcribing,
+                reason: "heard no words".into()
+            })
+        );
+
+        // Nowhere to go.
+        let mut stopped = voice_ready();
+        stopped.session.as_mut().unwrap().status = SessionStatus::Stopped;
+        let (s, _) = update(stopped, hearing(0, 4, HearingStage::Arriving));
+        let (s, _) = update(s, said("go", 4));
+        assert!(matches!(
+            &s.requests[0].outcome,
+            Some(Outcome::Failed { at: Step::Transcribed, reason }) if reason.contains("not running a game")
+        ));
+
+        // Typed: processing, the agent, then its outcome.
+        let (s, _) = stepped(voice_ready(), 10, nth_task(1, "what is the count?"));
+        assert_eq!(steps(&s), [(Step::Processing, 10)]);
+        assert_eq!(s.requests[0].line.as_deref(), Some("Starting the agent"));
+        let (s, _) = stepped(s, 20, agent(1, 0, started("a1")));
+        let (s, _) = stepped(s, 30, agent(1, 0, finished()));
+        let (s, _) = stepped(s, 30, ended(1, 0));
+        assert_eq!(steps(&s), [(Step::Processing, 10), (Step::Agent, 20)]);
+        assert_eq!(s.requests[0].outcome, Some(Outcome::Done), "changes untracked");
+        assert_eq!(s.requests[0].ended, Some(30));
+    }
+
+    fn link(conn: u64, linked: bool) -> Event {
+        Event::Link(match linked {
+            true => LinkEvent::Connected {
+                conn,
+                device: "aa".into(),
+                name: "Quest aa".into(),
+                app_version: "0.0.0".into(),
+                link: crate::devices::LinkKind::Wifi,
+            },
+            false => LinkEvent::Disconnected { conn, lost: None },
+        })
+    }
+
+    /// The headset goes away mid-run: its utterance is still followed. A
+    /// run that ends ok meanwhile waits for it however long, then for the
+    /// push `functor run vr` holds until it is back: `Reloaded` once it
+    /// lands, or (changes untracked) `Answered` only past the grace counted
+    /// from the relink.
+    #[test]
+    fn an_away_headset_is_waited_for_not_failed() {
+        let (s, commands) = update(voice_task_running(), link(0, false));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(s.voice.len(), 1, "still followed");
+        // The run starts while away: told that the headset is away.
+        assert_eq!(headset_away(&s, "examples/a").as_deref(), Some("Quest aa"));
+        let (s, _) = update(s, agent(4, 0, finished()));
+        let (s, commands) = update(AppState { clock: 1_000, ..s }, ended(4, 0));
+        assert_eq!(stages(&commands), [], "the change is ready; it loads when the headset is back");
+        let late = AppState {
+            clock: 1_000 + 10 * voice::RELOAD_GRACE_MS,
+            ..s
+        };
+        let (s, commands) = update(late, Event::Link(LinkEvent::Tick));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(s.voice.len(), 1);
+        // Back: the push lands, the game reloads.
+        let (back, commands) = update(s, link(1, true));
+        assert_eq!(stages(&commands), []);
+        assert_eq!(headset_away(&back, "examples/a"), None);
+        assert_eq!(stages(&polled_revision(back.clone(), 6).1), [(1, Stage::Reloaded)]);
+        // Back with no reload: failed once the grace from the relink passes.
+        let (s, commands) = update(back, Event::Link(LinkEvent::Tick));
+        assert_eq!(stages(&commands), []);
+        let later = AppState {
+            clock: s.clock + voice::RELOAD_GRACE_MS,
+            ..s
+        };
+        let (_, commands) = update(later, Event::Link(LinkEvent::Tick));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Answered(_))]));
+    }
+
+    /// The headset app restarted while away: `run vr` loads the game
+    /// afresh (its revision starts again), with the run's saved edit.
+    #[test]
+    fn a_fresh_load_after_the_run_counts_as_its_reload() {
+        let (s, _) = update(voice_task_running(), link(0, false));
+        let (s, _) = update(s, agent(4, 0, finished()));
+        let (s, _) = update(s, ended(4, 0));
+        let (s, _) = update(s, link(1, true));
+        assert_eq!(stages(&polled_revision(s, 0).1), [(1, Stage::Reloaded)]);
+    }
+
+    /// A run that fails while the headset is away still says so: the shell
+    /// keeps the status for its relink.
+    #[test]
+    fn a_failure_while_away_is_still_reported() {
+        let (s, _) = update(voice_task_running(), link(0, false));
+        let error = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Ended {
+                error: Some("boom".to_string()),
+            },
+        };
+        let (_, commands) = update(s, error);
+        assert_eq!(stages(&commands), [(1, Stage::Failed("boom".to_string()))]);
+    }
+
+
 
     /// Said while a task runs for the game: that task is stopped and
     /// resumed with it (D29's steer), and only the new utterance is followed.
@@ -8236,13 +8901,14 @@ pub(crate) mod tests {
             utterance: 3,
             text: "hi".to_string(),
             context: None,
+            timing: VoiceTiming::default(),
         });
         let (_, commands) = update(voice_ready(), stranger);
         assert!(stages(&commands).is_empty());
     }
 
     /// A run that fails, is stopped, or ends ok without the game reloading
-    /// in time is `Failed`; so is the game leaving the headset.
+    /// its change in time is `Failed`; so is the game leaving the headset.
     #[test]
     fn a_followed_run_that_does_not_reload_fails() {
         let error = Event::Run {
@@ -8269,11 +8935,26 @@ pub(crate) mod tests {
             clock: 1_000 + voice::RELOAD_GRACE_MS,
             ..s
         };
-        let (_, commands) = update(late, Event::Link(LinkEvent::Tick));
+        // Changes untracked: nothing says a change is waiting, so it is
+        // the agent's answer, not a failure.
+        let (_, commands) = update(late.clone(), Event::Link(LinkEvent::Tick));
+        let answered = Stage::Answered("Answered: see the conversation".to_string());
+        assert_eq!(stages(&commands), [(1, answered)]);
+        // A change that did not load is one.
+        let mut changed = late;
+        changed.tracks_changes = true;
+        changed.tasks[0].baseline = Some("t0".to_string());
+        changed.tasks[0].change = Some(one_file(1));
+        let (_, commands) = update(changed.clone(), Event::Link(LinkEvent::Tick));
         assert!(
-            matches!(&stages(&commands)[..], [(1, Stage::Failed(_))]),
+            matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("did not reload")),
             "{commands:?}"
         );
+        // The same change as when the run started (a question about an
+        // earlier run's change): nothing new is waiting.
+        changed.voice[0].before = changed.tasks[0].change.clone();
+        let (_, commands) = update(changed, Event::Link(LinkEvent::Tick));
+        assert!(matches!(&stages(&commands)[..], [(1, Stage::Answered(_))]));
 
         let reason = "the game stopped on the headset".to_string();
         let gone = [(1, Stage::Failed(reason))];
@@ -8288,6 +8969,94 @@ pub(crate) mod tests {
         let (s, commands) = update(s, switch("examples/b"));
         assert!(s.session.as_ref().is_some_and(|x| x.status.is_live()));
         assert_eq!(stages(&commands), gone);
+    }
+
+    /// What the commands say aloud.
+    fn said_aloud<'a>(commands: &'a [Command]) -> Vec<&'a str> {
+        let text = |c: &'a Command| match c {
+            Command::Link(LinkCommand::Say { text, .. }) => Some(text.as_str()),
+            _ => None,
+        };
+        commands.iter().filter_map(text).collect()
+    }
+
+    /// With replies on (D47), a spoken request's prompt asks for a line to
+    /// say, and its outcome is said: the agent's line, that its change is
+    /// ready to look at, or the failure. A typed request is not.
+    #[test]
+    fn a_spoken_requests_outcome_is_said_aloud() {
+        let mut ready = voice_ready();
+        ready.speak = true;
+        ready.tracks_changes = true;
+        let (s, commands) = update(ready.clone(), said("go", 1));
+        let (s, commands) = reserved(s, commands, 4);
+        assert!(spec(&commands).message.ends_with(crate::reply::ASK));
+        let baseline = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Baseline {
+                tree: "t0".to_string(),
+            },
+        };
+        let (s, _) = update(s, baseline);
+        let reply = AgentEvent::Text {
+            text: "Edited `game.fun`.\n\nSpoken: The ball is red now.".to_string(),
+        };
+        let (working, _) = update(s, agent(4, 0, reply));
+        let (s, _) = update(working.clone(), agent(4, 0, finished()));
+        let change = |change| Event::Change {
+            task: 4,
+            baseline: "t0".to_string(),
+            change,
+        };
+        // It changed the game and the game reloaded: ready to look at.
+        let (changed, _) = update(s.clone(), change(one_file(1)));
+        let (changed, _) = update(changed, ended(4, 0));
+        let (_, commands) = polled_revision(changed, 6);
+        assert_eq!(stages(&commands), [(1, Stage::Reloaded)]);
+        assert_eq!(
+            said_aloud(&commands),
+            ["The ball is red now. It's ready for you to look at."]
+        );
+        // An answer: its line alone.
+        let (answered, _) = update(s.clone(), change(Change::default()));
+        let (_, commands) = update(answered, ended(4, 0));
+        assert_eq!(said_aloud(&commands), ["The ball is red now."]);
+        // Its change never reloaded: a failure, said.
+        let (waiting, _) = update(AppState { clock: 1_000, ..s }, change(one_file(1)));
+        let (waiting, _) = update(waiting, ended(4, 0));
+        let late = AppState {
+            clock: 1_000 + voice::RELOAD_GRACE_MS,
+            ..waiting
+        };
+        let (_, commands) = update(late, Event::Link(LinkEvent::Tick));
+        assert_eq!(
+            said_aloud(&commands),
+            ["That did not work: the agent finished, but the game did not reload"]
+        );
+        // A failure.
+        let error = Event::Run {
+            task: 4,
+            run: 0,
+            event: RunEvent::Ended {
+                error: Some("boom".to_string()),
+            },
+        };
+        let (_, commands) = update(working.clone(), error);
+        assert_eq!(said_aloud(&commands), ["That did not work: boom"]);
+        // Stopped by the user: the toast says so; nothing is said.
+        let (_, commands) = update(working.clone(), client(ClientMsg::StopTask { task: 4 }));
+        assert_eq!(stages(&commands), [(1, Stage::Failed("stopped".to_string()))]);
+        assert_eq!(said_aloud(&commands), [] as [&str; 0]);
+        // The game left the headset mid-run: the job lost track, but the
+        // run goes on; nothing is said.
+        let (_, commands) = update(working, client(ClientMsg::StopSession));
+        let gone = Stage::Failed("the game stopped on the headset".to_string());
+        assert_eq!(stages(&commands), [(1, gone)]);
+        assert_eq!(said_aloud(&commands), [] as [&str; 0]);
+        // Typed: no line asked for.
+        let (_, commands) = update(ready, nth_task(1, "go"));
+        assert!(!spec(&commands).message.contains("Spoken:"));
     }
 
     /// A task whose review is preparing has no run of its own to steer:
@@ -8308,7 +9077,8 @@ pub(crate) mod tests {
         assert_eq!(voice::route(&s, "aa", "and blue"), Route::New);
     }
 
-    /// An answer that changed nothing is said at once, not after the wait
+    /// An answer that changed nothing is said at once (its first line, not
+    /// a failure), not after the wait
     /// for a reload; said during a revert, it queues a task behind it,
     /// `Working` once that starts.
     #[test]
@@ -8323,6 +9093,10 @@ pub(crate) mod tests {
             },
         };
         let (s, _) = update(s, baseline);
+        let reply = AgentEvent::Text {
+            text: "\nThe ball is red already.\nNothing to change.".to_string(),
+        };
+        let (s, _) = update(s, agent(4, 0, reply));
         let (s, _) = update(s, agent(4, 0, finished()));
         let none = Event::Change {
             task: 4,
@@ -8331,10 +9105,12 @@ pub(crate) mod tests {
         };
         let (s, _) = update(s, none);
         let (_, commands) = update(s, ended(4, 0));
-        assert!(
-            matches!(&stages(&commands)[..], [(1, Stage::Failed(r))] if r.contains("without changing")),
-            "{commands:?}"
+        // Not a failure: the answer's first line.
+        assert_eq!(
+            stages(&commands),
+            [(1, Stage::Answered("The ball is red already.".to_string()))]
         );
+        assert_eq!(said_aloud(&commands), [] as [&str; 0], "replies are off");
 
         let mut s = voice_ready();
         s.tracks_changes = true;
@@ -8420,8 +9196,15 @@ pub(crate) mod tests {
         // Nothing changed: nothing sent.
         let (s, commands) = update(s, Event::Link(LinkEvent::Tick));
         assert!(panels(&commands).is_empty());
-        // Kept on the desktop: the panel follows.
+        // Kept on the desktop: the panel follows, once the last send is
+        // RESEND_MS old (the link's tick brings it).
         let (s, commands) = update(s, keep(1));
+        assert!(panels(&commands).is_empty(), "too soon after the last");
+        let later = AppState {
+            clock: crate::panel::RESEND_MS,
+            ..s
+        };
+        let (s, commands) = update(later, Event::Link(LinkEvent::Tick));
         let t = &panels(&commands)[0].tasks[0];
         assert_eq!((t.stance, t.decision.is_none()), (Stance::Done, true));
         // Gone and back: sent again.
@@ -8510,6 +9293,10 @@ pub(crate) mod tests {
         assert_eq!(route.line, s.routes[0].line);
         assert_eq!(route.moves, s.routes[0].moves);
         assert!(panel(&s, "bb").route.is_none(), "another headset's speech");
+        // The request in flight (D43): steered, its agent at work.
+        let progress = panel(&s, "aa").progress.unwrap();
+        assert_eq!(progress.step, crate::panel::Step::Agent);
+        assert!(panel(&s, "bb").progress.is_none());
 
         let to = route.moves[0].to.clone();
         let (by_panel, commands) = update(s.clone(), from_panel(0, PanelAction::Move { id: route.id, to: to.clone() }));
@@ -8528,5 +9315,78 @@ pub(crate) mod tests {
             c,
             Command::Link(LinkCommand::PanelRefused { conn: 0, .. })
         )));
+    }
+
+    /// The conversation a panel carries: the latest items as text, spoken
+    /// lines marked with their route, a run of steps as one line, long text
+    /// cut, a question flagged; never a tool's input or a file's contents.
+    #[test]
+    fn the_panel_carries_the_conversation_bounded_and_without_code() {
+        use crate::panel::{panel, Role, SAID, SAID_BYTES};
+        use crate::tasks::Spoken;
+        use serde_json::json;
+        let (mut s, _) = update(state(), new_task("Make it spin"));
+        let tool = |name: &str, input| agent(1, 0, AgentEvent::ToolUse { name: name.into(), input });
+        let text = |t: &str| agent(1, 0, AgentEvent::Text { text: t.into() });
+        let result = agent(1, 0, AgentEvent::ToolResult { content: "SECRET_RESULT".into() });
+        for event in [
+            agent(1, 0, started("sess-1")),
+            text(&"é".repeat(SAID_BYTES)),
+            tool("Read", json!({"file_path": "a/game.fun"})),
+            result.clone(),
+            tool("Write", json!({"file_path": "a/game.fun", "content": "SECRET_FILE"})),
+            result.clone(),
+            tool("Bash", json!({"command": "cargo test"})),
+            result,
+            text("Which hip?\n```rust\nlet secret = SECRET_CODE;\n```\nOr the other?"),
+            tool("AskUserQuestion", json!({"questions": [{"question": "Left or right hip?"}]})),
+        ] {
+            s = update(s, event).0;
+        }
+        let Item::User { spoken, .. } = &mut s.tasks[0].transcript[0] else {
+            panic!("the first message");
+        };
+        *spoken = Some(Spoken {
+            headset: "Quest 3".into(),
+            context: Some("at frame 7".into()),
+            route: Some("Steered “Make it spin”".into()),
+        });
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!((c.task, c.title.as_str(), c.question), (1, "Make it spin", true));
+        let lines: Vec<(Role, bool, &str)> =
+            c.items.iter().map(|i| (i.role, i.spoken, i.text.as_str())).collect();
+        assert_eq!(lines[0], (Role::You, true, "Make it spin"));
+        assert_eq!(lines[1], (Role::App, false, "Steered “Make it spin”"));
+        assert_eq!(lines[2].0, Role::Agent);
+        assert!(c.items[2].cut && c.items[2].text.len() <= SAID_BYTES);
+        assert_eq!(lines[3], (Role::App, false, "3 steps, last: running cargo test"));
+        assert_eq!(lines[4..], [(Role::Agent, false, "Which hip?\n[code on the desktop]\nOr the other?"), (Role::Agent, false, "Left or right hip?")]);
+        let all = format!("{c:?}");
+        assert!(!all.contains("SECRET") && !all.contains("at frame"), "{all}");
+
+        // Only the latest SAID items, and the panel says there were more.
+        for i in 0..SAID {
+            s = update(s, text(&format!("line {i}"))).0;
+        }
+        let c = panel(&s, "aa").conversation.unwrap();
+        assert_eq!(c.items.len(), SAID);
+        assert!(c.first > 0);
+        assert_eq!(c.items.last().unwrap().text, format!("line {}", SAID - 1));
+    }
+
+    /// A headset's conversation is the task it opened, else the one in
+    /// front; another headset's choice is its own.
+    #[test]
+    fn each_headset_reads_the_conversation_it_opened() {
+        use crate::panel::panel;
+        let (s, _) = update(state(), nth_task(1, "one"));
+        let (s, _) = update(s, ended(1, 0));
+        let (mut s, _) = update(s, nth_task(2, "two"));
+        let now = panel(&s, "aa").now.unwrap();
+        assert_eq!(panel(&s, "aa").conversation.unwrap().task, now);
+        let other = if now == 1 { 2 } else { 1 };
+        s.panel_tasks.insert("aa".into(), other);
+        assert_eq!(panel(&s, "aa").conversation.unwrap().task, other);
+        assert_eq!(panel(&s, "bb").conversation.unwrap().task, now);
     }
 }

@@ -164,6 +164,7 @@ pub(crate) fn undo(state: &mut AppState, commands: &mut Vec<Command>) -> Result<
 mod tests {
     use super::*;
     use crate::agent_view::{ViewReply, ViewRequest};
+    use crate::devices::LinkCommand;
     use crate::folders::Recent;
     use crate::layout::{Layout, LayoutOp, Placement};
     use crate::protocol::ClientMsg;
@@ -339,11 +340,19 @@ mod tests {
     }
 
     /// Asked for in the headset: the new project's game runs there, and the
-    /// headset hears what happened, once.
+    /// headset hears what happened, once, shown and (replies on) aloud.
     #[test]
     fn a_switch_on_the_headset_stays_there_and_says_so() {
         let mut s = voice_task_running();
         s.start_on_open = true;
+        s.speak = true;
+        let aloud = |commands: &[Command]| -> Vec<String> {
+            let text = |c: &Command| match c {
+                Command::Link(LinkCommand::Say { text, .. }) => Some(text.clone()),
+                _ => None,
+            };
+            commands.iter().filter_map(text).collect()
+        };
         let old = s.session.as_ref().unwrap().id;
         let (s, commands) = update(s, request(4, false, ViewRequest::OpenProject { path: B.into() }));
         assert!(reply(&commands).ok);
@@ -355,10 +364,11 @@ mod tests {
             Command::StartHeadset { dir, tunnel, .. } if dir.ends_with(B) && tunnel == "http://127.0.0.1:6000"
         )));
         assert_eq!(stages(&commands), [(1, Stage::Done("Switched to examples/b".into()))]);
+        assert_eq!(aloud(&commands), ["Switched to examples/b"]);
         let (s, commands) = update(s, agent(4, 0, finished()));
-        assert_eq!(stages(&commands), []);
+        assert_eq!((stages(&commands), aloud(&commands)), (vec![], vec![]));
         let (_, commands) = update(s, ended(4, 0));
-        assert_eq!(stages(&commands), []);
+        assert_eq!((stages(&commands), aloud(&commands)), (vec![], vec![]));
     }
 
     /// The picker's own switch keeps the game on the headset too.

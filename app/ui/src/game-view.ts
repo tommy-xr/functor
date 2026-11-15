@@ -3,7 +3,7 @@
 // (its input rules are `game-input.ts`).
 
 import type { Device, Mirror, Session, Transport } from "./generated/protocol";
-import { fixFor, WORDS } from "./devices-model.ts";
+import { fixFor, loading, WORDS } from "./devices-model.ts";
 
 export type Size = { w: number; h: number };
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -58,6 +58,30 @@ export type HeadsetNote = {
   fix: string | null;
 };
 
+/**
+ * The title bar's session pill: where the session runs and one word for
+ * it. A live session on a headset that is not linked takes the headset's
+ * word (`Headset session · away`), as the Game tab does (D27).
+ */
+export function sessionPill(headset: Device | null | undefined, onHeadset: boolean, session: Session | null | undefined): { text: string; word: string } {
+  const kind = session?.status.kind ?? "stopped";
+  const where = onHeadset ? "Headset session" : "Local session";
+  const state = headset?.state.state;
+  if (onHeadset && (kind === "running" || kind === "starting") && state && state !== "connected") {
+    return { text: `${where} · ${WORDS[state].toLowerCase()}`, word: state };
+  }
+  // What the headset is loading, in a word (and how far, when it says).
+  const load = onHeadset && headset?.state.state === "connected" ? loading(headset.state.loading) : null;
+  if (load && (kind === "running" || kind === "starting")) {
+    const percent = /\((\d+%)\)/.exec(load[1])?.[1];
+    const doing = load[0] === "Sending to headset" ? "sending" : load[0].toLowerCase();
+    // A failure there is not a healthy session; anything else is still starting.
+    const word = load[0] === "Failed to load" ? "failed" : "starting";
+    return { text: `${where} · ${doing}${percent ? ` ${percent}` : ""}`, word };
+  }
+  return { text: `${where} · ${kind}`, word: kind };
+}
+
 export function headsetNote(device: Device | null, session: Session | null, transport: Transport | null): HeadsetNote {
   const status = session?.status ?? { kind: "stopped" };
   if (!device) {
@@ -79,10 +103,18 @@ export function headsetNote(device: Device | null, session: Session | null, tran
       title: `${name}: ${WORDS[device.state.state]}`,
       detail:
         status.kind === "running"
-          ? "The game goes on there; this view follows it again when the headset reconnects."
+          ? `The game goes on there; this view follows it again when the headset reconnects.${
+              device.state.state === "away" ? " An edit saved meanwhile loads there once it is back." : ""
+            }`
           : "The game starts there when the headset reconnects.",
       fix: fixFor(device),
     };
+  }
+  // What the headset says it is doing: sending, starting, loading assets, a failure.
+  const load = loading(device.state.loading);
+  if (load) {
+    const title = load[0] === "Sending to headset" ? `Sending to ${name}` : `${load[0]} on ${name}${load[0] === "Starting" ? "…" : ""}`;
+    return { title, detail: load[1] || null, fix: null };
   }
   if (status.kind === "starting") return { title: `Starting on ${name}…`, detail: null, fix: null };
   const clock = transport?.clock ? `Frame ${transport.frame} · ${transport.paused ? "Paused" : "Playing"}` : null;

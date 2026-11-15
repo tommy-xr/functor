@@ -2637,7 +2637,7 @@ let draw = (model, tts) =>
         use crate::debug_protocol::{RecordedFrames, TimelineMark};
         use crate::protocol::{clock_state, input_log, seek_to_state_frame};
         let mut game = parked_input_game();
-        assert_eq!(clock_state(&game, false).recorded, None);
+        assert_eq!(clock_state(&game, false, None).recorded, None);
         let dt = 1.0 / 60.0;
         for frame in 1..=3 {
             if frame == 2 {
@@ -2645,7 +2645,7 @@ let draw = (model, tts) =>
             }
             game.tick(frame_time(frame as f32 * dt, dt));
         }
-        let clock = clock_state(&game, true);
+        let clock = clock_state(&game, true, None);
         assert!(clock.paused);
         assert_eq!(
             clock.recorded,
@@ -2675,7 +2675,7 @@ let draw = (model, tts) =>
         );
         assert_eq!(game.state_frame(), Some(2));
         // The future is kept: seek forward again.
-        assert_eq!(clock_state(&game, true).recorded, clock.recorded);
+        assert_eq!(clock_state(&game, true, None).recorded, clock.recorded);
         assert_eq!(
             seek_to_state_frame(&mut game, 99).as_deref(),
             Ok("showing frame 3 (requested 99, clamped to the recorded window)")
@@ -2683,7 +2683,7 @@ let draw = (model, tts) =>
         seek_to_state_frame(&mut game, 1).unwrap();
         // The next step branches: frames 2 and 3 are replaced.
         game.tick(frame_time(2.0 * dt, dt));
-        let branched = clock_state(&game, true);
+        let branched = clock_state(&game, true, None);
         assert_eq!(
             branched.recorded,
             Some(RecordedFrames {
@@ -3086,6 +3086,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// request survives the branch, and drops a request the branch cut.
     #[test]
     fn arrivals_while_scrubbed_park_until_the_branch_and_follow_it() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let kept = request(&mut game, 0);
@@ -3105,6 +3106,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// response lands.
     #[test]
     fn a_reload_keeps_requests_in_flight() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let token = request(&mut game, 0);
@@ -3118,6 +3120,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// issued after it.
     #[test]
     fn a_rewind_keeps_only_requests_issued_before_it() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let kept = request(&mut game, 0);
@@ -3137,6 +3140,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     #[test]
     fn http_workers_deliver_responses_to_the_tagger() {
         let _gauge = crate::net::INBOUND_GAUGE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut game = http_game();
         let token = request(&mut game, 0);
@@ -3167,6 +3171,7 @@ let draw = (model, tts) => Frame.create(Camera3D.lookAt(Vec3.make(0.0, 0.0, -5.0
     /// Two producers on one thread keep their own pending requests.
     #[test]
     fn producers_do_not_share_pending_requests() {
+        let _net = crate::net::OUTBOUND_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::net::drain_commands();
         let mut a = http_game();
         let mut b = http_game();

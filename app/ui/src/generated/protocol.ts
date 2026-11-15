@@ -21,7 +21,12 @@ subagents: Array<Subagent>,
  * How full the main agent's context is, once both its use and its
  * model's window are known.
  */
-context: ContextFill | null, };
+context: ContextFill | null, 
+/**
+ * Its run is in flight and an agent's tools hold its project's game
+ * paused: it is checking the change.
+ */
+game_paused: boolean, };
 
 /**
  * The agent's part of a layout (D25): kept with it, so it survives restarts.
@@ -127,6 +132,10 @@ queues: { [key in string]: Queue },
  * their lines and moves, refreshed after every event.
  */
 routes: Array<Routed>, 
+/**
+ * Where each recent request is (D43), oldest first.
+ */
+requests: Array<Request>, 
 /**
  * Per project path, the chat's current task (`None`: a new one), the
  * one the Tasks pane shows selected. Absent until a client first
@@ -343,6 +352,13 @@ build: string | null,
  * The project it runs.
  */
 project: string | null, 
+/**
+ * What it is loading: the step's kind, then its status card's lines
+ * (`["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of
+ * 9 files"]`; see `functor_device_link::load`). Empty when its card
+ * is hidden, and from a headset that does not say.
+ */
+loading: Array<string>, 
 /**
  * The last ping's round trip.
  */
@@ -675,6 +691,11 @@ tabs: Array<View>,
 active: number, };
 
 /**
+ * Who paused the clock, as the request that paused it said.
+ */
+export type PausedBy = "agent" | "user" | "start";
+
+/**
  * Where the project's one game view shows (D21).
  */
 export type Placement = "pane" | "mini" | "window" | "headset";
@@ -785,6 +806,41 @@ evidence: Array<Check>,
  * Written by a separate review, not the agent that made the change.
  */
 reviewed: boolean, };
+
+export type Request = { id: number, project: string, 
+/**
+ * The headset it was said in, by name; `None` when typed.
+ */
+headset: string | null, 
+/**
+ * What was said (once transcribed) or typed.
+ */
+text: string | null, 
+/**
+ * The task it went to, once placed.
+ */
+task: number | null, 
+/**
+ * Where it went: "Started a new task", "Steered “…”".
+ */
+line: string | null, 
+/**
+ * The steps reached so far, each with when (`AppState::now`, wall ms):
+ * a done step took until the next one began.
+ */
+steps: Array<RequestReached>, outcome: RequestOutcome | null, 
+/**
+ * When (wall ms) its outcome was last set.
+ */
+ended: number | null, };
+
+export type RequestOutcome = { "kind": "answered", text: string, } | { "kind": "changed", reload: RequestReload, } | { "kind": "needs_you" } | { "kind": "done" } | { "kind": "cancelled" } | { "kind": "failed", at: RequestStep, reason: string, };
+
+export type RequestReached = { step: RequestStep, at: number, };
+
+export type RequestReload = "waiting" | "when_back" | "reloaded";
+
+export type RequestStep = "received" | "transcribing" | "transcribed" | "processing" | "agent";
 
 /**
  * A task's review of its waiting change, kept until the change is decided,
@@ -1049,7 +1105,12 @@ created_at: number | null,
 /**
  * Last active, as `created_at`.
  */
-updated_at: number | null, };
+updated_at: number | null, 
+/**
+ * Its latest spoken request's stage times (a typed message after it
+ * leaves them).
+ */
+voice?: VoiceTiming, };
 
 export type TaskStatus = { "kind": "queued" } | { "kind": "in_progress" } | { "kind": "waiting_on_you" } | { "kind": "ready_for_review" } | { "kind": "done" } | { "kind": "failed", summary: string | null, } | { "kind": "kept" } | { "kind": "reverted" };
 
@@ -1091,6 +1152,10 @@ clock: boolean,
  * Pinned: paused, stepped, or parked on a seek.
  */
 paused: boolean, 
+/**
+ * Who paused it, where the runtime says (debug protocol v52).
+ */
+paused_by: PausedBy | null, 
 /**
  * The recorded steps behind the state shown (`/state.frame`).
  */
@@ -1174,6 +1239,52 @@ export type View = { "kind": "game" } | { "kind": "file", path: string, } | { "k
  * (scrolled to `path`), or the game. Paths are relative to the project.
  */
 export type ViewTarget = { "kind": "file", path: string, lines: [number, number] | null, } | { "kind": "changes", path: string | null, } | { "kind": "game" };
+
+/**
+ * Stage times: the shell's wall clock, ms since the Unix epoch (`None`:
+ * not reached yet).
+ */
+export type VoiceTiming = { 
+/**
+ * The headset's number for the utterance.
+ */
+utterance: number, 
+/**
+ * The clip's `Start` arrived: the button went down.
+ */
+start: number, first_chunk: number | null, 
+/**
+ * Its `End` arrived: the clip is whole.
+ */
+end: number, 
+/**
+ * The clip's length.
+ */
+audio_ms: number, transcribe_start: number, transcribe_end: number, 
+/**
+ * Of transcribing, the time spent loading the model (`None`: loaded).
+ */
+model_load_ms: number | null, 
+/**
+ * The core placed it: a task started, steered, queued or added to.
+ */
+routed: number | null, 
+/**
+ * The run it started (its user message's index), once it has one.
+ */
+run: number | null, run_started: number | null, 
+/**
+ * The tool server listened and the agent process was started.
+ */
+agent_spawned: number | null, 
+/**
+ * The agent's first event (its start).
+ */
+agent_event: number | null, first_text: number | null, finished: number | null, 
+/**
+ * [`VoiceTiming::summary`] as of the last stage, for the task page.
+ */
+line: string, };
 
 /**
  * Why a project's next task cannot start now.

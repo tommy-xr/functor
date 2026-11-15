@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 
 use crate::debug_protocol::{
     self, CaptureError, DebugRequest, InputCommand, LoadHost, ProjectAssetPaths, ProjectSources,
-    RewindCommand, RuntimeState, TimeCommand,
+    RewindCommand, RuntimeState, TimeRequest,
 };
 use crate::frame_stream;
 
@@ -455,7 +455,7 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
             }
         }
         ("POST", "/time") => {
-            let command = match parse_json::<TimeCommand>(&mut reader, content_length) {
+            let command = match parse_json::<TimeRequest>(&mut reader, content_length) {
                 Ok(command) => command,
                 Err(error) => {
                     respond_text(
@@ -708,6 +708,16 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     return Some(());
                 }
             };
+            ASSET_BYTES.fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            if let (Ok(Some(files)), Ok(Some(bytes))) =
+                (query_number::<u64>(query, "push_files"), query_number::<u64>(query, "push_bytes"))
+            {
+                let mut push = PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                // A manifest's own count (it knows what is held) stands.
+                if push.is_none_or(|push| !push.from_manifest) {
+                    *push = Some(Push { files, bytes, held_bytes: 0, from_manifest: false });
+                }
+            }
             let body = match upload_part(query, body, max) {
                 Ok(Some(whole)) => whole,
                 Ok(None) => {
@@ -732,6 +742,12 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                     return Some(());
                 }
             };
+            // Kept by content when the push named it and its bytes are the
+            // ones named.
+            if let Some(cache) = crate::push_cache::installed() {
+                cache.accept_later(&asset.path, &asset.bytes);
+            }
+            ASSET_FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let (resp_tx, resp_rx) = mpsc::channel();
             if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
                 return runtime_gone(&mut stream, cors_origin);
@@ -816,8 +832,92 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
                 ),
             }
         }
+        ("POST", "/push-manifest") => {
+            let manifest = match parse_json_capped::<crate::push_cache::Manifest>(
+                &mut reader,
+                content_length,
+                debug_protocol::MAX_ASSET_MANIFEST_BYTES,
+            ) {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let message = format!("body must be {{\"files\": [{{path, size, hash}}]}}: {error}");
+                    respond_text(&mut stream, cors_origin, 400, "Bad Request", &message);
+                    return Some(());
+                }
+            };
+            if let Some(error) = manifest
+                .files
+                .iter()
+                .find_map(|file| debug_protocol::validate_project_asset_path(&file.path).err())
+            {
+                let message = format!("bad push manifest: {error}");
+                respond_text(&mut stream, cors_origin, 400, "Bad Request", &message);
+                return Some(());
+            }
+            // Without a cache (desktop), everything is asked for.
+            let cache = crate::push_cache::installed();
+            let (held, mut answer) = match &cache {
+                Some(cache) => cache.begin(&manifest),
+                None => (Vec::new(), Default::default()),
+            };
+            // What it holds installs as an upload would, without counting as
+            // one. Sent ahead of their answers (the shell takes a frame for
+            // each batch, not each file), a few at a time (they are in
+            // memory until it does).
+            let mut installing = Vec::new();
+            let mut pending = 0;
+            let mut installed = true;
+            for file in &manifest.files {
+                let bytes = held.contains(file).then(|| cache.as_ref()?.get(&file.hash, file.size)).flatten();
+                let Some(bytes) = bytes else {
+                    // Not held, or gone since it was listed.
+                    if !answer.missing.contains(&file.hash) {
+                        answer.missing.push(file.hash.clone());
+                    }
+                    continue;
+                };
+                pending += bytes.len();
+                let (resp_tx, resp_rx) = mpsc::channel();
+                let asset = debug_protocol::ProjectAsset { path: file.path.clone(), bytes };
+                if tx.send(DebugRequest::ReloadAsset(asset, resp_tx)).is_err() {
+                    return runtime_gone(&mut stream, cors_origin);
+                }
+                installing.push(resp_rx);
+                if pending > MANIFEST_BATCH_BYTES {
+                    installed &= installing.drain(..).all(|answer| matches!(recv(answer), Ok(Ok(_))));
+                    pending = 0;
+                }
+            }
+            installed &= installing.into_iter().all(|answer| matches!(recv(answer), Ok(Ok(_))));
+            if !installed {
+                // The sender falls back to sending everything.
+                *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+                let message = "the runtime did not install a cached file";
+                respond_text(&mut stream, cors_origin, 503, "Service Unavailable", message);
+                return Some(());
+            }
+            let lacks = |file: &&crate::push_cache::ManifestFile| answer.missing.contains(&file.hash);
+            let (sending, have): (Vec<_>, Vec<_>) = manifest.files.iter().partition(lacks);
+            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Push {
+                files: sending.len() as u64,
+                bytes: sending.iter().map(|file| file.size).sum(),
+                held_bytes: have.iter().map(|file| file.size).sum(),
+                from_manifest: true,
+            });
+            let body = serde_json::to_vec(&answer).unwrap_or_default();
+            respond_bytes(&mut stream, cors_origin, 200, "OK", "application/json", &body)
+        }
+        ("POST", "/clear-push-cache") => {
+            let freed = crate::push_cache::installed().map_or(0, |cache| cache.clear());
+            let message = format!("cleared the pushed-file cache ({freed} bytes)");
+            respond_text(&mut stream, cors_origin, 200, "OK", &message)
+        }
         ("POST", "/sync-assets") => {
             *UPLOAD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            if let Some(cache) = crate::push_cache::installed() {
+                cache.end();
+            }
             let paths = match parse_json_capped::<ProjectAssetPaths>(
                 &mut reader,
                 content_length,
@@ -940,6 +1040,36 @@ fn handle(mut stream: TcpStream, tx: &mpsc::Sender<DebugRequest>) -> Option<()> 
         _ => respond_text(&mut stream, cors_origin, 404, "Not Found", "not found"),
     }
     Some(())
+}
+
+static ASSET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Held files a manifest installs before waiting for the shell to take them.
+const MANIFEST_BATCH_BYTES: usize = 64 * 1024 * 1024;
+
+static ASSET_FILES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Files `POST /reload-asset` has received in this process (not those a
+/// push's manifest installed from the cache).
+pub fn asset_files_received() -> u64 {
+    ASSET_FILES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub use crate::load_status::Push;
+
+/// The push in flight, until its `/sync-assets`.
+static PUSH: std::sync::Mutex<Option<Push>> = std::sync::Mutex::new(None);
+
+/// What the push in flight will send; `None` between pushes and from a
+/// sender that says nothing.
+pub fn push_announced() -> Option<Push> {
+    *PUSH.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Bytes `POST /reload-asset` has received in this process, parts of an
+/// unfinished upload included: a shell's "receiving" progress.
+pub fn asset_bytes_received() -> u64 {
+    ASSET_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// An asset envelope arriving in parts (`POST /reload-asset?upload=…`).
@@ -1281,6 +1411,7 @@ mod tests {
     use std::net::Shutdown;
 
     use super::*;
+    use crate::debug_protocol::{PausedBy, TimeCommand};
 
     fn connect(listener: &TcpListener, request: String) -> std::thread::JoinHandle<String> {
         let address = listener.local_addr().unwrap();
@@ -1694,7 +1825,7 @@ Content-Length: {}\r\n\r\n{body}",
     #[test]
     fn a_time_command_the_runtime_refuses_is_a_conflict_not_an_ok() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let body = r#"{"type":"advance","dts":0.016,"frames":4}"#;
+        let body = r#"{"type":"advance","dts":0.016,"frames":4,"by":"agent"}"#;
         let request = format!(
             "POST /time HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
@@ -1707,9 +1838,12 @@ Content-Length: {}\r\n\r\n{body}",
             DebugRequest::Time(command, response) => {
                 assert_eq!(
                     command,
-                    TimeCommand::Advance {
-                        dts: 0.016,
-                        frames: 4
+                    TimeRequest {
+                        command: TimeCommand::Advance {
+                            dts: 0.016,
+                            frames: 4
+                        },
+                        by: Some(PausedBy::Agent),
                     }
                 );
                 response.send(Err("pinned by --fixed-time".into())).unwrap();

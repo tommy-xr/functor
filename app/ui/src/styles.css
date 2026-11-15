@@ -272,6 +272,8 @@ blockquote {
 }
 
 .pill-session-starting,
+.pill-session-away,
+.pill-session-needs_update,
 .pill-warn,
 .pill-hs-asking_to_pair,
 .pill-hs-needs_update {
@@ -281,6 +283,7 @@ blockquote {
 
 .pill-session-failed,
 .pill-session-exited,
+.pill-session-cannot_reach,
 .pill-hs-cannot_reach {
   background: var(--danger-bg);
   color: var(--danger);
@@ -2129,6 +2132,13 @@ blockquote {
   pointer-events: none;
 }
 
+/* Why the game holds, beside the buttons. */
+.transport-paused {
+  color: var(--tl-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 /* 33px tall with the mini card's top border: MINI_TRANSPORT (Canvas.tsx). */
 .transport-compact {
   gap: 4px;
@@ -2791,6 +2801,43 @@ blockquote {
 .switch-line .icon-button {
   width: 22px;
   height: 22px;
+}
+
+/* Where the latest request is (D43): one quiet line above the composer. */
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--chip);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.request-done,
+.request-slow {
+  color: var(--muted);
+}
+
+.request-failed .request-now {
+  color: var(--danger);
+}
+
+.request-elsewhere {
+  cursor: pointer;
+}
+
+.request-elsewhere:hover {
+  background: var(--selected);
+}
+
+.request-go {
+  color: var(--accent-soft);
 }
 
 .composer {

@@ -139,7 +139,10 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.3 | Quest: `RECORD_AUDIO`, mic capture, thumbstick push-to-talk, clip + capsule data sent over the link. | Stub sends a recorded clip end to end; headset for the mic. |
 | 4.4 | Headset status toast (heard → working → reloaded) driven over the link. | Capture on device or emulator. |
 | 4.4a | Overlay panel (D28): the runtime draws the panel over any game on the menu button — Now and Talk first, then Tasks — fed over the link; the wrist light when closed. | Emulator captures; device when attached; `frame_bench` unchanged when the panel is closed. |
+| 4.4c | The conversation in the headset (D41): the current task's transcript on the panel channel, bounded and rate-limited; a Conversation page in the panel that follows new text and scrolls, a question shown first, push-to-talk inline; the agent's first reply and result as toasts when the panel is closed. | Protocol bounds and version tests; desktop tests that the transcript is bounded, redacted and rate-limited; overlay tests for follow, scroll and questions; `test:quest-panel` extended on the device. |
 | 4.4b | Router (D29, D30): one model call per utterance splitting it into steer / new task, the decision shown with overrides on desktop and headset, steer as stop-and-resume, a task queue that starts the next task with every later utterance attached. | Core unit tests for the queue; router tests on recorded utterances; fake-agent end to end. |
+| 4.4d | Request progress (D43): one progress record per request in the core (received, transcribed, processing, agent status, outcome, with times), shown as one line in the chat, the headset toast and the headset panel; minimum time on screen per step; a late step re-shows it; failures name their step. | Core tests for the record; a slow fake transcriber and a slow fake agent drive every step on the desktop and the stub headset; overlay tests with real timings. |
+| 4.4e | The panel as a compositor layer, for legible text (after the type scale in #1125): the panel, the toast and the pairing card render into their own swapchain (about 1300×1100 for the panel's 50°×43° at 25 px/deg; three images, about 17 MB) and are submitted as an `XrCompositionLayerQuad` at the panel's pose, view-space for the head-locked cards. The compositor then samples them once, at the display's ~25 px/deg at the centre, instead of through the ~15 px/deg eye buffer and timewarp: 1.6× sharper, 2.7× the pixels per glyph. Redrawn only when the shapes change; layer sharpening (`XR_FB_composition_layer_settings`) where the runtime offers it; the eye-buffer painter stays as the fallback (desktop, an XR runtime without quad layers). `/capture` composes the layer into its image so captures still show it. Estimate: 3–4 agent-days in two PRs, (a) the world-anchored panel's layer, (b) the cards and toast, sharpening, captures. | On the device: a compositor screenshot of the panel shows at least 1.5× the pixels per glyph of the eye-buffer path; `bench:quest` with the panel open no worse than the eye-buffer path; the panel stays over the game; desktop overlay tests unchanged. |
 | S3 | Spike before 4.5: can `/state.model` round-trip into a second session for `examples/vr-lab` and two other examples? List what breaks (closures, host handles). | Findings appended here. |
 | 4.5 | Mirror view (D5): desktop draws from the headset's state with head view and switchable dev cameras (D18, via the debug camera); fall back to the headset's own capture where S3 says the model does not round-trip. | Stub feeds recorded state; frame matches a golden. |
 | S5 | Spike before 4.7: two named state branches kept alive at once and switched with the code (D32), on desktop then device; what fails and what it costs in memory. | Findings appended here. |
@@ -148,10 +151,32 @@ an HTTP MCP server that exposes one tool proxying `GET /state`.
 | 4.7 | Before and after in place, and the lab (D31, D32): switching versions by branch; the lab from a capsule's recorded moment; both in the headset panel. | Desktop tests under the XR emulator; device when attached. |
 | 4.8 | Agents in the room (D34): the characters as a Functor scene fed by 1.17, drawn by the runtime as an overlay beside the panel; look-and-press opens a task, look-and-talk steers it. The desktop cards move to the same scene if it holds up. | Emulator captures; device when attached; `frame_bench` unchanged when hidden. |
 | 4.9 | Presentation in the world (D36): notes and measured lines pinned to objects first; then two versions side by side and the ghost of the old, after S5. Drawn by the runtime as an overlay; each mark tied to its panel item. | Emulator captures; device when attached; `frame_bench` unchanged when nothing is shown. |
+| S6 | Spike for D44: draw a running game's frame as a miniature on a desk under passthrough, grabbed and scaled; what breaks (sky, fog, post-effects, first-person attachments, unknown bounds) and what it costs on device. | Findings appended here. |
+| S7 | Spike for D44: go in at a pointed spot and come back out with the game's state unchanged, for a VR example and a flat one. | Findings appended here. |
+| S8 | Spike for D44: an orchestrator run with two or three subagents each in its own worktree of the project, a game session per fork, merging back with conflicts surfaced; on the desktop first (a tasks tree and per-fork Keep), before any of it is drawn in the room. | Findings appended here. |
+| S9 | The workspace contract (D44): write down, from what the desktop page, the headset panel channel and the agent's app tools already exchange, one versioned schema of state and actions; say what each client uses, what is missing for the workshop (agent tree, forks, code map, request progress) and what must never be in it (secrets, file contents beyond what the chat shows). | A document under `docs/`, reviewed before anything is built on it. |
 
 ## M5 and later
 
 Code city as a rendering of presentations (D33).
+
+### The code city (D46)
+
+Design and budgets: [`docs/code-city.md`](../../code-city.md).
+
+| # | Task | Verify |
+|---|---|---|
+| C1 | `functor-city` crate on `functor-lang`: the analyzer and snapshot v1 (files, definitions with kind, span, size and shape hash, types with members, reference sites, the loop's entry points); `functor city --json`. | Snapshot tests over three examples. |
+| S12 | Spike before C2: replay the history of `examples/vr-lab` and two small examples through the slot layout; measure how far lots move per commit against a weight-sorted treemap. | Findings appended here. |
+| C2 | History per definition from git (shape hash per blob, cached); the model: stable layout, stacks, marks; the skyline pane. | Model unit tests; a pane capture; an edit moves no lot outside its file. |
+| C3 | Execution light and call dots while paused and scrubbing, joined from `/trace` coverage; full speed after S10. | A scripted pause lights the expected definitions; `frame_bench` unchanged. |
+| S10 | Spike before C3's full-speed half: per-definition and per-pair counters at call boundaries behind a flag, against sampled coverage replay. | `frame_bench` on and off; findings appended here. |
+| C4 | Agents and forks as layers, after S8 and the contract's agent and fork steps; kept tasks as events. | Recorded workspace state drives the skyline. |
+| C5 | Tours: a `present` step focuses its definitions. | Core test: step → focus. |
+| S11 | Spike before C6: a generated district of 50, 150 and 500 buildings with dots and labels as a Functor scene on the Quest, under passthrough beside a game. | Legibility and frame time; findings appended here. |
+| C6 | The district in the workshop scene, drawing the same marks (after S6, S11). | Emulator captures; device when attached. |
+| S13 | Spike for the city at scale: 2,000 and 8,000 instances whose tints change every frame — a rebuilt list, two instanced sets, a prototype per-instance attribute buffer. | Interpreter time, `allocs/frame`, device frame time; findings appended here. |
+| C7 | Files may draw themselves: the optional pure `diagram` binding per file or inline module, bounded in time and size, with a fault mark; a picture in the skyline and the editor, a scene in the workshop. Any time after C3. | Core tests for the budgets and the fault; a capture of a diagram above its file. |
 
 Developer menu and build info; agent-authored tuning UI (D7), which needs UI
 render targets wired in VR and the VR gamma fix first; TTS (Kokoro) played in
@@ -307,6 +332,34 @@ APK over adb.
   APK (404), and says so. Not in the frame, so not mirrored: what the
   headset shell draws itself (passthrough feed, fused room mesh, the link
   panel and toasts).
+
+### S9 — the workspace contract (2026-11-14)
+
+The document is [`docs/workspace-contract.md`](../../workspace-contract.md): a
+proposal (v0) to review before anything is built on it. No code changed.
+
+- **Three contracts today, one a projection of another.** The page
+  (`AppState`, `ClientMsg` / `ServerMsg`), the headset (link channels 1–4)
+  and the agent's app tools (`/agent/view`, `app_context`). Every panel
+  action already becomes a `ClientMsg` and the panel is a pure function of
+  `AppState`; the contract makes that the rule for every client.
+- **The same concept is typed more than once:** stance (three enums),
+  destination (two), the decision (structured on the page, worded for the
+  panel), refusal (three shapes), request stages (three lists).
+- **Confirmation is in the clients,** not the app: the panel's second press
+  and the page's revert dialog. The core holds only the revert's `tree`
+  witness. The proposal moves it behind the contract, collected by a host
+  surface a scene cannot draw.
+- **The page's state holds what a forked scene must not get:** absolute
+  paths, the debug URL, tunnel URLs, pairing codes, tool inputs, file text.
+- **Missing for D44 / D45, in order:** one reply shape with confirmation,
+  request progress, the pending list, agents with ids and targets, the task
+  tree and the manager, game handles, forks, the code map, voice out,
+  project switching outside the page.
+- **Migration in six PRs,** the page and panel working after each: a shared
+  contract crate; `Workspace` as a projection of `AppState`; replies and
+  confirmation; requests, pending and version negotiation; agents and the
+  tree; the scene transport.
 
 ## Agent-run metrics
 
@@ -576,3 +629,82 @@ each turn is measured rather than guessed:
   alone: the project level wrote 26k (more than the full level), isolated
   read 42k of its 51k. Comparing costs needs repeated runs.
 - One run each.
+
+### Voice latency (2026-11-14, this MacBook Air M3, 8 cores, shared with other agents' builds)
+
+One real utterance before this work: 2.9 s of speech; release to task
+created 11.0 s; the run 32.2 s (7 turns, 26.4 s API, $1.15). Each spoken
+request now keeps its stage times on its task (`voice`, shown on the task
+page as one line), in `<home>/voice.log` once its run ends, and in
+`--metrics` records:
+
+`heard 0.0 s · transcribed 0.2 s · agent started 2.1 s · first reply 5.2 s · done 5.8 s`
+
+Each stage is since the release, as near as the desktop can tell: the
+headset streams the clip while the button is held, so "heard" is how far
+behind the stream was when it ended.
+
+**Where the 11 s went: speech-to-text on a loaded CPU.** whisper.cpp ran on
+8 threads, every core. Its threads wait for each other at each step, so
+when other processes take cores, one clip stalls. The clip itself was on
+the desktop almost at once.
+
+Speech-to-text, `cargo run --release -p functor-stt --features whisper
+--example stt_bench` (3 fresh processes per row, interleaved; `load` is the
+1-minute load average; ms min / median / max):
+
+| | load | 2.7 s clip | 5.1 s clip | 9.8 s clip |
+| --- | --- | --- | --- | --- |
+| before: CPU, 8 threads | 21–49 | 401 / 490 / 1310 | 442 / 717 / 1057 | 742 / 1607 / 2032 |
+| before: CPU, 8 threads | 51–127 | 1614 / 2412 / 56040 | 4242 / 18777 / 62529 | 948 / 13018 / 89842 |
+| CPU, 4 threads | 35–45 | 395 / 450 / 1058 | 380 / 609 / 972 | 522 / 654 / 1154 |
+| CPU, 4 threads | 65–152 | 396 / 398 / 429 | 440 / 445 / 505 | 450 / 503 / 593 |
+| after: Metal, 4 threads | 33–46 | 112 / 121 / 189 | 136 / 167 / 173 | 220 / 254 / 337 |
+| after: Metal, 4 threads | 54–136 | 115 / 139 / 176 | 151 / 165 / 192 | 206 / 337 / 398 |
+
+The first use also paid, before: the model's SHA-256 check (0.4–1.9 s
+release; 7–13 s in a debug build, now ~1 s) and its load (0.1–0.4 s).
+Metal compiles its shaders on the first load of each new build (7–13 s
+here), then loads in 0.2–0.6 s. Both now happen in the background when the app starts (if the
+model is on disk), with a second of silence transcribed to warm it, so
+the first clip waits only if it comes within a second or two of the start.
+
+Link to task, `FUNCTOR_VOICE_BENCH=1 cargo test -p functor-app --features
+whisper --test device_link voice_stages_on_this_machine -- --nocapture`
+(the stub headset sends each clip over loopback; debug app; load 14–55;
+3 rounds): end of clip to task started 0.2–0.4 s; the first clip, 2 s
+after start, 0.4–0.8 s (0.2–0.7 s of it the preload finishing).
+
+Agent kick-off, three one-turn live runs (Claude, the user's own setup,
+the real `functor mcp --attach` on the stub's tunnel; load 16–20):
+
+| stage | time |
+| --- | --- |
+| task started → tool server listening, agent spawned | 68–75 ms |
+| spawned → Claude Code's first event | 1.8–2.3 s |
+| first event → first text (one API turn) | 2.7–3.4 s |
+| one-word answer, in all | 5.2–6.4 s, $0.37 (39k input, 23k written to cache) |
+
+Not used:
+
+- **Encoding only the clip's length** (`audio_ctx`) instead of 30 s: no
+  faster on Metal (134 against 137 ms), and the 2.7 s clip came back with
+  its sentence twice.
+- **The tiny model**: 58 against 121 ms on the 2.7 s clip, the same words
+  on clips under 6 s ("3" for "three" on the long one), but a second model
+  to fetch for well under 0.1 s.
+- **Transcribing while the clip arrives**: the whole clip takes 0.1–0.3 s.
+
+Also: whisper.cpp's C++ build hung at its end whenever it started the
+`sccache` server (3 of 3 cold builds here; neither of two others, one
+with the server already running, one with `GGML_CCACHE=OFF`). ggml uses `sccache` or `ccache` from
+`PATH` as its compiler launcher; a server started inside the build keeps
+the build's make jobserver pipe and its tokens, so make waits for them
+forever. `.cargo/config.toml` now sets `GGML_CCACHE=OFF`. The Intel
+Homebrew `cmake` first on `PATH` is not the cause.
+
+What is left is the agent: about 2 s for Claude Code to start, then each
+API turn (a one-word answer is about 39k input tokens with the user's own
+setup). The 32 s run was 7 turns; fewer turns for a question, or a smaller
+setup (the project's own or isolated scope, about a third less a turn), are
+what would cut it.

@@ -10,8 +10,23 @@ use crate::state::{connected, AppState, Command};
 use crate::tasks::{Item, Spoken};
 
 /// After a run ends ok, how long the game has to reload with its edit
-/// (the push follows the save) before the headset is told it did not.
+/// (the push follows the save) before the headset is told it did not;
+/// counted only while the headset is linked, as `functor run vr` holds
+/// the push for a headset that is away until it is back.
 pub const RELOAD_GRACE_MS: u64 = 15_000;
+
+/// A spoken request's clip as the shell sees it, before it has text
+/// (`LinkEvent::Hearing`): the first steps of its record (`progress`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HearingStage {
+    /// Its clip is arriving.
+    Arriving,
+    /// Its clip is whole and being turned into text.
+    Transcribing,
+    /// Cancelled in the headset.
+    Cancelled,
+    Failed { reason: String },
+}
 
 /// A transcribed utterance from a linked headset.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +43,8 @@ pub struct Utterance {
     pub title: Option<String>,
     /// The project of the game it was said to: it goes nowhere else.
     pub project: String,
+    /// Its stages so far (`None`: not timed, as one the user moved).
+    pub timing: Option<crate::voice_timing::VoiceTiming>,
 }
 
 /// The stages the core reports.
@@ -37,6 +54,8 @@ pub enum Stage {
     Working,
     /// The game on the headset reloaded after the run's edit.
     Reloaded,
+    /// The run answered without changing the game: its answer's first line.
+    Answered(String),
     /// The run did what was asked, in a few words: "Switched to examples/b".
     Done(String),
     Failed(String),
@@ -57,8 +76,12 @@ pub struct Job {
     /// polled yet; the first poll sets it).
     revision: Option<u64>,
     reloaded: bool,
-    /// When (`AppState::clock`) the run ended ok.
+    /// Since when (`AppState::clock`) the run has ended ok with the
+    /// headset linked.
     ended: Option<u64>,
+    /// The task's change when the run started: the same one at its end is
+    /// an earlier run's, not one waiting to load.
+    pub(crate) before: Option<crate::changes::Change>,
 }
 
 /// Where an utterance goes.
@@ -122,15 +145,21 @@ pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, 
 }
 
 /// `task`'s run switched the project (D42): its utterances' outcome is
-/// `what`, said now, as the game they were said to has gone.
+/// `what`, shown and said now, as the game they were said to has gone.
 pub(crate) fn switched(state: &mut AppState, task: u64, what: &str, commands: &mut Vec<Command>) {
-    state.voice.retain(|job| {
-        let done = job.task == task;
-        if done {
-            status(commands, &job.device, job.utterance, Stage::Done(what.to_string()));
+    let stage = Stage::Done(what.to_string());
+    let (done, kept) = std::mem::take(&mut state.voice)
+        .into_iter()
+        .partition::<Vec<_>, _>(|job| job.task == task);
+    state.voice = kept;
+    for job in done {
+        status(commands, &job.device, job.utterance, stage.clone());
+        // Aloud too (D47).
+        let said = (state.speak.then(|| said(state, task, job.run, &job.before, &stage))).flatten();
+        if let Some(text) = said {
+            commands.push(Command::Link(LinkCommand::Say { device: job.device, text }));
         }
-        !done
-    });
+    }
 }
 
 /// Follows `task`'s run, started for `u` (`Working` now), or the one it
@@ -155,6 +184,7 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
         revision,
         reloaded: false,
         ended: None,
+        before: t.change.clone(),
     });
     if run.is_some() {
         status(commands, &u.device, u.utterance, Stage::Working);
@@ -163,22 +193,25 @@ pub(crate) fn follow(state: &mut AppState, u: &Utterance, task: u64, commands: &
 
 /// After every event: each followed run's outcome, once known, goes to its
 /// headset — `Reloaded` once the run ended ok and the game reloaded since
-/// it started; `Failed` if the run failed, was stopped, or the game left
-/// the headset or did not reload in time.
+/// it started; `Answered` if it ended ok with nothing to reload; `Failed`
+/// if the run failed, was stopped, or the game left the headset or did not
+/// reload its change in time. A headset that is away is waited
+/// for: the shell delivers what it missed when it relinks.
 pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
     let mut jobs = std::mem::take(&mut state.voice);
+    let mut ended = Vec::new();
     jobs.retain_mut(|job| {
-        let mut end = |stage| {
-            status(commands, &job.device, job.utterance, stage);
+        let mut end = |stage: Stage| {
+            status(commands, &job.device, job.utterance, stage.clone());
+            let run = (job.task, job.run, job.before.clone());
+            ended.push((job.device.clone(), job.utterance, stage, run));
             false
         };
         let revision = match on_headset(state, &job.device) {
             Some((session, revision)) if session == job.session => revision,
             _ => return end(Stage::Failed("the game stopped on the headset".to_string())),
         };
-        if !connected(&state.devices, &job.device) {
-            return false;
-        }
+        let linked = connected(&state.devices, &job.device);
         let Some(task) = state.tasks.iter().find(|t| t.id == job.task) else {
             return end(Stage::Failed("the task was deleted".to_string()));
         };
@@ -189,17 +222,25 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             (None, Some(run)) => {
                 job.run = Some(run.id);
                 job.revision = revision;
+                job.before = task.change.clone();
                 status(commands, &job.device, job.utterance, Stage::Working);
                 return true;
             }
             (None, None) => return end(Stage::Failed("the task did not start".to_string())),
         };
+        let running = task.run.as_ref().is_some_and(|r| r.id == run);
         match (revision, job.revision) {
             (Some(now), None) => job.revision = Some(now),
             (Some(now), Some(then)) if now > then => job.reloaded = true,
+            // A fresh load (its app restarted while away): counted from
+            // here, and after the run it carries what the run saved.
+            (Some(now), Some(then)) if now < then => {
+                job.revision = Some(now);
+                job.reloaded |= !running;
+            }
             _ => {}
         }
-        if task.run.as_ref().is_some_and(|r| r.id == run) {
+        if running {
             return true;
         }
         match outcome(&task.transcript, run) {
@@ -207,17 +248,26 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
             Some(Item::Finished { ok: true, .. })
                 if state.tracks_changes && task.change.as_ref().is_some_and(|c| c.is_empty()) =>
             {
-                end(Stage::Failed(
-                    "the agent answered without changing the game: see the computer".to_string(),
-                ))
+                end(Stage::Answered(answer(&task.transcript, run)))
+            }
+            // The change is ready; it loads when the headset is back.
+            Some(Item::Finished { ok: true, .. }) if !linked => {
+                job.ended = None;
+                true
             }
             Some(Item::Finished { ok: true, .. }) => {
                 let ended = *job.ended.get_or_insert(state.clock);
-                match state.clock.saturating_sub(ended) >= RELOAD_GRACE_MS {
+                if state.clock.saturating_sub(ended) < RELOAD_GRACE_MS {
+                    return true;
+                }
+                // A failure only when a change is known to be waiting;
+                // otherwise (changes untracked) it is the agent's answer.
+                let waiting = crate::tasks::has_change(task) && task.change != job.before;
+                match state.tracks_changes && waiting {
                     true => end(Stage::Failed(
                         "the agent finished, but the game did not reload".to_string(),
                     )),
-                    false => true,
+                    false => end(Stage::Answered(answer(&task.transcript, run))),
                 }
             }
             Some(Item::Finished { ok: false, summary }) => end(Stage::Failed(
@@ -230,10 +280,61 @@ pub(crate) fn progress(state: &mut AppState, commands: &mut Vec<Command>) {
         }
     });
     state.voice = jobs;
+    for (device, utterance, stage, (task, run, before)) in ended {
+        crate::progress::voice_ended(state, &device, utterance, &stage);
+        // Its reply, aloud (D47).
+        let said = (state.speak.then(|| said(state, task, run, &before, &stage))).flatten();
+        if let Some(text) = said {
+            commands.push(Command::Link(LinkCommand::Say { device, text }));
+        }
+    }
+}
+
+/// What is said aloud as `task`'s run ends as `stage`; `before` is its
+/// change when the run started. A failure is said only when the run
+/// finished (it failed, or its change did not reload): not one the user
+/// stopped, nor one this job lost track of (the game left the headset
+/// mid-run, the task was deleted or never started).
+fn said(
+    state: &AppState,
+    task: u64,
+    run: Option<u64>,
+    before: &Option<crate::changes::Change>,
+    stage: &Stage,
+) -> Option<String> {
+    let task = state.tasks.iter().find(|t| t.id == task);
+    let items = task.map_or(&[][..], |t| &t.transcript[..]);
+    let ended = run.and_then(|r| outcome(items, r));
+    let finished = matches!(ended, Some(Item::Finished { .. }));
+    if matches!(stage, Stage::Failed(_)) && !finished {
+        return None;
+    }
+    let fresh = |t: &crate::tasks::Task| crate::tasks::has_change(t) && t.change != *before;
+    let review = state.tracks_changes && task.is_some_and(fresh);
+    // A run that never started has no replies: past the end.
+    let run = run.unwrap_or(items.len() as u64);
+    crate::reply::spoken(items, run, stage, review)
+}
+
+/// Run `run`'s answer, as a headset's toast says it: its last reply's
+/// first line, or where to read it.
+pub(crate) fn answer(items: &[Item], run: u64) -> String {
+    let reply = items
+        .iter()
+        .skip(run as usize + 1)
+        .take_while(|i| !matches!(i, Item::User { .. }))
+        .filter_map(|i| match i {
+            Item::Agent { text, .. } => text.lines().map(str::trim).find(|l| !l.is_empty()),
+            _ => None,
+        })
+        .last();
+    // The line for the ear (D47) without its mark.
+    let reply = reply.map(|l| crate::reply::strip_mark(l).filter(|s| !s.is_empty()).unwrap_or(l));
+    reply.map_or("Answered: see the conversation".to_string(), crate::activity::cut)
 }
 
 /// How run `run` (its user message's index) of a transcript ended.
-fn outcome(items: &[Item], run: u64) -> Option<&Item> {
+pub(crate) fn outcome(items: &[Item], run: u64) -> Option<&Item> {
     items
         .iter()
         .skip(run as usize + 1)

@@ -212,7 +212,8 @@ export function outcome(item: Item): Outcome | null {
   if (item.kind === "reverted") return { tone: "neutral", label: "Change reverted" };
   if (item.kind !== "finished") return null;
   if (item.ok) return { tone: "ok", label: "Done" };
-  const why = item.summary ? firstLine(item.summary) : "";
+  // Whole: the pill wraps, so a long reason is never cut.
+  const why = item.summary ? firstLine(item.summary, Infinity) : "";
   return { tone: "danger", label: why ? `Failed: ${why}` : "Failed" };
 }
 

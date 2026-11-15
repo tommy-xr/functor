@@ -57,7 +57,27 @@ deletes the block fails naming it and the old program keeps running. A push
 with no role query leaves the role already in force alone. Assets transfer individually through
 `POST /reload-asset`; a final
 `POST /sync-assets` manifest removes deleted uploads and changed render assets
-are decoded again on the next frame. The pieces also work individually:
+are decoded again from the next frame. Models and textures decode on worker
+threads: the headset keeps rendering, and each shows its stand-in (nothing
+for a model, a checkerboard for a texture) until its decode lands. The pieces
+also work individually:
+
+A card low in the view says where a load is: `WAITING FOR A DESKTOP` or
+`CONNECTED` on the boot scene, then `RECEIVING PROJECT` (MB and files so
+far, of the totals `run vr` announces), `STARTING` (checking code), `LOADING ASSETS` (n of m) and `RUNNING`.
+Over a running game it shows only work that lasts: `RELOADING...` after
+150 ms, assets still loading, files still arriving. A rejected load or
+reload shows `LOAD FAILED` with the error (10 s over a running game, until
+the next push otherwise). `GET /state` reports its lines as `load_status`.
+
+The headset keeps what is pushed by content hash (`push-cache/` in its app
+storage, 2 GiB, least recently used evicted): `run vr` sends a manifest of
+paths, sizes and sha256 first (`POST /push-manifest`) and uploads only the
+files the headset lacks, so running the same project again, or another one
+that shares a model, sends only what changed. The status card says `UP TO
+DATE` or how much is already there. `curl -X POST …/clear-push-cache` empties
+it. `run vr` remembers each file's hash by path, size and modified time
+(`~/.functor/cache/push-hashes.json`).
 
 Sound bytes are synchronized into the device cache, but Quest audio playback
 is still pending its Android audio host; the shell currently drains audio
@@ -159,15 +179,21 @@ game does not see it (nor B while talking); a click shorter than 250 ms
 reaches the game on release. Unpaired, the click is the game's alone; paired
 but not linked, holding shows "Not connected to a desktop".
 
-- The microphone (AAudio, `RECORD_AUDIO`, asked for on the first hold) is
-  open only while talking and linked. Audio goes only onto the link; nothing
-  is stored. A link that cannot keep up cancels the clip, and a dropped link
-  resends nothing.
+- The microphone (AAudio, `RECORD_AUDIO`) is open only while talking and
+  linked. Audio goes only onto the link; nothing is stored. A link that
+  cannot keep up cancels the clip, and a dropped link resends nothing.
+- The first hold shows the system's microphone prompt; once it is allowed the
+  toast says so and the next hold talks (no restart). Still not allowed, a
+  hold says how to allow it in Settings. A microphone failure names the step
+  and AAudio's result (`Microphone read: AAUDIO_ERROR_DISCONNECTED`).
 - `/state.link.voice` reports the toast. `npm run test:quest-voice` drives it
   on an attached Quest against a stub desktop, with injected presses (under
-  `debug.functor.pair_input`) and, instead of the microphone, a 440 Hz test
-  tone: `adb shell setprop debug.functor.voice_tone 1`, honoured by debug
-  builds only.
+  `debug.functor.pair_input`): first with a 440 Hz test tone instead of the
+  microphone (`adb shell setprop debug.functor.voice_tone 1`, honoured by
+  debug builds only), then with the real microphone (room sound), then
+  through the permission prompt (it revokes and grants `RECORD_AUDIO`, and
+  puts it back as found). Run it only when nobody is using the headset: it
+  reinstalls nothing, but restarts the app.
 
 ## Benchmark on the actual headset
 

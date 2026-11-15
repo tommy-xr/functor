@@ -1031,7 +1031,7 @@ The generated modules:
 | Module | What it is |
 | --- | --- |
 | `Scene` | 3D scene nodes: primitives, models, terrain, materials, transforms, instancing |
-| `Instance` | per-copy placement values (position/rotation/scale/tint) for `Scene.instanced` |
+| `Instance` | per-copy placement values (position/rotation/scale/tint) for `Scene.instanced`, and `raycast`: a ray against every instance's box |
 | `Sprite` | pure 2D picture values: shapes, text, images, transforms |
 | `Camera3D` | 3D cameras (`lookAt`, `firstPerson`, `fromPose`), clip planes, screen→world rays, tracked-pose mapping |
 | `Camera2D` | center-origin 2D camera: pan, zoom, screen→world |
@@ -1197,6 +1197,32 @@ rebuilt in `draw` with identical content still skips the upload, but pays the
 rebuild every frame; a list whose content changes uploads each frame it
 changes. This is renderer-side caching only — the scene is still a plain
 value.
+
+**Paint that changes every frame goes in `Scene.instancedPaint`, not in the
+instance list.** `template |> Scene.instancedPaint(instances, paints)` is
+`Scene.instanced` plus a second, per-copy stream: `paints` is `Bytes`, 16 per
+instance in order — four little-endian f32 `r, g, b, glow`
+(`Bytes.fromF32le([r0, g0, b0, glow0, r1, …])`). The copy's tint is its
+`Instance.tint` × `(r, g, b)`; `glow` (0–1, clamped) mixes a LIT copy's
+shading toward its unlit colour (1 reads like `Scene.emissive`; no effect on
+unlit materials); `Scene.model` templates ignore paints as they ignore
+tints. A byte count other than 16 × instances, or a non-finite float, is an
+error. Keep `instances` the same value (model or top-level def) and rebuild
+only `paints`: the transforms convert and upload once and each frame uploads
+16 B/copy (vs 52 B/copy and a full rebuild for re-tinted instances). Paint
+bytes held unchanged (the same `Bytes` value) convert and upload once too.
+Per-copy opacity is not a paint: wrap the node in `Scene.opacity`.
+
+**Pick instanced boxes with `Instance.raycast(ray, instances)`, not physics.**
+It returns `Option.t<{ index, point, normal, distance }>` for the nearest box
+the ray meets — each instance's unit cube under its scale, rotation and
+position (what an instanced `Scene.cube()` draws). Pure, one call for the whole
+list: pass the SAME list you draw (model or top-level def) and nothing
+converts; a few ns per box on desktop. The ray is in the instances' space; feed it
+`Camera3D.toWorldRay(snapshot.mouse, camera)` or a controller's
+`Camera3D.mapTrackedPose(camera, aim)` (its `position` and `forward`, made
+`Vec3`s). A ray starting inside a box hits it at distance 0; ties go to
+the lower index.
 
 **`Scene.memo(key, deps, builder)` skips the rebuild too** — for a subtree
 derived from model data in `draw` (props placed from `model.trees`, a city

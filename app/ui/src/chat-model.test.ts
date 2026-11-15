@@ -97,6 +97,9 @@ test("outcomes: done, failed with the summary's first line, stopped", () => {
     label: "Failed: spawning claude",
   });
   assert.deepEqual(outcome({ kind: "finished", ok: false, summary: null }), { tone: "danger", label: "Failed" });
+  // A long one is whole, never cut mid-word.
+  const long = "functor mcp exited before listening: error: --attach http://127.0.0.1:58260: / → 503 Service Unavailable: the headset is away; try again when it is back";
+  assert.equal(outcome({ kind: "finished", ok: false, summary: long })!.label, `Failed: ${long}`);
   assert.deepEqual(outcome({ kind: "stopped" }), { tone: "neutral", label: "Stopped" });
   assert.equal(outcome(user("hi")), null);
 });

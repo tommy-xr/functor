@@ -1,0 +1,21 @@
+# pick.input — sweep the pointer across the city, then pick a tower.
+# Drives the pick golden and the PR GIF; deterministic under --script-dt.
+# Coordinates are logical points of a 1600x1200 capture (--capture-size).
+#
+#   functor -d examples/city-lights run native --input-script pick.input \
+#     --script-dt 0.0166667 --capture-size 1600x1200 \
+#     --capture-at-frame 90 --capture-frame /tmp/pick.png
+#
+#   f 0..   sweep left to right across the middle
+#   f 60    click: the hovered tower turns cyan and stays picked
+#   f 70..  move on, hovering another tower
+0 Mouse.Move 500 720
+10 Mouse.Move 580 710
+20 Mouse.Move 660 700
+30 Mouse.Move 720 690
+40 Mouse.Move 760 680
+50 Mouse.Move 790 672
+60 Mouse.Left down
+62 Mouse.Left up
+70 Mouse.Move 900 760
+80 Mouse.Move 1000 820

@@ -94,12 +94,12 @@ const RENDER_MESH_CAP: usize = 16;
 /// Values derived from `Arc`s, keyed by the `Arc`'s address and held weakly: a
 /// dead key's entry is dropped, and the least recently used is evicted beyond
 /// [`RENDER_MESH_CAP`]. The memo never keeps a key alive, yet pins its address.
-pub(super) struct WeakMemo<K, V> {
+pub(super) struct WeakMemo<K: ?Sized, V> {
     entries: HashMap<usize, (Weak<K>, V, u64)>,
     clock: u64,
 }
 
-impl<K, V> Default for WeakMemo<K, V> {
+impl<K: ?Sized, V> Default for WeakMemo<K, V> {
     fn default() -> Self {
         WeakMemo {
             entries: HashMap::new(),
@@ -108,13 +108,13 @@ impl<K, V> Default for WeakMemo<K, V> {
     }
 }
 
-impl<K, V: Clone> WeakMemo<K, V> {
+impl<K: ?Sized, V: Clone> WeakMemo<K, V> {
     pub(super) fn get_or_try_insert<E>(
         &mut self,
         key: &Arc<K>,
         make: impl FnOnce() -> Result<V, E>,
     ) -> Result<V, E> {
-        let address = Arc::as_ptr(key) as usize;
+        let address = Arc::as_ptr(key) as *const () as usize;
         self.clock += 1;
         let clock = self.clock;
         if let Some((_, value, last_used)) = self.entries.get_mut(&address) {
@@ -202,7 +202,7 @@ fn solid(solid: Solid) -> FunctorLangSolid {
     FunctorLangSolid(Arc::new(solid))
 }
 
-fn vec3_value([x, y, z]: [f64; 3]) -> Value {
+pub(super) fn vec3_value([x, y, z]: [f64; 3]) -> Value {
     Value::HostData(Rc::new(FunctorLangVec3((x as f32, y as f32, z as f32))))
 }
 
@@ -341,10 +341,10 @@ build it with Solid.frame(origin, xAxis, zAxis)"
     }
 }
 
-/// `Solid.raycast`'s ray: `Camera3D.ray`'s `{ origin, direction }`, in mm.
-struct Ray {
-    origin: [f64; 3],
-    direction: [f64; 3],
+/// `Camera3D.ray`'s `{ origin, direction }` (in mm for `Solid.raycast`).
+pub(super) struct Ray {
+    pub(super) origin: [f64; 3],
+    pub(super) direction: [f64; 3],
 }
 
 impl crate::host_registry::FromArg for Ray {

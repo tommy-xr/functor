@@ -16,11 +16,11 @@ use cgmath::Matrix4;
 use glow::HasContext;
 
 use crate::color_space::{OutputAlpha, OutputEncodeUniform};
-use crate::debug_protocol::{PairingState, VoiceStage, VoiceToast};
+use crate::debug_protocol::{PairingState, PausedBy, VoiceStage, VoiceToast};
 use crate::input::{XrControllerSnapshot, XrInputSnapshot};
+use crate::overlay_font;
 use crate::shader::{Shader, ShaderType};
 use crate::shader_program::{ShaderProgram, UniformLocation};
-use crate::sprite_font;
 use crate::TrackingPose;
 
 /// How long the menu button is held to start pairing.
@@ -216,15 +216,16 @@ pub struct Line {
     pub color: [f32; 3],
 }
 
-const CYAN: [f32; 3] = [65.0 / 255.0, 216.0 / 255.0, 230.0 / 255.0];
-const PINK: [f32; 3] = [1.0, 0.36, 0.72];
-const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
+pub(crate) const CYAN: [f32; 3] = [65.0 / 255.0, 216.0 / 255.0, 230.0 / 255.0];
+pub(crate) const PINK: [f32; 3] = [1.0, 0.36, 0.72];
+pub(crate) const WHITE: [f32; 3] = [0.95, 0.95, 0.98];
 const DIM: [f32; 3] = [0.65, 0.65, 0.75];
 const BACKGROUND: [f32; 4] = [0.06, 0.04, 0.12, 0.92];
-/// Text sizes: a heading, the code, the rest.
-const HEADING: f32 = 0.022;
+/// Text sizes for a card a metre away ([`overlay_font`]'s scale): a
+/// heading, the rest, and the pairing code.
+pub(crate) const HEADING: f32 = overlay_font::TITLE;
+pub(crate) const BODY: f32 = overlay_font::BODY;
 const CODE: f32 = 0.07;
-const BODY: f32 = 0.016;
 
 /// `482913` as `482 913`.
 pub fn spaced(code: &str) -> String {
@@ -283,81 +284,174 @@ pub fn lines(pairing: &PairingState) -> Vec<Line> {
 pub const METER: u8 = 12;
 /// How long an outcome shows, and the fade after.
 const OUTCOME: Duration = Duration::from_secs(4);
+/// How long an answer shows: it is read, not glanced at.
+const ANSWER: Duration = Duration::from_secs(10);
 const FADE: Duration = Duration::from_millis(500);
-/// How long the transcript shows.
-const TRANSCRIPT: Duration = Duration::from_secs(5);
-/// A stage waiting on the desktop stops showing after this; sent but not
-/// yet heard, sooner (a desktop without voice never answers).
+/// The least time a desktop stage, and the transcript, stay on screen before
+/// the next one replaces them: arriving together, each is still seen.
+const HOLD_STAGE: Duration = Duration::from_millis(1500);
+const HOLD_TRANSCRIPT: Duration = Duration::from_secs(4);
+/// A step still going says for how long after this; one that never ends
+/// stops showing after `STALE`. Sent and never heard (a desktop without
+/// voice) says so after `UNHEARD`.
+const STILL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(120);
-const UNHEARD: Duration = Duration::from_secs(10);
-/// Transcript characters per line, and its most lines.
-const WRAP: usize = 34;
+const UNHEARD: Duration = Duration::from_secs(15);
+/// The transcript's measure in metres (about 40 characters), and its most
+/// lines.
+const WRAP: f32 = 0.5;
 const WRAP_LINES: usize = 3;
 
-/// The push-to-talk toast: a stage, the transcript for a while, and a fade
-/// once done. Hidden, it holds nothing and costs one check a frame.
+/// What the desktop said about an utterance, in the order it said it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Progress {
+    Stage(VoiceStage),
+    /// The words it heard: shown under the stages that follow.
+    Transcript(String),
+    /// Nothing in progress: fade.
+    Idle,
+}
+
+/// The push-to-talk toast: a stage, the words the desktop heard, and a fade
+/// once done. The desktop's progress is queued, so each step is seen for a
+/// moment however fast the next follows, and one arriving after the toast
+/// faded shows it again. Hidden, it holds nothing and costs one check a
+/// frame.
 #[derive(Default)]
 pub struct Toast {
     shown: Option<VoiceToast>,
     /// When it starts fading; `None` stays until changed.
     fade_at: Option<Instant>,
-    transcript_until: Option<Instant>,
+    /// Steps waiting, with when they arrived.
+    queue: std::collections::VecDeque<(Progress, Instant)>,
+    /// Until when the step on screen holds off the next.
+    hold_until: Option<Instant>,
+    /// When the step on screen arrived (its "going for" clock).
+    since: Option<Instant>,
 }
 
 impl Toast {
+    /// Shows `stage` now (this headset's own), dropping queued progress.
     pub fn show(&mut self, stage: VoiceStage, now: Instant) {
+        self.queue.clear();
+        self.hold_until = None;
+        self.set(stage, now, now);
+    }
+
+    /// The desktop's next step: shown once the one on screen has held.
+    pub fn progress(&mut self, step: Progress, now: Instant) {
+        self.queue.push_back((step, now));
+        self.advance(now);
+    }
+
+    /// Shows `stage` from `now`; it arrived at `arrived`.
+    fn set(&mut self, stage: VoiceStage, now: Instant, arrived: Instant) {
         self.fade_at = match stage {
             VoiceStage::Listening { .. } => None,
-            VoiceStage::Sending => Some(now + UNHEARD),
-            VoiceStage::Heard | VoiceStage::Working => Some(now + STALE),
+            ref s if in_flight(s) => Some(now + STALE),
+            VoiceStage::Answered { .. } => Some(now + ANSWER),
             _ => Some(now + OUTCOME),
         };
+        self.since = Some(arrived);
         // A new utterance starts clean.
         let transcript = self
             .shown
             .take()
             .and_then(|t| t.transcript)
             .filter(|_| !matches!(stage, VoiceStage::Listening { .. }));
-        self.shown = Some(VoiceToast { stage, transcript });
+        self.shown = Some(VoiceToast {
+            stage,
+            transcript,
+            waiting: None,
+        });
     }
 
-    pub fn transcript(&mut self, text: String, now: Instant) {
-        if let Some(shown) = &mut self.shown {
-            shown.transcript = Some(text);
-            self.transcript_until = Some(now + TRANSCRIPT);
+    /// Applies queued steps whose turn has come by `now`, each from when
+    /// its turn came (not when this is called), so unseen frames add no
+    /// delay. (A step that comes and goes while the pairing card or panel
+    /// covers the toast is not seen; those show the link's own state.)
+    fn advance(&mut self, now: Instant) {
+        while let Some(&(_, arrived)) = self.queue.front() {
+            let at = self.hold_until.map_or(arrived, |until| until.max(arrived));
+            if at > now {
+                return;
+            }
+            let (step, _) = self.queue.pop_front().expect("a front");
+            self.hold_until = match step {
+                Progress::Stage(stage) => {
+                    self.set(stage, at, arrived);
+                    Some(at + HOLD_STAGE)
+                }
+                Progress::Transcript(text) => {
+                    if self.shown.is_none() {
+                        self.set(VoiceStage::Heard, at, arrived);
+                    }
+                    if let Some(shown) = &mut self.shown {
+                        shown.transcript = Some(text);
+                    }
+                    Some(at + HOLD_TRANSCRIPT)
+                }
+                Progress::Idle => {
+                    self.hide(at);
+                    None
+                }
+            };
         }
     }
 
     /// Fades out from `now`.
-    pub fn hide(&mut self, now: Instant) {
+    fn hide(&mut self, now: Instant) {
         if self.shown.is_some() {
             self.fade_at = Some(self.fade_at.map_or(now, |at| at.min(now)));
         }
     }
 
-    pub fn stage(&self) -> Option<&VoiceStage> {
-        self.shown.as_ref().map(|t| &t.stage)
-    }
-
     /// What shows at `now`, and its opacity.
     pub fn look(&mut self, now: Instant) -> Option<(&VoiceToast, f32)> {
-        if self.transcript_until.is_some_and(|until| now >= until) {
-            self.transcript_until = None;
-            if let Some(shown) = &mut self.shown {
-                shown.transcript = None;
+        self.advance(now);
+        // Sent, never heard: say so rather than wait out `STALE`.
+        let unheard = self.since.is_some_and(|since| now >= since + UNHEARD);
+        if unheard && self.queue.is_empty() {
+            if let Some(VoiceToast {
+                stage: VoiceStage::Sending,
+                ..
+            }) = self.shown
+            {
+                let reason = "The desktop did not answer".to_string();
+                self.set(VoiceStage::NotSent { reason }, now, now);
             }
         }
         let alpha = match self.fade_at {
+            // Faded: gone, unless the desktop has more to say.
             Some(at) if now >= at + FADE => {
-                self.shown = None;
-                self.transcript_until = None;
+                if self.queue.is_empty() {
+                    self.shown = None;
+                    self.hold_until = None;
+                }
                 return None;
             }
-            Some(at) if now > at => 1.0 - now.duration_since(at).as_secs_f32() / FADE.as_secs_f32(),
+            Some(at) if now > at => {
+                (1.0 - now.duration_since(at).as_secs_f32() / FADE.as_secs_f32()).max(0.0)
+            }
             _ => 1.0,
         };
-        self.shown.as_ref().map(|t| (t, alpha))
+        let shown = self.shown.as_mut()?;
+        // Going for a while: say so, rather than sit still.
+        shown.waiting = self
+            .since
+            .map(|since| now.saturating_duration_since(since))
+            .filter(|d| in_flight(&shown.stage) && *d >= STILL)
+            .map(|d| d.as_secs() as u32);
+        Some((shown, alpha))
     }
+}
+
+/// A step the desktop (or the link) has yet to finish.
+fn in_flight(stage: &VoiceStage) -> bool {
+    matches!(
+        stage,
+        VoiceStage::Sending | VoiceStage::Heard | VoiceStage::Working
+    )
 }
 
 /// The toast's lines.
@@ -367,6 +461,11 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         size,
         color,
     };
+    // A step going for a while counts its seconds: "WORKING... 12s".
+    let going = |heading: &str| match toast.waiting {
+        Some(s) => format!("{heading} {s}s"),
+        None => heading.to_string(),
+    };
     let mut out = match &toast.stage {
         VoiceStage::NotConnected => vec![
             line("NOT CONNECTED", HEADING, PINK),
@@ -374,7 +473,17 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         ],
         VoiceStage::AllowMicrophone => vec![
             line("MICROPHONE", HEADING, PINK),
-            line("Allow the microphone, then hold again", BODY, WHITE),
+            line("Allow it in the prompt or in Settings,", BODY, WHITE),
+            line("then hold again", BODY, WHITE),
+        ],
+        VoiceStage::MicrophoneAllowed => vec![
+            line("MICROPHONE ALLOWED", HEADING, CYAN),
+            line("Hold again to talk", BODY, WHITE),
+        ],
+        VoiceStage::MicrophoneDenied => vec![
+            line("MICROPHONE OFF", HEADING, PINK),
+            line("Allow it for Functor in the headset's", BODY, WHITE),
+            line("Settings, then hold again", BODY, WHITE),
         ],
         VoiceStage::Listening {
             level,
@@ -391,10 +500,16 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
                 },
             ]
         }
-        VoiceStage::Sending => vec![line("SENDING...", HEADING, CYAN)],
-        VoiceStage::Heard => vec![line("HEARD", HEADING, CYAN)],
-        VoiceStage::Working => vec![line("WORKING...", HEADING, CYAN)],
+        VoiceStage::Sending => vec![line(&going("SENDING..."), HEADING, CYAN)],
+        VoiceStage::Heard => vec![line(&going("HEARD"), HEADING, CYAN)],
+        VoiceStage::Working => vec![line(&going("WORKING..."), HEADING, CYAN)],
         VoiceStage::Reloaded => vec![line("RELOADED", HEADING, CYAN)],
+        VoiceStage::Answered { text } => {
+            let mut lines = vec![line("ANSWERED", HEADING, CYAN)];
+            let wrapped = overlay_font::wrap(text, BODY, WRAP, WRAP_LINES);
+            lines.extend(wrapped.iter().map(|l| line(l, BODY, WHITE)));
+            lines
+        }
         VoiceStage::Done { text } => vec![line("DONE", HEADING, CYAN), line(text, BODY, WHITE)],
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
@@ -403,10 +518,13 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
             vec![line("NOT SENT", HEADING, PINK), line(reason, BODY, WHITE)]
         }
     };
-    if let Some(text) = &toast.transcript {
-        let quoted = format!("\"{text}\"");
+    // An answer has the toast to itself: the question was just asked.
+    let transcript = (toast.transcript.as_ref())
+        .filter(|_| !matches!(toast.stage, VoiceStage::Answered { .. }));
+    if let Some(text) = transcript {
+        let quoted = format!("\u{201c}{text}\u{201d}");
         out.extend(
-            wrap(&quoted, WRAP, WRAP_LINES)
+            overlay_font::wrap(&quoted, BODY, WRAP, WRAP_LINES)
                 .iter()
                 .map(|l| line(l, BODY, WHITE)),
         );
@@ -414,39 +532,27 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
     out
 }
 
-/// `text` in lines of at most `width` characters, broken at spaces where
-/// it can be; at most `lines` of them, the last cut with `...`.
-pub(crate) fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let mut word: Vec<char> = word.chars().collect();
-        while !word.is_empty() {
-            let used = current.chars().count();
-            let gap = usize::from(used > 0);
-            if used + gap + word.len() <= width {
-                if gap == 1 {
-                    current.push(' ');
-                }
-                current.extend(word.drain(..));
-            } else if used > 0 {
-                out.push(std::mem::take(&mut current));
-            } else {
-                // A word longer than a line: split it.
-                out.push(word.drain(..width).collect());
-            }
-        }
+/// The paused marker's lines: `PAUSED` while the game clock holds, and why
+/// when an agent's tools hold it. `None` while the clock runs. It stays as
+/// long as the pause does, and gives its place to the pairing card, the open
+/// panel and the toast.
+pub fn paused_lines(paused: bool, by: Option<PausedBy>) -> Option<Vec<Line>> {
+    let line = |text: &str, size, color| Line {
+        text: text.to_string(),
+        size,
+        color,
+    };
+    let mut out = vec![line("PAUSED", HEADING, CYAN)];
+    if by == Some(PausedBy::Agent) {
+        out.push(line("Agent is checking its change", BODY, WHITE));
     }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.len() > lines {
-        out.truncate(lines);
-        let last = &mut out[lines - 1];
-        let keep: String = last.chars().take(width - 3).collect();
-        *last = keep + "...";
-    }
-    out
+    paused.then_some(out)
+}
+
+/// Head space from the paused marker's own, for `head`: in front and low,
+/// where the toast appears.
+pub fn paused_marker_transform(head: [f32; 4]) -> Matrix4<f32> {
+    Follow::default().transform(head, 0.0)
 }
 
 /// Where the toast sits: a metre out and low in the view, following the
@@ -500,19 +606,21 @@ const GAP: f32 = 0.018;
 pub enum Shape {
     /// `rect` is `[x, y, w, h]` from its bottom-left corner.
     Rect { rect: [f32; 4], color: [f32; 4] },
-    /// One line from its top-left corner `at`; `size` is the cell height
-    /// (and advance) of the monospace font.
+    /// One line from its top-left corner `at`; `size` is its box height
+    /// ([`overlay_font`]: capitals fill it, descenders hang below). `style`
+    /// sets it; `None` follows the copy ([`overlay_font::Style::of`]).
     Text {
         at: [f32; 2],
         size: f32,
         color: [f32; 3],
         text: String,
+        style: Option<overlay_font::Style>,
     },
 }
 
 /// `lines` centred on a background card around the origin.
 pub fn card(lines: &[Line]) -> Vec<Shape> {
-    let width = |l: &Line| sprite_font::advance_count(&l.text) as f32 * l.size;
+    let width = |l: &Line| overlay_font::width(&l.text, l.size);
     let inner_w = lines.iter().map(width).fold(0.0, f32::max);
     let inner_h =
         lines.iter().map(|l| l.size).sum::<f32>() + GAP * lines.len().saturating_sub(1) as f32;
@@ -528,6 +636,7 @@ pub fn card(lines: &[Line]) -> Vec<Shape> {
             size: line.size,
             color: line.color,
             text: line.text.clone(),
+            style: None,
         });
         top -= line.size + GAP;
     }
@@ -539,8 +648,8 @@ pub fn card(lines: &[Line]) -> Vec<Shape> {
 pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
     let mut out = Vec::new();
     let atlas = [
-        sprite_font::ATLAS_WIDTH as f32,
-        sprite_font::ATLAS_HEIGHT as f32,
+        overlay_font::ATLAS_WIDTH as f32,
+        overlay_font::ATLAS_HEIGHT as f32,
     ];
     let linear = |c: [f32; 3]| crate::color_space::srgb_to_linear3(c);
     for shape in shapes {
@@ -554,21 +663,26 @@ pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
                 size,
                 color,
                 text,
+                style,
             } => {
                 let [r, g, b] = linear(*color);
-                let mut x = at[0];
-                for character in text.chars() {
-                    if let Some((cx, cy, cw, ch)) = sprite_font::glyph_cell(character) {
-                        let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
-                        quad(
-                            &mut out,
-                            [x, at[1] - size, *size, *size],
-                            Some(uv),
-                            [r, g, b, 1.0],
-                        );
+                let em = overlay_font::em(*size);
+                let style = style.unwrap_or_else(|| overlay_font::Style::of(text));
+                overlay_font::place_in(text, *size, style, *at, |glyph, [x, y]| {
+                    let [cx, cy, cw, ch] = glyph.cell.map(f32::from);
+                    if cw == 0.0 {
+                        return;
                     }
-                    x += size;
-                }
+                    let [left, bottom, right, top] = glyph.plane;
+                    let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
+                    let rect = [
+                        x + left * em,
+                        y + bottom * em,
+                        (right - left) * em,
+                        (top - bottom) * em,
+                    ];
+                    quad(&mut out, rect, Some(uv), [r, g, b, 1.0]);
+                });
             }
         }
     }
@@ -620,10 +734,13 @@ pub struct LinkOverlayPainter {
     transform: UniformLocation,
     alpha: UniformLocation,
     atlas_uniform: UniformLocation,
+    linear_blend: UniformLocation,
     output: OutputEncodeUniform,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
-    atlas: glow::Texture,
+    /// Uploaded with the first text, so a painter of rects (the wrist
+    /// light) never holds it.
+    atlas: Option<glow::Texture>,
     /// What the mesh shows, so it is rebuilt only on change.
     shown: Vec<Shape>,
     vertices: i32,
@@ -643,14 +760,22 @@ const VERTEX_SHADER: &str = r#"
     }
 "#;
 
+/// Glyphs sample the font's field ([`overlay_font::msdf_glsl`]); a
+/// negative `v_uv` is a solid fill.
 const FRAGMENT_SHADER: &str = r#"
     uniform sampler2D u_atlas;
     uniform float u_alpha;
-    in vec2 v_uv;
+    uniform bool u_linear_blend;
+    // Full precision: a mediump uv is off by half a texel across the atlas.
+    in highp vec2 v_uv;
     in vec4 v_color;
     out vec4 frag_color;
     void main() {
-        float coverage = v_uv.x < 0.0 ? 1.0 : texture(u_atlas, v_uv).a;
+        highp vec2 texels = functorMsdfTexels(v_uv);
+        float coverage = 1.0;
+        if (v_uv.x >= 0.0) {
+            coverage = functorMsdfCoverage(u_atlas, v_uv, texels, v_color.rgb, u_linear_blend);
+        }
         frag_color = functorOutput(vec4(v_color.rgb, v_color.a * coverage * u_alpha));
     }
 "#;
@@ -658,34 +783,15 @@ const FRAGMENT_SHADER: &str = r#"
 impl LinkOverlayPainter {
     pub fn new(gl: &glow::Context, shader_version: &str) -> Self {
         let vertex = Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER, shader_version);
-        let fragment = Shader::build(gl, ShaderType::Fragment, FRAGMENT_SHADER, shader_version);
+        let fragment = Shader::build(
+            gl,
+            ShaderType::Fragment,
+            &format!("{}{FRAGMENT_SHADER}", overlay_font::msdf_glsl()),
+            shader_version,
+        );
         let program = ShaderProgram::link(gl, &vertex, &fragment);
         let counters = crate::gpu_counters::gpu_counters();
-        let font = sprite_font::atlas_texture_data();
         unsafe {
-            let atlas = gl.create_texture().expect("create link overlay atlas");
-            counters.texture_created();
-            gl.bind_texture(glow::TEXTURE_2D, Some(atlas));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA8 as i32,
-                font.width as i32,
-                font.height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&font.bytes)),
-            );
-            for (param, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
-            }
-            gl.bind_texture(glow::TEXTURE_2D, None);
             let vao = gl.create_vertex_array().expect("create link overlay vao");
             counters.vao_created();
             gl.bind_vertex_array(Some(vao));
@@ -710,15 +816,58 @@ impl LinkOverlayPainter {
                 transform: program.get_uniform_location(gl, "u_transform"),
                 alpha: program.get_uniform_location(gl, "u_alpha"),
                 atlas_uniform: program.get_uniform_location(gl, "u_atlas"),
+                linear_blend: program.get_uniform_location(gl, "u_linear_blend"),
                 output: OutputEncodeUniform::get(&program, gl),
                 program,
                 vao,
                 vbo,
-                atlas,
+                atlas: None,
                 shown: Vec::new(),
                 vertices: 0,
             }
         }
+    }
+
+    /// The font atlas texture: decoded and uploaded once.
+    fn atlas(&mut self, gl: &glow::Context) -> glow::Texture {
+        *self.atlas.get_or_insert_with(|| {
+            let atlas = image::load_from_memory_with_format(
+                overlay_font::ATLAS_PNG,
+                image::ImageFormat::Png,
+            )
+            .expect("decode the overlay font atlas")
+            .to_rgb8();
+            unsafe {
+                let texture = gl.create_texture().expect("create link overlay atlas");
+                crate::gpu_counters::gpu_counters().texture_created();
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                let alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                // Distances, not colours: a linear format.
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGB8 as i32,
+                    atlas.width() as i32,
+                    atlas.height() as i32,
+                    0,
+                    glow::RGB,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(atlas.as_raw())),
+                );
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
+                for (param, value) in [
+                    (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+                ] {
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+                }
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                texture
+            }
+        })
     }
 
     /// Draws `shapes` (a [`card`] of [`lines`] or [`toast_lines`], the
@@ -769,9 +918,13 @@ impl LinkOverlayPainter {
             self.program
                 .set_uniform_matrix4(gl, &self.transform, &transform);
             self.program.set_uniform_1f(gl, &self.alpha, alpha);
+            let text = shapes.iter().any(|s| matches!(s, Shape::Text { .. }));
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas));
+            gl.bind_texture(glow::TEXTURE_2D, text.then(|| self.atlas(gl)));
             self.program.set_uniform_1i(gl, &self.atlas_uniform, 0);
+            let linear_blend = !output_srgb_encode;
+            self.program
+                .set_uniform_1i(gl, &self.linear_blend, linear_blend as i32);
             self.output
                 .set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
             gl.bind_vertex_array(Some(self.vao));
@@ -1058,20 +1211,19 @@ mod tests {
                 seconds_left: Some(3),
             },
             transcript: None,
+            waiting: None,
         };
         assert_eq!(toast_lines(&countdown)[2].text, "Sending in 3");
 
-        toast.show(VoiceStage::Heard, t);
-        toast.transcript("make the ball red".into(), t);
-        toast.show(VoiceStage::Working, t + Duration::from_secs(1));
-        let lines = toast_lines(toast.look(t + Duration::from_secs(2)).unwrap().0);
+        toast.progress(Progress::Stage(VoiceStage::Heard), t);
+        toast.progress(Progress::Transcript("make the ball red".into()), t);
+        toast.progress(Progress::Stage(VoiceStage::Working), t);
+        let lines = toast_lines(toast.look(t + Duration::from_secs(10)).unwrap().0);
         assert_eq!(
             lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
-            ["WORKING...", "\"make the ball red\""]
+            ["WORKING... 10s", "\u{201c}make the ball red\u{201d}"],
+            "the words stay under the stages that follow, which count their seconds"
         );
-        let later = toast.look(t + TRANSCRIPT).unwrap().0;
-        assert_eq!(later.transcript, None, "the transcript shows a while");
-        assert_eq!(later.stage, VoiceStage::Working);
 
         let done = t + Duration::from_secs(30);
         toast.show(VoiceStage::Reloaded, done);
@@ -1079,7 +1231,7 @@ mod tests {
         let fading = toast.look(done + OUTCOME + FADE / 2).unwrap().1;
         assert!((fading - 0.5).abs() < 0.01, "{fading}");
         assert!(toast.look(done + OUTCOME + FADE).is_none());
-        assert!(toast.stage().is_none(), "hidden holds nothing");
+        assert!(toast.shown.is_none(), "hidden holds nothing");
 
         // Done says what, and goes as an outcome does.
         let text = "Switched to examples/hello".to_string();
@@ -1093,26 +1245,140 @@ mod tests {
 
         // Idle from the desktop fades it now.
         toast.show(VoiceStage::Working, t);
-        toast.hide(t);
+        toast.progress(Progress::Idle, t);
         assert!(toast.look(t + FADE).is_none());
+    }
+
+    /// The timings seen in the headset: heard at once, the words 11 s
+    /// later with work starting a moment after, the answer at 43 s.
+    #[test]
+    fn each_step_of_a_slow_answer_is_seen_in_order() {
+        let t = Instant::now();
+        let at = |s: f32| t + Duration::from_secs_f32(s);
+        let mut toast = Toast::default();
+        let seen = |toast: &mut Toast, s: f32| {
+            toast
+                .look(at(s))
+                .map(|(v, _)| (v.stage.clone(), v.transcript.clone()))
+        };
+        let words = Some("make the ball red".to_string());
+        toast.show(VoiceStage::Sending, at(0.0));
+        toast.progress(Progress::Stage(VoiceStage::Heard), at(0.05));
+        assert_eq!(seen(&mut toast, 1.0), Some((VoiceStage::Heard, None)));
+        assert_eq!(toast.look(at(1.0)).unwrap().0.waiting, None);
+        // Still going: it says so, and does not fade.
+        assert_eq!(seen(&mut toast, 10.9), Some((VoiceStage::Heard, None)));
+        assert_eq!(toast.look(at(10.9)).unwrap().0.waiting, Some(10));
+        toast.progress(Progress::Transcript("make the ball red".into()), at(11.0));
+        toast.progress(Progress::Stage(VoiceStage::Working), at(11.1));
+        // The words get their moment before Working takes the heading.
+        assert_eq!(
+            seen(&mut toast, 14.9),
+            Some((VoiceStage::Heard, words.clone()))
+        );
+        assert_eq!(
+            seen(&mut toast, 15.1),
+            Some((VoiceStage::Working, words.clone()))
+        );
+        assert_eq!(
+            seen(&mut toast, 42.0),
+            Some((VoiceStage::Working, words.clone()))
+        );
+        let answer = VoiceStage::Failed {
+            reason: "no change".into(),
+        };
+        toast.progress(Progress::Stage(answer.clone()), at(43.0));
+        assert_eq!(seen(&mut toast, 43.0), Some((answer, words)));
+        assert_eq!(seen(&mut toast, 48.0), None, "then it fades");
+
+        // A step that arrives after the toast faded shows it again.
+        toast.show(VoiceStage::Sending, at(50.0));
+        let unanswered = VoiceStage::NotSent {
+            reason: "The desktop did not answer".into(),
+        };
+        assert_eq!(seen(&mut toast, 65.0), Some((unanswered, None)));
+        assert_eq!(seen(&mut toast, 70.0), None, "then it fades");
+        toast.progress(Progress::Transcript("late".into()), at(80.0));
+        assert_eq!(
+            seen(&mut toast, 80.0),
+            Some((VoiceStage::Heard, Some("late".into())))
+        );
+        toast.progress(Progress::Stage(VoiceStage::Reloaded), at(80.1));
+        assert_eq!(
+            seen(&mut toast, 84.1),
+            Some((VoiceStage::Reloaded, Some("late".into())))
+        );
     }
 
     #[test]
     fn a_long_transcript_wraps_into_a_few_lines() {
-        assert_eq!(wrap("make the ball red", 34, 3), ["make the ball red"]);
+        let toast = |text: String| {
+            toast_lines(&VoiceToast {
+                stage: VoiceStage::Heard,
+                transcript: Some(text),
+                waiting: None,
+            })
+        };
+        assert_eq!(toast("make the ball red".into()).len(), 2);
+        for text in ["word ".repeat(100), "é".repeat(2000)] {
+            let lines = toast(text);
+            assert_eq!(lines.len(), 1 + WRAP_LINES);
+            assert!(lines[WRAP_LINES].text.ends_with('\u{2026}'));
+            assert!(lines.iter().all(|l| overlay_font::width(&l.text, l.size) <= WRAP));
+        }
+    }
+
+    /// The desktop clears the toast before an answer (for a headset that
+    /// cannot read one): the answer still shows, as a success, long enough
+    /// to read.
+    #[test]
+    fn an_answer_shows_after_the_clear_that_precedes_it() {
+        let t = Instant::now();
+        let at = |s: f32| t + Duration::from_secs_f32(s);
+        let mut toast = Toast::default();
+        toast.show(VoiceStage::Working, at(0.0));
+        toast.progress(Progress::Idle, at(5.0));
+        let text = "The ball is red already, so there was nothing to change.".to_string();
+        let answer = VoiceStage::Answered { text };
+        toast.progress(Progress::Stage(answer.clone()), at(5.0));
+        let (shown, alpha) = toast.look(at(9.0)).unwrap();
+        assert_eq!((&shown.stage, alpha), (&answer, 1.0));
+        let lines = toast_lines(shown);
+        assert_eq!((lines[0].text.as_str(), lines[0].color), ("ANSWERED", CYAN));
+        assert!(lines.len() > 1 && lines[1].text.starts_with("The ball is red"));
+        assert!(lines.iter().all(|l| overlay_font::width(&l.text, l.size) <= WRAP));
+        let mut asked = shown.clone();
+        asked.transcript = Some("is the ball red?".into());
+        assert_eq!(toast_lines(&asked), lines, "without what was asked");
+        assert!(toast.look(at(14.0)).is_some());
+        assert!(toast.look(at(16.0)).is_none(), "then it fades");
+    }
+
+    #[test]
+    fn the_paused_marker_says_paused_and_when_an_agent_holds_it() {
+        let texts = |paused, by| {
+            paused_lines(paused, by).map(|lines| {
+                lines.into_iter().map(|l| l.text).collect::<Vec<_>>()
+            })
+        };
         assert_eq!(
-            wrap("one two three four", 9, 3),
-            ["one two", "three", "four"]
+            texts(true, Some(PausedBy::Agent)),
+            Some(vec!["PAUSED".to_string(), "Agent is checking its change".to_string()])
         );
-        assert_eq!(wrap("abcdefghijkl", 5, 3), ["abcde", "fghij", "kl"]);
-        let long = wrap(&"word ".repeat(100), 34, 3);
-        assert_eq!(long.len(), 3);
-        assert!(long[2].ends_with("...") && long[2].chars().count() <= 34);
-        let lines = toast_lines(&VoiceToast {
-            stage: VoiceStage::Heard,
-            transcript: Some("é".repeat(2000)),
-        });
-        assert!(lines.len() == 4 && lines.iter().all(|l| l.text.chars().count() <= 34));
+        for by in [Some(PausedBy::User), Some(PausedBy::Start), None] {
+            assert_eq!(texts(true, by), Some(vec!["PAUSED".to_string()]), "{by:?}");
+        }
+        // Running: no marker, whatever the cause last was.
+        assert_eq!(texts(false, None), None);
+        assert_eq!(texts(false, Some(PausedBy::Agent)), None);
+        // It sits where the toast appears, whichever way the head faces.
+        let turned = [0.0, 0.5f32.sin(), 0.0, 0.5f32.cos()];
+        assert_eq!(
+            paused_marker_transform(turned),
+            Follow::default().transform(turned, 0.01)
+        );
+        let at = paused_marker_transform(turned) * cgmath::vec4(0.0, 0.0, 0.0, 1.0);
+        assert!(at.x.abs() < 1e-6 && (at.y + 0.3).abs() < 1e-6 && (at.z + 1.0).abs() < 1e-6);
     }
 
     #[test]

@@ -148,6 +148,12 @@ pub enum DeviceState {
         build: Option<String>,
         /// The project it runs.
         project: Option<String>,
+        /// What it is loading: the step's kind, then its status card's lines
+        /// (`["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of
+        /// 9 files"]`; see `functor_device_link::load`). Empty when its card
+        /// is hidden, and from a headset that does not say.
+        #[serde(default)]
+        loading: Vec<String>,
         /// The last ping's round trip.
         latency_ms: Option<u64>,
     },
@@ -245,6 +251,11 @@ pub enum LinkEvent {
         build: String,
         project: Option<String>,
     },
+    /// Its status card changed (empty: hidden).
+    Loading {
+        conn: u64,
+        lines: Vec<String>,
+    },
     Latency {
         conn: u64,
         ms: u64,
@@ -293,12 +304,20 @@ pub enum LinkEvent {
         action: PanelAction,
     },
     /// `conn`'s headset said `text` (transcribed), as its utterance
-    /// `utterance`; `context` is its capsule, rendered.
+    /// `utterance`; `context` is its capsule, rendered; `timing`, its clip
+    /// and transcription's stages.
     Utterance {
         conn: u64,
         utterance: u64,
         text: String,
         context: Option<String>,
+        timing: crate::voice_timing::VoiceTiming,
+    },
+    /// Connection `conn`'s request `utterance` before it has text.
+    Hearing {
+        conn: u64,
+        utterance: u64,
+        stage: crate::voice::HearingStage,
     },
 }
 
@@ -330,6 +349,8 @@ pub enum LinkCommand {
     Panel { conn: u64, panel: Box<Panel> },
     /// Tell the panel on `conn` its last action was refused.
     PanelRefused { conn: u64, reason: String },
+    /// Say `text` aloud: the reply to what was said in `device` (D47).
+    Say { device: String, text: String },
     /// Tell `device` how its utterance is going.
     Voice {
         device: String,
@@ -548,6 +569,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                         charging: false,
                         build: None,
                         project: None,
+                        loading: Vec::new(),
                         latency_ms: None,
                     },
                 };
@@ -576,6 +598,11 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
                 {
                     (*b, *c, *v, *p) = (battery, charging, Some(build), project);
                 }
+            }
+        }
+        LinkEvent::Loading { conn, lines } => {
+            if let Some(DeviceState::Connected { loading, .. }) = devices.by_conn(conn).map(|d| &mut d.state) {
+                *loading = lines;
             }
         }
         LinkEvent::Latency { conn, ms } => {
@@ -677,7 +704,7 @@ pub fn on_link(devices: &mut Devices, event: LinkEvent, now: u64) -> (bool, Vec<
         // The core turns these into client messages before they get here.
         LinkEvent::Panel { .. } => {}
         // The core's to act on (`voice::heard`): no device changes.
-        LinkEvent::Utterance { .. } => {}
+        LinkEvent::Utterance { .. } | LinkEvent::Hearing { .. } => {}
     }
     refresh(devices);
     (*devices != before, commands)
@@ -930,9 +957,21 @@ mod tests {
                 charging: true,
                 build: Some("abc".into()),
                 project: Some("examples/hello".into()),
+                loading: Vec::new(),
                 latency_ms: Some(12),
             }
         );
+        // Its status card, as it changes; another connection's is not its.
+        let loading = |d: &Devices| match state(d, "a") {
+            DeviceState::Connected { loading, .. } => loading,
+            other => panic!("{other:?}"),
+        };
+        let lines: Vec<String> = ["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"].map(String::from).to_vec();
+        on_link(&mut d, LinkEvent::Loading { conn: 9, lines: lines.clone() }, 1006);
+        on_link(&mut d, LinkEvent::Loading { conn: 8, lines: vec!["running".into(), "RUNNING".into()] }, 1006);
+        assert_eq!(loading(&d), lines);
+        on_link(&mut d, LinkEvent::Loading { conn: 9, lines: Vec::new() }, 1006);
+        assert!(loading(&d).is_empty());
         // Another connection's news changes nothing.
         let (changed, _) = on_link(&mut d, LinkEvent::Latency { conn: 8, ms: 1 }, 1007);
         assert!(!changed);

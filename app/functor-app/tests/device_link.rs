@@ -729,6 +729,22 @@ impl Review {
             r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"Renamed x."}}"#,
         ];
         std::fs::write(tools.path().join("edit.jsonl"), fixture.join("\n")).unwrap();
+        // A run that talks a while, then asks and waits (each gap is ms after
+        // the line before).
+        let talk = [
+            r#"{"ms":0,"event":{"type":"started","session":"fake-session-2","model":"claude-model"}}"#,
+            r#"{"ms":500,"event":{"type":"text","text":"Looking at the ball."}}"#,
+            r#"{"ms":500,"event":{"type":"tool_use","name":"Read","input":{"file_path":"game.fun"}}}"#,
+            r#"{"ms":800,"event":{"type":"tool_result","content":"let x = 1"}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"Found it in game.fun. The colour is set once, at the top."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"The ball's material is a plain colour, so red is one value. The bounce does not touch it, and nothing else reads it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"I can change it in place, or add a colour field to the ball so a later change can animate it."}}"#,
+            r#"{"ms":1000,"event":{"type":"text","text":"Changing it in place is one line. A field is three lines and a test."}}"#,
+            r#"{"ms":1500,"event":{"type":"text","text":"One question first."}}"#,
+            r#"{"ms":1500,"event":{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Should it stay red after a bounce?"}]}}}"#,
+            r#"{"ms":120000,"event":{"type":"finished","ok":true,"summary":"Asked."}}"#,
+        ];
+        std::fs::write(tools.path().join("talk.jsonl"), talk.join("\n")).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
@@ -770,13 +786,18 @@ impl Review {
 
     /// `functor-app` on the repo with its link `link` (`--device-link …`).
     async fn app(&self, link: &[&str]) -> App {
+        self.app_with(link, "edit.jsonl").await
+    }
+
+    /// `app`, its fake agent replaying `fixture`.
+    async fn app_with(&self, link: &[&str], fixture: &str) -> App {
         let functor = self.tools.path().join("functor");
         let mut args = link.to_vec();
         args.extend(["--functor", functor.to_str().unwrap()]);
         let mut env = Review::git_env(self.tools.path());
         env.push((
             "FUNCTOR_APP_FAKE_AGENT",
-            self.tools.path().join("edit.jsonl").into(),
+            self.tools.path().join(fixture).into(),
         ));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
         app_env(self.repo.path(), &args, &env).await
@@ -849,7 +870,7 @@ async fn pair_client(app: &mut App, quest: &headset::Client) {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
-    use functor_device_link::panel::{Action, Stance, Update, ACTION_CHANNEL};
+    use functor_device_link::panel::{Action, Role, Stance, Update, ACTION_CHANNEL};
     let review = Review::new();
     let mut app = review
         .app(&["--device-link", "127.0.0.1:0", "--no-mdns", "--adb", NO_ADB])
@@ -876,6 +897,18 @@ async fn the_headset_panel_shows_tasks_and_keeps_a_change() {
     );
     let decision = task.decision.as_ref().unwrap();
     assert_eq!(decision.size, "+1 -1, 1 file, game logic");
+    // The task's conversation, as text: the request, the step, the outcome.
+    let c = panel.conversation.as_ref().unwrap();
+    let said: Vec<(Role, &str)> = c.items.iter().map(|i| (i.role, i.text.as_str())).collect();
+    assert_eq!(c.task, id);
+    assert_eq!(
+        said,
+        [
+            (Role::You, "Rename x"),
+            (Role::App, "editing game.fun"),
+            (Role::App, "Done")
+        ]
+    );
     let link = quest.link().unwrap();
     let send = |action: &Action| quest.send_channel(link, ACTION_CHANNEL, action.encode(), false);
 
@@ -1224,7 +1257,11 @@ fn capture_to(url: &str, name: &str) {
     };
     let addr = url.strip_prefix("http://").unwrap();
     let mut stream = TcpStream::connect(addr).unwrap();
-    write!(stream, "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(
+        stream,
+        "POST /capture HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).unwrap();
     let split = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
@@ -1855,16 +1892,56 @@ async fn quest_runs_a_project_over_the_link() {
     };
     assert_eq!(forwards(), "", "no adb forward");
 
+    // Its status card: connected, on the boot scene.
+    let heading = {
+        let tunnel = tunnel.clone();
+        move || -> Option<String> {
+            let (_, body) = get(&tunnel, "/state?model=0").ok()?;
+            let state: Value = serde_json::from_str(&body).ok()?;
+            state["load_status"][0].as_str().map(str::to_string)
+        }
+    };
+    until("the card says connected", || {
+        (heading().as_deref() == Some("CONNECTED")).then_some(())
+    })
+    .await;
+
     let projects = tempfile::tempdir().unwrap();
     let big: Vec<u8> = (0..20 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
     let project = cubes_project(projects.path(), &[("big.bin", &big)]);
     let path = tempfile::tempdir().unwrap();
+    // The card's headings while the push runs, in order.
+    let pushing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let headings = std::thread::spawn({
+        let (pushing, heading) = (pushing.clone(), heading.clone());
+        move || {
+            let mut seen: Vec<String> = Vec::new();
+            while pushing.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(now) = heading().filter(|now| seen.last() != Some(now)) {
+                    seen.push(now);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            seen
+        }
+    });
     let started = Instant::now();
     let run = run_vr(&functor, &project, &["--device-url", &tunnel], path.path());
+    // The desktop's own card says the same, as the headset reports it.
+    app.devices_where("the desktop says it is sending", |d| {
+        card_by_id(d, &id).is_some_and(|c| c["state"]["loading"][0] == "receiving")
+    })
+    .await;
     run.line("synced ");
     run.line("[debug-server] listening on");
     eprintln!("pushed and loaded over the link in {:?}", started.elapsed());
     assert_eq!(forwards(), "", "the push used no adb forward");
+    until("the card hides once the game runs", || heading().is_none().then_some(())).await;
+    pushing.store(false, std::sync::atomic::Ordering::Relaxed);
+    let headings = headings.join().unwrap();
+    eprintln!("the card showed {headings:?}");
+    assert_eq!(headings.first().map(String::as_str), Some("CONNECTED"), "{headings:?}");
+    assert!(headings.iter().any(|h| h == "RECEIVING PROJECT"), "{headings:?}");
 
     // Running there: its source, frames rendered and the clock stepping.
     let state = |path: &str| -> Value {
@@ -1912,6 +1989,10 @@ async fn quest_runs_a_project_over_the_link() {
     assert!(project_text().contains("boot scene"), "{}", project_text());
     app.devices_where("the card names nothing", |d| {
         card_by_id(d, &id).is_some_and(|c| c["state"]["project"].is_null())
+    })
+    .await;
+    until("the card says connected again", || {
+        (heading().as_deref() == Some("CONNECTED")).then_some(())
     })
     .await;
     app.send(json!({"type": "forget_device", "device": id}))
@@ -2414,6 +2495,8 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
         s["current_task"]["a"] == id
     })
     .await;
+    // The page opens on its conversation; Keep is next.
+    down().await;
     quest.capture("panel-decision.png");
     a().await;
     until("Keep waits for its confirm", || {
@@ -2441,6 +2524,106 @@ async fn quest_panel_keeps_a_change_from_the_headset() {
     wrist();
     tokio::time::sleep(Duration::from_millis(300)).await;
     quest.capture("panel-wrist-done.png");
+}
+
+/// `npm run test:quest-panel` (second half): the conversation page. A task
+/// whose fake agent talks a while, then asks: from Now the conversation
+/// opens and fills as the agent writes, following the newest; up scrolls
+/// back and stops following, down to the end follows again; the question
+/// shows. Captures land in `FUNCTOR_QUEST_CAPTURES` when set.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn quest_panel_follows_the_conversation() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let quest = Quest::attach(&["debug.oculus.guardian_pause", "debug.functor.pair_input"]);
+    let review = Review::new();
+    let app = review
+        .app_with(&["--device-link", "0.0.0.0:0"], "talk.jsonl")
+        .await;
+    let (mut app, _, _) = pair_quest_by_cable(&quest, app).await;
+    let panel = |quest: &Quest| quest.link()["panel"].clone();
+    let debug = quest.debug.clone();
+    let hold = |controls: Value, ms: u64| {
+        let debug = debug.clone();
+        async move {
+            for sample in [controls, json!({"active": true})] {
+                let mut hand = json!({"active": true});
+                hand.as_object_mut()
+                    .unwrap()
+                    .extend(sample.as_object().unwrap().clone());
+                let body = json!({"type": "xr", "right": hand}).to_string();
+                let (status, text) = post(&debug, "/input", &body).unwrap();
+                assert_eq!(status, 200, "{text}");
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+            }
+        }
+    };
+    let a = || hold(json!({"primary_pressed": true}), 150);
+    let stick = |y: f32| hold(json!({"thumbstick": [0.0, y]}), 150);
+    let menu = || {
+        let debug = debug.clone();
+        async move {
+            for on in [true, false] {
+                let body = json!({"type": "xr", "left": {"active": true, "menu_pressed": on}});
+                post(&debug, "/input", &body.to_string()).unwrap();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+
+    app.send(json!({"type": "new_task", "message": "Make the ball red", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the task runs", 30, |s| s["tasks"][0]["run"].is_object())
+        .await;
+    let id = state["tasks"][0]["id"].as_u64().unwrap();
+    until("the headset has it", || {
+        (panel(&quest)["now"] == id).then_some(())
+    })
+    .await;
+    menu().await;
+    until("open", || (panel(&quest)["open"] == true).then_some(())).await;
+    // Now's first item is the conversation.
+    a().await;
+    a().await;
+    until("the conversation opens", || {
+        (panel(&quest)["conversation"] == id).then_some(())
+    })
+    .await;
+    let first = panel(&quest)["said"].as_u64().unwrap();
+    until("it fills as the agent writes, following", || {
+        let p = panel(&quest);
+        (p["said"].as_u64()? > first && p["following"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation.png");
+    until("the agent asks", || {
+        (panel(&quest)["question"] == true).then_some(())
+    })
+    .await;
+    quest.capture("conversation-question.png");
+    // Scrolled up it stops following; down to the end it follows again.
+    stick(1.0).await;
+    until("scrolled up", || {
+        (panel(&quest)["following"] == false).then_some(())
+    })
+    .await;
+    quest.capture("conversation-scrolled.png");
+    for _ in 0..8 {
+        stick(-1.0).await;
+    }
+    assert_eq!(panel(&quest)["following"], true);
+    // B: back to Now; the menu closes the panel.
+    hold(json!({"secondary_pressed": true}), 150).await;
+    until("back to Now", || {
+        panel(&quest)["conversation"].is_null().then_some(())
+    })
+    .await;
+    menu().await;
+    until("closed", || (panel(&quest)["open"] == false).then_some(())).await;
 }
 
 /// `quest` unpaired (keeping its id, which the desktop knows it by), then
@@ -2585,7 +2768,12 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
         functor.to_str().unwrap(),
     ];
     let real = std::env::var_os("FUNCTOR_STT_REAL").is_some();
-    let mut envs = vec![("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap())];
+    let voice = tempfile::tempdir().unwrap();
+    let voice_log = voice.path().join("said");
+    let mut envs = vec![
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_VOICE", voice_log.to_str().unwrap()),
+    ];
     if !real {
         envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
     }
@@ -2645,6 +2833,22 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // The agent's edit is pushed, as `functor run vr` does after a save.
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    // Its reply is said aloud (D47), and not before the first clip started.
+    let spoke = until("the reply is said", || {
+        let spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
+        spoke.contains("play ").then_some(spoke)
+    })
+    .await;
+    assert!(spoke.starts_with("play "), "{spoke:?}");
+    // Its one record (D43) went through every step to the reload.
+    let reloaded = |s: &Value| {
+        s["requests"].as_array().and_then(|r| r.last()).cloned().filter(|r| r["outcome"]["reload"] == "reloaded")
+    };
+    let state = app.state_where("the request reloaded", 10, |s| reloaded(s).is_some()).await;
+    let request = reloaded(&state).unwrap();
+    let steps: Vec<&str> = request["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
+    assert_eq!(steps, ["received", "transcribing", "transcribed", "processing", "agent"]);
+    assert_eq!((request["headset"].as_str(), request["line"].as_str()), (Some("Test Quest"), Some("Started a new task")));
 
     // The task holds what was said, marked spoken, with the capsule.
     let state = app
@@ -2653,6 +2857,15 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
         })
         .await;
     let task = state["tasks"][0]["id"].clone();
+    // Its stages, timed from the clip to the run's end.
+    let state = app
+        .state_where("the run's end, timed", 10, |s| {
+            s["tasks"][0]["voice"]["finished"].is_u64()
+        })
+        .await;
+    let line = state["tasks"][0]["voice"]["line"].as_str().unwrap();
+    assert!(line.starts_with("heard ") && line.contains(" · transcribed "), "{line}");
+    assert!(line.contains(" · agent started ") && line.contains(" · done "), "{line}");
     // A long one is cut to a title.
     let title = state["tasks"][0]["title"].as_str().unwrap();
     assert!(said.starts_with(title.trim_end_matches('…')), "{title}");
@@ -2685,6 +2898,236 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(cancel.line("voice "), "voice 1 idle");
     let state = app.state_where("the state", 10, |_| true).await;
     assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
+}
+
+/// A slow transcription (11 s, as the real model took on the headset):
+/// heard at once, then the words, then working, every stage on the link
+/// the clip came in on and in order.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_slow_transcription_still_reports_every_stage_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("functor.json"),
+        r#"{"language": "functor-lang"}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":30000,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT_MS", "11000"),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let quest = stub(&app.link, store.path(), "Test Quest", &["--say", CLIP]);
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    assert_eq!(quest.line("voice "), "voice 1 heard");
+    let heard = Instant::now();
+    assert_eq!(
+        quest.line("voice "),
+        "voice 1 transcribed make the ball red"
+    );
+    assert!(heard.elapsed() >= Duration::from_secs(10), "{:?}", heard.elapsed());
+    assert_eq!(quest.line("voice "), "voice 1 working");
+}
+
+/// Voice with the real app and a Quest (`FUNCTOR_QUEST_E2E=1`, needs
+/// `FUNCTOR_BIN`): the game placed on the headset, push-to-talk held by
+/// injected presses over a test tone, a transcription as slow as the real
+/// model (11 s) and an agent that answers without a change. The headset's
+/// toast is read every 200 ms: it must show heard, then the words, then
+/// working, then the outcome, in that order. The timeline is printed.
+#[tokio::test(flavor = "current_thread")]
+async fn quest_shows_every_voice_step_from_the_real_app() {
+    if std::env::var_os("FUNCTOR_QUEST_E2E").is_none() {
+        eprintln!("skipped: set FUNCTOR_QUEST_E2E=1 with a Quest attached");
+        return;
+    }
+    let Some(functor) = functor_bin() else { return };
+    let quest = Quest::attach(&[
+        "debug.oculus.guardian_pause",
+        "debug.functor.pair_input",
+        "debug.functor.voice_tone",
+    ]);
+    let projects = tempfile::tempdir().unwrap();
+    let project = cubes_project(projects.path(), &[]);
+    let fixture = projects.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":20000,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"It is already red.\"}}\n",
+    )
+    .unwrap();
+    let functor_arg = functor.to_string_lossy().to_string();
+    let app = app_env(
+        &project,
+        &["--device-link", "0.0.0.0:0", "--functor", &functor_arg],
+        &[
+            ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+            ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+            ("FUNCTOR_APP_FAKE_TRANSCRIPT_MS", "11000"),
+        ],
+    )
+    .await;
+    let (mut app, id, _) = pair_quest_by_cable(&quest, app).await;
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    app.state_where("the game runs on the headset", 90, |s| {
+        card_by_id(&s["devices"], &id).is_some_and(|c| c["state"]["project"] == "cubes")
+    })
+    .await;
+
+    let voice = || quest.link()["voice"].clone();
+    quest
+        .press(&quest.debug, "right", "thumbstick_pressed", 2500)
+        .await;
+    let released = Instant::now();
+    // What the toast shows, each time it changes.
+    let mut seen: Vec<(f32, String)> = Vec::new();
+    while released.elapsed() < Duration::from_secs(50) {
+        let v = voice();
+        let shown = match v["stage"].as_str() {
+            None => "-".to_string(),
+            Some(stage) => format!(
+                "{stage}{}",
+                v["transcript"]
+                    .as_str()
+                    .map_or(String::new(), |t| format!(" \"{t}\""))
+            ),
+        };
+        if seen.last().is_none_or(|(_, last)| *last != shown) {
+            eprintln!("toast at {:5.1} s: {shown}", released.elapsed().as_secs_f32());
+            seen.push((released.elapsed().as_secs_f32(), shown));
+        }
+        if seen.iter().any(|(_, s)| s.starts_with("failed") || s.starts_with("reloaded")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let order = ["heard", "heard \"make the ball red\"", "working \"make the ball red\""];
+    let mut at = 0;
+    for (_, shown) in &seen {
+        if at < order.len() && shown == order[at] {
+            at += 1;
+        }
+    }
+    assert_eq!(at, order.len(), "every step, in order: {seen:?}");
+    assert!(
+        seen.iter().any(|(_, s)| s.starts_with("failed") || s.starts_with("reloaded")),
+        "an outcome: {seen:?}"
+    );
+}
+
+/// Voice latency on this machine, stage by stage (`FUNCTOR_VOICE_BENCH=1`;
+/// the real model with `--features whisper`, else the fake transcriber):
+/// the stub headset says each fixture clip in turn, all at once, over
+/// loopback, and each task's stage line prints. The agent is the fake one,
+/// answering at once, so "agent started" is the app's own kick-off.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn voice_stages_on_this_machine() {
+    if std::env::var_os("FUNCTOR_VOICE_BENCH").is_none() {
+        eprintln!("SKIPPED: set FUNCTOR_VOICE_BENCH=1 to time voice here");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":0,\"event\":{\"type\":\"text\",\"text\":\"ok\"}}\n\
+         {\"ms\":0,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let mut envs = vec![("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap())];
+    if !cfg!(feature = "whisper") {
+        envs.push(("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"));
+    }
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/../functor-stt/fixtures/");
+    let clips = ["jump-twice-as-high.wav", "make-the-ball-red.wav", "crates-sky-and-coin.wav"];
+    for (n, clip) in clips.iter().enumerate() {
+        let path = format!("{fixtures}{clip}");
+        let quest = stub(&app.link, store.path(), "Test Quest", &["--say", &path]);
+        if n == 0 {
+            let devices = app
+                .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+                .await;
+            let id = card(&devices, "Test Quest").unwrap()["id"].clone();
+            app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+                .await;
+        }
+        let said = loop {
+            match quest.line("voice 1 ") {
+                l if l.starts_with("voice 1 heard") || l.starts_with("voice 1 transcribed") => {}
+                l => break l,
+            }
+        };
+        assert_eq!(said, "voice 1 working", "{clip}");
+        let state = app
+            .state_where("the run's end", 60, |s| {
+                (s["tasks"].as_array().into_iter().flatten())
+                    .filter(|t| t["voice"]["finished"].is_u64())
+                    .count()
+                    > n
+            })
+            .await;
+        let tasks = state["tasks"].as_array().unwrap();
+        let task = (tasks.iter())
+            .filter(|t| t["voice"]["finished"].is_u64())
+            .max_by_key(|t| t["id"].as_u64())
+            .unwrap();
+        eprintln!("{clip}: {}", task["voice"]["line"].as_str().unwrap());
+        eprintln!("{clip}: {}", task["voice"]);
+        drop(quest);
+    }
 }
 
 /// A spoken "switch to another sample" (D42) on loopback with the real
@@ -2741,7 +3184,8 @@ async fn a_spoken_switch_runs_the_new_project_on_the_headset() {
     let (mut said, mut loaded) = (None, false);
     while said.is_none() || !loaded {
         let line = quest.line("");
-        if line.starts_with("voice 1 ") {
+        // `idle` first, for a headset that cannot read `done`.
+        if line.starts_with("voice 1 ") && line != "voice 1 idle" {
             said = Some(line);
         } else if line.starts_with("request POST /load-project") {
             loaded = line.contains("name=b");
@@ -2812,7 +3256,8 @@ async fn a_second_clip_is_routed_and_moved() {
         ),
     ];
     let mut app = app_env(&project, &args, &envs).await;
-    app.send(json!({"type": "set_model_route", "on": true})).await;
+    app.send(json!({"type": "set_model_route", "on": true}))
+        .await;
     app.state_where("the model routes speech", 10, |s| {
         s["router"] == true && s["model_routes"] == json!(["."])
     })
@@ -2875,9 +3320,257 @@ async fn a_second_clip_is_routed_and_moved() {
             s["tasks"].as_array().is_some_and(|t| t.len() == 1)
         })
         .await;
-    let moved = state["routes"].as_array().unwrap().iter().find(|r| r["by"] == "you").cloned();
+    let moved = state["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["by"] == "you")
+        .cloned();
+    assert_eq!(moved.unwrap()["line"], "Moved: steered “make the ball red”");
+}
+
+/// [`voice_functor`] with the real `functor mcp` (`real`) as runs' tool
+/// servers: `app-compat` passes (CI's CLI is built without the app), `run
+/// vr --device-url <url>` says it listens there and holds, and other runs
+/// (the local game) hold.
+#[cfg(unix)]
+fn link_functor(dir: &Path, real: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("functor");
+    let script = format!(
+        "#!/bin/sh\n\
+         [ \"$1\" = app-compat ] && {{ echo '{{\"app_protocol\":1}}'; exit 0; }}\n\
+         [ \"$1\" = mcp ] && exec '{}' \"$@\"\n\
+         url=\n\
+         for a in \"$@\"; do [ \"$prev\" = --device-url ] && url=\"$a\"; prev=\"$a\"; done\n\
+         [ -n \"$url\" ] && echo \"[debug-server] listening on $url\" >&2\n\
+         exec sleep 600\n",
+        real.display()
+    );
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// An app on a new project under `fixture`'s fake agent and a
+/// [`link_functor`], with "Test Quest" paired and the game placed on it:
+/// the app, the stub's store, the stub (run with `say`) and its tunnel.
+/// `None` without `FUNCTOR_BIN`.
+#[cfg(unix)]
+async fn game_on_stub(
+    dir: &Path,
+    fixture: &str,
+    say: &[&str],
+) -> Option<(App, tempfile::TempDir, Stub, String)> {
+    let real = functor_bin()?;
+    let project = dir.join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("functor.json"), r#"{"language": "functor-lang"}"#).unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = link_functor(dir, &real);
+    let agent = dir.join("agent.jsonl");
+    std::fs::write(&agent, fixture).unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", agent.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    let quest = stub(&app.link, store.path(), "Test Quest", say);
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let card = card(&devices, "Test Quest").unwrap();
+    let (id, tunnel) = (card["id"].clone(), card["tunnel"].as_str().unwrap().to_string());
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    // Said in full if it never does: the session and the CLI check.
+    let last = std::cell::RefCell::new(Value::Null);
+    let runs = |s: &Value| {
+        *last.borrow_mut() = json!({"session": s["session"], "cli": s["cli_problem"]});
+        s["session"]["status"]["debug_url"] == tunnel.as_str()
+    };
+    let waited = tokio::time::timeout(
+        Duration::from_secs(60),
+        app.state_where("the game runs on the headset", 61, runs),
+    );
+    if waited.await.is_err() {
+        panic!("the game never ran on the headset: {}", last.borrow());
+    }
+    Some((app, store, quest, tunnel))
+}
+
+/// Task `task`'s transcript items once `done` holds for them, within 30s.
+#[cfg(unix)]
+async fn transcript_where(
+    app: &mut App,
+    task: &Value,
+    what: &str,
+    done: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        app.send(json!({"type": "get_transcript", "task": task})).await;
+        let items = loop {
+            let msg = app.socket.next().await.unwrap().unwrap();
+            let json: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+            if json["type"] == "transcript" {
+                break json["items"].as_array().unwrap().clone();
+            }
+        };
+        if done(&items) {
+            return items;
+        }
+        assert!(Instant::now() < deadline, "no transcript where {what}: {items:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The results of the calls to tool `tool` so far.
+fn results(items: &[Value], tool: &str) -> Vec<String> {
+    let name = format!("mcp__mis__{tool}");
+    items
+        .iter()
+        .filter(|i| i["kind"] == "tool" && i["name"] == name.as_str())
+        .filter_map(|i| i["result"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn finished_ok(items: &[Value]) -> bool {
+    items.iter().any(|i| i["kind"] == "finished" && i["ok"] == true)
+}
+
+/// The reported failure: a task typed while the game's headset is away.
+/// The run starts anyway (its tool server keeps the game's session), its
+/// non-game tools work, a game tool says the headset is away at once, and
+/// once the headset is back the same run's game tool reaches it.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_task_typed_while_the_headset_is_away_reaches_it_when_it_is_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = [
+        r#"{"ms":0,"event":{"type":"started","session":"a1","model":"m"}}"#,
+        r#"{"ms":300,"mcp":{"tool":"api_reference","arguments":{"query":"Ui.row"}}}"#,
+        r#"{"ms":400,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":12000,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":12100,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
+    ]
+    .join("\n");
+    let Some((mut app, store, quest, _)) = game_on_stub(dir.path(), &fixture, &[]).await else {
+        return;
+    };
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+
+    app.send(json!({"type": "new_task", "message": "What is the count?", "harness": "claude"}))
+        .await;
+    let state = app
+        .state_where("the task runs", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+        .await;
+    let task = state["tasks"][0]["id"].clone();
+    let items = transcript_where(&mut app, &task, "the game tool answered", |i| {
+        !results(i, "get_state").is_empty()
+    })
+    .await;
+    assert!(results(&items, "api_reference")[0].contains("Ui.row"), "{items:?}");
+    let away = &results(&items, "get_state")[0];
+    assert!(away.contains("the headset is away; try again when it is back"), "{away}");
+    assert!(!items.iter().any(|i| i["kind"] == "finished"), "still running: {items:?}");
+
+    // Back: the same run's next call reaches the headset.
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
+    quest.line("linked ");
+    let items = transcript_where(&mut app, &task, "the run finished", |i| {
+        i.iter().any(|i| i["kind"] == "finished")
+    })
+    .await;
+    let back = &results(&items, "get_state")[1];
+    assert!(back.contains("\"stub\":true"), "{back}");
+    assert!(finished_ok(&items), "{items:?}");
+    // Its `run vr` stand-in stops with the session, not orphaned by the kill.
+    app.send(json!({"type": "stop_session"})).await;
+    app.state_where("the game stops", 10, |s| {
+        s["session"]["status"]["kind"] != "running"
+    })
+    .await;
+}
+
+/// A spoken request whose headset goes away mid-run: the run goes on (a
+/// game tool says the headset is away), ends ok while it is away without
+/// "did not reload", and the reload once it is back is reported. A status
+/// the headset missed while away (its game stopped) reaches it on relink.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_spoken_request_waits_for_an_away_headset() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = [
+        r#"{"ms":0,"event":{"type":"started","session":"a1","model":"m"}}"#,
+        r#"{"ms":1500,"mcp":{"tool":"get_state","arguments":{"session":"s1"}}}"#,
+        r#"{"ms":1600,"mcp":{"tool":"api_reference","arguments":{"query":"Ui.row"}}}"#,
+        r#"{"ms":2000,"event":{"type":"finished","ok":true,"summary":"done"}}"#,
+    ]
+    .join("\n");
+    let say = ["--say", CLIP];
+    let Some((mut app, store, quest, tunnel)) = game_on_stub(dir.path(), &fixture, &say).await
+    else {
+        return;
+    };
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let state = app
+        .state_where("the spoken task", 10, |s| {
+            s["tasks"].as_array().is_some_and(|t| !t.is_empty())
+        })
+        .await;
+    let task = state["tasks"][0]["id"].clone();
+    let items = transcript_where(&mut app, &task, "the run finished", |i| {
+        i.iter().any(|i| i["kind"] == "finished")
+    })
+    .await;
+    assert!(results(&items, "get_state")[0].contains("the headset is away"), "{items:?}");
+    assert!(results(&items, "api_reference")[0].contains("Ui.row"), "{items:?}");
+    assert!(finished_ok(&items), "{items:?}");
+
+    // Back: the edit's push lands (as `functor run vr`'s held one does).
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
+    quest.line("linked ");
+    app.devices_where("it is back", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
+    assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    drop(quest);
+
+    // Said again, away while it works, and the game stopped meanwhile:
+    // told once it is back.
+    let quest = stub(&app.link, store.path(), "Test Quest", &say);
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    drop(quest);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    app.send(json!({"type": "stop_session"})).await;
+    app.state_where("the game stops", 10, |s| {
+        s["session"]["status"]["kind"] != "running"
+    })
+    .await;
+    let quest = stub(&app.link, store.path(), "Test Quest", &[]);
     assert_eq!(
-        moved.unwrap()["line"],
-        "Moved: steered “make the ball red”"
+        quest.line("voice "),
+        "voice 1 failed the game stopped on the headset"
     );
 }

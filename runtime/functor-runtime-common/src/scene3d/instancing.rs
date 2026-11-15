@@ -163,21 +163,101 @@ impl std::fmt::Debug for InstanceList {
     }
 }
 
+/// One copy's paint for `Scene.instancedPaint` — `repr(C)` so the decoded
+/// slice uploads directly as the second instance stream (4 floats, 16 bytes
+/// per copy). Kept apart from [`InstanceData`] so a paint that changes every
+/// frame re-uploads 16 bytes per copy, never the static transforms.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaintData {
+    /// Multiplied into the copy's tint (white is the identity).
+    pub tint: [f32; 3],
+    /// How far a lit copy's shading mixes toward its unlit colour, 0–1
+    /// (clamped). No effect on unlit materials.
+    pub glow: f32,
+}
+
+impl PaintData {
+    pub const IDENTITY: PaintData = PaintData {
+        tint: [1.0, 1.0, 1.0],
+        glow: 0.0,
+    };
+}
+
+/// The paint records of one instanced node, shared by reference; content
+/// equality and serde, `Arc` identity for the renderer's retained buffer
+/// (see [`InstanceList`]).
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PaintList(Arc<[PaintData]>);
+
+impl PaintList {
+    pub fn ptr_eq(&self, other: &PaintList) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::ops::Deref for PaintList {
+    type Target = [PaintData];
+    fn deref(&self) -> &[PaintData] {
+        &self.0
+    }
+}
+
+impl From<Vec<PaintData>> for PaintList {
+    fn from(paints: Vec<PaintData>) -> Self {
+        PaintList(paints.into())
+    }
+}
+
+impl FromIterator<PaintData> for PaintList {
+    fn from_iter<I: IntoIterator<Item = PaintData>>(iter: I) -> Self {
+        PaintList(iter.into_iter().collect())
+    }
+}
+
+impl std::fmt::Debug for PaintList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self[..].fmt(f)
+    }
+}
+
+/// Two glows applied in turn: `mix(mix(s, a, g1), a, g2)` is
+/// `mix(s, a, 1 - (1 - g1)(1 - g2))`.
+pub(crate) fn compose_glow(g1: f32, g2: f32) -> f32 {
+    1.0 - (1.0 - g1.clamp(0.0, 1.0)) * (1.0 - g2.clamp(0.0, 1.0))
+}
+
 /// The stamp expansion — the DEFINITION of `Scene.instanced`'s semantics, and
 /// the renderer's fallback for templates [`recognize`] does not accept.
 ///
 /// Each copy is the template wrapped in a `Group` carrying the instance
 /// transform (transforms never sit on `Material` nodes, which the renderer
-/// ignores), with the copy's tint multiplied into every material color in the
-/// stamped subtree.
-pub fn expand_instanced(template: &Scene3D, instances: &[InstanceData]) -> Scene3D {
+/// ignores), with the copy's tint (times its paint's) multiplied into every
+/// material color in the stamped subtree, and its paint's glow composed into
+/// every lit material.
+pub fn expand_instanced(
+    template: &Scene3D,
+    instances: &[InstanceData],
+    paints: Option<&PaintList>,
+) -> Scene3D {
     Scene3D {
         obj: SceneObject::Group(
             instances
                 .iter()
-                .map(|instance| Scene3D {
-                    obj: SceneObject::Group(vec![tint_scene(template.clone(), instance.tint)]),
-                    xform: instance.matrix(),
+                .enumerate()
+                .map(|(index, instance)| {
+                    let paint = paints.and_then(|p| p.get(index)).copied();
+                    let paint = paint.unwrap_or(PaintData::IDENTITY);
+                    let tint = std::array::from_fn(|k| instance.tint[k] * paint.tint[k]);
+                    Scene3D {
+                        obj: SceneObject::Group(vec![paint_scene(
+                            template.clone(),
+                            tint,
+                            paint.glow,
+                        )]),
+                        xform: instance.matrix(),
+                    }
                 })
                 .collect(),
         ),
@@ -185,66 +265,73 @@ pub fn expand_instanced(template: &Scene3D, instances: &[InstanceData]) -> Scene
     }
 }
 
-/// Multiply `tint` into every material color of a subtree. White is the
-/// identity (returns the scene untouched). A `Texture` material has no color
-/// channel and is unchanged; nested `Instanced` nodes fold the tint into
-/// their own instances' tint channel.
-fn tint_scene(scene: Scene3D, tint: [f32; 3]) -> Scene3D {
-    if tint == [1.0, 1.0, 1.0] {
+/// Multiply `tint` into every material color of a subtree and compose
+/// `glow` into every lit material. White and 0 are the identity (returns the
+/// scene untouched). A `Texture` material has no color channel and is
+/// unchanged; nested `Instanced` nodes fold both into their own channels.
+fn paint_scene(scene: Scene3D, tint: [f32; 3], glow: f32) -> Scene3D {
+    if tint == [1.0, 1.0, 1.0] && glow <= 0.0 {
         return scene;
     }
+    let map = |items: Vec<Scene3D>| {
+        items
+            .into_iter()
+            .map(|item| paint_scene(item, tint, glow))
+            .collect()
+    };
     let obj = match scene.obj.into_resolved() {
-        SceneObject::Material(material, items) => SceneObject::Material(
-            tint_material(material, tint),
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
-        SceneObject::Group(items) => SceneObject::Group(
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
-        SceneObject::Opacity(alpha, items) => SceneObject::Opacity(
-            alpha,
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
-        SceneObject::Cells(node, items) => SceneObject::Cells(
-            node,
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
-        SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(
-            casts,
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
-        SceneObject::Resident(items) => SceneObject::Resident(
-            items
-                .into_iter()
-                .map(|item| tint_scene(item, tint))
-                .collect(),
-        ),
+        SceneObject::Material(material, items) => {
+            let material = match tint_material(material, tint) {
+                MaterialDescription::Lit {
+                    color,
+                    texture,
+                    normal_map,
+                    world_tile,
+                    glow: own,
+                } => MaterialDescription::Lit {
+                    color,
+                    texture,
+                    normal_map,
+                    world_tile,
+                    glow: compose_glow(own, glow),
+                },
+                other => other,
+            };
+            SceneObject::Material(material, map(items))
+        }
+        SceneObject::Group(items) => SceneObject::Group(map(items)),
+        SceneObject::Opacity(alpha, items) => SceneObject::Opacity(alpha, map(items)),
+        SceneObject::Cells(node, items) => SceneObject::Cells(node, map(items)),
+        SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(casts, map(items)),
+        SceneObject::Resident(items) => SceneObject::Resident(map(items)),
         SceneObject::Instanced {
             template,
             instances,
-        } => SceneObject::Instanced {
-            template,
-            instances: instances
-                .iter()
-                .map(|instance| instance.clone().tinted(tint))
-                .collect::<Vec<_>>()
-                .into(),
-        },
+            paints,
+        } => {
+            let paints = if glow > 0.0 {
+                let own = |index| {
+                    let own = paints.as_ref().and_then(|p| p.get(index)).copied();
+                    own.unwrap_or(PaintData::IDENTITY)
+                };
+                let glowing = (0..instances.len()).map(|index| PaintData {
+                    glow: compose_glow(own(index).glow, glow),
+                    ..own(index)
+                });
+                Some(glowing.collect())
+            } else {
+                paints
+            };
+            SceneObject::Instanced {
+                template,
+                instances: instances
+                    .iter()
+                    .map(|instance| instance.clone().tinted(tint))
+                    .collect::<Vec<_>>()
+                    .into(),
+                paints,
+            }
+        }
         leaf @ (SceneObject::Geometry(_) | SceneObject::Model(_) | SceneObject::Terrain(_)) => leaf,
         SceneObject::Shared(_) => unreachable!("resolved"),
     };
@@ -269,11 +356,13 @@ fn tint_material(material: MaterialDescription, tint: [f32; 3]) -> MaterialDescr
             texture,
             normal_map,
             world_tile,
+            glow,
         } => MaterialDescription::Lit {
             color: scale(color),
             texture,
             normal_map,
             world_tile,
+            glow,
         },
         MaterialDescription::SpriteTexture {
             color,
@@ -589,7 +678,7 @@ mod tests {
                 .tinted([0.5, 1.0, 1.0]),
             InstanceData::at([-4.0, 0.0, 0.0]).rotated(Quaternion::from_angle_y(Deg(90.0))),
         ];
-        let expanded = expand_instanced(&lit_cube(), &instances);
+        let expanded = expand_instanced(&lit_cube(), &instances, None);
 
         let stamp = |instance: &InstanceData, r: f32, g: f32, b: f32| Scene3D {
             obj: SceneObject::Group(vec![Scene3D {
@@ -609,6 +698,56 @@ mod tests {
             xform: Matrix4::from_scale(1.0),
         };
         assert_eq!(expanded, by_hand);
+    }
+
+    /// A paint multiplies into the copy's tint and composes its glow into
+    /// the lit material; an unlit material keeps no glow.
+    #[test]
+    fn paints_expand_into_tint_and_glow() {
+        let instances = vec![
+            InstanceData::at([0.0; 3]).tinted([0.5, 1.0, 1.0]),
+            InstanceData::at([1.0, 0.0, 0.0]),
+        ];
+        let paints: PaintList = vec![
+            PaintData { tint: [1.0, 0.5, 1.0], glow: 0.5 },
+            PaintData::IDENTITY,
+        ]
+        .into();
+        let expanded = expand_instanced(&lit_cube(), &instances, Some(&paints));
+        let SceneObject::Group(copies) = &expanded.obj else { panic!() };
+        let material = |copy: &Scene3D| {
+            let SceneObject::Group(inner) = &copy.obj else { panic!() };
+            let SceneObject::Material(material, _) = &inner[0].obj else { panic!() };
+            material.clone()
+        };
+        let mut glowing = MaterialDescription::lit(0.4, 0.1, 0.1, 1.0);
+        if let MaterialDescription::Lit { glow, .. } = &mut glowing {
+            *glow = 0.5;
+        }
+        assert_eq!(material(&copies[0]), glowing);
+        assert_eq!(material(&copies[1]), MaterialDescription::lit(0.8, 0.2, 0.1, 1.0));
+
+        let unlit = Scene3D {
+            obj: SceneObject::Material(
+                MaterialDescription::Color(cgmath::vec4(1.0, 1.0, 1.0, 1.0)),
+                vec![Scene3D::cube()],
+            ),
+            xform: Matrix4::from_scale(1.0),
+        };
+        let expanded = expand_instanced(&unlit, &instances, Some(&paints));
+        let SceneObject::Group(copies) = &expanded.obj else { panic!() };
+        assert_eq!(
+            material(&copies[0]),
+            MaterialDescription::Color(cgmath::vec4(0.5, 0.5, 1.0, 1.0))
+        );
+    }
+
+    #[test]
+    fn glows_compose_like_two_mixes() {
+        // mix(mix(s, a, 0.5), a, 0.5) = mix(s, a, 0.75).
+        assert_eq!(compose_glow(0.5, 0.5), 0.75);
+        assert_eq!(compose_glow(0.0, 0.3), 0.3);
+        assert_eq!(compose_glow(2.0, 0.0), 1.0);
     }
 
     #[test]

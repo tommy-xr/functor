@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import type { AppState, Change, Decision, Destination, Harness, Item, Routed, Scope, Task, Usage } from "./generated/protocol";
+import type { Activity, AppState, Change, Decision, Destination, Harness, Item, Request, Routed, Scope, Task, Usage } from "./generated/protocol";
 import {
   atBottom,
   clip,
@@ -45,6 +45,7 @@ import { record, type Recording } from "./mic";
 import { Icon } from "./Icon";
 import { useMenu } from "./menu";
 import { destinations } from "./queue-model";
+import { requestLine, shownRequest, spokenTask } from "./progress-model";
 
 
 const RECENT = 8;
@@ -70,7 +71,12 @@ type Props = {
   onViewDiff: (path: string | null) => void;
   /** Opens a task (an agent card's click). */
   onOpenTask: (task: number) => void;
+  /** When (ms) the user last chose a task. */
+  choseAt: { readonly current: number };
 };
+
+/** Chosen this recently, a task is being read: a spoken request does not switch away from it. */
+const READING_MS = 10_000;
 
 const NO_FILES: string[] = [];
 
@@ -151,6 +157,57 @@ function useMic(draft: string, onDraft: (d: string) => void, onNotice: (reason: 
   return { stage, toggle };
 }
 
+/**
+ * Where a request is (D43): one line that moves through its steps, the done
+ * ones with how long each took. One said in a headset that went to another
+ * task says where, and shows that task when clicked.
+ */
+function RequestLine({
+  request,
+  activity,
+  now,
+  elsewhere,
+  onShow,
+}: {
+  request: Request;
+  activity: Activity | null;
+  now: number;
+  elsewhere: boolean;
+  onShow: () => void;
+}) {
+  const line = requestLine(request, activity, now);
+  const said = elsewhere ? `Said in ${request.headset}: “${request.text}”. ${request.line}. ` : "";
+  const body = (
+    <>
+      <span className="request-now">
+        {said}
+        {line.now}
+        {line.slow && (
+          // Not announced each tick.
+          <span className="request-slow" aria-hidden>
+            {" "}
+            still going, {line.slow}
+          </span>
+        )}
+      </span>
+      {line.done.length > 0 && <span className="request-done">{line.done.join(" · ")}</span>}
+    </>
+  );
+  if (elsewhere) {
+    return (
+      <button type="button" className="request request-elsewhere" data-testid="request" onClick={onShow}>
+        {body}
+        <span className="request-go">Show that task</span>
+      </button>
+    );
+  }
+  return (
+    <div className={`request${line.failed ? " request-failed" : ""}`} role="status" data-testid="request">
+      {body}
+    </div>
+  );
+}
+
 /** The chat dock: one task's conversation (the current task) and the composer. */
 export function ChatDock({
   state,
@@ -166,6 +223,7 @@ export function ChatDock({
   onSelect: setSelected,
   onViewDiff,
   onOpenTask,
+  choseAt,
 }: Props) {
   const online = conn === "open" && state !== null;
   const active = state?.active ?? null;
@@ -206,6 +264,26 @@ export function ChatDock({
   useEffect(() => {
     if (conn !== "open") setPending(null);
   }, [conn]);
+
+  // Where the latest request is (D43), ticking while one shows.
+  const [now, setNow] = useState(() => Date.now());
+  const shown = shownRequest(state, current?.id ?? null, now);
+  useEffect(() => {
+    if (!shown) return;
+    const tick = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(tick);
+  }, [shown?.id, shown?.ended]);
+  // A spoken request's task shows, unless that would switch under the
+  // user (a draft, or a task chosen moments ago): then its line is the way there.
+  const seenSpoken = useRef<number | null>(null);
+  useEffect(() => {
+    if (conn !== "open") seenSpoken.current = null;
+    if (!state || conn !== "open") return;
+    const busy = seenSpoken.current === null || draft.trim() !== "" || Date.now() - choseAt.current < READING_MS;
+    const next = spokenTask(state, seenSpoken.current ?? 0, current?.id ?? null, busy);
+    seenSpoken.current = next.seen;
+    if (next.show !== null) send({ type: "select_task", task: next.show, if_unset: false });
+  }, [state?.requests, conn]);
 
   const lines = useConnectionLines(state, conn, current?.id ?? null, items?.length);
   // Stable while nothing it holds changes: every row is memoised on it.
@@ -312,6 +390,15 @@ export function ChatDock({
               <Icon name="cross" />
             </button>
           </p>
+        )}
+        {shown && (
+          <RequestLine
+            request={shown}
+            activity={shown.task === null ? null : (state?.activity[shown.task] ?? null)}
+            now={now}
+            elsewhere={shown.task !== null && shown.task !== (current?.id ?? null)}
+            onShow={() => shown.task !== null && select(shown.task)}
+          />
         )}
         {shownNotice && (
           <p className="notice" role="status" data-testid="chat-notice">

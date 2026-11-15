@@ -883,6 +883,8 @@ struct DebugLoopState {
     /// The clock `last_frame` rendered at.
     last_tts: f32,
     pending_capture: Option<mpsc::Sender<Result<Vec<u8>, CaptureError>>>,
+    /// The last capture's PNG encode: one at a time (each holds ~140 MB).
+    capture_encode: Option<std::thread::JoinHandle<()>>,
     /// `None` when the runtime lacks XR_FB_display_refresh_rate.
     display_refresh_rate: Option<DisplayRefreshRate>,
     /// The loaded game's launch `config` (`None` for the boot scene).
@@ -913,6 +915,66 @@ struct DebugLoopState {
     panel: panel::HeadsetPanel,
     /// The wrist light's place in head space, from the overlay's sample.
     wrist_at: Option<[f32; 3]>,
+    /// The load status card, the lines it last showed (`/state.load_status`),
+    /// and where it sits.
+    load_status: functor_runtime_common::load_status::LoadStatus,
+    status_lines: Option<Vec<String>>,
+    /// What the desktop last heard of it (its kind, then its lines), on
+    /// which link, and when.
+    status_said: Vec<String>,
+    status_link: Option<u64>,
+    status_said_at: Option<Instant>,
+    status_follow: functor_runtime_common::link_overlay::Follow,
+    /// The load in flight is a game (not the boot scene), and one is running.
+    loading_game: bool,
+    game: bool,
+}
+
+impl DebugLoopState {
+    /// Tell the linked desktop what the status card says (`said`: its kind,
+    /// then its lines; empty when hidden): a new step at once, a count that
+    /// moves at most four times a second, and all of it again on a new link.
+    fn tell_desktop(&mut self, said: Vec<String>, now: Instant) {
+        let Some((client, link)) = self.link.as_ref().and_then(|client| Some((client, client.link()?))) else {
+            return;
+        };
+        let relinked = self.status_link != Some(link);
+        if said == self.status_said && !relinked {
+            return;
+        }
+        let stepped = said.first() != self.status_said.first();
+        let due = self.status_said_at.is_none_or(|at| now.duration_since(at) >= std::time::Duration::from_millis(250));
+        if !(relinked || stepped || due) {
+            return;
+        }
+        // Small and never resent by the link: unbounded, and tried again
+        // next frame if the link went.
+        let data = functor_device_link::load::encode(&said);
+        if client.send_channel(link, functor_device_link::load::CHANNEL, data, false) {
+            (self.status_said, self.status_link, self.status_said_at) = (said, Some(link), Some(now));
+        }
+    }
+
+    /// No frame renders (the headset dozes): the card is not showing, and
+    /// the desktop must not keep its last word.
+    fn status_hidden(&mut self) {
+        self.status_lines = None;
+        self.tell_desktop(Vec::new(), Instant::now());
+    }
+
+    /// A `/load-project` ended: which program runs now, or why it failed.
+    fn loaded(&mut self, result: &Result<String, String>) {
+        match result {
+            Ok(_) => {
+                self.game = self.loading_game;
+                match self.game {
+                    true => self.load_status.launched(Instant::now()),
+                    false => self.load_status.succeeded(),
+                }
+            }
+            Err(message) => self.load_status.fail(message.clone(), Instant::now()),
+        }
+    }
 }
 
 /// Where a link overlay is drawn: head-locked, or by a matrix from its
@@ -1061,7 +1123,9 @@ fn service_debug_request(
                 let _ = response.send(Err(CaptureError::Unavailable(
                     "capture is unsupported by this OpenXR runtime".to_string(),
                 )));
-            } else if debug.pending_capture.is_some() {
+            } else if debug.pending_capture.is_some()
+                || debug.capture_encode.as_ref().is_some_and(|encode| !encode.is_finished())
+            {
                 let _ = response.send(Err(CaptureError::Failed(
                     "another capture is already pending".to_string(),
                 )));
@@ -1091,12 +1155,13 @@ fn service_debug_request(
             let mut input = debug.input.clone();
             apply_xr_override(&mut input, debug.xr_override.as_ref());
             debug.input_edges.apply_to(&mut input);
-            let (frame, rendered_frames, tts, pending_steps, paused) = (
+            let (frame, rendered_frames, tts, pending_steps, paused, paused_by) = (
                 debug.frame_count,
                 debug.rendered_frames,
                 clock.current_tts(),
                 clock.pending_steps(),
                 clock.is_paused(),
+                clock.paused_by(),
             );
             let sim_thread = sim_thread.to_string();
             let display_refresh_rate = debug.display_refresh_rate.clone();
@@ -1127,6 +1192,7 @@ fn service_debug_request(
                 link::state(client, toast, debug.panel.debug(client.linked()))
             });
             let reload = debug.reload.state(Instant::now());
+            let load_status = debug.status_lines.clone();
             // Replies from the sim side, after every call queued before it.
             sim.post(move |g| {
                 let _ = response.send(RuntimeState {
@@ -1140,7 +1206,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: RuntimeViewport::new(width, height),
                     views,
                     model: if with_model {
@@ -1174,6 +1240,7 @@ fn service_debug_request(
                     }),
                     // No audio host on device yet.
                     audio: None,
+                    load_status,
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link,
@@ -1322,8 +1389,8 @@ desktop runtime's --headless/--debug-port path"
             }
             let _ = response.send(result);
         }
-        DebugRequest::Time(command, response) => {
-            let _ = response.send(clock.apply(command));
+        DebugRequest::Time(request, response) => {
+            let _ = response.send(clock.apply(request.command, request.by));
         }
         DebugRequest::Project(response) => {
             sim.post(move |g| {
@@ -1353,6 +1420,7 @@ desktop runtime's --headless/--debug-port path"
             // An empty load unloads: the boot scene, under the plain
             // contract, and no uploads (a desktop app stopping the game here).
             // Reported over the link once the load lands.
+            debug.loading_game = !files.is_empty();
             let (files, role, name) = if files.is_empty() {
                 let removed = asset_cache.retain_uploaded(&HashSet::new());
                 for path in &removed {
@@ -1395,6 +1463,7 @@ desktop runtime's --headless/--debug-port path"
                     if result.is_ok() {
                         link::set_project(name);
                     }
+                    debug.loaded(&result);
                     let _ = response.send(result);
                 }
             }
@@ -1767,7 +1836,9 @@ pub fn android_main(app: AndroidApp) {
         eyes[0].height
     );
 
-    let asset_cache = Arc::new(AssetCache::new());
+    // A model takes seconds to decode here: off the frame, the headset
+    // keeps rendering meanwhile.
+    let asset_cache = Arc::new(AssetCache::new().decode_in_background());
     // `File.bytes` reads the files `functor run vr` pushed, then those it
     // fetched from the host, kept in app storage across launches.
     let device_files = Arc::new(DeviceFiles::new(
@@ -1777,6 +1848,13 @@ pub fn android_main(app: AndroidApp) {
         functor_runtime_common::device_files::DEFAULT_STORE_BYTES,
     ));
     functor_runtime_common::storage::set_project_reader(Some(device_files.clone()));
+    // Pushed files kept by content hash: a push sends only what is new.
+    if let Some(dir) = app.internal_data_path() {
+        functor_runtime_common::push_cache::install(
+            &dir.join("push-cache"),
+            functor_runtime_common::push_cache::DEFAULT_CAP_BYTES,
+        );
+    }
     let scene_context = SceneContext::new();
     // The eye swapchain is SRGB8_ALPHA8 (COLOR_FORMAT): the hardware encodes
     // on write, so the shared shader epilogue must pass through — see the
@@ -2000,6 +2078,9 @@ pub fn android_main(app: AndroidApp) {
                             session_running = false;
                             session_focused = false;
                             last_frame_at = None;
+                            // Taken off: an open panel stands in front again
+                            // when it is back on (the room may recentre).
+                            debug.panel.anchor = None;
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
                             quit = true;
@@ -2029,6 +2110,7 @@ pub fn android_main(app: AndroidApp) {
             while let Ok(request) = rx.try_recv() {
                 // A mirror's snapshot is self-contained: no lockstep for it.
                 debug_active |= !matches!(request, DebugRequest::Mirror(_));
+                debug.telemetry.note(request.route());
                 service_debug_request(
                     request,
                     &session,
@@ -2060,10 +2142,23 @@ pub fn android_main(app: AndroidApp) {
                 if result.is_ok() {
                     link::set_project(name);
                 }
+                debug.loaded(&result);
                 let _ = response.send(result);
             }
         }
         debug.reload.poll(Instant::now(), debug.rendered_frames);
+        // A newer push answers for a superseded one.
+        match debug.reload.take_outcome() {
+            // A reload replaces the boot scene too (`/reload-source`).
+            Some(Ok(())) => {
+                debug.game = true;
+                debug.load_status.succeeded();
+            }
+            Some(Err(message)) if !message.starts_with("superseded") => {
+                debug.load_status.fail(message, Instant::now())
+            }
+            _ => {}
+        }
 
         if !session_running {
             if let Some(client) = &debug.link {
@@ -2073,6 +2168,8 @@ pub fn android_main(app: AndroidApp) {
             // A doze is not frame time.
             last_rendered = Instant::now();
             last_display_ns = None;
+            debug.status_hidden();
+            debug.telemetry.idle();
             continue;
         }
 
@@ -2125,6 +2222,8 @@ pub fn android_main(app: AndroidApp) {
                 .expect("frame end (invalid tracking)");
             last_frame_at = None;
             last_display_ns = None;
+            debug.status_hidden();
+            debug.telemetry.idle();
             last_rendered = Instant::now();
             continue;
         }
@@ -2240,6 +2339,8 @@ pub fn android_main(app: AndroidApp) {
             last_rendered = Instant::now();
             // A declined frame is the compositor's choice, not a miss.
             last_display_ns = None;
+            debug.status_hidden();
+            debug.telemetry.idle();
             continue;
         }
 
@@ -2264,6 +2365,7 @@ pub fn android_main(app: AndroidApp) {
             caps = sim.caps();
         }
         let progress = asset_cache.progress();
+        let assets_settled = (progress.loaded + progress.failed.len(), progress.total);
         let pushed_progress = sim.is_threaded().then(|| progress.clone());
         sim.post(move |g| g.push_asset_progress(progress));
         let mut feedback = false;
@@ -2531,34 +2633,83 @@ images cannot be posed"
         }
         terrain_frame_id = terrain_frame_id.wrapping_add(1);
         let reload_look = debug.reload.look(Instant::now());
-        // The pairing card, else the open panel, else the voice toast:
-        // shapes, opacity and placement, worked out once for both eyes.
-        use functor_runtime_common::link_overlay::{card, toast_lines};
+        // The pairing card, else the open panel, else the voice toast, else
+        // the paused marker: shapes, opacity and placement, worked out once
+        // for both eyes.
+        use functor_runtime_common::link_overlay::{
+            card, paused_lines, paused_marker_transform, toast_lines,
+        };
         use functor_runtime_common::link_panel::{placement, pose_matrix, wrist_shapes};
         let panel = match (&pairing, &debug.link) {
             (Some(pairing), _) => {
                 let shapes = card(&functor_runtime_common::link_overlay::lines(pairing));
-                Some((shapes, 1.0, Place::HeadLocked))
+                Some((std::rc::Rc::new(shapes), 1.0, Place::HeadLocked))
             }
             (None, Some(client)) if debug.panel.nav.is_open() => tracked_center.map(|head| {
                 // Where it opened, in the world: back into head space.
                 let anchor = *debug.panel.anchor.get_or_insert_with(|| placement(head));
                 let world = pose_matrix(head).invert().unwrap_or(Matrix4::identity());
                 let toast = debug.voice.toast(Instant::now()).map(|(t, _)| t.clone());
-                let shapes = debug.panel.nav.shapes(
-                    debug.panel.data.as_ref(),
-                    &panel::connection(&client.view()),
-                    toast.as_ref(),
-                    Instant::now(),
-                );
+                let shapes =
+                    debug.panel.shapes(panel::connection(&client.view()), toast, Instant::now());
                 (shapes, 1.0, Place::Head(world * anchor))
             }),
-            _ => tracked_center.and_then(|head| {
-                let (toast, alpha) = debug.voice.toast(Instant::now())?;
-                let shapes = card(&toast_lines(toast));
-                let place = debug.voice.follow.transform(head.orientation, real_delta);
-                Some((shapes, alpha, Place::Head(place)))
-            }),
+            _ => tracked_center
+                .and_then(|head| {
+                    let (toast, alpha) = debug.voice.toast(Instant::now())?;
+                    let shapes = card(&toast_lines(toast));
+                    let place = debug.voice.follow.transform(head.orientation, real_delta);
+                    Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+                })
+                .or_else(|| {
+                    // A capture shows the game, not the marker.
+                    let head = tracked_center.filter(|_| !capture_due)?;
+                    let shapes = card(&paused_lines(clock.is_paused(), clock.paused_by())?);
+                    let place = paused_marker_transform(head.orientation);
+                    Some((std::rc::Rc::new(shapes), 1.0, Place::Head(place)))
+                }),
+        };
+        // The load status, where the toast sits, when nothing above shows.
+        let link_view = debug.link.as_ref().filter(|_| !debug.game).map(|client| client.view());
+        let status = debug.load_status.step(
+            &functor_runtime_common::load_status::Facts {
+                linked: link_view.as_ref().is_some_and(|view| view.linked),
+                desktop: link_view.and_then(|view| view.paired),
+                game: debug.game,
+                files: functor_runtime_common::debug_http::asset_files_received(),
+                bytes: functor_runtime_common::debug_http::asset_bytes_received(),
+                announced: functor_runtime_common::debug_http::push_announced(),
+                loading: debug.pending_load.is_some() && debug.loading_game,
+                reloading: debug.reload.in_progress(),
+                assets: assets_settled,
+            },
+            Instant::now(),
+        );
+        let kind = status.as_ref().map(|(step, _)| functor_runtime_common::load_status::kind(step));
+        let status = status.map(|(step, alpha)| (functor_runtime_common::load_status::lines(&step), alpha));
+        let status_lines: Option<Vec<String>> = status.as_ref().map(|(lines, _)| lines.iter().map(|l| l.text.clone()).collect());
+        if status_lines != debug.status_lines {
+            // Logged per step, not per count: a push's count moves every frame.
+            let heading = |lines: &Option<Vec<String>>| lines.as_ref().and_then(|lines| lines.first().cloned());
+            if heading(&status_lines) != heading(&debug.status_lines) {
+                log::info!("load status: {}", status_lines.as_ref().map_or("(hidden)".to_string(), |l: &Vec<String>| l.join(" | ")));
+            }
+            debug.status_lines = status_lines.clone();
+        }
+        // The desktop hears it too: its kind, then its lines.
+        let said = kind.into_iter().map(str::to_string).chain(status_lines.into_iter().flatten()).collect();
+        debug.tell_desktop(said, Instant::now());
+        let panel = match (panel, status, tracked_center) {
+            (None, Some((lines, alpha)), Some(head)) => {
+                let shapes = card(&lines);
+                let place = debug.status_follow.transform(head.orientation, real_delta);
+                Some((std::rc::Rc::new(shapes), alpha, Place::Head(place)))
+            }
+            (panel, ..) => {
+                // Hidden: it appears in front next time.
+                debug.status_follow.reset();
+                panel
+            }
         };
         // The wrist light, while the panel is closed.
         let wrist = debug
@@ -2792,16 +2943,29 @@ images cannot be posed"
                     eyes[0].width, eyes[0].height, eyes[1].width, eyes[1].height
                 )))
             } else {
-                let captured = captured_eyes.expect("two captured views checked above");
-                functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
-                    eyes[0].width,
-                    eyes[0].height,
-                    &captured[0],
-                    &captured[1],
-                )
-                .map_err(CaptureError::Failed)
+                Ok((eyes[0].width, eyes[0].height, captured_eyes.expect("two captured views checked above")))
             };
-            let _ = response.send(result);
+            match result {
+                // The PNG encodes off the frame: 140 ms for two eyes (seconds
+                // in a debug build), which froze the view.
+                Ok((width, height, captured)) => {
+                    let encode = move || {
+                        let png = functor_runtime_common::frame_capture::encode_stereo_side_by_side_png(
+                            width,
+                            height,
+                            &captured[0],
+                            &captured[1],
+                        );
+                        let _ = response.send(png.map_err(CaptureError::Failed));
+                    };
+                    // Unstarted, the request's sender drops: it answers 500.
+                    debug.capture_encode =
+                        std::thread::Builder::new().name("functor-capture".to_string()).spawn(encode).ok();
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
         }
     }
 

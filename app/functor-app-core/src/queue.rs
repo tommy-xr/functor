@@ -185,7 +185,7 @@ from an earlier one, the later one wins; if one drops the request, change nothin
 /// request and all said since, so a change of mind is honoured); else
 /// those after its last run (a run cut before its agent started leaves no
 /// `Stopped`, so its messages are sent again).
-pub fn prompt(task: &Task) -> String {
+pub fn prompt(task: &Task, speak: bool) -> String {
     fn user(i: &Item) -> Option<(&String, &Option<Spoken>)> {
         match i {
             Item::User { text, spoken } => Some((text, spoken)),
@@ -204,13 +204,18 @@ pub fn prompt(task: &Task) -> String {
         Some(s) => voice::prompt(text, s),
         None => text.to_string(),
     };
-    match &messages[..] {
+    let prompt = match &messages[..] {
         [] => String::new(),
         [one] => said(one),
         [first, rest @ ..] => {
             let rest: Vec<String> = rest.iter().map(said).collect();
             format!("{}\n\n{LATER}\n\n{}", said(first), rest.join("\n\n"))
         }
+    };
+    // Its reply is said aloud (D47): ask for the line to say.
+    match speak && messages.last().is_some_and(|(_, spoken)| spoken.is_some()) {
+        true => format!("{prompt}\n\n{}", crate::reply::ASK),
+        false => prompt,
     }
 }
 
@@ -241,6 +246,7 @@ mod tests {
             review: None,
             created_at: None,
             updated_at: None,
+            voice: None,
             transcript: vec![],
         }
     }
@@ -365,7 +371,7 @@ mod tests {
     fn a_first_run_gets_every_message_and_a_resumed_one_only_the_new() {
         let mut t = queued(1, "a", 1);
         t.transcript = vec![user("make the ball red")];
-        assert_eq!(prompt(&t), "make the ball red");
+        assert_eq!(prompt(&t, false), "make the ball red");
         t.transcript.push(user("actually blue"));
         t.transcript.push(Item::User {
             text: "and bigger".to_string(),
@@ -375,7 +381,7 @@ mod tests {
                 route: None,
             }),
         });
-        let sent = prompt(&t);
+        let sent = prompt(&t, false);
         assert!(
             sent.starts_with(&format!("make the ball red\n\n{LATER}\n\nactually blue\n\n")),
             "{sent}"
@@ -385,9 +391,9 @@ mod tests {
         // A stopped run with no session: the next run is a new session, so
         // it is told everything again.
         t.transcript = vec![user("one"), Item::Stopped, user("two")];
-        assert_eq!(prompt(&t), format!("one\n\n{LATER}\n\ntwo"));
+        assert_eq!(prompt(&t, false), format!("one\n\n{LATER}\n\ntwo"));
         // With a session to resume: only what came after its last run.
         t.session_id = Some("s".to_string());
-        assert_eq!(prompt(&t), "two");
+        assert_eq!(prompt(&t, false), "two");
     }
 }

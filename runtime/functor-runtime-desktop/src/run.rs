@@ -308,6 +308,86 @@ fn route_visible_pointer_position(
     }
 }
 
+/// The window's overlay pointer, threaded into `POST /input` so injected pointer
+/// input follows the window's routing: a `mouse_move` also moves the pointer the
+/// overlays (game UI, webview, scrubber) see, and a left press an overlay wanted
+/// is the overlay's (it clicks what is under the pointer), never the game's.
+/// `None` in the headless loop, which draws no overlays.
+struct OverlayPointer<'a> {
+    pos: &'a mut (i32, i32),
+    /// Set by an injected move: a hidden window then feeds the overlays the
+    /// injected pointer (it has no real cursor of its own).
+    injected: &'a mut bool,
+    /// Set by an injected move / left edge the overlay passes haven't seen yet
+    /// (`waits_for_overlay_pass`).
+    moved: &'a mut bool,
+    edged: &'a mut bool,
+    /// An overlay owns a left press at `pos` (`overlay_owns_primary_press`).
+    wants_pointer: bool,
+    primary_down: &'a mut bool,
+    primary_clicked: &'a mut bool,
+}
+
+/// Whether a left press at `pos` (window points == CSS px) belongs to an
+/// overlay rather than the game. The webview is hit-tested at press time: its
+/// `wants_pointer` latch reads the old tree after a model-driven re-render.
+fn overlay_owns_primary_press(
+    scrubber_wants_pointer: bool,
+    ui_wants_pointer: bool,
+    webview: &crate::webview_overlay::WebviewOverlay,
+    pos: (i32, i32),
+) -> bool {
+    scrubber_wants_pointer
+        || ui_wants_pointer
+        || webview.hit_interactive_css(pos.0 as f32, pos.1 as f32)
+}
+
+/// Whether `/input` request `req` waits for the next frame, while an overlay is
+/// shown: the overlay passes sample one pointer state per frame, so a left edge
+/// waits until they've seen the move or edge before it (routing at the new
+/// position, and `move A; down; up; move B` clicks at A). Moves after moves stream.
+fn waits_for_overlay_pass(
+    req: &debug_server::DebugRequest,
+    pointer_moved: bool,
+    primary_edged: bool,
+    overlay_shown: bool,
+) -> bool {
+    use debug_server::{DebugRequest::Input, InputCommand};
+    overlay_shown
+        && match req {
+            Input(InputCommand::MouseButton { button, .. }, _) => {
+                (pointer_moved || primary_edged)
+                    && functor_runtime_common::MouseButton::from_name(button)
+                        == Some(functor_runtime_common::MouseButton::Left)
+            }
+            Input(InputCommand::MouseMove { .. }, _) => primary_edged,
+            _ => false,
+        }
+}
+
+/// Route an injected primary (left) edge the way the window's released-pointer
+/// arm does: a press the UI wanted goes to the overlay (and not the game); every
+/// release clears the overlay press and still goes to the game, whose held-state
+/// discipline drops a release it never saw pressed. Returns whether the game
+/// should receive the edge.
+fn route_injected_primary(
+    down: bool,
+    ui_wants_pointer: bool,
+    primary_down: &mut bool,
+    primary_clicked: &mut bool,
+) -> bool {
+    if down && ui_wants_pointer {
+        *primary_down = true;
+        *primary_clicked = true;
+        false
+    } else {
+        if !down {
+            *primary_down = false;
+        }
+        true
+    }
+}
+
 /// Apply one mouse-button edge with the held-state discipline every *injected*
 /// path shares (`POST /input` and `--input-script`): a press enters the held
 /// set and is delivered; a release is delivered only if the game saw the press,
@@ -1067,7 +1147,9 @@ fn parse_script_dt(s: &str) -> Result<f32, String> {
 /// (and `--replay-input`, which then steps it).
 fn launch_clock(args: &Args) -> GameClock {
     let mut clock = GameClock::new(args.fixed_time);
-    if args.paused || args.replay_input.is_some() {
+    if args.paused {
+        clock.pause_at_start();
+    } else if args.replay_input.is_some() {
         clock.pause();
     }
     clock
@@ -1377,6 +1459,7 @@ fn service_debug_request(
     // Pushed reloads, for the indicator and `/state.reload`.
     reload: &mut ReloadIndicator,
     capture: &dyn Fn() -> Result<Vec<u8>, debug_server::CaptureError>,
+    mut overlay: Option<OverlayPointer>,
 ) -> bool {
     let mut sampled_input_changed = false;
     match req {
@@ -1403,6 +1486,7 @@ fn service_debug_request(
         debug_server::DebugRequest::State(with_model, resp) => {
             let frame = *frame_count;
             let paused = clock.is_paused();
+            let paused_by = clock.paused_by();
             let frame_stats = telemetry.stats();
             let pending_steps = clock.pending_steps();
             let sim_thread = sim_thread.to_string();
@@ -1429,7 +1513,7 @@ fn service_debug_request(
                     pending_net: functor_runtime_common::net::inbound_pending(),
                     http: functor_runtime_common::net::http_stats(),
                     reload,
-                    clock: functor_runtime_common::protocol::clock_state(g, paused),
+                    clock: functor_runtime_common::protocol::clock_state(g, paused, paused_by),
                     viewport: debug_server::RuntimeViewport::new(width, height),
                     views: vec![debug_server::RuntimeView::new("main", width, height)],
                     model: if with_model {
@@ -1472,6 +1556,7 @@ fn service_debug_request(
                         depth_stream,
                     ),
                     audio: Some(functor_runtime_common::audio::one_shot_counts()),
+                    load_status: None,
                     haptics: Some(functor_runtime_common::haptics::counts()),
                     frame_stats,
                     link: None,
@@ -1721,6 +1806,11 @@ fn service_debug_request(
                 }
                 debug_server::InputCommand::MouseMove { x, y } => {
                     *mouse_pos = (x, y);
+                    if let Some(o) = overlay.as_mut() {
+                        *o.pos = (x, y);
+                        *o.injected = true;
+                        *o.moved = true;
+                    }
                     if !emulate_xr {
                         sim.mouse_move(x, y);
                     }
@@ -1737,7 +1827,21 @@ fn service_debug_request(
                     // scripted clicks are the whole point.
                     match functor_runtime_common::MouseButton::from_name(&button) {
                         Some(b) => {
-                            apply_mouse_button_edge(sim, held_buttons, edges, b, down);
+                            let to_game = match overlay.as_mut() {
+                                Some(o) if b == functor_runtime_common::MouseButton::Left => {
+                                    *o.edged = true;
+                                    route_injected_primary(
+                                        down,
+                                        o.wants_pointer,
+                                        o.primary_down,
+                                        o.primary_clicked,
+                                    )
+                                }
+                                _ => true,
+                            };
+                            if to_game {
+                                apply_mouse_button_edge(sim, held_buttons, edges, b, down);
+                            }
                             Ok(())
                         }
                         None => Err(format!("unknown mouse button: {}", button)),
@@ -1798,8 +1902,8 @@ fn service_debug_request(
             }
             let _ = resp.send(result);
         }
-        debug_server::DebugRequest::Time(cmd, resp) => {
-            let _ = resp.send(clock.apply(cmd));
+        debug_server::DebugRequest::Time(request, resp) => {
+            let _ = resp.send(clock.apply(request.command, request.by));
         }
     }
     sampled_input_changed
@@ -1978,6 +2082,7 @@ fn run_headless(
 
         if let Some(rx) = &debug_requests {
             while let Ok(req) = rx.try_recv() {
+                telemetry.note(req.route());
                 let state_input = desktop_input_snapshot(
                     &held_keys,
                     mouse_pos,
@@ -2025,6 +2130,7 @@ fn run_headless(
                             "capture is unavailable in --headless mode".to_string(),
                         ))
                     },
+                    None, // no UI overlay in headless
                 );
             }
         }
@@ -2344,6 +2450,9 @@ Escape releases while captured"
         // the pointer last frame (so a click on a control doesn't recapture the
         // cursor for free-look).
         let mut mouse_primary_down = false;
+        // An injected `mouse_move` happened: feed its position to the game-UI
+        // pass even in a hidden window (see `OverlayPointer`).
+        let mut pointer_injected = false;
         // Press-latch for the frame's pointer SAMPLE: a click whose press and
         // release both land in one poll batch (a fast tap, a slow frame)
         // leaves `mouse_primary_down` false by sample time — the latch keeps
@@ -2990,11 +3099,12 @@ Escape again to quit"
                                 // after a model-driven re-render, and a
                                 // stationary repeat-click would recapture
                                 // the cursor.
-                                if scrubber_wants_pointer
-                                    || ui_wants_pointer
-                                    || webview_overlay
-                                        .hit_interactive_css(mouse_pos.0 as f32, mouse_pos.1 as f32)
-                                {
+                                if overlay_owns_primary_press(
+                                    scrubber_wants_pointer,
+                                    ui_wants_pointer,
+                                    &webview_overlay,
+                                    mouse_pos,
+                                ) {
                                     mouse_primary_down = true;
                                     mouse_primary_clicked = true;
                                 } else if args.emulate_xr {
@@ -4049,8 +4159,11 @@ Escape again to quit"
             } else {
                 1.0
             };
+            // Whether the overlays get a pointer this frame; without one they
+            // own no injected press either.
+            let pointer_shown = !cursor_captured && (!hidden || pointer_injected);
             let pointer = functor_runtime_common::ui::PointerState {
-                pos: (!cursor_captured && !hidden).then_some((
+                pos: pointer_shown.then_some((
                     mouse_pos.0 as f32 * dpi_scale,
                     mouse_pos.1 as f32 * dpi_scale,
                 )),
@@ -4400,6 +4513,13 @@ Escape again to quit"
             // reads from). GL stays on this thread; we only reply over channels.
             let mut debug_active = false;
             let mut picture_request = false;
+            // Injected pointer input serviced below, after this frame's
+            // overlay passes (`OverlayPointer::{moved, edged}`).
+            let mut pointer_moved = false;
+            let mut primary_edged = false;
+            let overlay_shown = scrubber_visible
+                || snapshot.webview_html.is_some()
+                || functor_runtime_common::sim_driver::has_widgets(&snapshot.ui);
             // Whether `/stream` has this frame.
             let mut streamed = false;
             // When this frame began waiting below.
@@ -4411,6 +4531,15 @@ Escape again to quit"
             loop {
                 if let Some(rx) = &debug_requests {
                     while let Some(req) = woken.take().or_else(|| rx.try_recv().ok()) {
+                        // Answered next frame, once the overlay passes have
+                        // seen the pointer input before it; later requests wait too.
+                        if waits_for_overlay_pass(&req, pointer_moved, primary_edged, overlay_shown)
+                        {
+                            woken = Some(req);
+                            picture_request = true;
+                            break;
+                        }
+                        telemetry.note(req.route());
                         // A mirror's snapshot is self-contained: no lockstep for it.
                         debug_active |= !matches!(req, debug_server::DebugRequest::Mirror(_));
                         picture_request |= !leaves_picture(&req);
@@ -4525,6 +4654,21 @@ Escape again to quit"
                                 )
                                     .map_err(debug_server::CaptureError::Failed)
                             },
+                            Some(OverlayPointer {
+                                wants_pointer: pointer_shown
+                                    && overlay_owns_primary_press(
+                                        scrubber_wants_pointer,
+                                        ui_wants_pointer,
+                                        &webview_overlay,
+                                        mouse_pos,
+                                    ),
+                                pos: &mut mouse_pos,
+                                injected: &mut pointer_injected,
+                                moved: &mut pointer_moved,
+                                edged: &mut primary_edged,
+                                primary_down: &mut mouse_primary_down,
+                                primary_clicked: &mut mouse_primary_clicked,
+                            }),
                         );
                         if fixed_sample && sampled_input_changed {
                             fixed_input_snapshot = desktop_input_snapshot(
@@ -4753,6 +4897,56 @@ mod tests {
     }
 
     #[test]
+    fn injected_primary_presses_over_ui_belong_to_the_widget() {
+        let (mut down, mut clicked) = (false, false);
+        assert!(
+            !route_injected_primary(true, true, &mut down, &mut clicked),
+            "a press the UI wanted must not reach the game"
+        );
+        assert!(down && clicked);
+        assert!(
+            route_injected_primary(false, true, &mut down, &mut clicked),
+            "releases reach the game (its held-state discipline drops unseen ones)"
+        );
+        assert!(!down);
+        let (mut down, mut clicked) = (false, false);
+        assert!(route_injected_primary(true, false, &mut down, &mut clicked));
+        assert!(!down && !clicked, "a press off the UI is the game's alone");
+    }
+
+    #[test]
+    fn injected_pointer_input_waits_for_the_overlay_pass_that_sees_it() {
+        let input = |cmd| debug_server::DebugRequest::Input(cmd, std::sync::mpsc::channel().0);
+        let button = |name: &str| {
+            input(debug_server::InputCommand::MouseButton {
+                button: name.into(),
+                down: true,
+            })
+        };
+        let move_ = input(debug_server::InputCommand::MouseMove { x: 1, y: 1 });
+        assert!(waits_for_overlay_pass(&button("left"), true, false, true));
+        assert!(
+            !waits_for_overlay_pass(&button("left"), true, false, false),
+            "no overlay: the press lands this frame, before a following step"
+        );
+        assert!(
+            waits_for_overlay_pass(&button("left"), false, true, true),
+            "one left edge per overlay pass"
+        );
+        assert!(!waits_for_overlay_pass(&button("left"), false, false, true));
+        assert!(!waits_for_overlay_pass(&button("right"), true, false, true));
+        assert!(
+            waits_for_overlay_pass(&move_, false, true, true),
+            "a click then a move: the overlays see the click where it happened"
+        );
+        assert!(
+            !waits_for_overlay_pass(&move_, true, false, true),
+            "moves stream through"
+        );
+        assert!(!waits_for_overlay_pass(&move_, false, true, false));
+    }
+
+    #[test]
     fn detached_debug_camera_blocks_new_visible_pointer_game_input() {
         assert!(visible_pointer_game_input_enabled(true, false, false));
         assert!(!visible_pointer_game_input_enabled(false, false, false));
@@ -4785,7 +4979,9 @@ mod tests {
     #[test]
     fn paused_launches_on_a_paused_clock() {
         let paused = Args::try_parse_from(["functor", "--game-path", "g.fun", "--paused"]).unwrap();
-        assert!(launch_clock(&paused).is_paused());
+        let clock = launch_clock(&paused);
+        assert!(clock.is_paused());
+        assert_eq!(clock.paused_by(), Some(functor_runtime_common::debug_protocol::PausedBy::Start));
         let live = Args::try_parse_from(["functor", "--game-path", "g.fun"]).unwrap();
         assert!(!launch_clock(&live).is_paused());
         // A capture pin cannot also be paused.

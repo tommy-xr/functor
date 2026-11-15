@@ -83,7 +83,7 @@ pub struct GpuWindow {
     pub bytes_uploaded: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
-    /// `Scene.instanced` instance-buffer uploads (count, bytes) — zero in the
+    /// `Scene.instanced` instance- and paint-buffer uploads (count, bytes) — zero in the
     /// steady state when instance lists are retained.
     pub instance_uploads: u64,
     pub instance_upload_bytes: u64,

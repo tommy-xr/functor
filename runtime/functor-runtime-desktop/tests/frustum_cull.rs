@@ -310,6 +310,7 @@ fn lit(scene: Scene3D) -> Scene3D {
                 texture: None,
                 normal_map: None,
                 world_tile: None,
+                glow: 0.0,
             },
             vec![scene],
         ),

@@ -6,7 +6,8 @@
 //!   from 0, then `End` (or `Cancel`). The audio is 16 kHz mono 16-bit
 //!   little-endian PCM, fixed by [`VERSION`].
 //! - [`STATUS_CHANNEL`] carries [`Status`]: `Heard` → `Transcribed` →
-//!   `Working` → `Reloaded`, or `Failed` at any point; `Idle` clears.
+//!   `Working` → `Reloaded`, `Answered` or `Done`, or `Failed` at any
+//!   point; `Idle` clears.
 //!
 //! Every message starts with [`VERSION`]. `decode` refuses another version
 //! and anything over the per-message limits below; the receiver enforces
@@ -168,9 +169,15 @@ pub enum Stage {
     },
     /// Nothing in progress: clear the toast.
     Idle,
+    /// The run answered without changing the game: its answer's first
+    /// line. A headset from before this stage cannot read it, so the
+    /// desktop sends `Idle` first.
+    Answered {
+        text: String,
+    },
     /// The desktop did what was asked, in a few words ("Switched to
-    /// examples/hello"). An older headset cannot read it: its toast stays
-    /// at Working until that goes stale.
+    /// examples/hello"). A headset from before this stage cannot read it,
+    /// so the desktop sends `Idle` first.
     Done {
         text: String,
     },
@@ -211,8 +218,12 @@ impl Status {
                 w.str16(&tidy(reason, MAX_REASON));
             }
             Stage::Idle => w.u8(6),
-            Stage::Done { text } => {
+            Stage::Answered { text } => {
                 w.u8(7);
+                w.str16(&tidy(text, MAX_TEXT));
+            }
+            Stage::Done { text } => {
+                w.u8(8);
                 w.str16(&tidy(text, MAX_REASON));
             }
         }
@@ -245,7 +256,10 @@ impl Status {
                 reason: r.text16(MAX_REASON)?,
             },
             6 => Stage::Idle,
-            7 => Stage::Done {
+            7 => Stage::Answered {
+                text: r.text16(MAX_TEXT)?,
+            },
+            8 => Stage::Done {
                 text: r.text16(MAX_REASON)?,
             },
             _ => return Err(Error::Malformed("voice stage")),
@@ -365,6 +379,9 @@ mod tests {
                 reason: "no project".into(),
             },
             Stage::Idle,
+            Stage::Answered {
+                text: "The ball is red already.".into(),
+            },
             Stage::Done {
                 text: "Switched to examples/hello".into(),
             },

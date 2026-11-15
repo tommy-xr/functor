@@ -48,3 +48,39 @@ let trs : (Vec3.t, Angle.t, float, float, float) => t
 /// has no material colors to multiply, so tint has no effect there (exactly
 /// as in the stamped group).
 let tint : (Color.t, t) => t
+
+/// Where a ray first meets an instance's box (see `raycast`).
+type hit = { index: float, point: Vec3.t, normal: Vec3.t, distance: float }
+
+/// The nearest instance box a ray meets, or `Option.None` — picking among
+/// thousands of boxes in one call, with no physics bodies.
+///
+/// Each instance's box is the unit cube (`-0.5..0.5` on each axis) under the
+/// instance's scale, rotation and position: exactly what an instanced
+/// `Scene.cube()` draws, oriented boxes included. Other templates are picked
+/// by that same box. The ray is in the instances' space — the space of the
+/// `Scene.instanced` node (world space, unless the node is transformed).
+///
+/// - `index` is the instance's position in the list; `distance` runs along
+///   the ray's normalized direction, in the instances' units; `normal` is the
+///   entered face's outward unit normal.
+/// - A ray that starts inside (or on) a box hits it at distance 0, at the
+///   origin, with `normal` the reversed direction.
+/// - A ray parallel to a face pair (within 1e-12 of it) hits only when it
+///   runs between them; a zero-size axis is a flat box, hit when the ray
+///   crosses it.
+/// - Equal distances go to the lower index; a ray through an edge or corner
+///   takes the face of the box's lowest local axis (X, then Y, then Z).
+/// - A zero or non-finite direction hits nothing, and a box with non-finite
+///   data is never hit.
+///
+/// Keep the list the same value you draw (the model, or a top-level def) and
+/// the call converts nothing. It tests every box, rejecting most by a bounding
+/// sphere first: a few nanoseconds a box on a desktop.
+///
+/// ```functor
+/// let hovered = Camera3D.toWorldRay(snapshot.mouse, camera)
+///   |> Option.bind((ray) => Instance.raycast(ray, model.towers))
+///   |> Option.map((hit) => hit.index)
+/// ```
+let raycast : (Camera3D.ray, List<t>) => Option.t<hit>

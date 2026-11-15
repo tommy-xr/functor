@@ -21,7 +21,16 @@ pub enum Heard {
         utterance: u64,
         pcm: Vec<i16>,
         capsule: String,
+        arrived: Arrival,
     },
+}
+
+/// When a clip's messages came, on [`Assembler::receive`]'s clock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arrival {
+    pub start: u64,
+    pub first_chunk: Option<u64>,
+    pub end: u64,
 }
 
 /// One link's clip in progress, and the utterance being transcribed.
@@ -42,6 +51,7 @@ struct Partial {
     next: u32,
     /// When its last message came.
     at: u64,
+    arrived: Arrival,
 }
 
 impl Assembler {
@@ -65,6 +75,11 @@ fn failed(utterance: Option<u64>, reason: &str) -> Heard {
 }
 
 impl Assembler {
+    /// The utterance whose clip is arriving.
+    pub fn arriving(&self) -> Option<u64> {
+        self.clip.as_ref().map(|c| c.utterance)
+    }
+
     /// Takes one message from the voice channel at `now` (ms).
     pub fn receive(&mut self, data: &[u8], now: u64) -> Option<Heard> {
         let msg = match Clip::decode(data) {
@@ -87,6 +102,10 @@ impl Assembler {
                     audio: Vec::new(),
                     next: 0,
                     at: now,
+                    arrived: Arrival {
+                        start: now,
+                        ..Arrival::default()
+                    },
                 });
                 None
             }
@@ -102,6 +121,7 @@ impl Assembler {
                 clip.audio.extend_from_slice(&data);
                 clip.next += 1;
                 clip.at = now;
+                clip.arrived.first_chunk.get_or_insert(now);
                 None
             }
             Clip::End { .. } if ours => {
@@ -121,6 +141,10 @@ impl Assembler {
                     utterance: u,
                     pcm,
                     capsule: clip.capsule,
+                    arrived: Arrival {
+                        end: now,
+                        ..clip.arrived
+                    },
                 })
             }
             Clip::Cancel { .. } if ours || self.transcribing == Some(u) => {
@@ -235,7 +259,8 @@ fn forward([x, y, z, w]: [f32; 4]) -> [f32; 3] {
 pub enum Speech {
     /// `FUNCTOR_APP_FAKE_TRANSCRIPT`: every clip says this (tests).
     Fake(Arc<functor_stt::Fake>),
-    /// whisper.cpp, loaded (and its model fetched) on first use.
+    /// whisper.cpp, loaded (and its model fetched) on first use, or ahead
+    /// of it by [`Speech::preload`].
     #[cfg(feature = "whisper")]
     Whisper(Arc<tokio::sync::OnceCell<Arc<functor_stt::Whisper>>>),
     /// Not in this build.
@@ -260,29 +285,41 @@ impl Speech {
         cfg!(feature = "whisper") || matches!(self, Speech::Fake(_))
     }
 
+    /// Loads the model in the background when it is already on disk, so the
+    /// first clip does not wait for it (a missing or partial one is still
+    /// fetched on first use). A failure is left for that use to report.
+    pub fn preload(&self) {
+        #[cfg(feature = "whisper")]
+        if let Speech::Whisper(cell) = self {
+            let model = functor_stt::DEFAULT_MODEL;
+            let file = model_dir().and_then(|d| std::fs::metadata(d.join(model.file)).map_err(|e| e.to_string()));
+            if file.is_ok_and(|f| f.len() == model.bytes) {
+                let cell = cell.clone();
+                tokio::spawn(async move { loaded(&cell).await.map(drop) });
+            }
+        }
+    }
+
     /// The text spoken in `pcm` (16 kHz mono), off the async threads.
-    pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<String, String> {
+    pub async fn transcribe(&self, pcm: Vec<i16>) -> Result<Transcript, String> {
         use functor_stt::Transcriber;
-        let model: Arc<dyn Transcriber> = match self {
-            Speech::Fake(fake) => fake.clone(),
+        let started = std::time::Instant::now();
+        let (model, warm): (Arc<dyn Transcriber>, bool) = match self {
+            Speech::Fake(fake) => {
+                // `FUNCTOR_APP_FAKE_TRANSCRIPT_MS`: as slow as a real model.
+                if let Some(ms) = std::env::var("FUNCTOR_APP_FAKE_TRANSCRIPT_MS")
+                    .ok()
+                    .and_then(|ms| ms.parse().ok())
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+                (fake.clone(), true)
+            }
             #[cfg(feature = "whisper")]
-            Speech::Whisper(cell) => cell
-                .get_or_try_init(|| async {
-                    let load = || {
-                        let dir = functor_stt::models_dir(
-                            std::env::var_os("FUNCTOR_MODELS"),
-                            std::env::home_dir(),
-                        )
-                        .ok_or("no home directory for the speech model; set FUNCTOR_MODELS")?;
-                        let path = functor_stt::ensure_model(&dir, &functor_stt::DEFAULT_MODEL)?;
-                        functor_stt::Whisper::load(&path).map(Arc::new)
-                    };
-                    tokio::task::spawn_blocking(load)
-                        .await
-                        .map_err(|e| e.to_string())?
-                })
-                .await?
-                .clone(),
+            Speech::Whisper(cell) => {
+                let warm = cell.initialized();
+                (loaded(cell).await?, warm)
+            }
             #[cfg(not(feature = "whisper"))]
             Speech::Off => {
                 return Err(
@@ -292,10 +329,47 @@ impl Speech {
                 )
             }
         };
-        tokio::task::spawn_blocking(move || model.transcribe(&pcm))
+        // Waited for a load, its own or a preload's still running.
+        let load_ms = (!warm).then(|| started.elapsed().as_millis() as u64);
+        let text = tokio::task::spawn_blocking(move || model.transcribe(&pcm))
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())??;
+        Ok(Transcript { text, load_ms })
     }
+}
+
+/// A clip's text, and how long it waited for the model to load (`None`:
+/// loaded already).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transcript {
+    pub text: String,
+    pub load_ms: Option<u64>,
+}
+
+#[cfg(feature = "whisper")]
+fn model_dir() -> Result<std::path::PathBuf, String> {
+    functor_stt::models_dir(std::env::var_os("FUNCTOR_MODELS"), std::env::home_dir())
+        .ok_or_else(|| "no home directory for the speech model; set FUNCTOR_MODELS".to_string())
+}
+
+/// The model, fetched and loaded once; callers at once share the load.
+#[cfg(feature = "whisper")]
+async fn loaded(
+    cell: &tokio::sync::OnceCell<Arc<functor_stt::Whisper>>,
+) -> Result<Arc<functor_stt::Whisper>, String> {
+    let load = || {
+        let path = functor_stt::ensure_model(&model_dir()?, &functor_stt::DEFAULT_MODEL)?;
+        functor_stt::Whisper::load(&path).map(Arc::new)
+    };
+    // A thread of its own, not `spawn_blocking`: the runtime waits for
+    // those as it shuts down, and a load can take seconds (Metal compiles
+    // its shaders on a new build's first load), so quitting would too.
+    let init = || async {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || tx.send(load()));
+        rx.await.map_err(|_| "loading the speech model panicked".to_string())?
+    };
+    cell.get_or_try_init(init).await.cloned()
 }
 
 /// With `FUNCTOR_APP_KEEP_AUDIO` set, keeps `pcm` as a WAV under `home`
@@ -359,6 +433,11 @@ mod tests {
                 utterance: 1,
                 pcm: vec![1, 2, 3],
                 capsule: r#"{"frame":3}"#.into(),
+                arrived: Arrival {
+                    start: 0,
+                    first_chunk: Some(1),
+                    end: 3
+                },
             })
         );
         // While it is transcribed, another waits its turn: refused.
