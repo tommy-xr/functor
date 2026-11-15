@@ -148,10 +148,11 @@ pub enum DeviceState {
         build: Option<String>,
         /// The project it runs.
         project: Option<String>,
-        /// What it is loading, as its status card says it (heading first):
-        /// `["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]`.
-        /// Empty when its card is hidden, and from a headset that does not
-        /// say.
+        /// What it is loading: the step's kind, then its status card's lines
+        /// (`["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of
+        /// 9 files"]`; see `functor_device_link::load`). Empty when its card
+        /// is hidden, and from a headset that does not say.
+        #[serde(default)]
         loading: Vec<String>,
         /// The last ping's round trip.
         latency_ms: Option<u64>,
@@ -961,9 +962,9 @@ mod tests {
             DeviceState::Connected { loading, .. } => loading,
             other => panic!("{other:?}"),
         };
-        let lines = vec!["RECEIVING PROJECT".to_string(), "23.0 of 67.5 MB (34%), 4 of 9 files".to_string()];
+        let lines: Vec<String> = ["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"].map(String::from).to_vec();
         on_link(&mut d, LinkEvent::Loading { conn: 9, lines: lines.clone() }, 1006);
-        on_link(&mut d, LinkEvent::Loading { conn: 8, lines: vec!["RUNNING".into()] }, 1006);
+        on_link(&mut d, LinkEvent::Loading { conn: 8, lines: vec!["running".into(), "RUNNING".into()] }, 1006);
         assert_eq!(loading(&d), lines);
         on_link(&mut d, LinkEvent::Loading { conn: 9, lines: Vec::new() }, 1006);
         assert!(loading(&d).is_empty());

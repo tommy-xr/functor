@@ -1,9 +1,15 @@
-//! The headset's load status, headset → desktop: the lines of its status
-//! card (receiving a project, checking code, loading assets, a failure), so
-//! the desktop can say the same where a headset session is started. One
-//! message per change; an empty one when the card hides.
+//! The headset's load status, headset → desktop: what its status card
+//! says (receiving a project, checking code, loading assets, a failure), so
+//! the desktop can say the same where a headset session is started. A
+//! message when the step changes and as its count moves; an empty one when
+//! the card hides.
+//!
+//! The first line is the step's kind — `waiting`, `connected`, `receiving`,
+//! `starting`, `assets`, `running`, `reloading`, `failed` — and the rest are
+//! the card's lines as the headset words them (heading first). A desktop
+//! shows a kind it does not know as nothing.
 
-/// Headset → desktop: the card's lines, UTF-8, one per line.
+/// Headset → desktop: the kind and the card's lines, UTF-8, one per line.
 pub const CHANNEL: u16 = 5;
 
 /// Most bytes of a message; longer is cut.

@@ -79,26 +79,22 @@ test("a connected card's details", () => {
     ["Running", "examples/hello"],
   ]);
   assert.deepEqual(details(device({ state: "away" })), []);
-  // What the headset is loading takes the place of what it runs.
+  // What the headset is loading takes the place of what it runs. Its
+  // lines: the step's kind, then the card's own (heading first).
   const row = (loading: string[]) => details({ ...d, state: { ...d.state, loading } as Device["state"] }).at(-1);
-  assert.deepEqual(row(["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), [
+  assert.deepEqual(row(["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), [
     "Sending to headset",
     "23.0 of 67.5 MB (34%), 4 of 9 files",
   ]);
-  assert.deepEqual(row(["RECEIVING PROJECT", "1.0 of 3.0 MB (33%), 0 of 1 file", "68.0 MB already on the headset"]), [
-    "Sending to headset",
-    "1.0 of 3.0 MB (33%), 0 of 1 file · 68.0 MB already on the headset",
-  ]);
-  assert.deepEqual(row(["UP TO DATE", "Nothing to send", "71.0 MB already on the headset"]), [
-    "Sending to headset",
-    "Nothing to send · 71.0 MB already on the headset",
-  ]);
-  assert.deepEqual(row(["STARTING", "Checking code"]), ["Starting", "Checking code"]);
-  assert.deepEqual(row(["LOADING ASSETS", "2 of 6"]), ["Loading assets", "2 of 6"]);
-  assert.deepEqual(row(["LOAD FAILED", "game.fun:3:1: unknown", "name `tik`"]), ["Failed to load", "game.fun:3:1: unknown · name `tik`"]);
-  // Running, or a card this desktop does not know: what it runs.
-  assert.deepEqual(row(["RUNNING"]), ["Running", "examples/hello"]);
-  assert.deepEqual(row(["CONNECTED", "to Studio"]), ["Running", "examples/hello"]);
+  assert.deepEqual(row(["starting", "STARTING", "Checking code"]), ["Starting", "Checking code"]);
+  assert.deepEqual(row(["assets", "LOADING ASSETS", "2 of 6"]), ["Loading assets", "2 of 6"]);
+  assert.deepEqual(row(["reloading", "RELOADING..."]), ["Reloading", "The game is reloading"]);
+  // An error the headset wrapped for its card reads as one sentence.
+  assert.deepEqual(row(["failed", "LOAD FAILED", "game.fun:3:1: unknown", "name `tik`"]), ["Failed to load", "game.fun:3:1: unknown name `tik`"]);
+  // Running, waiting, hidden, or a kind this desktop does not know: what it runs.
+  for (const lines of [["running", "RUNNING"], ["connected", "CONNECTED", "to Studio"], ["later", "SOMETHING NEW"], []]) {
+    assert.deepEqual(row(lines), ["Running", "examples/hello"]);
+  }
 });
 
 const onCable = (serial: string, state: Attached["state"]): Attached => ({

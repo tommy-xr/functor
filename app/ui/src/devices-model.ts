@@ -136,24 +136,25 @@ export function details(d: Device): [string, string][] {
 
 /**
  * The headset's status card as a row: what is being sent or loaded, in the
- * desktop's words. `null` when its card is hidden or only says it runs.
+ * desktop's words. `lines` is the step's kind, then the card's own lines
+ * (heading first). `null` when its card is hidden, only says it runs or
+ * waits, or is of a kind this desktop does not know.
  */
-export function loading(lines: string[]): [string, string] | null {
-  const [heading, ...rest] = lines;
+export function loading(lines: string[] | undefined): [string, string] | null {
+  const [kind, , ...rest] = lines ?? [];
   const detail = rest.join(" · ");
-  switch (heading) {
-    case "RECEIVING PROJECT":
+  switch (kind) {
+    case "receiving":
       return ["Sending to headset", detail];
-    case "UP TO DATE":
-      return ["Sending to headset", "Nothing to send" + (rest[1] ? ` · ${rest[1]}` : "")];
-    case "STARTING":
+    case "starting":
       return ["Starting", detail];
-    case "LOADING ASSETS":
+    case "assets":
       return ["Loading assets", detail];
-    case "RELOADING...":
-      return ["Reloading", ""];
-    case "LOAD FAILED":
-      return ["Failed to load", detail];
+    case "reloading":
+      return ["Reloading", "The game is reloading"];
+    case "failed":
+      // The headset wrapped the error for its card: one sentence again.
+      return ["Failed to load", rest.join(" ")];
     default:
       return null;
   }

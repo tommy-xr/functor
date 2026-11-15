@@ -72,10 +72,12 @@ export function sessionPill(headset: Device | null | undefined, onHeadset: boole
   }
   // What the headset is loading, in a word (and how far, when it says).
   const load = onHeadset && headset?.state.state === "connected" ? loading(headset.state.loading) : null;
-  if (load && kind !== "stopped") {
+  if (load && (kind === "running" || kind === "starting")) {
     const percent = /\((\d+%)\)/.exec(load[1])?.[1];
     const doing = load[0] === "Sending to headset" ? "sending" : load[0].toLowerCase();
-    return { text: `${where} · ${doing}${percent ? ` ${percent}` : ""}`, word: kind };
+    // A failure there is not a healthy session; anything else is still starting.
+    const word = load[0] === "Failed to load" ? "failed" : "starting";
+    return { text: `${where} · ${doing}${percent ? ` ${percent}` : ""}`, word };
   }
   return { text: `${where} · ${kind}`, word: kind };
 }
@@ -111,7 +113,7 @@ export function headsetNote(device: Device | null, session: Session | null, tran
   // What the headset says it is doing: sending, starting, loading assets, a failure.
   const load = loading(device.state.loading);
   if (load) {
-    const title = load[0] === "Sending to headset" ? `Sending to ${name}` : `${load[0]} on ${name}`;
+    const title = load[0] === "Sending to headset" ? `Sending to ${name}` : `${load[0]} on ${name}${load[0] === "Starting" ? "…" : ""}`;
     return { title, detail: load[1] || null, fix: null };
   }
   if (status.kind === "starting") return { title: `Starting on ${name}…`, detail: null, fix: null };

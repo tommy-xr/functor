@@ -330,10 +330,10 @@ build: string | null,
  */
 project: string | null, 
 /**
- * What it is loading, as its status card says it (heading first):
- * `["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]`.
- * Empty when its card is hidden, and from a headset that does not
- * say.
+ * What it is loading: the step's kind, then its status card's lines
+ * (`["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of
+ * 9 files"]`; see `functor_device_link::load`). Empty when its card
+ * is hidden, and from a headset that does not say.
  */
 loading: Array<string>, 
 /**

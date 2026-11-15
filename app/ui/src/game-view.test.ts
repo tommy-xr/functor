@@ -98,11 +98,17 @@ test("the session pill takes the headset's word while the game runs on one that 
   assert.equal(sessionPill(undefined, false, running).text, "Local session · running");
   // While the headset loads, the pill says what it is doing.
   const doing = (lines: string[]) => sessionPill(quest("a", "Quest 3", { ...linked, loading: lines } as Device["state"]), true, running).text;
-  assert.equal(doing(["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), "Headset session · sending 34%");
-  assert.equal(doing(["LOADING ASSETS", "2 of 6"]), "Headset session · loading assets");
-  assert.equal(doing(["RUNNING"]), "Headset session · running");
-  const here = sessionPill(quest("a", "Quest 3", { ...linked, loading: ["STARTING", "Checking code"] } as Device["state"]), false, running);
+  assert.equal(doing(["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), "Headset session · sending 34%");
+  assert.equal(doing(["assets", "LOADING ASSETS", "2 of 6"]), "Headset session · loading assets");
+  assert.equal(doing(["running", "RUNNING"]), "Headset session · running");
+  const here = sessionPill(quest("a", "Quest 3", { ...linked, loading: ["starting", "STARTING", "Checking code"] } as Device["state"]), false, running);
   assert.equal(here.text, "Local session · running");
+  // A load that failed there is not a running session's green; a stopped session says stopped.
+  const refusedThere = { ...linked, loading: ["failed", "LOAD FAILED", "game.fun:3:1: unknown name"] } as Device["state"];
+  assert.deepEqual(sessionPill(quest("a", "Quest 3", refusedThere), true, running), { text: "Headset session · failed to load", word: "failed" });
+  assert.equal(sessionPill(quest("a", "Quest 3", refusedThere), true, null).text, "Headset session · stopped");
+  const sendingThere = { ...linked, loading: ["receiving", "RECEIVING PROJECT", "1.0 of 2.0 MB (50%), 0 of 1 file"] } as Device["state"];
+  assert.equal(sessionPill(quest("a", "Quest 3", sendingThere), true, running).word, "starting");
 });
 
 test("the headset note says where the game runs, its clock, and the fix while away", () => {
@@ -125,15 +131,15 @@ test("the headset note says where the game runs, its clock, and the fix while aw
   });
   assert.equal(headsetNote(quest("a", "Quest 3", linked), session({ kind: "starting" }), null).title, "Starting on Quest 3…");
   // What the headset is loading takes the note, starting or running.
-  const sending = { ...linked, loading: ["RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"] } as Device["state"];
+  const sending = { ...linked, loading: ["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"] } as Device["state"];
   assert.deepEqual(headsetNote(quest("a", "Quest 3", sending), session({ kind: "starting" }), null), {
     title: "Sending to Quest 3",
     detail: "23.0 of 67.5 MB (34%), 4 of 9 files",
     fix: null,
   });
-  const assets = { ...linked, loading: ["LOADING ASSETS", "2 of 6"] } as Device["state"];
+  const assets = { ...linked, loading: ["assets", "LOADING ASSETS", "2 of 6"] } as Device["state"];
   assert.equal(headsetNote(quest("a", "Quest 3", assets), running, clock).title, "Loading assets on Quest 3");
-  const refused = { ...linked, loading: ["LOAD FAILED", "game.fun:3:1: unknown name"] } as Device["state"];
+  const refused = { ...linked, loading: ["failed", "LOAD FAILED", "game.fun:3:1: unknown name"] } as Device["state"];
   assert.equal(headsetNote(quest("a", "Quest 3", refused), running, clock).detail, "game.fun:3:1: unknown name");
   const gone = headsetNote(quest("a", "Quest 3", away), running, clock);
   assert.equal(gone.title, "Quest 3: Away");
