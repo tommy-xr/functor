@@ -1124,7 +1124,7 @@ fn forward_pass(
     // recipe (which owns blending for the whole scene) draws without it.
     // Blend materials the opaque walk reaches, for the blend passes.
     let blends = crate::scene3d::BlendQueue::default();
-    // Text a previous pass queued but did not draw.
+    // Text a previous pass queued but did not draw, and its colour/facing.
     scene_context.discard_texts();
     let render_scene = |with_grid: bool| {
         if let Some(room) = stand_in_room {
@@ -1237,7 +1237,11 @@ fn forward_pass(
             );
         }
         // `Scene.text`: one blended batch over everything, depth-tested.
-        scene_context.draw_texts(&render_context, &projection_matrix, &view_matrix);
+        if matches!(debug_render_mode, DebugRenderMode::Normals | DebugRenderMode::Tangents) {
+            scene_context.discard_texts();
+        } else {
+            scene_context.draw_texts(&render_context, &projection_matrix, &view_matrix);
+        }
     }
 }
 
@@ -1345,9 +1349,15 @@ fn transparent_pass<'a>(
         let material = draw
             .material
             .map(|description| description.get(&context, scene_context));
-        // Text under the deferred node takes the colour around it.
-        let color = draw.material.and_then(|m| m.constant_color());
-        scene_context.set_text_color(color.unwrap_or(cgmath::vec4(1.0, 1.0, 1.0, 1.0)));
+        // Text under the deferred node takes the colour and facing around it.
+        let text = crate::scene3d::TextState {
+            color: draw
+                .material
+                .and_then(|m| m.constant_color())
+                .unwrap_or(crate::scene3d::TextState::ROOT.color),
+            facing: draw.facing,
+        };
+        let outer = scene_context.replace_text_state(text);
         Scene3D::render(
             draw.node,
             &context,
@@ -1357,6 +1367,7 @@ fn transparent_pass<'a>(
             view_matrix,
             material.as_ref().unwrap_or(&root_material),
         );
+        scene_context.replace_text_state(outer);
     }
 
     unsafe {

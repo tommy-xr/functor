@@ -652,7 +652,7 @@ fn bench_text3d() {
         let m = bench_source(&text3d_workload(count));
         let draws: Vec<TextDraw> = (0..count)
             .map(|i| TextDraw {
-                quads: text_layout::layout(&format!("lot {i}"), TextLayout::LABEL),
+                quads: text_layout::layout(&format!("lot {i}"), TextLayout::LABEL).quads,
                 xform: cgmath::Matrix4::from_translation(cgmath::vec3(i as f32, 1.0, 0.0)),
                 color: [1.0; 4],
             })

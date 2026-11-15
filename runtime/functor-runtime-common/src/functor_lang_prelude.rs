@@ -10808,9 +10808,9 @@ Vec3.make(x, y, z)"
 
     // --- Scene.text ---
 
-    /// `Scene.text` is a text leaf, `Scene.facing` turns it (through the
-    /// wrappers around it), and `Scene.textBlock` refuses a bad width or
-    /// line count.
+    /// `Scene.text` is a text leaf, `Scene.facing` wraps it (through the
+    /// wrappers around it, keeping a memoized subtree shared), and
+    /// `Scene.textBlock` refuses a bad width or line count.
     #[test]
     fn scene_text_builds_text_leaves() {
         use crate::scene3d::text_layout::TextLayout;
@@ -10820,30 +10820,44 @@ Vec3.make(x, y, z)"
         );
         let scene = scene_of(&value).expect("a Scene");
         let mut found = None;
-        fn find(scene: &Scene3D, found: &mut Option<(String, bool)>) {
+        fn find(scene: &Scene3D, facing: bool, found: &mut Option<(String, bool)>) {
             match scene.obj.resolved() {
-                SceneObject::Geometry(crate::scene3d::Shape::Text { text, facing, .. }) => {
-                    *found = Some((text.clone(), *facing))
+                SceneObject::Geometry(crate::scene3d::Shape::Text { text, .. }) => {
+                    *found = Some((text.clone(), facing))
                 }
                 SceneObject::Group(items) | SceneObject::Material(_, items) => {
-                    items.iter().for_each(|item| find(item, found))
+                    items.iter().for_each(|item| find(item, facing, found))
                 }
+                SceneObject::Facing(items) => items.iter().for_each(|item| find(item, true, found)),
                 _ => {}
             }
         }
-        find(&scene, &mut found);
+        find(&scene, false, &mut found);
         assert_eq!(found, Some(("hi".to_string(), true)));
 
+        // A memoized subtree stays shared under `Scene.facing`.
+        let memo = eval(
+            "let labels = (n) => Scene.group([Scene.text(\"a\")]) \
+             let main = () => Scene.facing(Scene.memo(\"labels\", 1, labels))",
+        );
+        let SceneObject::Facing(items) = &scene_of(&memo).unwrap().obj else {
+            panic!("a facing node");
+        };
+        assert!(matches!(items[0].obj, SceneObject::Shared(_)), "{:?}", items[0].obj);
+        // A transform's group turns in place: no extra node.
+        let scaled = eval("let main = () => Scene.text(\"a\") |> Scene.scale(2.0) |> Scene.facing");
+        let scaled = scene_of(&scaled).unwrap();
+        let SceneObject::Facing(items) = &scaled.obj else { panic!("{:?}", scaled.obj) };
+        assert!(matches!(items[0].obj, SceneObject::Geometry(_)));
+        assert_eq!(scaled.xform, Matrix4::from_scale(2.0));
+
         let block = eval("let main = () => Scene.textBlock(4.0, 2.0, \"a b c\")");
-        let SceneObject::Geometry(crate::scene3d::Shape::Text { layout, facing, .. }) =
+        let SceneObject::Geometry(crate::scene3d::Shape::Text { layout, .. }) =
             &scene_of(&block).unwrap().obj
         else {
             panic!("a text leaf");
         };
-        assert_eq!(
-            (*layout, *facing),
-            (TextLayout { width: Some(4.0), lines: 2 }, false)
-        );
+        assert_eq!(*layout, TextLayout { width: Some(4.0), lines: 2 });
         for bad in ["0.0, 2.0", "4.0, 0.5"] {
             let source = format!("let main = () => Scene.textBlock({bad}, \"x\")");
             let module = functor_lang::lower(functor_lang::parse(&source).unwrap()).unwrap();

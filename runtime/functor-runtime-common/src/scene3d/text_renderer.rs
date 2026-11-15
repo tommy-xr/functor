@@ -152,7 +152,8 @@ impl TextRenderer {
         view: &Matrix4<f32>,
     ) {
         // View-space z grows toward the camera: ascending is far to near.
-        draws.sort_by(|a, b| {
+        // Unstable sorts in place (no scratch buffer) and is deterministic.
+        draws.sort_unstable_by(|a, b| {
             let depth = |d: &TextDraw| (view * d.xform.w).z;
             depth(a).total_cmp(&depth(b))
         });

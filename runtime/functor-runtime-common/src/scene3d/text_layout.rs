@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::Aabb;
 use crate::overlay_font;
 
 /// How a `Scene.text` leaf is set: a label (`width: None`) centres each
@@ -42,13 +43,20 @@ pub struct GlyphQuad {
     pub uv: [f32; 4],
 }
 
+/// A laid-out text: its glyphs and their bounds (z = 0), for culling.
+#[derive(Debug, Clone)]
+pub struct LaidText {
+    pub quads: Arc<[GlyphQuad]>,
+    pub bounds: Aabb,
+}
+
 /// The quads of `text` set by `layout`, centred on the origin (a block's
 /// middle; each line aligned within the block's width). Remembered by
 /// content, so a label that doesn't change lays out once.
-pub fn layout(text: &str, layout: TextLayout) -> Arc<[GlyphQuad]> {
+pub fn layout(text: &str, layout: TextLayout) -> LaidText {
     // Keyed by a hash, the text kept to confirm a hit: a lookup — once per
     // label per pass — allocates nothing.
-    type Entry = (String, TextLayout, Arc<[GlyphQuad]>);
+    type Entry = (String, TextLayout, LaidText);
     thread_local! {
         static MEMO: RefCell<HashMap<u64, Entry>> = RefCell::default();
     }
@@ -62,20 +70,27 @@ pub fn layout(text: &str, layout: TextLayout) -> Arc<[GlyphQuad]> {
     let hit = MEMO.with_borrow(|memo| {
         memo.get(&key)
             .filter(|(t, l, _)| t == text && *l == layout)
-            .map(|(_, _, quads)| quads.clone())
+            .map(|(_, _, laid)| laid.clone())
     });
     if let Some(hit) = hit {
         return hit;
     }
     let quads = layout_uncached(text, layout);
+    let mut bounds = Aabb::empty();
+    for quad in quads.iter() {
+        let [l, b, r, t] = quad.rect;
+        bounds.extend(cgmath::vec3(l, b, 0.0));
+        bounds.extend(cgmath::vec3(r, t, 0.0));
+    }
+    let laid = LaidText { quads, bounds };
     MEMO.with_borrow_mut(|memo| {
         // Far above a scene's distinct labels; past it, they lay out again.
         if memo.len() >= 16384 {
             memo.clear();
         }
-        memo.insert(key, (text.to_string(), layout, quads.clone()));
+        memo.insert(key, (text.to_string(), layout, laid.clone()));
     });
-    quads
+    laid
 }
 
 /// `text`'s lines: each `\n`-separated paragraph wrapped to the width,
@@ -160,9 +175,12 @@ mod tests {
 
     #[test]
     fn a_label_is_centred_one_line_box_tall() {
-        let quads = layout("Hello", TextLayout::LABEL);
+        let laid = layout("Hello", TextLayout::LABEL);
+        let quads = &laid.quads;
         assert_eq!(quads.len(), 5);
-        let [l, b, r, t] = bounds(&quads);
+        let [l, b, r, t] = bounds(quads);
+        // The cull box is the quads' extent.
+        assert_eq!(laid.bounds, Aabb::new([l, b, 0.0], [r, t, 0.0]));
         assert!((l + r).abs() < 0.1, "centred: {l} .. {r}");
         // Capitals fill the line box from its top (0.5); quads add the
         // field's padding (PAD) around each outline.
@@ -174,29 +192,29 @@ mod tests {
 
     #[test]
     fn spaces_draw_nothing_and_unknown_characters_draw_a_box() {
-        assert_eq!(layout("a b", TextLayout::LABEL).len(), 2);
-        assert_eq!(layout("\u{4e2d}", TextLayout::LABEL).len(), 1, "the missing-glyph box");
-        assert!(layout("", TextLayout::LABEL).is_empty());
+        assert_eq!(layout("a b", TextLayout::LABEL).quads.len(), 2);
+        assert_eq!(layout("\u{4e2d}", TextLayout::LABEL).quads.len(), 1, "the missing-glyph box");
+        assert!(layout("", TextLayout::LABEL).quads.is_empty());
     }
 
     #[test]
     fn a_block_wraps_within_its_width_and_aligns_each_line() {
         let text = "the quick brown fox jumps over the lazy dog";
         let set = TextLayout { width: Some(6.0), lines: 9 };
-        let left = layout(text, set);
+        let left = layout(text, set).quads;
         let [l, b, r, t] = bounds(&left);
         assert!(l >= -3.0 - PAD && r <= 3.0 + PAD, "inside the width: {l} .. {r}");
         assert!(t - b > 1.5, "more than one line: {b} .. {t}");
         // Left-aligned: the first glyph of every line starts at the block's edge.
         assert!((l + 3.0).abs() < PAD, "flush left: {l}");
         // Two lines at most: the second is cut with an ellipsis.
-        let short = layout(text, TextLayout { lines: 2, ..set });
+        let short = layout(text, TextLayout { lines: 2, ..set }).quads;
         assert!(short.len() < left.len());
     }
 
     #[test]
     fn a_newline_breaks_the_line() {
-        let two = layout("ab\ncd", TextLayout::LABEL);
+        let two = layout("ab\ncd", TextLayout::LABEL).quads;
         let [_, b, _, t] = bounds(&two);
         assert!(t - b > LINE_PITCH, "two rows: {b} .. {t}");
         // Past the line budget: the last kept line ends with an ellipsis.
@@ -214,6 +232,6 @@ mod tests {
     fn the_same_text_lays_out_once() {
         let a = layout("cached", TextLayout::LABEL);
         let b = layout("cached", TextLayout::LABEL);
-        assert!(Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a.quads, &b.quads));
     }
 }
