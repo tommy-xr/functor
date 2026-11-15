@@ -6,7 +6,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::link_overlay::{wrap, Line, BODY, CYAN, HEADING, PINK, WHITE};
+use crate::link_overlay::{Line, BODY, CYAN, HEADING, PINK, WHITE};
+use crate::overlay_font;
 
 /// Work over a running game shows only once it has taken this long.
 pub const QUIET: Duration = Duration::from_millis(150);
@@ -188,8 +189,8 @@ impl LoadStatus {
     }
 }
 
-/// A failure's characters per line, and its most lines.
-const WRAP: usize = 44;
+/// A failure's line width in metres, and its most lines.
+const WRAP: f32 = 0.5;
 const WRAP_LINES: usize = 6;
 
 /// The card's lines.
@@ -219,7 +220,7 @@ pub fn lines(step: &Step) -> Vec<Line> {
         Step::Running => vec![line("RUNNING", HEADING, CYAN)],
         Step::Reloading => vec![line("RELOADING...", HEADING, CYAN)],
         Step::Failed(message) => std::iter::once(line("LOAD FAILED", HEADING, PINK))
-            .chain(wrap(message, WRAP, WRAP_LINES).iter().map(|text| line(text, BODY, WHITE)))
+            .chain(overlay_font::wrap(message, BODY, WRAP, WRAP_LINES).iter().map(|text| line(text, BODY, WHITE)))
             .collect(),
     }
 }
@@ -383,7 +384,7 @@ mod tests {
         let long = "cannot load game.fun:12:5: `Scene.modle` is not a member of Scene; did you mean `Scene.model`?";
         let card = lines(&Step::Failed(long.into()));
         assert_eq!(card[0].text, "LOAD FAILED");
-        assert!(card.len() > 2 && card[1..].iter().all(|line| line.text.chars().count() <= WRAP));
+        assert!(card.len() > 2 && card[1..].iter().all(|line| overlay_font::width(&line.text, BODY) <= WRAP));
         assert_eq!(lines(&Step::Receiving { files: 3, bytes: 5 << 19, of: None })[1].text, "3 files, 2.5 MB");
         // A sender that says what it will send gets a count against it.
         let of = Some((40, 71 << 20));

@@ -18,9 +18,9 @@ use glow::HasContext;
 use crate::color_space::{OutputAlpha, OutputEncodeUniform};
 use crate::debug_protocol::{PairingState, VoiceStage, VoiceToast};
 use crate::input::{XrControllerSnapshot, XrInputSnapshot};
+use crate::overlay_font;
 use crate::shader::{Shader, ShaderType};
 use crate::shader_program::{ShaderProgram, UniformLocation};
-use crate::sprite_font;
 use crate::TrackingPose;
 
 /// How long the menu button is held to start pairing.
@@ -294,8 +294,9 @@ const HOLD_TRANSCRIPT: Duration = Duration::from_secs(4);
 const STILL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(120);
 const UNHEARD: Duration = Duration::from_secs(15);
-/// Transcript characters per line, and its most lines.
-const WRAP: usize = 34;
+/// The transcript's measure in metres (about 45 characters), and its most
+/// lines.
+const WRAP: f32 = 0.42;
 const WRAP_LINES: usize = 3;
 
 /// What the desktop said about an utterance, in the order it said it.
@@ -507,47 +508,12 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
         }
     };
     if let Some(text) = &toast.transcript {
-        let quoted = format!("\"{text}\"");
+        let quoted = format!("\u{201c}{text}\u{201d}");
         out.extend(
-            wrap(&quoted, WRAP, WRAP_LINES)
+            overlay_font::wrap(&quoted, BODY, WRAP, WRAP_LINES)
                 .iter()
                 .map(|l| line(l, BODY, WHITE)),
         );
-    }
-    out
-}
-
-/// `text` in lines of at most `width` characters, broken at spaces where
-/// it can be; at most `lines` of them, the last cut with `...`.
-pub(crate) fn wrap(text: &str, width: usize, lines: usize) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for word in text.split_whitespace() {
-        let mut word: Vec<char> = word.chars().collect();
-        while !word.is_empty() {
-            let used = current.chars().count();
-            let gap = usize::from(used > 0);
-            if used + gap + word.len() <= width {
-                if gap == 1 {
-                    current.push(' ');
-                }
-                current.extend(word.drain(..));
-            } else if used > 0 {
-                out.push(std::mem::take(&mut current));
-            } else {
-                // A word longer than a line: split it.
-                out.push(word.drain(..width).collect());
-            }
-        }
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.len() > lines {
-        out.truncate(lines);
-        let last = &mut out[lines - 1];
-        let keep: String = last.chars().take(width - 3).collect();
-        *last = keep + "...";
     }
     out
 }
@@ -603,8 +569,8 @@ const GAP: f32 = 0.018;
 pub enum Shape {
     /// `rect` is `[x, y, w, h]` from its bottom-left corner.
     Rect { rect: [f32; 4], color: [f32; 4] },
-    /// One line from its top-left corner `at`; `size` is the cell height
-    /// (and advance) of the monospace font.
+    /// One line from its top-left corner `at`; `size` is its box height
+    /// ([`overlay_font`]: capitals fill it, descenders hang below).
     Text {
         at: [f32; 2],
         size: f32,
@@ -615,7 +581,7 @@ pub enum Shape {
 
 /// `lines` centred on a background card around the origin.
 pub fn card(lines: &[Line]) -> Vec<Shape> {
-    let width = |l: &Line| sprite_font::advance_count(&l.text) as f32 * l.size;
+    let width = |l: &Line| overlay_font::width(&l.text, l.size);
     let inner_w = lines.iter().map(width).fold(0.0, f32::max);
     let inner_h =
         lines.iter().map(|l| l.size).sum::<f32>() + GAP * lines.len().saturating_sub(1) as f32;
@@ -642,8 +608,8 @@ pub fn card(lines: &[Line]) -> Vec<Shape> {
 pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
     let mut out = Vec::new();
     let atlas = [
-        sprite_font::ATLAS_WIDTH as f32,
-        sprite_font::ATLAS_HEIGHT as f32,
+        overlay_font::ATLAS_WIDTH as f32,
+        overlay_font::ATLAS_HEIGHT as f32,
     ];
     let linear = |c: [f32; 3]| crate::color_space::srgb_to_linear3(c);
     for shape in shapes {
@@ -659,19 +625,22 @@ pub fn mesh(shapes: &[Shape]) -> Vec<f32> {
                 text,
             } => {
                 let [r, g, b] = linear(*color);
-                let mut x = at[0];
-                for character in text.chars() {
-                    if let Some((cx, cy, cw, ch)) = sprite_font::glyph_cell(character) {
-                        let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
-                        quad(
-                            &mut out,
-                            [x, at[1] - size, *size, *size],
-                            Some(uv),
-                            [r, g, b, 1.0],
-                        );
+                let em = overlay_font::em(*size);
+                overlay_font::place(text, *size, *at, |glyph, [x, y]| {
+                    let [cx, cy, cw, ch] = glyph.cell.map(f32::from);
+                    if cw == 0.0 {
+                        return;
                     }
-                    x += size;
-                }
+                    let [left, bottom, right, top] = glyph.plane;
+                    let uv = [cx / atlas[0], cy / atlas[1], cw / atlas[0], ch / atlas[1]];
+                    let rect = [
+                        x + left * em,
+                        y + bottom * em,
+                        (right - left) * em,
+                        (top - bottom) * em,
+                    ];
+                    quad(&mut out, rect, Some(uv), [r, g, b, 1.0]);
+                });
             }
         }
     }
@@ -723,10 +692,13 @@ pub struct LinkOverlayPainter {
     transform: UniformLocation,
     alpha: UniformLocation,
     atlas_uniform: UniformLocation,
+    linear_blend: UniformLocation,
     output: OutputEncodeUniform,
     vao: glow::VertexArray,
     vbo: glow::Buffer,
-    atlas: glow::Texture,
+    /// Uploaded with the first text, so a painter of rects (the wrist
+    /// light) never holds it.
+    atlas: Option<glow::Texture>,
     /// What the mesh shows, so it is rebuilt only on change.
     shown: Vec<Shape>,
     vertices: i32,
@@ -746,49 +718,63 @@ const VERTEX_SHADER: &str = r#"
     }
 "#;
 
+/// Glyphs sample the font's MSDF: the median of its channels is the
+/// distance to the outline, scaled to screen pixels by the derivatives so
+/// the edge is one pixel wide at any distance or angle. A negative `v_uv`
+/// is a solid fill.
 const FRAGMENT_SHADER: &str = r#"
     uniform sampler2D u_atlas;
     uniform float u_alpha;
-    in vec2 v_uv;
+    uniform bool u_linear_blend;
+    // Full precision: a mediump uv is off by half a texel across the atlas.
+    in highp vec2 v_uv;
     in vec4 v_color;
     out vec4 frag_color;
+    float median(vec3 v) { return max(min(v.r, v.g), min(max(v.r, v.g), v.b)); }
     void main() {
-        float coverage = v_uv.x < 0.0 ? 1.0 : texture(u_atlas, v_uv).a;
+        // Atlas texels per pixel, before the branch: derivatives need
+        // uniform control flow.
+        highp vec2 texels = fwidth(v_uv) * ATLAS;
+        float coverage = 1.0;
+        if (v_uv.x >= 0.0) {
+            float field = median(textureLod(u_atlas, v_uv, 0.0).rgb) - 0.5;
+            // Screen pixels the field's range spans; at least one, so small
+            // text softens rather than aliases.
+            float px_range = max(0.5 * RANGE * (1.0 / max(texels.x, 1e-6) + 1.0 / max(texels.y, 1e-6)), 1.0);
+            coverage = clamp(field * px_range + 0.5, 0.0, 1.0);
+            // Blending in linear light (an sRGB target) fattens light
+            // strokes on dark and thins dark ones on light; this restores
+            // the weight a gamma-space blend gives.
+            if (u_linear_blend) {
+                float light = smoothstep(0.02, 0.2, dot(v_color.rgb, vec3(0.2126, 0.7152, 0.0722)));
+                coverage = pow(coverage, mix(1.0 / GAMMA, GAMMA, light));
+            }
+        }
         frag_color = functorOutput(vec4(v_color.rgb, v_color.a * coverage * u_alpha));
     }
 "#;
 
+/// The weight correction's exponent (see the fragment shader).
+const GAMMA: f32 = 1.6;
+
 impl LinkOverlayPainter {
     pub fn new(gl: &glow::Context, shader_version: &str) -> Self {
         let vertex = Shader::build(gl, ShaderType::Vertex, VERTEX_SHADER, shader_version);
-        let fragment = Shader::build(gl, ShaderType::Fragment, FRAGMENT_SHADER, shader_version);
+        let constants = format!(
+            "const float RANGE = {:.1};\nconst vec2 ATLAS = vec2({:.1}, {:.1});\nconst float GAMMA = {GAMMA:.2};\n",
+            overlay_font::RANGE,
+            overlay_font::ATLAS_WIDTH as f32,
+            overlay_font::ATLAS_HEIGHT as f32,
+        );
+        let fragment = Shader::build(
+            gl,
+            ShaderType::Fragment,
+            &format!("{constants}{FRAGMENT_SHADER}"),
+            shader_version,
+        );
         let program = ShaderProgram::link(gl, &vertex, &fragment);
         let counters = crate::gpu_counters::gpu_counters();
-        let font = sprite_font::atlas_texture_data();
         unsafe {
-            let atlas = gl.create_texture().expect("create link overlay atlas");
-            counters.texture_created();
-            gl.bind_texture(glow::TEXTURE_2D, Some(atlas));
-            gl.tex_image_2d(
-                glow::TEXTURE_2D,
-                0,
-                glow::RGBA8 as i32,
-                font.width as i32,
-                font.height as i32,
-                0,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(&font.bytes)),
-            );
-            for (param, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::NEAREST),
-                (glow::TEXTURE_MAG_FILTER, glow::NEAREST),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
-            }
-            gl.bind_texture(glow::TEXTURE_2D, None);
             let vao = gl.create_vertex_array().expect("create link overlay vao");
             counters.vao_created();
             gl.bind_vertex_array(Some(vao));
@@ -813,15 +799,58 @@ impl LinkOverlayPainter {
                 transform: program.get_uniform_location(gl, "u_transform"),
                 alpha: program.get_uniform_location(gl, "u_alpha"),
                 atlas_uniform: program.get_uniform_location(gl, "u_atlas"),
+                linear_blend: program.get_uniform_location(gl, "u_linear_blend"),
                 output: OutputEncodeUniform::get(&program, gl),
                 program,
                 vao,
                 vbo,
-                atlas,
+                atlas: None,
                 shown: Vec::new(),
                 vertices: 0,
             }
         }
+    }
+
+    /// The font atlas texture: decoded and uploaded once.
+    fn atlas(&mut self, gl: &glow::Context) -> glow::Texture {
+        *self.atlas.get_or_insert_with(|| {
+            let atlas = image::load_from_memory_with_format(
+                overlay_font::ATLAS_PNG,
+                image::ImageFormat::Png,
+            )
+            .expect("decode the overlay font atlas")
+            .to_rgb8();
+            unsafe {
+                let texture = gl.create_texture().expect("create link overlay atlas");
+                crate::gpu_counters::gpu_counters().texture_created();
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                let alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+                // Distances, not colours: a linear format.
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGB8 as i32,
+                    atlas.width() as i32,
+                    atlas.height() as i32,
+                    0,
+                    glow::RGB,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(Some(atlas.as_raw())),
+                );
+                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
+                for (param, value) in [
+                    (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+                ] {
+                    gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+                }
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                texture
+            }
+        })
     }
 
     /// Draws `shapes` (a [`card`] of [`lines`] or [`toast_lines`], the
@@ -872,9 +901,13 @@ impl LinkOverlayPainter {
             self.program
                 .set_uniform_matrix4(gl, &self.transform, &transform);
             self.program.set_uniform_1f(gl, &self.alpha, alpha);
+            let text = shapes.iter().any(|s| matches!(s, Shape::Text { .. }));
             gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(self.atlas));
+            gl.bind_texture(glow::TEXTURE_2D, text.then(|| self.atlas(gl)));
             self.program.set_uniform_1i(gl, &self.atlas_uniform, 0);
+            let linear_blend = !output_srgb_encode;
+            self.program
+                .set_uniform_1i(gl, &self.linear_blend, linear_blend as i32);
             self.output
                 .set(&self.program, gl, output_srgb_encode, OutputAlpha::Blend);
             gl.bind_vertex_array(Some(self.vao));
@@ -1171,7 +1204,7 @@ mod tests {
         let lines = toast_lines(toast.look(t + Duration::from_secs(10)).unwrap().0);
         assert_eq!(
             lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
-            ["WORKING... 10s", "\"make the ball red\""],
+            ["WORKING... 10s", "\u{201c}make the ball red\u{201d}"],
             "the words stay under the stages that follow, which count their seconds"
         );
 
@@ -1252,21 +1285,20 @@ mod tests {
 
     #[test]
     fn a_long_transcript_wraps_into_a_few_lines() {
-        assert_eq!(wrap("make the ball red", 34, 3), ["make the ball red"]);
-        assert_eq!(
-            wrap("one two three four", 9, 3),
-            ["one two", "three", "four"]
-        );
-        assert_eq!(wrap("abcdefghijkl", 5, 3), ["abcde", "fghij", "kl"]);
-        let long = wrap(&"word ".repeat(100), 34, 3);
-        assert_eq!(long.len(), 3);
-        assert!(long[2].ends_with("...") && long[2].chars().count() <= 34);
-        let lines = toast_lines(&VoiceToast {
-            stage: VoiceStage::Heard,
-            transcript: Some("é".repeat(2000)),
-            waiting: None,
-        });
-        assert!(lines.len() == 4 && lines.iter().all(|l| l.text.chars().count() <= 34));
+        let toast = |text: String| {
+            toast_lines(&VoiceToast {
+                stage: VoiceStage::Heard,
+                transcript: Some(text),
+                waiting: None,
+            })
+        };
+        assert_eq!(toast("make the ball red".into()).len(), 2);
+        for text in ["word ".repeat(100), "é".repeat(2000)] {
+            let lines = toast(text);
+            assert_eq!(lines.len(), 1 + WRAP_LINES);
+            assert!(lines[WRAP_LINES].text.ends_with('\u{2026}'));
+            assert!(lines.iter().all(|l| overlay_font::width(&l.text, l.size) <= WRAP));
+        }
     }
 
     #[test]
