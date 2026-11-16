@@ -5,16 +5,22 @@
 //! and nothing is written to storage. The desktop's progress comes back on
 //! the toast.
 //!
-//! The microphone is AAudio, read without blocking once a frame: the APK
-//! plays no sound yet, so there is no audio stack to share, and AAudio is
+//! The microphone is AAudio, read without blocking once a frame: AAudio is
 //! the NDK's own. The first hold asks for `RECORD_AUDIO`; the toast says
 //! when it was allowed (no restart needed) or how to allow it.
+//!
+//! The desktop's spoken reply (D47) plays here: its audio arrives on the
+//! link ([`functor_device_link::play`]) and is written to an AAudio output
+//! without blocking once a frame. Holding push-to-talk silences it at once.
 
 use std::time::{Duration, Instant};
 
 use functor_device_link::client::Client;
+use functor_device_link::play::Player;
 use functor_device_link::talk::{Stopped, Talk};
-use functor_device_link::voice::{Capsule, Pose, Stage, Status, MAX_SECONDS, STATUS_CHANNEL};
+use functor_device_link::voice::{
+    Capsule, Pose, Speech, Stage, Status, MAX_SECONDS, PLAYS, SPEECH_CHANNEL, STATUS_CHANNEL,
+};
 use functor_runtime_common::debug_protocol::{VoiceStage, VoiceToast};
 use functor_runtime_common::link_overlay::{self, Follow, Progress, PushToTalk, Toast};
 use functor_runtime_common::{TrackingPose, XrInputSnapshot};
@@ -29,6 +35,13 @@ const PERMISSION: &str = "android.permission.RECORD_AUDIO";
 /// After asking: how often, and how long, the answer is looked for.
 const PERMISSION_POLL: Duration = Duration::from_millis(500);
 const PERMISSION_WAIT: Duration = Duration::from_secs(120);
+/// The speaker closes after this long with nothing to play or arriving:
+/// longer than its buffer holds, so a reply's end is heard, and a reply
+/// whose rest never comes (it is sent whole) is dropped.
+const SPEAKER_IDLE: Duration = Duration::from_secs(2);
+/// Frames the speaker's stream holds: half a second at 16 kHz, so a frame
+/// that stalls leaves no gap, and under `SPEAKER_IDLE` at any rate.
+const SPEAKER_BUFFER: usize = 8_000;
 
 pub struct Voice {
     gesture: PushToTalk,
@@ -46,6 +59,12 @@ pub struct Voice {
     toast: Toast,
     pub follow: Follow,
     samples: Vec<i16>,
+    /// The desktop's spoken reply, and the output it plays on while there
+    /// is one.
+    player: Player,
+    speaker: Option<Speaker>,
+    /// The link told this headset plays replies ([`PLAYS`]).
+    speech_link: Option<u64>,
 }
 
 impl Default for Voice {
@@ -66,13 +85,16 @@ impl Default for Voice {
             toast: Toast::default(),
             follow: Follow::default(),
             samples: Vec::new(),
+            player: Player::default(),
+            speaker: None,
+            speech_link: None,
         }
     }
 }
 
 impl Voice {
     /// One frame: `received` is the link's channel messages since the last
-    /// (statuses are taken from it), `sample` drives the gesture, `armed`
+    /// (statuses and speech are taken from it), `sample` drives the gesture, `armed`
     /// while it may talk; `capsule` (JSON) is made only when an utterance
     /// starts.
     pub fn frame(
@@ -84,6 +106,14 @@ impl Voice {
         capsule: impl FnOnce() -> String,
         now: Instant,
     ) {
+        // A new link, or none: a reply from the last is cut off, and the new
+        // one is told replies play here.
+        if client.link() != self.speech_link {
+            self.quiet();
+            self.speech_link = client
+                .link()
+                .filter(|&link| client.send_channel(link, SPEECH_CHANNEL, PLAYS.to_vec(), false));
+        }
         for (channel, data) in received {
             if *channel == STATUS_CHANNEL {
                 match Status::decode(data) {
@@ -91,14 +121,25 @@ impl Voice {
                     Err(e) => log::warn!("voice: a status we cannot read: {e}"),
                 }
             }
+            if *channel == SPEECH_CHANNEL {
+                match Speech::decode(data) {
+                    Ok(speech) => self.speech(speech, now),
+                    Err(e) => log::warn!("voice: speech we cannot read: {e}"),
+                }
+            }
         }
         self.permission_answered(now);
         match self.gesture.step(sample, armed, now) {
-            Some(link_overlay::Talk::Start) => self.start(client, capsule, now),
+            Some(link_overlay::Talk::Start) => {
+                // The user is talking: the reply stops at once.
+                self.quiet();
+                self.start(client, capsule, now)
+            }
             Some(link_overlay::Talk::Send) => self.send(client, now),
             Some(link_overlay::Talk::Cancel) => self.cancel(client, "Cancelled", now),
             None => {}
         }
+        self.play(now);
         if self.talk.utterance().is_none() {
             return;
         }
@@ -156,6 +197,58 @@ impl Voice {
             self.follow.reset();
         }
         look
+    }
+
+    /// A message of the desktop's spoken reply. Each `Start` opens a fresh
+    /// speaker, so nothing the last one holds is heard; one that cannot
+    /// open plays nothing.
+    fn speech(&mut self, speech: Speech, now: Instant) {
+        match speech {
+            Speech::Start { .. } => {
+                self.quiet();
+                // Sent before the desktop knew the user is talking: not played.
+                if self.gesture.talking() {
+                    return;
+                }
+                match Speaker::open(now) {
+                    Ok(speaker) => self.speaker = Some(speaker),
+                    Err(e) => log::warn!("voice: {e}"),
+                }
+            }
+            // With what the speaker holds of it.
+            Speech::Stop { reply } if self.player.reply() == Some(reply) => return self.quiet(),
+            _ => {}
+        }
+        match &mut self.speaker {
+            Some(speaker) => {
+                speaker.busy = now;
+                self.player.receive(speech, speaker.rate);
+            }
+            None => self.player.stop(),
+        }
+    }
+
+    /// Silence: the speaker closes, so what it had buffered is not heard.
+    fn quiet(&mut self) {
+        self.player.stop();
+        self.speaker = None;
+    }
+
+    /// The reply's next samples to the speaker, which closes once idle.
+    fn play(&mut self, now: Instant) {
+        let Some(speaker) = &mut self.speaker else {
+            return;
+        };
+        if !self.player.pending().is_empty() {
+            speaker.busy = now;
+        }
+        if let Err(e) = speaker.play(&mut self.player) {
+            log::warn!("voice: {e}");
+            return self.quiet();
+        }
+        if now.duration_since(speaker.busy) >= SPEAKER_IDLE {
+            self.quiet();
+        }
     }
 
     fn start(&mut self, client: &Client, capsule: impl FnOnce() -> String, now: Instant) {
@@ -345,7 +438,7 @@ struct Mic {
 
 enum Source {
     Aaudio {
-        input: Input,
+        input: Stream,
         channels: usize,
         buffer: Vec<i16>,
         /// Since opening: for the log when it closes.
@@ -376,7 +469,7 @@ impl Mic {
 
     /// The microphone, recording; `Err` names what failed.
     fn open() -> Result<Mic, String> {
-        let input = Input::open()?;
+        let input = Stream::microphone()?;
         let rate = input.rate();
         let channels = input.channels();
         Ok(Mic {
@@ -448,53 +541,129 @@ impl Drop for Mic {
     }
 }
 
-/// An AAudio input stream (16-bit, mono, 16 kHz asked for; the device may
-/// give another rate), started; closed on drop. Straight on the NDK: the
-/// `ndk` crate's `AudioStream::read` takes any non-zero result, a frame
-/// count included, for an error.
-struct Input(*mut ffi::AAudioStream);
+/// The open speaker: the reply's samples to its [`Stream`]. Closed (and
+/// silent) on drop.
+struct Speaker {
+    output: Stream,
+    rate: u32,
+    channels: usize,
+    /// The samples being written, one per channel.
+    frames: Vec<i16>,
+    /// When it last had something to play.
+    busy: Instant,
+}
 
-impl Input {
-    fn open() -> Result<Input, String> {
+impl Speaker {
+    fn open(now: Instant) -> Result<Speaker, String> {
+        let output = Stream::speaker()?;
+        Ok(Speaker {
+            rate: output.rate(),
+            channels: output.channels(),
+            output,
+            frames: Vec::new(),
+            busy: now,
+        })
+    }
+
+    /// Writes as much of what `player` has pending as the stream takes now.
+    fn play(&mut self, player: &mut Player) -> Result<(), String> {
+        // No more than the stream holds.
+        let pending = player.pending();
+        let pending = &pending[..pending.len().min(SPEAKER_BUFFER)];
+        if pending.is_empty() {
+            return Ok(());
+        }
+        self.frames.clear();
+        for sample in pending {
+            self.frames
+                .extend(std::iter::repeat_n(*sample, self.channels));
+        }
+        let wrote = self.output.write(&self.frames, self.channels)?;
+        player.played(wrote);
+        Ok(())
+    }
+}
+
+/// An AAudio stream (16-bit, mono, 16 kHz asked for; the device may give
+/// another rate or more channels), started; closed on drop. Straight on the
+/// NDK: the `ndk` crate's `AudioStream::read` takes any non-zero result, a
+/// frame count included, for an error.
+struct Stream {
+    raw: *mut ffi::AAudioStream,
+    /// `Microphone` or `Speaker`, for its errors.
+    what: &'static str,
+}
+
+impl Stream {
+    /// About a second of room at any rate the device picks (AAudio clamps
+    /// it): a frame that stalls loses no audio (the default holds about
+    /// 0.3 s).
+    fn microphone() -> Result<Stream, String> {
+        Stream::open("Microphone", ffi::AAUDIO_DIRECTION_INPUT, 48_000)
+    }
+
+    /// [`SPEAKER_BUFFER`] of room.
+    fn speaker() -> Result<Stream, String> {
+        Stream::open(
+            "Speaker",
+            ffi::AAUDIO_DIRECTION_OUTPUT,
+            SPEAKER_BUFFER as i32,
+        )
+    }
+
+    fn open(what: &'static str, direction: u32, capacity: i32) -> Result<Stream, String> {
+        let input = direction == ffi::AAUDIO_DIRECTION_INPUT;
         // SAFETY: the builder is used only between its creation and delete;
-        // the stream is owned by `Input` once opened.
+        // the stream is owned by `Stream` once opened.
         unsafe {
             let mut builder = std::ptr::null_mut();
-            check("create", ffi::AAudio_createStreamBuilder(&mut builder))?;
-            ffi::AAudioStreamBuilder_setDirection(builder, ffi::AAUDIO_DIRECTION_INPUT as _);
+            check(
+                &format!("{what} create"),
+                ffi::AAudio_createStreamBuilder(&mut builder),
+            )?;
+            ffi::AAudioStreamBuilder_setDirection(builder, direction as _);
             ffi::AAudioStreamBuilder_setFormat(builder, ffi::AAUDIO_FORMAT_PCM_I16 as _);
             ffi::AAudioStreamBuilder_setChannelCount(builder, 1);
             ffi::AAudioStreamBuilder_setSampleRate(
                 builder,
                 functor_device_link::voice::SAMPLE_RATE as i32,
             );
-            ffi::AAudioStreamBuilder_setInputPreset(
-                builder,
-                ffi::AAUDIO_INPUT_PRESET_VOICE_RECOGNITION as _,
-            );
+            if input {
+                ffi::AAudioStreamBuilder_setInputPreset(
+                    builder,
+                    ffi::AAUDIO_INPUT_PRESET_VOICE_RECOGNITION as _,
+                );
+            }
             ffi::AAudioStreamBuilder_setSharingMode(builder, ffi::AAUDIO_SHARING_MODE_SHARED as _);
-            // About a second of room at any rate the device picks (AAudio
-            // clamps it): a frame that stalls loses no audio (the default
-            // holds about 0.3 s).
-            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(builder, 48_000);
-            let mut stream = std::ptr::null_mut();
-            let opened = ffi::AAudioStreamBuilder_openStream(builder, &mut stream);
+            ffi::AAudioStreamBuilder_setBufferCapacityInFrames(builder, capacity);
+            let mut raw = std::ptr::null_mut();
+            let opened = ffi::AAudioStreamBuilder_openStream(builder, &mut raw);
             ffi::AAudioStreamBuilder_delete(builder);
-            check("open", opened)?;
-            let input = Input(stream);
-            check("start", ffi::AAudioStream_requestStart(stream))?;
-            Ok(input)
+            check(&format!("{what} open"), opened)?;
+            let stream = Stream { raw, what };
+            // Written once a frame: all of its capacity in use, not the
+            // default (as little as a burst), so a late frame leaves no gap.
+            if !input {
+                let size = ffi::AAudioStream_getBufferCapacityInFrames(raw);
+                let set = ffi::AAudioStream_setBufferSizeInFrames(raw, size);
+                check(&format!("{what} buffer"), set.min(0))?;
+            }
+            check(
+                &format!("{what} start"),
+                ffi::AAudioStream_requestStart(raw),
+            )?;
+            Ok(stream)
         }
     }
 
     fn rate(&self) -> u32 {
         // SAFETY: an open stream.
-        unsafe { ffi::AAudioStream_getSampleRate(self.0) }.max(1) as u32
+        unsafe { ffi::AAudioStream_getSampleRate(self.raw) }.max(1) as u32
     }
 
     fn channels(&self) -> usize {
         // SAFETY: an open stream.
-        unsafe { ffi::AAudioStream_getChannelCount(self.0) }.max(1) as usize
+        unsafe { ffi::AAudioStream_getChannelCount(self.raw) }.max(1) as usize
     }
 
     /// Reads what is waiting into `buffer` without blocking: the frames read.
@@ -502,16 +671,27 @@ impl Input {
         let frames = (buffer.len() / channels) as i32;
         // SAFETY: `buffer` holds `frames * channels` samples.
         let read =
-            unsafe { ffi::AAudioStream_read(self.0, buffer.as_mut_ptr().cast(), frames, 0) };
-        check("read", read.min(0))?;
+            unsafe { ffi::AAudioStream_read(self.raw, buffer.as_mut_ptr().cast(), frames, 0) };
+        check(&format!("{} read", self.what), read.min(0))?;
         Ok(read as usize)
+    }
+
+    /// Writes what the stream has room for from `samples` without
+    /// blocking: the frames written.
+    fn write(&mut self, samples: &[i16], channels: usize) -> Result<usize, String> {
+        let frames = (samples.len() / channels) as i32;
+        // SAFETY: `samples` holds `frames * channels` samples.
+        let wrote =
+            unsafe { ffi::AAudioStream_write(self.raw, samples.as_ptr().cast(), frames, 0) };
+        check(&format!("{} write", self.what), wrote.min(0))?;
+        Ok(wrote as usize)
     }
 }
 
-impl Drop for Input {
+impl Drop for Stream {
     fn drop(&mut self) {
-        // SAFETY: opened by `Input::open`, closed once.
-        unsafe { ffi::AAudioStream_close(self.0) };
+        // SAFETY: opened by `Stream::open`, closed once.
+        unsafe { ffi::AAudioStream_close(self.raw) };
     }
 }
 
@@ -523,7 +703,7 @@ fn check(what: &str, result: ffi::aaudio_result_t) -> Result<(), String> {
     }
     // SAFETY: AAudio returns a static string for any result.
     let name = unsafe { std::ffi::CStr::from_ptr(ffi::AAudio_convertResultToText(result)) };
-    Err(format!("Microphone {what}: {}", name.to_string_lossy()))
+    Err(format!("{what}: {}", name.to_string_lossy()))
 }
 
 /// Whether the app holds `RECORD_AUDIO`.

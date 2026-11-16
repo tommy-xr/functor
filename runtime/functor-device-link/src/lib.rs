@@ -29,7 +29,8 @@
 //!
 //! Other traffic rides [`wire::Frame::Channel`] on a numbered channel; a side
 //! drops channels it does not know. Channels 1 and 2 carry voice feedback
-//! (see [`voice`]); 3 and 4 the headset panel (see [`panel`]).
+//! (see [`voice`]); 3 and 4 the headset panel (see [`panel`]); 5 a spoken
+//! reply for the headset to play (see [`voice`], [`play`]).
 
 pub mod adb;
 #[cfg(feature = "client")]
@@ -40,6 +41,7 @@ pub mod device;
 pub mod file;
 pub mod load;
 pub mod panel;
+pub mod play;
 pub mod talk;
 pub mod voice;
 pub mod wire;

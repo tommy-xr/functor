@@ -70,7 +70,7 @@ impl Talk {
             seq: 0,
             pending: Vec::with_capacity(CHUNK),
             taken: 0,
-            resampler: Resampler::new(rate),
+            resampler: Resampler::new(rate, SAMPLE_RATE),
             level: 0.0,
         });
         Some(utterance)
@@ -182,10 +182,10 @@ fn level(samples: &[i16]) -> f32 {
     ((db + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
-/// Mono samples at any rate to [`SAMPLE_RATE`], averaging each output
-/// sample's span of input (48 kHz: every three), carrying the remainder
-/// across calls.
-struct Resampler {
+/// Mono samples from one rate to another, averaging each output sample's
+/// span of input (48 kHz to 16: every three; to a higher rate samples
+/// repeat), carrying the remainder across calls.
+pub(crate) struct Resampler {
     /// Input samples per output sample.
     step: f64,
     /// Where the next output sample's span starts in `carry`.
@@ -194,15 +194,16 @@ struct Resampler {
 }
 
 impl Resampler {
-    fn new(rate: u32) -> Resampler {
+    /// From `rate` to `to` samples per second.
+    pub(crate) fn new(rate: u32, to: u32) -> Resampler {
         Resampler {
-            step: rate.max(1) as f64 / SAMPLE_RATE as f64,
+            step: rate.max(1) as f64 / to.max(1) as f64,
             at: 0.0,
             carry: Vec::new(),
         }
     }
 
-    fn push(&mut self, input: &[i16], out: &mut Vec<i16>) {
+    pub(crate) fn push(&mut self, input: &[i16], out: &mut Vec<i16>) {
         if self.step == 1.0 {
             out.extend_from_slice(input);
             return;
