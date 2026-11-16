@@ -30,6 +30,39 @@ let quad : () => t
 /// cast NO shadow: a light-facing shadow quad would cut the camera-facing
 /// quad in half with its own shadow, so they skip the shadow pass entirely.
 let billboard : () => t
+/// Text in the scene: centred on the origin, in the XY plane reading from
+/// `+Z` (seen from behind, it reads mirrored). Each line is one unit tall
+/// (capitals fill it from the top) and lines sit 1.25 apart.
+///
+/// Set in Inter from a signed distance field, so it stays sharp up close, far
+/// away and at glancing angles. `\n` starts a new line. Size it with
+/// `Scene.scale`, colour it with the material around it (`Scene.color`,
+/// `Scene.emissive` or `Scene.lit` — text is always unlit; white with none),
+/// and turn it to the camera with `Scene.facing`. Covers Latin-1 plus
+/// typographic quotes, dashes, `…`, `•`, `€`, arrows and `✓`; any other
+/// character draws as a box.
+///
+/// All text in a pass draws in one blended batch after the opaque scene, the
+/// blend materials and `Scene.opacity` subtrees, far labels first:
+/// depth-tested against the scene, never hiding it or other text. It casts
+/// no shadow, takes no fog, and ignores `Scene.opacity`'s alpha. In a 2D
+/// layer it draws over that layer's sprites.
+///
+/// ```functor
+/// let tag = (name, at) => Scene.text(name) |> Scene.scale(0.3) |> Scene.facing
+///   |> Scene.translate(at) |> Scene.emissive(Color.rgb(1.0, 0.9, 0.6))
+/// ```
+let text : (string) => t
+/// `Scene.text` wrapped to `width` (in line heights), at most `lines` lines
+/// (the last cut with an ellipsis), each line left-aligned; the block is
+/// centred on the origin. `width` must be above 0 and `lines` a whole number
+/// of 1 or more.
+let textBlock : (float, float, string) => t
+/// Turn every text leaf in `scene` to face the camera, per eye: its origin
+/// stays where it is placed and its lines lie on the view's right and up,
+/// whatever rotates above it (its scale still applies). Other leaves are
+/// unchanged (`Scene.billboard` is the camera-facing quad).
+let facing : (t) => t
 /// Create a unit plane in the XZ ground plane.
 let plane : () => t
 

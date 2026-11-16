@@ -85,6 +85,48 @@ pub const TITLE: f32 = 0.0267;
 pub const BODY: f32 = 0.020;
 pub const SMALL: f32 = 0.0156;
 
+/// The atlas as a GL texture (linear RGB: distances, not colours), for
+/// every painter of this font. The caller owns it.
+pub fn upload_atlas(gl: &glow::Context) -> glow::Texture {
+    use glow::HasContext;
+    let atlas = image::load_from_memory_with_format(
+        ATLAS_PNG,
+        image::ImageFormat::Png,
+    )
+    .expect("decode the font atlas")
+    .to_rgb8();
+    unsafe {
+        let texture = gl.create_texture().expect("create the font atlas");
+        crate::gpu_counters::gpu_counters().texture_created();
+        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+        let alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
+        // Distances, not colours: a linear format.
+        gl.tex_image_2d(
+            glow::TEXTURE_2D,
+            0,
+            glow::RGB8 as i32,
+            atlas.width() as i32,
+            atlas.height() as i32,
+            0,
+            glow::RGB,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(atlas.as_raw())),
+        );
+        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
+        for (param, value) in [
+            (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+            (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+            (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+            (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+        ] {
+            gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
+        }
+        gl.bind_texture(glow::TEXTURE_2D, None);
+        texture
+    }
+}
+
 /// Em per `size`: capitals a little taller than the old 8x8 font's.
 const EM_PER_SIZE: f32 = 1.25;
 /// From a line's top to its baseline, in `size`.

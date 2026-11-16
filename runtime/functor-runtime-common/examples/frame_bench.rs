@@ -51,6 +51,7 @@
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- 40 80   # grid sides
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- paints  # instance paints
 //! cargo run -q --release -p functor_runtime_common --example frame_bench -- raycast # Instance.raycast
+//! cargo run -q --release -p functor_runtime_common --example frame_bench -- text3d  # Scene.text labels
 //! ```
 //!
 //! Always `--release` — a debug interpreter is many times slower and not
@@ -615,6 +616,69 @@ fn bench_raycast() {
     }
 }
 
+/// The 3D text workload: `count` short facing labels (`Scene.text`) over a
+/// grid, rebuilt in `draw` every frame as a game's labels would be.
+fn text3d_workload(count: u32) -> String {
+    format!(
+        r#"
+let ids = List.range({count}.0)
+let init = 0.0
+let tick = (m: float, dt: float, tts: float) => m
+let label = (i: float) =>
+  Scene.text($"lot {{i}}") |> Scene.scale(0.3) |> Scene.facing
+  |> Scene.translate(Vec3.make(Math.mod(i, 32.0), 1.0, Math.floor(i / 32.0)))
+let draw = (m: float, tts: float) =>
+  Frame.create(
+    Camera3D.lookAt(Vec3.make(16.0, 20.0, -20.0), Vec3.make(16.0, 0.0, 16.0)),
+    Scene.group(ids |> List.map(label)) |> Scene.emissive(Color.rgb(1.0, 1.0, 1.0)))
+"#
+    )
+}
+
+/// The 3D text table: per-frame cost of N labels — the interpreter's scene
+/// build, and the renderer's per-pass vertex fill (GL-free) for them.
+fn bench_text3d() {
+    use functor_runtime_common::text_layout::{self, TextLayout};
+    use functor_runtime_common::{build_text_vertices, TextDraw};
+    println!("frame_bench: Scene.text — N short facing labels rebuilt in draw each frame");
+    println!("  scene    = the draw call + Frame extraction (interpreter, layout cached)");
+    println!("  vertices = the renderer's per-pass vertex fill for the batch (no GL)");
+    println!();
+    println!(
+        "{:>7} {:>15} {:>13} {:>12} {:>14} {:>12}",
+        "labels", "us/frame(min)", "allocs/frame", "bytes/frame", "vertices us", "vertex allocs"
+    );
+    for count in [100u32, 1000] {
+        let m = bench_source(&text3d_workload(count));
+        let draws: Vec<TextDraw> = (0..count)
+            .map(|i| TextDraw {
+                quads: text_layout::layout(&format!("lot {i}"), TextLayout::LABEL).quads,
+                xform: cgmath::Matrix4::from_translation(cgmath::vec3(i as f32, 1.0, 0.0)),
+                color: [1.0; 4],
+            })
+            .collect();
+        let mut vertices = Vec::new();
+        build_text_vertices(&draws, &mut vertices);
+        let before = ALLOC_COUNT.load(Relaxed);
+        let mut best = Duration::MAX;
+        for _ in 0..200 {
+            let start = Instant::now();
+            build_text_vertices(&draws, &mut vertices);
+            best = best.min(start.elapsed());
+        }
+        let vertex_allocs = (ALLOC_COUNT.load(Relaxed) - before) / 200;
+        println!(
+            "{:>7} {:>15.1} {:>13} {:>12} {:>14.1} {:>12}",
+            count,
+            m.min_us,
+            m.allocs_per_frame,
+            m.bytes_per_frame,
+            best.as_secs_f64() * 1e6,
+            vertex_allocs,
+        );
+    }
+}
+
 fn main() {
     if cfg!(debug_assertions) {
         eprintln!("========================================================================");
@@ -632,6 +696,10 @@ fn main() {
     // are not comparable to each other).
     if args.first().is_some_and(|a| a == "text") {
         bench_text();
+        return;
+    }
+    if args.first().is_some_and(|a| a == "text3d") {
+        bench_text3d();
         return;
     }
     if args.first().is_some_and(|a| a == "shapes") {

@@ -304,6 +304,7 @@ fn paint_scene(scene: Scene3D, tint: [f32; 3], glow: f32) -> Scene3D {
         SceneObject::Cells(node, items) => SceneObject::Cells(node, map(items)),
         SceneObject::CastShadows(casts, items) => SceneObject::CastShadows(casts, map(items)),
         SceneObject::Resident(items) => SceneObject::Resident(map(items)),
+        SceneObject::Facing(items) => SceneObject::Facing(map(items)),
         SceneObject::Instanced {
             template,
             instances,
@@ -476,7 +477,10 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     Shape::Quad => InstancedPrimitive::Quad,
                     Shape::Billboard => InstancedPrimitive::Billboard,
                     Shape::Plane => InstancedPrimitive::Plane,
-                    Shape::Heightmap { .. } | Shape::ConvexPolygon { .. } | Shape::Mesh { .. } => {
+                    Shape::Heightmap { .. }
+                    | Shape::ConvexPolygon { .. }
+                    | Shape::Mesh { .. }
+                    | Shape::Text { .. } => {
                         return None
                     }
                 };
@@ -508,7 +512,8 @@ pub(crate) fn recognize(template: &Scene3D) -> Option<RecognizedTemplate<'_>> {
                     casts_shadows,
                 }))
             }
-            SceneObject::Group(items) => match items.as_slice() {
+            // Facing turns only text, which no hardware template holds.
+            SceneObject::Group(items) | SceneObject::Facing(items) => match items.as_slice() {
                 [only] => walk(only, local * node.xform, material, casts_shadows),
                 _ => None,
             },
@@ -581,6 +586,7 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
                 Shape::Heightmap { .. } => "heightmap",
                 Shape::ConvexPolygon { .. } => "polygon",
                 Shape::Mesh { .. } => "mesh",
+                Shape::Text { .. } => "text",
             }),
             SceneObject::Model(model) => {
                 out.push_str("model(");
@@ -596,6 +602,16 @@ pub(crate) fn template_summary(template: &Scene3D) -> String {
             SceneObject::Resident(_) => out.push_str("resident"),
             SceneObject::CastShadows(_, items) => {
                 out.push_str("castShadows[");
+                for (index, item) in items.iter().enumerate() {
+                    if index > 0 {
+                        out.push(' ');
+                    }
+                    describe(item, depth + 1, out);
+                }
+                out.push(']');
+            }
+            SceneObject::Facing(items) => {
+                out.push_str("facing[");
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
                         out.push(' ');

@@ -829,44 +829,7 @@ impl LinkOverlayPainter {
 
     /// The font atlas texture: decoded and uploaded once.
     fn atlas(&mut self, gl: &glow::Context) -> glow::Texture {
-        *self.atlas.get_or_insert_with(|| {
-            let atlas = image::load_from_memory_with_format(
-                overlay_font::ATLAS_PNG,
-                image::ImageFormat::Png,
-            )
-            .expect("decode the overlay font atlas")
-            .to_rgb8();
-            unsafe {
-                let texture = gl.create_texture().expect("create link overlay atlas");
-                crate::gpu_counters::gpu_counters().texture_created();
-                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                let alignment = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
-                // Distances, not colours: a linear format.
-                gl.tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGB8 as i32,
-                    atlas.width() as i32,
-                    atlas.height() as i32,
-                    0,
-                    glow::RGB,
-                    glow::UNSIGNED_BYTE,
-                    glow::PixelUnpackData::Slice(Some(atlas.as_raw())),
-                );
-                gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, alignment);
-                for (param, value) in [
-                    (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
-                    (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
-                    (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                    (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-                ] {
-                    gl.tex_parameter_i32(glow::TEXTURE_2D, param, value as i32);
-                }
-                gl.bind_texture(glow::TEXTURE_2D, None);
-                texture
-            }
-        })
+        *self.atlas.get_or_insert_with(|| overlay_font::upload_atlas(gl))
     }
 
     /// Draws `shapes` (a [`card`] of [`lines`] or [`toast_lines`], the

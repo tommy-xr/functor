@@ -47,6 +47,9 @@ mod material_description;
 mod model_description;
 mod terrain_materials;
 mod texture_description;
+pub mod text_layout;
+mod text_renderer;
+pub use text_renderer::{build_vertices as build_text_vertices, TextDraw};
 
 pub use cull::{Aabb, MeshBounds};
 pub use instance_raycast::{raycast_instances, BoxHit};
@@ -86,6 +89,12 @@ pub struct SceneContext {
     // Lazily created: scenes without `Scene.instanced` allocate no instancing
     // GPU resources and take no instancing branch.
     instanced: RefCell<Option<InstancedRenderer>>,
+    /// `Scene.text` leaves the walk queued this pass, drawn as one batch
+    /// after the transparent pass (`draw_texts`); the renderer is lazy.
+    texts: RefCell<Vec<TextDraw>>,
+    text_renderer: RefCell<Option<text_renderer::TextRenderer>>,
+    /// What the walk's enclosing nodes give a text leaf.
+    text_state: Cell<TextState>,
     // One persistent mesh per grid size. Animated terrain (heights change every
     // frame) re-uploads its vertex buffer in place instead of rebuilding a fresh
     // GL mesh each frame; static terrain uploads exactly once. Keyed by
@@ -912,6 +921,9 @@ impl SceneContext {
             quad: RefCell::new(geometry::Quad::create()),
             plane: RefCell::new(geometry::Plane::create()),
             instanced: RefCell::new(None),
+            texts: RefCell::new(Vec::new()),
+            text_renderer: RefCell::new(None),
+            text_state: Cell::new(TextState::ROOT),
             heightmaps: RefCell::new(HashMap::new()),
             polygons: RefCell::new(HashMap::new()),
             meshes: RefCell::new(HashMap::new()),
@@ -2309,6 +2321,38 @@ skybox disabled for this set",
         }
     }
 
+    /// Draw (and clear) the text leaves this pass queued, in one batch.
+    pub fn draw_texts(
+        &self,
+        render_context: &RenderContext,
+        projection_matrix: &Matrix4<f32>,
+        view_matrix: &Matrix4<f32>,
+    ) {
+        let mut texts = self.texts.borrow_mut();
+        if texts.is_empty() {
+            return;
+        }
+        let mut renderer = self.text_renderer.borrow_mut();
+        renderer
+            .get_or_insert_with(|| {
+                text_renderer::TextRenderer::new(render_context.gl, &render_context.shader_version)
+            })
+            .draw(render_context, &mut texts, projection_matrix, view_matrix);
+        texts.clear();
+    }
+
+    /// Forget queued text leaves without drawing them, and reset the walk's
+    /// text state: a pass's start, or a view that draws no text.
+    pub fn discard_texts(&self) {
+        self.texts.borrow_mut().clear();
+        self.text_state.set(TextState::ROOT);
+    }
+
+    /// Set what text leaves take from above, returning the previous state.
+    pub(crate) fn replace_text_state(&self, state: TextState) -> TextState {
+        self.text_state.replace(state)
+    }
+
     /// Draw `desc`'s skybox: right after the pass's clear, before
     /// `Scene3D::render`. The unit cube is drawn from the inside (this
     /// engine never enables face culling), glued to the camera by a
@@ -2782,6 +2826,14 @@ pub enum Shape {
     /// every frame neither copies the triangles nor re-uploads them: the
     /// renderer keeps one GPU mesh per live `Arc`.
     Mesh { mesh: Arc<MeshData> },
+    /// `Scene.text`: `text` set in the Inter MSDF atlas by `layout`, one
+    /// line box tall per line, in the XY plane reading from +Z — or, under
+    /// a [`SceneObject::Facing`], turned to the pass's camera. Drawn after
+    /// the opaque scene in one blended batch; it casts no shadow.
+    Text {
+        text: String,
+        layout: text_layout::TextLayout,
+    },
 }
 
 // The unit primitives' local bounds (see `geometry`). The cylinder fits
@@ -2894,6 +2946,9 @@ pub enum SceneObject {
     /// buffers) stay resident while the node is in the frame. A `Model.static`
     /// uploads on first sight; the rest once drawn.
     Resident(Vec<Scene3D>),
+    /// `Scene.facing` — every text leaf in the subtree turns to each pass's
+    /// camera. Otherwise a group.
+    Facing(Vec<Scene3D>),
     /// A `Scene.memo` result, held by reference so a node wrapping it (a
     /// group, a transform) copies a pointer, not the subtree. Transparent:
     /// it compares, serializes and draws as the object it holds.
@@ -2948,6 +3003,7 @@ impl PartialEq for SceneObject {
             (Cells(n, a), Cells(m, b)) => n == m && a == b,
             (CastShadows(x, a), CastShadows(y, b)) => x == y && a == b,
             (Resident(a), Resident(b)) => a == b,
+            (Facing(a), Facing(b)) => a == b,
             (
                 Instanced {
                     template: t,
@@ -2969,7 +3025,8 @@ impl PartialEq for SceneObject {
             | (Instanced { .. }, _)
             | (Cells(..), _)
             | (CastShadows(..), _)
-            | (Resident(_), _) => false,
+            | (Resident(_), _)
+            | (Facing(_), _) => false,
         }
     }
 }
@@ -3008,6 +3065,8 @@ pub(crate) struct BlendDraw<'s> {
     /// The enclosing `Scene.cells` walk's visibility, so `Scene.inCells`
     /// below `node` culls as it would have.
     visible: Option<Vec<bool>>,
+    /// The enclosing colour and facing, for text below `node`.
+    text: TextState,
 }
 
 /// The blend draws one opaque walk queued, in scene order.
@@ -3021,6 +3080,7 @@ impl<'s> BlendQueue<'s> {
             world: *world,
             mode,
             visible: ctx.portal_visible.borrow().clone(),
+            text: ctx.text_state.get(),
         });
     }
 
@@ -3042,6 +3102,7 @@ impl<'s> BlendQueue<'s> {
     ) {
         for draw in self.0.borrow_mut().iter_mut().filter(|d| d.mode == stage) {
             let outer = scene_context.portal_visible.replace(draw.visible.take());
+            let outer_text = scene_context.text_state.replace(draw.text);
             draw.node.render(
                 render_context,
                 scene_context,
@@ -3050,6 +3111,7 @@ impl<'s> BlendQueue<'s> {
                 view_matrix,
                 root_material,
             );
+            scene_context.text_state.set(outer_text);
             scene_context.portal_visible.replace(outer);
         }
     }
@@ -3075,6 +3137,26 @@ pub struct TransparentDraw<'a> {
     pub material: Option<&'a MaterialDescription>,
     /// World-space sort key; see [`Scene3D::leaf_centroid`].
     pub centroid: cgmath::Vector3<f32>,
+    /// The colour and facing its text takes from the nodes above it (a
+    /// textured material in between keeps an outer `Scene.color`).
+    pub(crate) text: TextState,
+}
+
+/// What a text leaf takes from the nodes above it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TextState {
+    /// The enclosing material's constant colour (sRGB, as authored).
+    pub color: cgmath::Vector4<f32>,
+    /// Inside a [`SceneObject::Facing`].
+    pub facing: bool,
+}
+
+impl TextState {
+    /// White, in its own plane.
+    pub const ROOT: TextState = TextState {
+        color: cgmath::Vector4 { x: 1.0, y: 1.0, z: 1.0, w: 1.0 },
+        facing: false,
+    };
 }
 
 /// Order translucent draws BACK-TO-FRONT for source-over compositing.
@@ -3106,20 +3188,33 @@ pub(crate) fn billboard_xform(
     acc: &Matrix4<f32>,
     view_matrix: &Matrix4<f32>,
 ) -> Matrix4<f32> {
-    let view_rotation_inverse = Matrix4::from(
-        cgmath::Matrix3::from_cols(
-            view_matrix.x.truncate(),
-            view_matrix.y.truncate(),
-            view_matrix.z.truncate(),
-        )
-        .transpose(),
-    );
-    let linear = Matrix4::from(cgmath::Matrix3::from_cols(
-        acc.x.truncate(),
-        acc.y.truncate(),
-        acc.z.truncate(),
+    let linear = cgmath::Matrix3::from_cols(acc.x.truncate(), acc.y.truncate(), acc.z.truncate());
+    let turned = view_rotation_inverse(view_matrix) * linear;
+    Matrix4::from_translation(acc.w.truncate()) * Matrix4::from(turned)
+}
+
+/// The view's rotation, inverted: its transpose (see [`billboard_xform`]).
+fn view_rotation_inverse(view_matrix: &Matrix4<f32>) -> cgmath::Matrix3<f32> {
+    cgmath::Matrix3::from_cols(
+        view_matrix.x.truncate(),
+        view_matrix.y.truncate(),
+        view_matrix.z.truncate(),
+    )
+    .transpose()
+}
+
+/// A facing text leaf's placement: its origin where `acc` puts it, its axes
+/// the view's right, up and back, each scaled as `acc` scales it — so no
+/// rotation above it (a turning unit) can turn it away from the camera.
+fn facing_xform(acc: &Matrix4<f32>, view_matrix: &Matrix4<f32>) -> Matrix4<f32> {
+    use cgmath::InnerSpace;
+    let scale = cgmath::Matrix3::from_diagonal(cgmath::vec3(
+        acc.x.truncate().magnitude(),
+        acc.y.truncate().magnitude(),
+        acc.z.truncate().magnitude(),
     ));
-    Matrix4::from_translation(acc.w.truncate()) * view_rotation_inverse * linear
+    let turned = view_rotation_inverse(view_matrix) * scale;
+    Matrix4::from_translation(acc.w.truncate()) * Matrix4::from(turned)
 }
 
 #[cfg(test)]
@@ -3157,6 +3252,27 @@ mod billboard_xform_tests {
         let out = billboard_xform(&Matrix4::identity(), &view);
         let n = out * Vector4::new(0.0, 0.0, 1.0, 0.0);
         assert_vec4_near(n, Vector4::new(1.0, 0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn facing_text_ignores_a_rotated_parent() {
+        // A label on a unit turned 90° about Y, scaled 2: it still reads
+        // along the view's right and up, twice as large, where it was put.
+        let view = Matrix4::look_at_rh(
+            Point3::new(4.0, 2.0, 9.0),
+            Point3::new(0.0, 0.0, 0.0),
+            vec3(0.0, 1.0, 0.0),
+        );
+        let acc = Matrix4::from_translation(vec3(1.0, 2.0, 3.0))
+            * Matrix4::from_angle_y(Deg(90.0))
+            * Matrix4::from_scale(2.0);
+        let out = super::facing_xform(&acc, &view);
+        assert_vec4_near(out.w, acc.w);
+        // In view space the local axes are the camera's right, up and back.
+        let in_view = view * out;
+        assert_vec4_near(in_view.x, Vector4::new(2.0, 0.0, 0.0, 0.0));
+        assert_vec4_near(in_view.y, Vector4::new(0.0, 2.0, 0.0, 0.0));
+        assert_vec4_near(in_view.z, Vector4::new(0.0, 0.0, 2.0, 0.0));
     }
 
     #[test]
@@ -3238,6 +3354,33 @@ impl Scene3D {
         Scene3D {
             obj: SceneObject::Geometry(Shape::Plane),
             xform: Matrix4::identity(),
+        }
+    }
+
+    /// `Scene.text` / `Scene.textBlock` — see [`Shape::Text`].
+    pub fn text(text: impl Into<String>, layout: text_layout::TextLayout) -> Self {
+        Scene3D {
+            obj: SceneObject::Geometry(Shape::Text {
+                text: text.into(),
+                layout,
+            }),
+            xform: Matrix4::identity(),
+        }
+    }
+
+    /// `Scene.facing`: every text leaf in the subtree turns to the camera —
+    /// see [`SceneObject::Facing`].
+    pub fn facing(self) -> Self {
+        match self.obj {
+            // A group (what every transform builds) turns in place: no node.
+            SceneObject::Group(items) => Scene3D {
+                obj: SceneObject::Facing(items),
+                xform: self.xform,
+            },
+            obj => Scene3D {
+                obj: SceneObject::Facing(vec![Scene3D { obj, xform: self.xform }]),
+                xform: Matrix4::identity(),
+            },
         }
     }
 
@@ -3358,7 +3501,8 @@ impl Scene3D {
             | SceneObject::Opacity(_, items)
             | SceneObject::Cells(_, items)
             | SceneObject::CastShadows(_, items)
-            | SceneObject::Resident(items) => {
+            | SceneObject::Resident(items)
+            | SceneObject::Facing(items) => {
                 items.iter_mut().for_each(|item| item.for_each_model(f))
             }
             SceneObject::Instanced { template, .. } => template.for_each_model(f),
@@ -3378,7 +3522,8 @@ impl Scene3D {
             SceneObject::Group(items)
             | SceneObject::Cells(_, items)
             | SceneObject::CastShadows(_, items)
-            | SceneObject::Resident(items) => items.iter().any(|i| i.has_blend(mode)),
+            | SceneObject::Resident(items)
+            | SceneObject::Facing(items) => items.iter().any(|i| i.has_blend(mode)),
             SceneObject::Instanced { template, .. } => template.has_blend(mode),
             // Under `Scene.opacity` a blend material draws nothing.
             SceneObject::Opacity(..)
@@ -3401,7 +3546,8 @@ impl Scene3D {
             SceneObject::Group(items)
             | SceneObject::Material(_, items)
             | SceneObject::Cells(_, items)
-            | SceneObject::CastShadows(_, items) => items.iter().any(Scene3D::has_opacity),
+            | SceneObject::CastShadows(_, items)
+            | SceneObject::Facing(items) => items.iter().any(Scene3D::has_opacity),
             // The prelude rejects `Scene.opacity` inside a template, so an
             // instanced node is opaque; an OUTER `Scene.opacity` wrapping it
             // is seen at that outer node like any other subtree.
@@ -3438,7 +3584,8 @@ impl Scene3D {
             SceneObject::Group(items)
             | SceneObject::Opacity(_, items)
             | SceneObject::Cells(_, items)
-            | SceneObject::CastShadows(_, items) => {
+            | SceneObject::CastShadows(_, items)
+            | SceneObject::Facing(items) => {
                 let w = world * self.xform;
                 for item in items {
                     item.accumulate_leaf_origins(&w, sum, count);
@@ -3501,6 +3648,16 @@ impl Scene3D {
         material: Option<&'a MaterialDescription>,
         out: &mut Vec<TransparentDraw<'a>>,
     ) {
+        self.collect_transparent_in(world, material, TextState::ROOT, out)
+    }
+
+    fn collect_transparent_in<'a>(
+        &'a self,
+        world: &Matrix4<f32>,
+        material: Option<&'a MaterialDescription>,
+        text: TextState,
+        out: &mut Vec<TransparentDraw<'a>>,
+    ) {
         match self.obj.resolved() {
             SceneObject::Opacity(..) => {
                 let centroid = self.leaf_centroid(world);
@@ -3509,6 +3666,7 @@ impl Scene3D {
                     parent_world: *world,
                     material,
                     centroid,
+                    text,
                 });
             }
             SceneObject::Group(items)
@@ -3516,15 +3674,22 @@ impl Scene3D {
             | SceneObject::CastShadows(_, items) => {
                 let w = world * self.xform;
                 for item in items {
-                    item.collect_transparent(&w, material, out);
+                    item.collect_transparent_in(&w, material, text, out);
+                }
+            }
+            SceneObject::Facing(items) => {
+                let w = world * self.xform;
+                for item in items {
+                    item.collect_transparent_in(&w, material, TextState { facing: true, ..text }, out);
                 }
             }
             // A `Material` node's own `xform` is ignored by `Scene3D::render`
             // (see `accumulate_leaf_origins`), so it must be ignored here too.
             SceneObject::Material(next_material, _) if next_material.blend_mode().is_some() => {}
             SceneObject::Material(next_material, items) => {
+                let color = next_material.constant_color().unwrap_or(text.color);
                 for item in items {
-                    item.collect_transparent(world, Some(next_material), out);
+                    item.collect_transparent_in(world, Some(next_material), TextState { color, ..text }, out);
                 }
             }
             SceneObject::Geometry(_)
@@ -3936,6 +4101,10 @@ impl Scene3D {
                     }
                 }
                 let material = material_description.get(render_context, scene_context);
+                let outer_text = scene_context.text_state.get();
+                if let Some(color) = material_description.constant_color() {
+                    scene_context.text_state.set(TextState { color, ..outer_text });
+                }
                 // The 3D forward pass is otherwise fully opaque — every shader
                 // already writes an alpha, but nothing blends it. A material
                 // whose constant color is translucent switches blending on for
@@ -4012,6 +4181,7 @@ impl Scene3D {
                 if let Some(resident) = hidden_blend {
                     scene_context.resident_only.set(resident);
                 }
+                scene_context.text_state.set(outer_text);
             }
 
             SceneObject::Group(items) => {
@@ -4173,6 +4343,24 @@ impl Scene3D {
                 if let Some(outer) = outer {
                     render_context.shadow_off.set(outer);
                 }
+            }
+            // `Scene.facing`: a group whose text turns to the camera.
+            SceneObject::Facing(items) => {
+                let world = world_matrix * self.xform;
+                let outer = scene_context.text_state.get();
+                scene_context.text_state.set(TextState { facing: true, ..outer });
+                for item in items {
+                    item.walk(
+                        render_context,
+                        scene_context,
+                        &world,
+                        projection_matrix,
+                        view_matrix,
+                        current_material,
+                        queue,
+                    )
+                }
+                scene_context.text_state.set(outer);
             }
             SceneObject::Instanced {
                 template,
@@ -4561,6 +4749,28 @@ leaf under transforms)"
                 };
                 mesh.update(&render_context.gl, heights);
                 mesh.draw(&render_context.gl);
+            }
+            // Queued for the pass's text batch, which draws after the blend
+            // passes: no shadow. Inside a blend material it is queued once,
+            // by that material's own pass. Culled at its placement in this
+            // pass, so a facing label tests the box it draws.
+            SceneObject::Geometry(Shape::Text { text, layout }) => {
+                if depth_pass {
+                    return;
+                }
+                let acc = world_matrix * self.xform;
+                let state = scene_context.text_state.get();
+                let xform = if state.facing { facing_xform(&acc, view_matrix) } else { acc };
+                let laid = text_layout::layout(text, *layout);
+                if scene_context.culled(projection_matrix, view_matrix, &xform, &laid.bounds) {
+                    return;
+                }
+                let color = crate::color_space::srgb_to_linear_vec4(state.color);
+                scene_context.texts.borrow_mut().push(TextDraw {
+                    quads: laid.quads,
+                    xform,
+                    color: color.into(),
+                });
             }
             SceneObject::Geometry(Shape::Mesh { mesh }) => {
                 let xform = world_matrix * self.xform;
@@ -5159,6 +5369,23 @@ mod opacity_tests {
         let mut draws = Vec::new();
         scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
         assert!(draws.is_empty());
+    }
+
+    #[test]
+    fn deferred_text_keeps_an_outer_colour_through_a_texture() {
+        let material = |m: MaterialDescription, child: Scene3D| Scene3D {
+            obj: SceneObject::Material(m, vec![child]),
+            xform: Matrix4::identity(),
+        };
+        let text = Scene3D::text("a", text_layout::TextLayout::LABEL);
+        let textured = MaterialDescription::Texture(TextureDescription::File("t.png".into()));
+        let scene = material(
+            MaterialDescription::color(1.0, 0.0, 0.0, 1.0),
+            material(textured, opacity(0.5, text)),
+        );
+        let mut draws = Vec::new();
+        scene.collect_transparent(&Matrix4::identity(), None, &mut draws);
+        assert_eq!(draws[0].text.color, cgmath::vec4(1.0, 0.0, 0.0, 1.0));
     }
 
     #[test]
