@@ -182,11 +182,6 @@ pub struct Run {
     /// The agent reported its start, so it has the run's messages.
     #[serde(default)]
     pub started: bool,
-    /// When it started (`AppState::clock`): a project switch is taken as
-    /// asked for only soon after (D42).
-    #[serde(skip)]
-    #[cfg_attr(feature = "ts", ts(skip))]
-    pub started_at: u64,
     /// It switched the open project (D42), which a run may do once.
     #[serde(skip)]
     #[cfg_attr(feature = "ts", ts(skip))]

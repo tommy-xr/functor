@@ -657,19 +657,22 @@ the project is taking the wheel, so it is allowed only when the user asks.
 - **The picker's switch.** The app switches as the project picker does: the
   old game stops and the new one opens paused (D37). A game on a headset
   stays on it: the new project's game runs there too, for this switch and a
-  manual one, for the session only; the new project's saved placement is
-  unchanged.
+  manual one, while that project stays open; its saved layout keeps its own
+  placement, whatever else of it is saved meanwhile.
 - **The gate, without judging intent.** Applied only for a running task whose
-  project is the one open, within 10 minutes of the message that started the
-  run, once per run, with "Let the agent arrange views" on (one setting for
+  project is the one open, within 10 minutes of the user's last message to
+  it (a request that waited its turn longer is not taken as asked), once per
+  run, with "Let the agent arrange views" on (one setting for
   what the agent may change on screen), and never for a review.
 - **The task stays.** A task belongs to its project (D12). The tool answers
   that the app now shows the other project and that the next request works
-  there; the run ends with a sentence. Its tool server forgets the game it
-  was attached to, which may now be the other project's at the same address.
+  there; the run ends with a sentence. Before asking, its tool server forgets
+  the game it was attached to and refuses that address for the run, which may
+  now serve the other project's game; only a refused switch lifts that.
 - **The chat follows the app.** It shows a new task in the new project and a
   line: "Switched to *project* — asked by you in *task*", with Undo (back to
-  that task) and a dismiss. Switching again, or the next request, clears it.
+  that task) and a dismiss. Switching again, or the next request (a new
+  task, a follow-up or a steer), clears it.
 - **The headset hears it.** The spoken request ends with "Switched to
   *project*", shown and said aloud (D47), as an Answered status: the
   headset needs no new one.

@@ -15,7 +15,7 @@ use crate::tasks::Task;
 use crate::voice;
 
 /// A switch is taken as asked for only this soon (ms) after the user's
-/// message started the run.
+/// last message to the task arrived.
 pub const ASKED_WITHIN_MS: u64 = 10 * 60 * 1000;
 /// Most projects `list_projects` names.
 const MAX_LISTED: usize = 60;
@@ -103,7 +103,8 @@ pub(crate) fn open(
     if r.switched {
         return Err(nothing("this run has switched the project once, the most it may".into()));
     }
-    if state.clock.saturating_sub(r.started_at) > ASKED_WITHIN_MS {
+    let asked = state.asked.get(&id).copied();
+    if asked.is_none_or(|at| state.clock.saturating_sub(at) > ASKED_WITHIN_MS) {
         let minutes = ASKED_WITHIN_MS / 60_000;
         return Err(nothing(format!(
             "the user's request is more than {minutes} minutes old; switch only when they ask again"
@@ -415,5 +416,81 @@ mod tests {
         assert_eq!(s.layouts[A].game.placement, Placement::Headset);
         assert!(commands.iter().any(|c| matches!(c, Command::StartHeadset { dir, .. } if dir.ends_with(A))));
         assert!(!saves(&commands, A));
+    }
+
+    /// The layout `commands` save for `project`.
+    fn saved(commands: &[Command], project: &str) -> Option<Layout> {
+        commands.iter().find_map(|c| match c {
+            Command::SaveLayout { dir, layout } if dir.ends_with(project) => Some((**layout).clone()),
+            _ => None,
+        })
+    }
+
+    /// A carried placement is never saved: the project's other layout
+    /// changes are, with its own placement, until the user places the game.
+    #[test]
+    fn a_carried_placement_is_never_saved() {
+        let mut s = voice_ready();
+        s.start_on_open = true;
+        let own = s.layouts.get(B).cloned().unwrap_or_default().game;
+        assert_ne!(own.placement, Placement::Headset);
+        let (s, _) = update(s, client(ClientMsg::SetActiveProject { path: B.into() }));
+        let off = LayoutOp::AgentArranges { on: false };
+        let (s, commands) = update(s, client(ClientMsg::Layout { op: off }));
+        let layout = saved(&commands, B).expect("saved");
+        assert_eq!((layout.game, layout.agent.arranges), (own.clone(), false));
+        assert_eq!(s.layouts[B].game.placement, Placement::Headset);
+        // Leaving B ends the carry: its layout is its own again.
+        let (back, _) = update(s.clone(), client(ClientMsg::SetActiveProject { path: A.into() }));
+        assert_eq!(back.layouts[B].game, own);
+        assert!(!back.layouts[B].agent.arranges);
+        // The user's own placement is theirs to keep.
+        let mini = LayoutOp::Place {
+            placement: Placement::Mini,
+        };
+        let (s, commands) = update(s, client(ClientMsg::Layout { op: mini }));
+        assert_eq!(saved(&commands, B).expect("saved").game.placement, Placement::Mini);
+        let (back, _) = update(s, client(ClientMsg::SetActiveProject { path: A.into() }));
+        assert_eq!(back.layouts[B].game.placement, Placement::Mini);
+    }
+
+    /// Consent runs from the user's message, not the run's start: a request
+    /// that waited its turn past the window is not taken as asked for now.
+    #[test]
+    fn a_request_queued_past_the_window_does_not_switch() {
+        let new = Event::NewTask {
+            id: Ok(2),
+            message: "switch to b".to_string(),
+            harness: Harness::Claude,
+            voice: None,
+            scope: None,
+        };
+        let (s, _) = update(asking(), new);
+        assert!(task(&s, 2).queued.is_some());
+        let s = AppState {
+            clock: ASKED_WITHIN_MS + 1,
+            ..s
+        };
+        let (s, _) = update(update(s, agent(1, 0, finished())).0, ended(1, 0));
+        assert!(task(&s, 2).run.is_some(), "started");
+        let late = request(2, false, ViewRequest::OpenProject { path: B.into() });
+        assert!(refused(s, late).contains("more than 10 minutes old"));
+    }
+
+    /// Any next request takes the switch: a follow-up to the asking task,
+    /// running (a steer) or not.
+    #[test]
+    fn a_next_message_to_the_asking_task_takes_the_switch() {
+        let (s, _) = update(asking(), open(B));
+        let follow = client(ClientMsg::SendMessage {
+            task: 1,
+            message: "and make it spin".into(),
+        });
+        let (steered, _) = update(s.clone(), follow.clone());
+        assert_eq!(steered.agent_switch, None);
+        let (s, _) = update(update(s, agent(1, 0, finished())).0, ended(1, 0));
+        assert!(s.agent_switch.is_some());
+        let (followed, _) = update(s, follow);
+        assert_eq!(followed.agent_switch, None);
     }
 }

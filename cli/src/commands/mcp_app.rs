@@ -201,16 +201,22 @@ impl FunctorMcp {
         &self,
         Parameters(args): Parameters<OpenProjectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .forward_view(json!({ "op": "open_project", "path": args.path }))
-            .await;
-        // The app's game is another project's now (a headset's keeps its
-        // URL): this run's tools must not reach it.
-        if matches!(&result, Ok(r) if r.is_error != Some(true)) {
-            self.forget_attached("the app switched to another project, so this run's game is gone")
-                .await;
+        // Detached first: once the app switches, a reused URL (a headset's)
+        // serves the next project's game, and a lost reply must not leave
+        // this run reaching it.
+        let why = "detached by open_project: after a switch the app's game is another project's";
+        let urls = self.forget_attached(why).await;
+        match self.ask_app(json!({ "op": "open_project", "path": args.path })).await {
+            Ok(Ok(message)) => ok_text(message),
+            // Nothing switched: the game is still this run's to reconnect.
+            Ok(Err(message)) => {
+                self.unrevoke(&urls);
+                tool_error(format!(
+                    "{message}. This run's game sessions were detached: reconnect with connect_game"
+                ))
+            }
+            Err(message) => tool_error(message),
         }
-        result
     }
 }
 
@@ -285,8 +291,17 @@ impl FunctorMcp {
     /// POSTs `body` to the app; its `message` is the tool's text, an error
     /// when `ok` is false.
     async fn forward_view(&self, body: Value) -> Result<CallToolResult, ErrorData> {
+        match self.ask_app(body).await {
+            Ok(Ok(message)) => ok_text(message),
+            Ok(Err(message)) | Err(message) => tool_error(message),
+        }
+    }
+
+    /// The app's answer to `body`: `Ok(Err)` when it refused, `Err` when it
+    /// gave none.
+    async fn ask_app(&self, body: Value) -> Result<Result<String, String>, String> {
         let Some(app) = &self.app else {
-            return tool_error("no app is attached to this server");
+            return Err("no app is attached to this server".to_string());
         };
         let sent = self
             .http
@@ -301,9 +316,9 @@ impl FunctorMcp {
             Ok(response) => response,
             Err(e) if e.is_timeout() => {
                 let secs = APP_TIMEOUT.as_secs();
-                return tool_error(format!("the app did not answer within {secs}s"));
+                return Err(format!("the app did not answer within {secs}s"));
             }
-            Err(e) => return tool_error(format!("cannot reach the app: {e}")),
+            Err(e) => return Err(format!("cannot reach the app: {e}")),
         };
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
@@ -314,11 +329,11 @@ impl FunctorMcp {
             reply.as_ref().map(|r| &r["ok"]),
             message,
         ) {
-            (true, Some(Value::Bool(true)), Some(message)) => ok_text(message),
-            (true, Some(Value::Bool(false)), Some(message)) => tool_error(message),
+            (true, Some(Value::Bool(true)), Some(message)) => Ok(Ok(message.to_string())),
+            (true, Some(Value::Bool(false)), Some(message)) => Ok(Err(message.to_string())),
             _ => {
                 let text: String = text.chars().take(200).collect();
-                tool_error(format!("the app answered {status}: {text}"))
+                Err(format!("the app answered {status}: {text}"))
             }
         }
     }

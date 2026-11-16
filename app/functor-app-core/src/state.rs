@@ -20,7 +20,7 @@ use crate::decision::{decisions, Decision};
 use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent};
 use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
-use crate::layout::{Layout, LayoutOp, Placement, Target, View};
+use crate::layout::{GamePlacement, Layout, LayoutOp, Placement, Target, View};
 use crate::panel::{client_msg, refresh_panels, Panel};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
@@ -160,6 +160,16 @@ pub struct AppState {
     /// The agent's last project switch, asked for by the user (D42), until
     /// they undo it, dismiss it or switch themselves.
     pub agent_switch: Option<AgentSwitch>,
+    /// The active project, its game carried onto a headset by a switch
+    /// (D42), and its own placement: what its saved layout keeps.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub carried: Option<(String, GamePlacement)>,
+    /// When (`clock`) the user last asked each task something: a switch is
+    /// taken as asked for only soon after (D42).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub asked: BTreeMap<u64, u64>,
     /// The page's canvas is too narrow for panes side by side, so they
     /// stack: the agent's views make no splits there.
     #[serde(skip)]
@@ -294,6 +304,8 @@ impl AppState {
             first_task: None,
             highlight: None,
             agent_switch: None,
+            carried: None,
+            asked: BTreeMap::new(),
             highlight_seq: 0,
             canvas_stacked: false,
             transport_watched: false,
@@ -1526,6 +1538,8 @@ fn opened(
         first_task: _,
         highlight: _,
         agent_switch: _,
+        carried: _,
+        asked: _,
         highlight_seq: _,
         canvas_stacked: _,
         transport_watched: _,
@@ -1561,6 +1575,8 @@ fn opened(
         highlight: None,
         // Its task and projects are the old folder's.
         agent_switch: None,
+        carried: None,
+        asked: BTreeMap::new(),
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
@@ -1821,6 +1837,12 @@ pub(crate) fn switch_active(state: &mut AppState, path: String, commands: &mut V
         path: path.clone(),
     });
     let headset = headset_game(state).map(str::to_owned);
+    // A carry lasts while its project is open: back to its own placement.
+    if let Some((project, own)) = state.carried.take() {
+        if let Some(layout) = state.layouts.remove(&project) {
+            state.layouts.insert(project, uncarried(layout, &own));
+        }
+    }
     // Cleared, so the old project's files never show under the new name.
     state.files.clear();
     state.active = Some(path);
@@ -1851,9 +1873,21 @@ fn carry_headset(state: &mut AppState, headset: Option<String>) {
         return;
     }
     let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
+    let own = layout.game.clone();
     if layout.apply(LayoutOp::PlaceOnHeadset { device }, |_| Ok(())) == Ok(true) {
-        state.layouts.insert(path, layout);
+        state.layouts.insert(path.clone(), layout);
+        state.carried = Some((path, own));
     }
+}
+
+/// `layout` with its game back in its `own` placement, undoing a carry.
+fn uncarried(mut layout: Layout, own: &GamePlacement) -> Layout {
+    let op = match (own.placement, own.headset.clone()) {
+        (Placement::Headset, Some(device)) => LayoutOp::PlaceOnHeadset { device },
+        (placement, _) => LayoutOp::Place { placement },
+    };
+    let _ = layout.apply(op, |_| Ok(()));
+    layout
 }
 
 /// Puts the active project first in the recent projects.
@@ -2147,9 +2181,21 @@ pub(crate) fn save_layout(
     layout: Layout,
     commands: &mut Vec<Command>,
 ) {
+    let mut saved = layout.clone();
+    if let Some((carried, own)) = &state.carried {
+        let runs = |l: &Layout| (l.game.placement, l.game.headset.clone());
+        let before = state.layouts.get(project);
+        if carried == project && before.map(runs) == Some(runs(&layout)) {
+            // A carried game is saved in its own placement.
+            saved = uncarried(saved, own);
+        } else if carried == project {
+            // The user placed the game: theirs to keep.
+            state.carried = None;
+        }
+    }
     commands.push(Command::SaveLayout {
         dir: project_dir(Path::new(&state.repo_root), project),
-        layout: Box::new(layout.clone()),
+        layout: Box::new(saved),
     });
     state.layouts.insert(project.to_string(), layout);
 }
@@ -2364,8 +2410,7 @@ fn create_task(
     if spoken.is_none() {
         state.current_task.insert(project.clone(), Some(id));
     }
-    // A request after the agent's switch takes it: nothing left to undo.
-    state.agent_switch = None;
+    asked(state, id);
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,
@@ -2431,6 +2476,7 @@ fn send_message(
         task.updated_at = now.or(task.updated_at);
         commands.push(save(&root, task));
         broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+        asked(state, id);
         return true;
     }
     if task.run.is_some() {
@@ -2441,6 +2487,7 @@ fn send_message(
     if let Err(reason) = can_run(state, &project, &message) {
         return reject(commands, reason);
     }
+    asked(state, id);
     say(state, id, message, None);
     start_run(state, id, commands);
     true
@@ -2472,6 +2519,13 @@ fn busy(state: &AppState, project: &str) -> Result<(), String> {
             None => Ok(()),
         },
     }
+}
+
+/// The user asked task `id` something now: when, for a switch's consent
+/// (D42); and a request after the agent's switch leaves it nothing to undo.
+fn asked(state: &mut AppState, id: u64) {
+    state.asked.insert(id, state.clock);
+    state.agent_switch = None;
 }
 
 /// Adds the user's `message` to task `id`'s transcript.
@@ -2512,6 +2566,7 @@ fn steer(
             stop_task(state, id, commands);
         }
     }
+    asked(state, id);
     say(state, id, message, spoken);
     start_run(state, id, commands);
 }
@@ -2597,7 +2652,6 @@ fn start_run(state: &mut AppState, id: u64, commands: &mut Vec<Command>) {
     let prompt = queue::prompt(task, state.speak);
     task.run = Some(Run {
         id: run,
-        started_at: state.clock,
         playing,
         ..Default::default()
     });
@@ -2785,6 +2839,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 spoken: Some(u.spoken.clone()),
             });
             task.updated_at = now.or(task.updated_at);
+            asked(state, id);
             time_utterance(state, id, &u);
             // Saved and broadcast with its line.
             record(state, &u, id, Landed::Added, commands);
