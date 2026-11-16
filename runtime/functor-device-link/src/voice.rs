@@ -32,8 +32,8 @@ pub const CLIP_CHANNEL: u16 = 1;
 /// Desktop → headset: [`Status`] messages.
 pub const STATUS_CHANNEL: u16 = 2;
 /// Desktop → headset: [`Speech`] messages; headset → desktop: [`PLAYS`].
-/// (3 and 4 are the panel's.)
-pub const SPEECH_CHANNEL: u16 = 5;
+/// (3 and 4 are the panel's, 5 the load status's.)
+pub const SPEECH_CHANNEL: u16 = 6;
 /// Headset → desktop on [`SPEECH_CHANNEL`], once a link: it plays
 /// [`Speech`].
 pub const PLAYS: [u8; 2] = [VERSION, 0];
