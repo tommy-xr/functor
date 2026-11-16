@@ -101,6 +101,7 @@ test("the session pill takes the headset's word while the game runs on one that 
   assert.equal(doing(["receiving", "RECEIVING PROJECT", "23.0 of 67.5 MB (34%), 4 of 9 files"]), "Headset session · sending 34%");
   assert.equal(doing(["assets", "LOADING ASSETS", "2 of 6"]), "Headset session · loading assets");
   assert.equal(doing(["running", "RUNNING"]), "Headset session · running");
+  assert.equal(doing(["up_to_date", "UP TO DATE", "Nothing to send", "71.0 MB already on the headset"]), "Headset session · up to date");
   const here = sessionPill(quest("a", "Quest 3", { ...linked, loading: ["starting", "STARTING", "Checking code"] } as Device["state"]), false, running);
   assert.equal(here.text, "Local session · running");
   // A load that failed there is not a running session's green; a stopped session says stopped.
@@ -137,6 +138,8 @@ test("the headset note says where the game runs, its clock, and the fix while aw
     detail: "23.0 of 67.5 MB (34%), 4 of 9 files",
     fix: null,
   });
+  const held = { ...linked, loading: ["up_to_date", "UP TO DATE", "Nothing to send", "71.0 MB already on the headset"] } as Device["state"];
+  assert.equal(headsetNote(quest("a", "Quest 3", held), session({ kind: "starting" }), null).title, "Up to date on Quest 3");
   const assets = { ...linked, loading: ["assets", "LOADING ASSETS", "2 of 6"] } as Device["state"];
   assert.equal(headsetNote(quest("a", "Quest 3", assets), running, clock).title, "Loading assets on Quest 3");
   const refused = { ...linked, loading: ["failed", "LOAD FAILED", "game.fun:3:1: unknown name"] } as Device["state"];

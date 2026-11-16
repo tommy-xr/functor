@@ -86,6 +86,12 @@ test("a connected card's details", () => {
     "Sending to headset",
     "23.0 of 67.5 MB (34%), 4 of 9 files",
   ]);
+  // A push the headset already held: nothing was sent.
+  assert.deepEqual(row(["up_to_date", "UP TO DATE", "Nothing to send", "71.0 MB already on the headset"]), [
+    "Up to date",
+    "71.0 MB already on the headset",
+  ]);
+  assert.deepEqual(row(["up_to_date", "UP TO DATE", "Nothing to send"]), ["Up to date", "Nothing to send"]);
   assert.deepEqual(row(["starting", "STARTING", "Checking code"]), ["Starting", "Checking code"]);
   assert.deepEqual(row(["assets", "LOADING ASSETS", "2 of 6"]), ["Loading assets", "2 of 6"]);
   assert.deepEqual(row(["reloading", "RELOADING..."]), ["Reloading", "The game is reloading"]);
