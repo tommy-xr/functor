@@ -3184,14 +3184,14 @@ async fn a_spoken_switch_runs_the_new_project_on_the_headset() {
     let (mut said, mut loaded) = (None, false);
     while said.is_none() || !loaded {
         let line = quest.line("");
-        // `idle` first, for a headset that cannot read `done`.
+        // `idle` first, for a headset from before `answered`.
         if line.starts_with("voice 1 ") && line != "voice 1 idle" {
             said = Some(line);
         } else if line.starts_with("request POST /load-project") {
             loaded = line.contains("name=b");
         }
     }
-    assert_eq!(said.unwrap(), "voice 1 done Switched to b");
+    assert_eq!(said.unwrap(), "voice 1 answered Switched to b");
     let state = app
         .state_where("b on the headset", 10, |s| {
             s["active"] == "b"

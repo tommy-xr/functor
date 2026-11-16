@@ -281,9 +281,7 @@ pub const DEBUG_PROTOCOL_SERVICE: &str = "functor debug runtime";
 /// 52 adds who paused the clock ([`PausedBy`]): an optional `by` on `POST
 /// /time`, reported back as `clock.paused_by` on `GET /state`. Additive: an
 /// earlier runtime ignores `by` and omits `paused_by`.
-///
-/// 53 adds the `done` voice stage.
-pub const DEBUG_PROTOCOL_VERSION: u32 = 53;
+pub const DEBUG_PROTOCOL_VERSION: u32 = 52;
 
 /// The well-known localhost port `functor develop` serves this protocol on
 /// when no explicit `--debug-port` is given, so an agent can attach to a
@@ -883,8 +881,6 @@ pub enum VoiceStage {
     Answered { text: String },
     /// The desktop could not act on it.
     Failed { reason: String },
-    /// The desktop did what was asked, without a reload: "Switched to …".
-    Done { text: String },
     /// It never reached the desktop whole: cancelled, or the link failed.
     NotSent { reason: String },
 }

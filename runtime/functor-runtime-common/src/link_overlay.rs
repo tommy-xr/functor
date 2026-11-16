@@ -510,7 +510,6 @@ pub fn toast_lines(toast: &VoiceToast) -> Vec<Line> {
             lines.extend(wrapped.iter().map(|l| line(l, BODY, WHITE)));
             lines
         }
-        VoiceStage::Done { text } => vec![line("DONE", HEADING, CYAN), line(text, BODY, WHITE)],
         VoiceStage::Failed { reason } => {
             vec![line("FAILED", HEADING, PINK), line(reason, BODY, WHITE)]
         }
@@ -1232,16 +1231,6 @@ mod tests {
         assert!((fading - 0.5).abs() < 0.01, "{fading}");
         assert!(toast.look(done + OUTCOME + FADE).is_none());
         assert!(toast.shown.is_none(), "hidden holds nothing");
-
-        // Done says what, and goes as an outcome does.
-        let text = "Switched to examples/hello".to_string();
-        toast.show(VoiceStage::Done { text }, done);
-        let lines = toast_lines(toast.look(done).unwrap().0);
-        assert_eq!(
-            lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
-            ["DONE", "Switched to examples/hello"]
-        );
-        assert!(toast.look(done + OUTCOME + FADE).is_none());
 
         // Idle from the desktop fades it now.
         toast.show(VoiceStage::Working, t);

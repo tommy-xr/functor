@@ -657,11 +657,12 @@ the project is taking the wheel, so it is allowed only when the user asks.
 - **The picker's switch.** The app switches as the project picker does: the
   old game stops and the new one opens paused (D37). A game on a headset
   stays on it: the new project's game runs there too, for this switch and a
-  manual one.
-- **The gate, without judging intent.** Applied only for the run of the task
-  the user is looking at, within 10 minutes of the message that started it,
-  once per run, with "Let the agent arrange views" on (one setting for what
-  the agent may change on screen), and never for a review.
+  manual one, for the session only; the new project's saved placement is
+  unchanged.
+- **The gate, without judging intent.** Applied only for a running task whose
+  project is the one open, within 10 minutes of the message that started the
+  run, once per run, with "Let the agent arrange views" on (one setting for
+  what the agent may change on screen), and never for a review.
 - **The task stays.** A task belongs to its project (D12). The tool answers
   that the app now shows the other project and that the next request works
   there; the run ends with a sentence. Its tool server forgets the game it
@@ -670,8 +671,8 @@ the project is taking the wheel, so it is allowed only when the user asks.
   line: "Switched to *project* — asked by you in *task*", with Undo (back to
   that task) and a dismiss. Switching again, or the next request, clears it.
 - **The headset hears it.** The spoken request ends with "Switched to
-  *project*", shown and said aloud (D47): a new status beside Reloaded,
-  Answered and Failed.
+  *project*", shown and said aloud (D47), as an Answered status: the
+  headset needs no new one.
 
 ### D43 — every request shows where it is
 

@@ -1820,12 +1820,12 @@ pub(crate) fn switch_active(state: &mut AppState, path: String, commands: &mut V
         dir: project_dir(Path::new(&state.repo_root), &path),
         path: path.clone(),
     });
-    let headset = headset_game(state);
+    let headset = headset_game(state).map(str::to_owned);
     // Cleared, so the old project's files never show under the new name.
     state.files.clear();
     state.active = Some(path);
     remember_active(state, commands);
-    carry_headset(state, headset, commands);
+    carry_headset(state, headset);
     // The session follows the active project.
     stop(state, commands);
     if starts_on_open(state) {
@@ -1835,14 +1835,15 @@ pub(crate) fn switch_active(state: &mut AppState, path: String, commands: &mut V
 }
 
 /// The headset the active project's game is placed on, if it is.
-fn headset_game(state: &AppState) -> Option<String> {
+pub(crate) fn headset_game(state: &AppState) -> Option<&str> {
     let game = &state.layouts.get(state.active.as_ref()?)?.game;
-    game.headset.clone().filter(|_| game.placement == Placement::Headset)
+    game.headset.as_deref().filter(|_| game.placement == Placement::Headset)
 }
 
 /// The active project, just opened, runs its game on `headset` too while
 /// it is connected: a switch asked for in the headset stays there (D42).
-fn carry_headset(state: &mut AppState, headset: Option<String>, commands: &mut Vec<Command>) {
+/// For the session only: its saved layout keeps its own placement.
+fn carry_headset(state: &mut AppState, headset: Option<String>) {
     let (Some(device), Some(path)) = (headset, state.active.clone()) else {
         return;
     };
@@ -1851,7 +1852,7 @@ fn carry_headset(state: &mut AppState, headset: Option<String>, commands: &mut V
     }
     let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
     if layout.apply(LayoutOp::PlaceOnHeadset { device }, |_| Ok(())) == Ok(true) {
-        save_layout(state, &path, layout, commands);
+        state.layouts.insert(path, layout);
     }
 }
 

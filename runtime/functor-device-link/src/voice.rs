@@ -6,8 +6,8 @@
 //!   from 0, then `End` (or `Cancel`). The audio is 16 kHz mono 16-bit
 //!   little-endian PCM, fixed by [`VERSION`].
 //! - [`STATUS_CHANNEL`] carries [`Status`]: `Heard` → `Transcribed` →
-//!   `Working` → `Reloaded`, `Answered` or `Done`, or `Failed` at any
-//!   point; `Idle` clears.
+//!   `Working` → `Reloaded` or `Answered`, or `Failed` at any point; `Idle`
+//!   clears.
 //!
 //! Every message starts with [`VERSION`]. `decode` refuses another version
 //! and anything over the per-message limits below; the receiver enforces
@@ -175,12 +175,6 @@ pub enum Stage {
     Answered {
         text: String,
     },
-    /// The desktop did what was asked, in a few words ("Switched to
-    /// examples/hello"). A headset from before this stage cannot read it,
-    /// so the desktop sends `Idle` first.
-    Done {
-        text: String,
-    },
 }
 
 /// The desktop's progress, desktop → headset.
@@ -222,10 +216,6 @@ impl Status {
                 w.u8(7);
                 w.str16(&tidy(text, MAX_TEXT));
             }
-            Stage::Done { text } => {
-                w.u8(8);
-                w.str16(&tidy(text, MAX_REASON));
-            }
         }
         w.0
     }
@@ -258,9 +248,6 @@ impl Status {
             6 => Stage::Idle,
             7 => Stage::Answered {
                 text: r.text16(MAX_TEXT)?,
-            },
-            8 => Stage::Done {
-                text: r.text16(MAX_REASON)?,
             },
             _ => return Err(Error::Malformed("voice stage")),
         };
@@ -381,9 +368,6 @@ mod tests {
             Stage::Idle,
             Stage::Answered {
                 text: "The ball is red already.".into(),
-            },
-            Stage::Done {
-                text: "Switched to examples/hello".into(),
             },
         ];
         for (i, stage) in stages.into_iter().enumerate() {

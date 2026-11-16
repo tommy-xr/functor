@@ -149,11 +149,10 @@ struct HubState {
 }
 
 /// `status` as the frames a headset is sent. One from before `Answered`
-/// or `Done` drops that stage unread, so `Idle` goes first: its toast
-/// clears rather than stays on Working.
+/// drops that stage unread, so `Idle` goes first: its toast clears rather
+/// than stays on Working.
 fn status_frames(status: &voice::Status) -> Vec<wire::Frame> {
-    let late = matches!(status.stage, voice::Stage::Answered { .. } | voice::Stage::Done { .. });
-    let clear = late.then(|| {
+    let clear = matches!(status.stage, voice::Stage::Answered { .. }).then(|| {
         voice::Status {
             utterance: status.utterance,
             stage: voice::Stage::Idle,
@@ -459,7 +458,6 @@ impl Hub {
                     Core::Working => voice::Stage::Working,
                     Core::Reloaded => voice::Stage::Reloaded,
                     Core::Answered(text) => voice::Stage::Answered { text },
-                    Core::Done(text) => voice::Stage::Done { text },
                     Core::Failed(reason) => voice::Stage::Failed { reason },
                 };
                 let status = voice::Status {

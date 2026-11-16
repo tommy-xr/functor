@@ -268,8 +268,7 @@ pub(crate) fn voice_ended(state: &mut AppState, device: &str, utterance: u64, st
     let (now, clock) = (state.now, state.clock);
     if let Some(r) = spoken(state, device, utterance) {
         let outcome = match stage {
-            // A switch's (D42) settles from its run's end, as a typed one's.
-            Stage::Working | Stage::Done(_) => return,
+            Stage::Working => return,
             Stage::Reloaded => Outcome::Changed {
                 reload: Reload::Reloaded,
             },

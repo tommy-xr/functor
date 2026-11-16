@@ -54,8 +54,6 @@ pub fn spoken(items: &[Item], run: u64, stage: &Stage, review: bool) -> Option<S
         Stage::Answered(_) => {
             Some(line.unwrap_or_else(|| "I have answered in the conversation.".to_string()))
         }
-        // Said as the headset shows it: the run's reply comes later.
-        Stage::Done(text) => Some(for_the_ear(text)),
         Stage::Reloaded => {
             let line = line.unwrap_or_else(|| "Done.".to_string());
             let asks = line.to_lowercase().contains("ready for you");

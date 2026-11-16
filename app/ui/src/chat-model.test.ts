@@ -227,5 +227,7 @@ test("the agent's project switch reads as where it went and the task that asked"
   assert.deepEqual(switchLine({ ...sw, title: "" }), { to: "examples/b", task: "Untitled task" });
   assert.equal(switchLine(null), null);
   assert.equal(phrase("mcp__mis__open_project", { path: "examples/b" }), "Switched to examples/b");
+  const refused = phraseText(stepPhrase("mcp__mis__open_project", { path: "examples/b" }, true));
+  assert.equal(refused, "Could not switch to examples/b");
   assert.equal(phrase("mcp__mis__list_projects"), "Listed the projects");
 });

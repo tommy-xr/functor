@@ -30,6 +30,10 @@ pub struct AgentSwitch {
     pub from: String,
     /// The project the app switched to.
     pub to: String,
+    /// `to`'s current task before (`None`: none chosen), back on Undo.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub shown: Option<Option<u64>>,
 }
 
 /// Run `run` of task `id`, while it runs; never a review's.
@@ -128,18 +132,20 @@ the user to open another folder from the project switcher"
         return Err(nothing(format!("{path} is already open")));
     }
     let to = path.to_string();
+    let name = (state.projects.iter().find(|p| p.path == to)).map_or(to.clone(), |p| p.name.clone());
     let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
     task.run.as_mut().expect("running").switched = true;
+    // The chat there starts a new task.
+    let shown = state.current_task.insert(to.clone(), None);
     state.agent_switch = Some(AgentSwitch {
         task: id,
         title,
         from: from.clone(),
         to: to.clone(),
+        shown,
     });
     switch_active(state, to.clone(), commands);
-    // The chat there starts a new task.
-    state.current_task.insert(to.clone(), None);
-    voice::switched(state, id, &format!("Switched to {to}"), commands);
+    voice::switched(state, id, &format!("Switched to {name}"), commands);
     Ok((
         format!(
             "The app now shows {to}. This task stays with {from}; say or type the next request to \
@@ -153,6 +159,14 @@ work in {to}. Tell the user so in one sentence and stop: your game tools no long
 /// the task that asked.
 pub(crate) fn undo(state: &mut AppState, commands: &mut Vec<Command>) -> Result<bool, String> {
     let switch = state.agent_switch.take().ok_or("there is no switch to undo")?;
+    // `to`'s chat shows what it did, unless the user chose a task there since.
+    if state.current_task.get(&switch.to) == Some(&None) {
+        let exists = |id: &u64| state.tasks.iter().any(|t| t.id == *id);
+        match switch.shown {
+            None => state.current_task.remove(&switch.to),
+            Some(shown) => state.current_task.insert(switch.to.clone(), shown.filter(exists)),
+        };
+    }
     switch_active(state, switch.from.clone(), commands);
     if state.tasks.iter().any(|t| t.id == switch.task) {
         state.current_task.insert(switch.from, Some(switch.task));
@@ -319,6 +333,8 @@ mod tests {
         let (back, commands) = update(s.clone(), client(ClientMsg::UndoSwitch));
         assert_eq!(back.active.as_deref(), Some(A));
         assert_eq!(back.current_task.get(A), Some(&Some(1)));
+        // B's chat had no task chosen before, and has none again.
+        assert_eq!(back.current_task.get(B), None);
         assert_eq!(back.agent_switch, None);
         assert!(commands.iter().any(|c| matches!(c, Command::StopSession { .. })));
 
@@ -363,31 +379,41 @@ mod tests {
             c,
             Command::StartHeadset { dir, tunnel, .. } if dir.ends_with(B) && tunnel == "http://127.0.0.1:6000"
         )));
-        assert_eq!(stages(&commands), [(1, Stage::Done("Switched to examples/b".into()))]);
-        assert_eq!(aloud(&commands), ["Switched to examples/b"]);
+        assert_eq!(stages(&commands), [(1, Stage::Answered("Switched to b".into()))]);
+        assert_eq!(aloud(&commands), ["Switched to b"]);
+        assert!(!saves(&commands, B), "for the session only");
         let (s, commands) = update(s, agent(4, 0, finished()));
         assert_eq!((stages(&commands), aloud(&commands)), (vec![], vec![]));
         let (_, commands) = update(s, ended(4, 0));
         assert_eq!((stages(&commands), aloud(&commands)), (vec![], vec![]));
     }
 
-    /// The picker's own switch keeps the game on the headset too.
+    /// Whether `commands` save `project`'s layout.
+    fn saves(commands: &[Command], project: &str) -> bool {
+        (commands.iter()).any(|c| matches!(c, Command::SaveLayout { dir, .. } if dir.ends_with(project)))
+    }
+
+    /// The picker's own switch keeps the game on the headset too, for the
+    /// session: the project's saved layout keeps its own placement.
     #[test]
-    fn a_manual_switch_on_the_headset_stays_there() {
+    fn a_manual_switch_on_the_headset_stays_there_for_the_session() {
         let mut s = voice_ready();
         s.start_on_open = true;
-        let (s, commands) = update(s, client(ClientMsg::SetActiveProject { path: B.into() }));
+        let (mut s, commands) = update(s, client(ClientMsg::SetActiveProject { path: B.into() }));
         assert_eq!(s.layouts[B].game.placement, Placement::Headset);
         assert!(commands.iter().any(|c| matches!(c, Command::StartHeadset { dir, .. } if dir.ends_with(B))));
-        // Back to a pane there, a switch back keeps a's own placement.
-        let pane = client(ClientMsg::Layout {
-            op: LayoutOp::Place {
-                placement: Placement::Pane,
-            },
-        });
-        let (s, _) = update(s, pane);
+        assert!(!saves(&commands, B));
+        // A saved in a pane: a switch back from the headset carries it there
+        // too, and leaves its saved layout as it is.
+        let mut pane = s.layouts[A].clone();
+        let place = LayoutOp::Place {
+            placement: Placement::Pane,
+        };
+        assert_eq!(pane.apply(place, |_| Ok(())), Ok(true));
+        s.layouts.insert(A.into(), pane);
         let (s, commands) = update(s, client(ClientMsg::SetActiveProject { path: A.into() }));
         assert_eq!(s.layouts[A].game.placement, Placement::Headset);
-        assert!(commands.iter().any(|c| matches!(c, Command::StartHeadset { .. })));
+        assert!(commands.iter().any(|c| matches!(c, Command::StartHeadset { dir, .. } if dir.ends_with(A))));
+        assert!(!saves(&commands, A));
     }
 }

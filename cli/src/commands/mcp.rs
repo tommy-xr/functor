@@ -900,9 +900,14 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
             .map(|(id, _)| id.clone())
             .collect();
         for id in &ids {
-            if let Some(session) = self.sessions.remove(id) {
+            if let Ok(session) = self.remove(id) {
                 // An operation already past its gate stops at its next check.
                 session.closing.store(true, Ordering::Release);
+                // A connect in flight to it attaches nothing: the URL may be
+                // the next game's.
+                if let Some(pending) = self.pending_connects.remove(&session.url) {
+                    pending.closing.store(true, Ordering::Release);
+                }
             }
             self.gone.insert(id.clone(), why.to_string());
         }
@@ -6986,6 +6991,23 @@ mod tests {
         assert!(error.contains("queued operation did not run"), "{error}");
         registry.remove("s1").unwrap();
         assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:1");
+    }
+
+    #[tokio::test]
+    async fn forgetting_attached_sessions_cancels_a_connect_in_flight_to_them() {
+        let server = FunctorMcp::new();
+        let url = "http://127.0.0.1:1";
+        server.sessions.lock().unwrap().insert(url.into(), None, None, None, None);
+        let reservation = server.reserve_connect(url);
+        server.forget_attached("switched").await;
+        let error = reservation.finish().unwrap_err();
+        assert!(error.contains("stopping"), "{error}");
+        let registry = server.sessions.lock().unwrap();
+        assert!(registry.sessions.is_empty() && registry.pending_connects.is_empty());
+        assert!(registry.url("s1").unwrap_err().contains("switched"));
+        // A later connect starts afresh.
+        drop(registry);
+        assert_eq!(server.reserve_connect(url).finish().unwrap(), "s2");
     }
 
     #[tokio::test]

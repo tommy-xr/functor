@@ -55,8 +55,8 @@ const GAME_TOOLS = new Map(
   }),
 );
 
-/** The short human line for a tool call, from its name and input. */
-export function stepPhrase(name: string, input: JsonValue): Phrase {
+/** The short human line for a tool call, from its name and input; `failed` when its result is an error. */
+export function stepPhrase(name: string, input: JsonValue, failed = false): Phrase {
   const bare = toolName(name);
   const arg = (key: string) => {
     const v = isObject(input) ? input[key] : undefined;
@@ -99,6 +99,8 @@ export function stepPhrase(name: string, input: JsonValue): Phrase {
     }
     case "open_project": {
       const path = arg("path");
+      // A refused switch switched nothing.
+      if (failed) return path ? { text: "Could not switch to", code: path } : { text: "Could not switch the project" };
       return path ? { text: "Switched to", code: path } : { text: "Switched the project" };
     }
   }

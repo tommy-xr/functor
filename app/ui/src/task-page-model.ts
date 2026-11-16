@@ -42,7 +42,7 @@ export function taskPage(items: readonly Item[], running: number | null): TaskPa
       case "tool": {
         const state: StepState =
           item.result === null ? (live ? "pending" : "unanswered") : FAILED.test(item.result) ? "failed" : "ok";
-        run?.steps.push({ phrase: stepPhrase(item.name, item.input), state });
+        run?.steps.push({ phrase: stepPhrase(item.name, item.input, item.is_error === true), state });
         break;
       }
       case "finished":

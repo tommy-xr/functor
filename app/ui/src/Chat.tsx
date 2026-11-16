@@ -819,7 +819,7 @@ function ToolCall({
   /** The task's project, which relative tool paths are in. */
   project: string;
 }) {
-  const phrase = stepPhrase(item.name, item.input);
+  const phrase = stepPhrase(item.name, item.input, item.is_error === true);
   const kind = toolKind(item.name);
   // The change's counts for the file this call edited, while that file is in it.
   const path = toolFile(item.input);
