@@ -2606,6 +2606,8 @@ fn start_now(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     }
     let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
     task.queued = None;
+    // The user acted since the switch: its Undo goes (consent keeps its age).
+    state.agent_switch = None;
     start_run(state, id, commands);
     true
 }

@@ -201,6 +201,10 @@ impl FunctorMcp {
         &self,
         Parameters(args): Parameters<OpenProjectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // One switch at a time: a refusal's unrevoke must not undo another
+        // switch's revocation.
+        static SWITCHING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        let _one = SWITCHING.get_or_init(Default::default).lock().await;
         // Detached first: once the app switches, a reused URL (a headset's)
         // serves the next project's game, and a lost reply must not leave
         // this run reaching it.
