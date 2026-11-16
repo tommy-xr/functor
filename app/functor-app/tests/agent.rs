@@ -1378,6 +1378,87 @@ async fn views_through_the_real_tool_server() {
     assert!(!layout.agent.arranges);
 }
 
+/// The project switch (D42) with the real `functor mcp` (`FUNCTOR_BIN`): a
+/// run lists the projects and opens `b`; the app shows `b` with the line
+/// naming the task, the run ends, and the next request is a task in `b`.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_switch_through_the_real_tool_server() {
+    use serde_json::json;
+    use socket::*;
+    let Some(functor) = std::env::var_os("FUNCTOR_BIN")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+    else {
+        eprintln!("SKIPPED: set FUNCTOR_BIN to a built `functor` to use the real tool server");
+        return;
+    };
+    let repo = tree();
+    std::fs::create_dir(repo.path().join("b")).unwrap();
+    for (name, text) in [("functor.json", r#"{"language": "functor-lang"}"#), ("game.fun", "")] {
+        std::fs::write(repo.path().join("b").join(name), text).unwrap();
+    }
+    let home = tempfile::tempdir().unwrap();
+    let fixture = home.path().join("switch.jsonl");
+    let lines = [
+        r#"{"ms":0,"event":{"type":"started","session":"fake-switch-1","model":"claude-model"}}"#,
+        r#"{"ms":0,"mcp":{"tool":"list_projects","arguments":{}}}"#,
+        r#"{"ms":0,"mcp":{"tool":"open_project","arguments":{"path":"b"}}}"#,
+        r#"{"ms":0,"event":{"type":"text","text":"The app shows b now."}}"#,
+        r#"{"ms":0,"event":{"type":"finished","ok":true,"summary":"The app shows b now."}}"#,
+    ];
+    std::fs::write(&fixture, lines.join("\n")).unwrap();
+    let app = serve(repo.path(), home.path(), &functor, &fixture);
+    let mut ws = connect(&app.ws).await;
+    assert_eq!(next(&mut ws).await["state"]["active"], "a");
+    send(
+        &mut ws,
+        json!({"type": "new_task", "message": "Switch to another sample", "harness": "claude"}),
+    )
+    .await;
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state" && m["state"]["active"] == "b"
+    })
+    .await;
+    let switch = &state["state"]["agent_switch"];
+    assert_eq!(
+        (&switch["task"], &switch["from"], &switch["to"]),
+        (&json!(1), &json!("a"), &json!("b"))
+    );
+    assert_eq!(state["state"]["current_task"]["b"], Value::Null);
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state" && m["state"]["tasks"][0]["run"].is_null()
+    })
+    .await;
+    assert_eq!(state["state"]["tasks"][0]["project"], "a", "the task stays");
+    send(&mut ws, json!({"type": "get_transcript", "task": 1})).await;
+    let (transcript, _) = until(&mut ws, |m| m["type"] == "transcript").await;
+    let results: Vec<&str> = (transcript["items"].as_array().unwrap().iter())
+        .filter_map(|i| i["result"].as_str())
+        .collect();
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert!(results[0].contains("\na (open)\nb\n"), "{}", results[0]);
+    assert!(
+        results[1].starts_with("The app now shows b. This task stays with a;"),
+        "{}",
+        results[1]
+    );
+
+    // The next request is a task in b.
+    send(
+        &mut ws,
+        json!({"type": "new_task", "message": "Make it red", "harness": "claude"}),
+    )
+    .await;
+    let (state, _) = until(&mut ws, |m| {
+        m["type"] == "state" && m["state"]["tasks"].as_array().is_some_and(|t| t.len() == 2)
+    })
+    .await;
+    let task = &state["state"]["tasks"][1];
+    assert_eq!((&task["id"], &task["project"]), (&json!(2), &json!("b")));
+    assert!(state["state"]["agent_switch"].is_null());
+}
+
 /// A review's fake run: it reads the change and reports through the real
 /// tool server, after `extra` lines (an edit, say).
 #[cfg(unix)]

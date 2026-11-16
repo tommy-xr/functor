@@ -159,6 +159,11 @@ pub enum ClientMsg {
     RemoveRecent {
         path: String,
     },
+    /// Undo the agent's project switch (`AppState::agent_switch`): back to
+    /// the project it was asked from, showing the task that asked.
+    UndoSwitch,
+    /// Hide the agent's project switch line, keeping the project.
+    DismissSwitch,
     /// Show step `step` of the walkthrough at transcript index `item` of
     /// `task` (a click on its card).
     WalkthroughStep {

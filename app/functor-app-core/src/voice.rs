@@ -5,8 +5,7 @@
 
 use crate::devices::LinkCommand;
 use crate::route::By;
-use crate::layout::Placement;
-use crate::state::{connected, AppState, Command};
+use crate::state::{connected, headset_game, AppState, Command};
 use crate::tasks::{Item, Spoken};
 
 /// After a run ends ok, how long the game has to reload with its edit
@@ -125,9 +124,7 @@ change. Choose it as the game's place on your computer."
 /// program revision (`None` until polled). The active project's game is
 /// placed there and the session is live.
 fn on_headset(state: &AppState, device: &str) -> Option<(u64, Option<u64>)> {
-    let project = state.active.as_deref()?;
-    let game = &state.layouts.get(project)?.game;
-    if game.placement != Placement::Headset || game.headset.as_deref() != Some(device) {
+    if headset_game(state) != Some(device) {
         return None;
     }
     let session = state.session.as_ref().filter(|s| s.status.is_live())?;
@@ -140,6 +137,24 @@ pub(crate) fn status(commands: &mut Vec<Command>, device: &str, utterance: u64, 
         utterance,
         stage,
     }));
+}
+
+/// `task`'s run switched the project (D42): its utterances are answered
+/// `what` now, shown and said, as the game they were said to has gone.
+/// Their requests settle from the run's end, as a typed one's.
+pub(crate) fn switched(state: &mut AppState, task: u64, what: &str, commands: &mut Vec<Command>) {
+    let (done, kept) = std::mem::take(&mut state.voice)
+        .into_iter()
+        .partition::<Vec<_>, _>(|job| job.task == task);
+    state.voice = kept;
+    for job in done {
+        status(commands, &job.device, job.utterance, Stage::Answered(what.to_string()));
+        // Aloud too (D47): what it shows, as the run's reply comes later.
+        if state.speak {
+            let text = crate::reply::for_the_ear(what);
+            commands.push(Command::Link(LinkCommand::Say { device: job.device, text }));
+        }
+    }
 }
 
 /// Follows `task`'s run, started for `u` (`Working` now), or the one it

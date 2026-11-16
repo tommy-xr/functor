@@ -596,6 +596,12 @@ struct Registry {
     groups: BTreeMap<String, Arc<tokio::sync::Mutex<Group>>>,
     session_groups: BTreeMap<String, String>,
     next_group: u32,
+    /// Attached sessions forgotten on purpose, by id, with why: a call
+    /// naming one says so rather than listing the others.
+    gone: BTreeMap<String, String>,
+    /// URLs whose attached sessions were forgotten for a project switch: the
+    /// runtime there may be another project's now, so no connect reaches it.
+    revoked: BTreeSet<String>,
 }
 
 impl Registry {
@@ -766,6 +772,7 @@ impl Registry {
                 Err(format!("session {id:?} is stopping; no new operation can start"))
             }
             Some(session) => Ok(session.url.clone()),
+            None if self.gone.contains_key(id) => Err(format!("session {id:?}: {}", self.gone[id])),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
             )),
@@ -796,6 +803,7 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
                 quarantined: session.quarantined.clone(),
                 closing: session.closing.clone(),
             }),
+            None if self.gone.contains_key(id) => Err(format!("session {id:?}: {}", self.gone[id])),
             None if self.sessions.is_empty() => Err(format!(
                 "unknown session {id:?}: no sessions yet — start one with launch_game or connect_game"
             )),
@@ -887,6 +895,45 @@ stop an owned session, or restart both an attached runtime and this MCP server, 
         self.url_quarantines.remove(url);
     }
 
+    /// Forget every attached session, `why` named to a later call, and
+    /// revoke their URLs and those being connected; the ids and the URLs.
+    /// Launched sessions (and their URLs) stay.
+    fn forget_attached(&mut self, why: &str) -> (Vec<String>, BTreeSet<String>) {
+        let ids: Vec<String> = (self.sessions.iter())
+            .filter(|(_, s)| !s.owned)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut urls: BTreeSet<String> = self.pending_connects.keys().cloned().collect();
+        for id in &ids {
+            if let Ok(session) = self.remove(id) {
+                // An operation already past its gate stops at its next check.
+                session.closing.store(true, Ordering::Release);
+                urls.insert(session.url);
+            }
+            self.gone.insert(id.clone(), why.to_string());
+        }
+        urls.retain(|url| !self.sessions.values().any(|s| s.owned && &s.url == url));
+        for url in &urls {
+            // A connect in flight there attaches nothing.
+            if let Some(pending) = self.pending_connects.remove(url) {
+                pending.closing.store(true, Ordering::Release);
+            }
+        }
+        self.revoked.extend(urls.iter().cloned());
+        (ids, urls)
+    }
+
+    /// Why `url` may not be connected to, if it was revoked.
+    fn refuse_revoked(&self, url: &str) -> Result<(), String> {
+        match self.revoked.contains(url) {
+            true => Err(format!(
+                "{url} was this run's game before it switched the app's project, and may be \
+another project's now: this run does not reach it"
+            )),
+            false => Ok(()),
+        }
+    }
+
     /// Kill every owned child. Attached sessions are only forgotten.
     fn shutdown(registry: &Arc<Mutex<Registry>>) {
         let mut guard = registry.lock().expect("mcp registry poisoned");
@@ -914,6 +961,7 @@ impl ConnectReservation {
             .upgrade()
             .ok_or_else(|| "the MCP session registry shut down during connect".to_string())?;
         let mut guard = registry.lock().expect("mcp registry poisoned");
+        guard.refuse_revoked(&self.url)?;
         let same_lifecycle = guard
             .pending_connects
             .get(&self.url)
@@ -2403,6 +2451,7 @@ impl FunctorMcp {
         url: &str,
         cancelled: impl Future<Output = ()>,
     ) -> Result<(String, Value), String> {
+        (self.sessions.lock().expect("mcp registry poisoned")).refuse_revoked(url)?;
         let reservation = self.reserve_connect(url);
         let target = reservation.target();
         let _operation = acquire_target_operation(&target, cancelled).await?;
@@ -2411,6 +2460,24 @@ impl FunctorMcp {
         // lifecycle closing. Recheck atomically with insertion.
         let id = reservation.finish()?;
         Ok((id, discovery))
+    }
+
+    /// Forget every attached session (see [`Registry::forget_attached`]);
+    /// the URLs revoked.
+    pub(super) async fn forget_attached(&self, why: &str) -> BTreeSet<String> {
+        let (ids, urls) =
+            (self.sessions.lock().expect("mcp registry poisoned")).forget_attached(why);
+        for id in ids {
+            self.forget_group_member(&id).await;
+        }
+        urls
+    }
+
+    /// Lets `urls` be connected to again: the switch they were revoked for
+    /// was refused.
+    pub(super) fn unrevoke(&self, urls: &BTreeSet<String>) {
+        let mut registry = self.sessions.lock().expect("mcp registry poisoned");
+        registry.revoked.retain(|url| !urls.contains(url));
     }
 
     /// Store the embedding app's context object for the `app_context` tool.
@@ -5778,7 +5845,8 @@ mod tests {
             ..FunctorMcp::new()
         });
         assert!(has(&linked, "show_view") && has(&linked, "present"), "{linked:?}");
-        assert_eq!(linked.len(), stdio.len() + 3);
+        assert!(has(&linked, "list_projects") && has(&linked, "open_project"), "{linked:?}");
+        assert_eq!(linked.len(), stdio.len() + 5);
     }
 
     #[test]
@@ -6955,6 +7023,39 @@ mod tests {
         assert!(error.contains("queued operation did not run"), "{error}");
         registry.remove("s1").unwrap();
         assert_eq!(registry.url("s2").unwrap(), "http://127.0.0.1:1");
+    }
+
+    #[tokio::test]
+    async fn forgetting_attached_sessions_cancels_a_connect_in_flight_to_them() {
+        let server = FunctorMcp::new();
+        let url = "http://127.0.0.1:1";
+        server.sessions.lock().unwrap().insert(url.into(), None, None, None, None);
+        let reservation = server.reserve_connect(url);
+        server.forget_attached("switched").await;
+        let error = reservation.finish().unwrap_err();
+        assert!(error.contains("another project's"), "{error}");
+        let registry = server.sessions.lock().unwrap();
+        assert!(registry.sessions.is_empty() && registry.pending_connects.is_empty());
+        assert!(registry.url("s1").unwrap_err().contains("switched"));
+        drop(registry);
+        // The URL may serve the next project's game now: no later connect
+        // reaches it either.
+        let refused = server.reserve_connect(url).finish().unwrap_err();
+        assert!(refused.contains("another project's"), "{refused}");
+        // Unless the switch was refused.
+        server.unrevoke(&std::collections::BTreeSet::from([url.to_string()]));
+        assert_eq!(server.reserve_connect(url).finish().unwrap(), "s2");
+    }
+
+    #[tokio::test]
+    async fn forgetting_attached_sessions_revokes_a_first_connect_in_flight() {
+        let server = FunctorMcp::new();
+        let url = "http://127.0.0.1:1";
+        let reservation = server.reserve_connect(url);
+        let revoked = server.forget_attached("switched").await;
+        assert_eq!(revoked, std::collections::BTreeSet::from([url.to_string()]));
+        assert!(reservation.finish().is_err());
+        assert!(server.reserve_connect(url).finish().is_err());
     }
 
     #[tokio::test]

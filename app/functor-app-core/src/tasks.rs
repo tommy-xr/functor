@@ -182,6 +182,10 @@ pub struct Run {
     /// The agent reported its start, so it has the run's messages.
     #[serde(default)]
     pub started: bool,
+    /// It switched the open project (D42), which a run may do once.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub switched: bool,
     /// The game session that was playing when the run took it (or that the
     /// user set playing since): resumed when the run ends, as the agent's
     /// `step` leaves it paused.

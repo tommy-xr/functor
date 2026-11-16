@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::activity::{activities, Activity};
+use crate::agent_switch::{self, AgentSwitch};
 use crate::agent_view::{
     agent_view, app_context, auto_apply, prune_highlight, publish_review, refresh_contexts,
     step_clicked, AppContext, Highlight, ViewReply, ViewRequest,
@@ -19,7 +20,7 @@ use crate::decision::{decisions, Decision};
 use crate::devices::{self, on_link, DeviceState, Devices, LinkCommand, LinkEvent};
 use crate::evidence::{self, Evidence, EvidenceState};
 use crate::folders::{mark_missing, remember, Recent};
-use crate::layout::{Layout, LayoutOp, Placement, Target, View};
+use crate::layout::{GamePlacement, Layout, LayoutOp, Placement, Target, View};
 use crate::panel::{client_msg, refresh_panels, Panel};
 use crate::projects::{check_relative, default_project, project_dir, relative, Project};
 use crate::protocol::{ClientMsg, ServerMsg};
@@ -156,6 +157,19 @@ pub struct AppState {
     pub first_task: Option<(u64, String, Harness)>,
     /// What the agent or a walkthrough step last pointed at (D25).
     pub highlight: Option<Highlight>,
+    /// The agent's last project switch, asked for by the user (D42), until
+    /// they undo it, dismiss it or switch themselves.
+    pub agent_switch: Option<AgentSwitch>,
+    /// The active project, its game carried onto a headset by a switch
+    /// (D42), and its own placement: what its saved layout keeps.
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub carried: Option<(String, GamePlacement)>,
+    /// When (`clock`) the user last asked each task something: a switch is
+    /// taken as asked for only soon after (D42).
+    #[serde(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
+    pub asked: BTreeMap<u64, u64>,
     /// The page's canvas is too narrow for panes side by side, so they
     /// stack: the agent's views make no splits there.
     #[serde(skip)]
@@ -289,6 +303,9 @@ impl AppState {
             last_parent: None,
             first_task: None,
             highlight: None,
+            agent_switch: None,
+            carried: None,
+            asked: BTreeMap::new(),
             highlight_seq: 0,
             canvas_stacked: false,
             transport_watched: false,
@@ -688,25 +705,18 @@ pub fn update(mut state: AppState, event: Event) -> (AppState, Vec<Command>) {
     let (changed, from_client) = match event {
         Event::Client(ClientMsg::GetState) => (false, true),
         Event::Client(ClientMsg::SetActiveProject { path }) => {
-            let switch = state.active.as_ref() != Some(&path)
-                && state.projects.iter().any(|p| p.path == path);
-            if switch {
-                commands.push(Command::ListFiles {
-                    dir: project_dir(Path::new(&state.repo_root), &path),
-                    path: path.clone(),
-                });
-                // Cleared, so the old project's files never show under the new name.
-                state.files.clear();
-                state.active = Some(path);
-                remember_active(&mut state, &mut commands);
-                // The session follows the active project.
-                stop(&mut state, &mut commands);
-                if starts_on_open(&state) {
-                    start(&mut state, &mut commands);
-                }
+            let switched = switch_active(&mut state, path, &mut commands);
+            // The user chose: the agent's switch is no longer theirs to undo.
+            if switched {
+                state.agent_switch = None;
             }
-            (switch, true)
+            (switched, true)
         }
+        Event::Client(ClientMsg::UndoSwitch) => match agent_switch::undo(&mut state, &mut commands) {
+            Ok(changed) => (changed, true),
+            Err(reason) => (reject(&mut commands, reason), false),
+        },
+        Event::Client(ClientMsg::DismissSwitch) => (state.agent_switch.take().is_some(), true),
         // Input arrives at pointer rate, so it is never answered with the state.
         // Only to a hidden session the game view shows: never to a game in
         // its own window or on a headset (whose mirror is view-only).
@@ -1527,6 +1537,9 @@ fn opened(
         last_parent: _,
         first_task: _,
         highlight: _,
+        agent_switch: _,
+        carried: _,
+        asked: _,
         highlight_seq: _,
         canvas_stacked: _,
         transport_watched: _,
@@ -1560,6 +1573,10 @@ fn opened(
         layouts,
         // The old folder's highlight could name a project of the same path.
         highlight: None,
+        // Its task and projects are the old folder's.
+        agent_switch: None,
+        carried: None,
+        asked: BTreeMap::new(),
         ..std::mem::replace(state, AppState::none())
     };
     remember_active(state, commands);
@@ -1808,19 +1825,90 @@ fn created(
     true
 }
 
+/// Makes `path`, a project in the open folder, the active one, as the
+/// project picker does: its files listed, the old game stopped and the new
+/// one started (D37), on the headset the old one ran on. Whether it switched.
+pub(crate) fn switch_active(state: &mut AppState, path: String, commands: &mut Vec<Command>) -> bool {
+    if state.active.as_ref() == Some(&path) || !state.projects.iter().any(|p| p.path == path) {
+        return false;
+    }
+    commands.push(Command::ListFiles {
+        dir: project_dir(Path::new(&state.repo_root), &path),
+        path: path.clone(),
+    });
+    let headset = headset_game(state).map(str::to_owned);
+    // A carry lasts while its project is open: back to its own placement.
+    if let Some((project, own)) = state.carried.take() {
+        if let Some(layout) = state.layouts.remove(&project) {
+            state.layouts.insert(project, uncarried(layout, &own));
+        }
+    }
+    // Cleared, so the old project's files never show under the new name.
+    state.files.clear();
+    state.active = Some(path);
+    remember_active(state, commands);
+    carry_headset(state, headset);
+    // The session follows the active project.
+    stop(state, commands);
+    if starts_on_open(state) {
+        start(state, commands);
+    }
+    true
+}
+
+/// The headset the active project's game is placed on, if it is.
+pub(crate) fn headset_game(state: &AppState) -> Option<&str> {
+    let game = &state.layouts.get(state.active.as_ref()?)?.game;
+    game.headset.as_deref().filter(|_| game.placement == Placement::Headset)
+}
+
+/// The active project, just opened, runs its game on `headset` too while
+/// it is connected: a switch asked for in the headset stays there (D42).
+/// For the session only: its saved layout keeps its own placement.
+fn carry_headset(state: &mut AppState, headset: Option<String>) {
+    let (Some(device), Some(path)) = (headset, state.active.clone()) else {
+        return;
+    };
+    if !connected(&state.devices, &device) {
+        return;
+    }
+    let mut layout = state.layouts.get(&path).cloned().unwrap_or_default();
+    let own = layout.game.clone();
+    if layout.apply(LayoutOp::PlaceOnHeadset { device }, |_| Ok(())) == Ok(true) {
+        state.layouts.insert(path.clone(), layout);
+        state.carried = Some((path, own));
+    }
+}
+
+/// `layout` with its game back in its `own` placement, undoing a carry.
+fn uncarried(mut layout: Layout, own: &GamePlacement) -> Layout {
+    let op = match (own.placement, own.headset.clone()) {
+        (Placement::Headset, Some(device)) => LayoutOp::PlaceOnHeadset { device },
+        (placement, _) => LayoutOp::Place { placement },
+    };
+    let _ = layout.apply(op, |_| Ok(()));
+    layout
+}
+
 /// Puts the active project first in the recent projects.
 fn remember_active(state: &mut AppState, commands: &mut Vec<Command>) {
     let Some(active) = &state.active else {
         return;
     };
-    // Rebuilt from its parts, so one directory has one spelling: on Windows
-    // `games/a` under `C:\r` joins as `C:\r\games/a`.
-    let dir: PathBuf = project_dir(Path::new(&state.repo_root), active)
-        .components()
-        .collect();
-    if remember(&mut state.recents, &dir.to_string_lossy()) {
+    let dir = recent_dir(state, active);
+    if remember(&mut state.recents, &dir) {
         save_recents(state, commands);
     }
+}
+
+/// Project `path`'s directory as the recent projects spell it: rebuilt
+/// from its parts, so one directory has one spelling (on Windows `games/a`
+/// under `C:\r` joins as `C:\r\games/a`).
+pub(crate) fn recent_dir(state: &AppState, path: &str) -> String {
+    let dir: PathBuf = project_dir(Path::new(&state.repo_root), path)
+        .components()
+        .collect();
+    dir.to_string_lossy().into_owned()
 }
 
 fn save_recents(state: &AppState, commands: &mut Vec<Command>) {
@@ -2093,9 +2181,21 @@ pub(crate) fn save_layout(
     layout: Layout,
     commands: &mut Vec<Command>,
 ) {
+    let mut saved = layout.clone();
+    if let Some((carried, own)) = &state.carried {
+        let runs = |l: &Layout| (l.game.placement, l.game.headset.clone());
+        let before = state.layouts.get(project);
+        if carried == project && before.map(runs) == Some(runs(&layout)) {
+            // A carried game is saved in its own placement.
+            saved = uncarried(saved, own);
+        } else if carried == project {
+            // The user placed the game: theirs to keep.
+            state.carried = None;
+        }
+    }
     commands.push(Command::SaveLayout {
         dir: project_dir(Path::new(&state.repo_root), project),
-        layout: Box::new(layout.clone()),
+        layout: Box::new(saved),
     });
     state.layouts.insert(project.to_string(), layout);
 }
@@ -2310,6 +2410,7 @@ fn create_task(
     if spoken.is_none() {
         state.current_task.insert(project.clone(), Some(id));
     }
+    asked(state, id);
     let scope = scope.or_else(|| state.scope_choice.get(&project).copied());
     let mut task = Task {
         id,
@@ -2375,6 +2476,7 @@ fn send_message(
         task.updated_at = now.or(task.updated_at);
         commands.push(save(&root, task));
         broadcast_items(commands, task, vec![task.transcript.len() - 1]);
+        asked(state, id);
         return true;
     }
     if task.run.is_some() {
@@ -2385,6 +2487,7 @@ fn send_message(
     if let Err(reason) = can_run(state, &project, &message) {
         return reject(commands, reason);
     }
+    asked(state, id);
     say(state, id, message, None);
     start_run(state, id, commands);
     true
@@ -2416,6 +2519,13 @@ fn busy(state: &AppState, project: &str) -> Result<(), String> {
             None => Ok(()),
         },
     }
+}
+
+/// The user asked task `id` something now: when, for a switch's consent
+/// (D42); and a request after the agent's switch leaves it nothing to undo.
+fn asked(state: &mut AppState, id: u64) {
+    state.asked.insert(id, state.clock);
+    state.agent_switch = None;
 }
 
 /// Adds the user's `message` to task `id`'s transcript.
@@ -2456,6 +2566,7 @@ fn steer(
             stop_task(state, id, commands);
         }
     }
+    asked(state, id);
     say(state, id, message, spoken);
     start_run(state, id, commands);
 }
@@ -2495,6 +2606,8 @@ fn start_now(state: &mut AppState, id: u64, commands: &mut Vec<Command>) -> bool
     }
     let task = state.tasks.iter_mut().find(|t| t.id == id).expect("found");
     task.queued = None;
+    // The user acted since the switch: its Undo goes (consent keeps its age).
+    state.agent_switch = None;
     start_run(state, id, commands);
     true
 }
@@ -2728,6 +2841,7 @@ fn land(state: &mut AppState, mut u: Utterance, place: Place, commands: &mut Vec
                 spoken: Some(u.spoken.clone()),
             });
             task.updated_at = now.or(task.updated_at);
+            asked(state, id);
             time_utterance(state, id, &u);
             // Saved and broadcast with its line.
             record(state, &u, id, Landed::Added, commands);
@@ -3618,7 +3732,7 @@ fn on_session(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::projects::Entries;
     use crate::protocol::GameInput;
@@ -3635,7 +3749,7 @@ mod tests {
         }
     }
 
-    fn state() -> AppState {
+    pub(crate) fn state() -> AppState {
         AppState {
             repo_root: "/repo".to_string(),
             projects: vec![project("examples/a"), project("examples/b")],
@@ -3731,7 +3845,7 @@ mod tests {
 
     const URL: &str = "http://127.0.0.1:52011";
 
-    fn client(msg: ClientMsg) -> Event {
+    pub(crate) fn client(msg: ClientMsg) -> Event {
         Event::Client(msg)
     }
 
@@ -4708,7 +4822,7 @@ mod tests {
         })
     }
 
-    fn agent(task: u64, run: u64, event: AgentEvent) -> Event {
+    pub(crate) fn agent(task: u64, run: u64, event: AgentEvent) -> Event {
         Event::Run {
             task,
             run,
@@ -4716,7 +4830,7 @@ mod tests {
         }
     }
 
-    fn ended(task: u64, run: u64) -> Event {
+    pub(crate) fn ended(task: u64, run: u64) -> Event {
         Event::Run {
             task,
             run,
@@ -4731,7 +4845,7 @@ mod tests {
         }
     }
 
-    fn finished() -> AgentEvent {
+    pub(crate) fn finished() -> AgentEvent {
         AgentEvent::Finished {
             ok: true,
             summary: Some("done".to_string()),
@@ -4744,7 +4858,7 @@ mod tests {
         })]
     }
 
-    fn task(state: &AppState, id: u64) -> &Task {
+    pub(crate) fn task(state: &AppState, id: u64) -> &Task {
         state.tasks.iter().find(|t| t.id == id).unwrap()
     }
 
@@ -7819,7 +7933,7 @@ mod tests {
 
     /// `s` with headsets `ids` paired, their tunnels open at
     /// `http://127.0.0.1:600<i>` and those in `linked` connected.
-    fn with_headsets(s: AppState, ids: &[&str], linked: &[&str]) -> AppState {
+    pub(crate) fn with_headsets(s: AppState, ids: &[&str], linked: &[&str]) -> AppState {
         use crate::devices::{LinkEvent, LinkKind, Paired};
         let paired = ids
             .iter()
@@ -8089,7 +8203,7 @@ mod tests {
 
     /// Examples/a's game on headset "aa" (conn 0), polled at program
     /// revision 4.
-    fn voice_ready() -> AppState {
+    pub(crate) fn voice_ready() -> AppState {
         let live = with_session(1, Some(42), running(Some(3)));
         let s = with_headsets(live, &["aa"], &["aa"]);
         let (s, _) = update(s, on_headset("aa"));
@@ -8194,7 +8308,7 @@ mod tests {
         assert_eq!(logged(&commands), 0, "once");
     }
 
-    fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
+    pub(crate) fn stages(commands: &[Command]) -> Vec<(u64, Stage)> {
         commands
             .iter()
             .filter_map(|c| match c {
@@ -8217,7 +8331,7 @@ mod tests {
     }
 
     /// `s` after utterance 1, "go", started task 4.
-    fn voice_task_running() -> AppState {
+    pub(crate) fn voice_task_running() -> AppState {
         voice_task_running_at(0)
     }
 

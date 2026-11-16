@@ -686,6 +686,59 @@ fn view_tools_forward_typed_requests_with_the_secret_and_relay_the_answer() {
     }
 }
 
+/// `list_projects` and `open_project` go to the app as the view tools do.
+/// The attached game is forgotten before the switch is sent, and its URL
+/// revoked unless the app refused: a headset's URL serves the next
+/// project's game, which this run must not reach, even if the reply is lost.
+#[test]
+fn a_project_switch_forgets_the_attached_game() {
+    let (url, requests) = stub_app(vec![
+        Some(json!({"ok": true, "message": "Projects in /repo (this task's is a):\na (open)\nb"})),
+        Some(json!({"ok": false, "message": "the user has turned off \"Let the agent arrange views\""})),
+        Some(json!({"garbled": true})),
+        Some(json!({"ok": true, "message": "The app now shows b."})),
+    ]);
+    let runtime = fake_debug_runtime();
+    let server = HttpServer::start_env(
+        &["--no-unsafe-code", "--app-url", &url, "--attach", &runtime],
+        &[("FUNCTOR_MCP_APP_TOKEN", APP_TOKEN)],
+    );
+    let mut mcp = HttpMcp::connect(&server.url);
+    let names = tool_names(&mcp.request("tools/list", json!({})));
+    assert!(names.contains(&"list_projects".into()) && names.contains(&"open_project".into()), "{names:?}");
+    let text = |reply: &Value| reply["content"][0]["text"].as_str().unwrap().to_string();
+
+    assert!(mcp.call("list_projects", json!({})).contains("a (open)"));
+    assert_eq!(requests.recv_timeout(Duration::from_secs(10)).unwrap().body, json!({"op": "list_projects"}));
+
+    // Refused: nothing switched, so the game may be reconnected.
+    let refused = mcp.request("tools/call", json!({"name": "open_project", "arguments": {"path": "b"}}));
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(text(&refused).contains("reconnect with connect_game"), "{refused}");
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    let gone = mcp.request("tools/call", json!({"name": "get_state", "arguments": {"session": "s1"}}));
+    assert!(text(&gone).contains("detached by open_project"), "{gone}");
+    assert!(mcp.call("connect_game", json!({"url": runtime})).contains("\"s2\""));
+    assert!(mcp.call("get_state", json!({"session": "s2"})).contains("\"frame\":42"));
+
+    // No answer to trust: the game stays out of reach.
+    let lost = mcp.request("tools/call", json!({"name": "open_project", "arguments": {"path": "b"}}));
+    assert_eq!(lost["isError"], true, "{lost}");
+    requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(!mcp.call("list_sessions", json!({})).contains("\"s2\""));
+    let again = mcp.request("tools/call", json!({"name": "connect_game", "arguments": {"url": runtime}}));
+    assert!(text(&again).contains("may be another project's now"), "{again}");
+
+    assert_eq!(mcp.call("open_project", json!({"path": "b"})), "The app now shows b.");
+    let got = requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.body, json!({"op": "open_project", "path": "b"}));
+
+    // Unknown fields are refused before forwarding.
+    let bad = mcp.request("tools/call", json!({"name": "open_project", "arguments": {"path": "b", "force": true}}));
+    assert!(bad["isError"] == true || !bad["error"].is_null(), "{bad}");
+    assert!(requests.recv_timeout(Duration::from_millis(300)).is_err());
+}
+
 #[test]
 fn malformed_view_requests_are_rejected_before_forwarding() {
     let (url, requests) = stub_app(vec![]);

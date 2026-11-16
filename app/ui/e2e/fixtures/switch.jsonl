@@ -1,0 +1,5 @@
+{"ms": 0, "event": {"type": "started", "session": "fake-switch-1", "model": "claude-model"}}
+{"ms": 300, "mcp": {"tool": "list_projects", "arguments": {}}}
+{"ms": 600, "mcp": {"tool": "open_project", "arguments": {"path": "examples/hello-cubes"}}}
+{"ms": 800, "event": {"type": "text", "text": "The app shows examples/hello-cubes now. Ask there for the next change."}}
+{"ms": 900, "event": {"type": "finished", "ok": true, "summary": "The app shows examples/hello-cubes now."}}

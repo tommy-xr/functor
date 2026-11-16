@@ -108,8 +108,8 @@ curl -X PUT -H "Authorization: Bearer $FUNCTOR_MCP_TOKEN" \
 
 ### View tools (`--app-url`)
 
-`--app-url <url>` (with `--http`) adds `show_view` and `present`, which
-forward to the embedding app: each call `POST`s a JSON request to `<url>`
+`--app-url <url>` (with `--http`) adds `show_view`, `present`,
+`list_projects` and `open_project`, which forward to the embedding app: each call `POST`s a JSON request to `<url>`
 with `Authorization: Bearer $FUNCTOR_MCP_APP_TOKEN` (a second secret, from
 the environment only, never passed on to launched games or the Node runner)
 and returns the app's answer. The URL must be `http://` on loopback. Without
@@ -119,6 +119,8 @@ the flag the tools are not listed, over either transport.
 | --- | --- |
 | `{"op": "show", "view": <view>}` | `show_view` |
 | `{"op": "present", "steps": [{"title", "note"?, "view": <view>}, …], "summary"?, "notes": […], "evidence": [{"ran", "result", "ok"}, …]}` | `present`, 1–8 steps; the rest is the run's report on its change |
+| `{"op": "list_projects"}` | `list_projects`: the projects the app can switch to |
+| `{"op": "open_project", "path"}` | `open_project`, a path `list_projects` gave. Before forwarding it, the server forgets its attached sessions, cancels connects in flight and refuses their URLs to later connects: once the app switches, its game is another project's, maybe at the same URL. Only an explicit refusal lifts that, so the agent can reconnect |
 
 A `<view>` is `{"kind": "file", "path", "lines"?: [first, last]}` (1-based,
 inclusive), `{"kind": "changes", "path"?}` or `{"kind": "game"}`; paths are
@@ -205,6 +207,7 @@ New and already-queued mutations on a closing id reject without runtime I/O.
 | `connect_game` | Attach to a runtime this server does **not** own (a human's `functor develop` on port 8077, someone else's `--debug-port`, or an adb-forwarded Quest). |
 | `app_context` | HTTP only. What the embedding app's user is looking at (view, file, session), as the app last supplied it — or `null` when none is set. See [`app_context`](#app_context). |
 | `show_view` / `present` | `--app-url` only. Show the user one view in the embedding app, or a walkthrough of steps. See [View tools](#view-tools---app-url). |
+| `list_projects` / `open_project` | `--app-url` only. List the projects the embedding app can switch to; switch it to one when the user asks. See [View tools](#view-tools---app-url). |
 | `task_change` / `report` | `--review` only. Read the change to present; write the decision page's report. See [Review tools](#review-tools---review). |
 | `list_sessions` | Every session: id, url, owned/attached, and whether it currently answers. |
 | `stop_game` | Kill a launched game and close its exact-URL aliases/pending connects; merely forget one attached id. |

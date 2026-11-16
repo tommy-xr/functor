@@ -10,6 +10,7 @@ import {
   phraseText,
   stepAvailable,
   stepPhrase,
+  switchLine,
   walkTo,
   tokens,
   toolKind,
@@ -218,4 +219,15 @@ test("prev and next skip unavailable steps and stop at the ends", () => {
   assert.equal(walkTo(ok, 2, -1), 0);
   assert.equal(walkTo(ok, 3, 1), null);
   assert.equal(walkTo([false, true], null, 1), 1);
+});
+
+test("the agent's project switch reads as where it went and the task that asked", () => {
+  const sw = { task: 3, title: "Switch samples", from: "examples/a", to: "examples/b" };
+  assert.deepEqual(switchLine(sw), { to: "examples/b", task: "Switch samples" });
+  assert.deepEqual(switchLine({ ...sw, title: "" }), { to: "examples/b", task: "Untitled task" });
+  assert.equal(switchLine(null), null);
+  assert.equal(phrase("mcp__mis__open_project", { path: "examples/b" }), "Switched to examples/b");
+  const refused = phraseText(stepPhrase("mcp__mis__open_project", { path: "examples/b" }, true));
+  assert.equal(refused, "Could not switch to examples/b");
+  assert.equal(phrase("mcp__mis__list_projects"), "Listed the projects");
 });

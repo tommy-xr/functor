@@ -2781,6 +2781,28 @@ blockquote {
   font-size: 12px;
 }
 
+/* The agent's project switch (D42): what it did, Undo, dismiss. */
+.switch-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.switch-line > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.switch-line .icon-button {
+  width: 22px;
+  height: 22px;
+}
+
 /* Where the latest request is (D43): one quiet line above the composer. */
 .request {
   display: flex;
