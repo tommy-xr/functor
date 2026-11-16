@@ -9,7 +9,9 @@
 //!   composes); an opaque wall in front hides a pane;
 //! - reflection adds `color × sky × fresnel`, at 0° and 80° to the pane;
 //! - hardware-instanced panes match plain ones;
-//! - a fully fogged pane leaves the background untouched.
+//! - a fully fogged pane leaves the background untouched;
+//! - `Scene.text` keeps the colour and facing around it through the blend
+//!   and `Scene.opacity` passes, and none leaks into the next frame.
 //!
 //! Self-skipping like `fog_sky` (needs a GL display; GLFW on the main
 //! thread, so `harness = false`):
@@ -25,6 +27,7 @@ use functor_runtime_common::asset::AssetCache;
 use functor_runtime_common::color_space::srgb_to_linear3;
 use functor_runtime_common::math::Angle;
 use functor_runtime_common::shadow::ShadowMap;
+use functor_runtime_common::text_layout::TextLayout;
 use functor_runtime_common::{
     render_frame, Camera, DebugRenderMode, Fog, Frame, FrameTime, InstanceData,
     MaterialDescription, OutputColorspace, Scene3D, SceneContext, SceneObject, Viewport,
@@ -50,6 +53,8 @@ fn main() {
     println!("test a_fully_fogged_pane_leaves_the_background ... ok");
     nesting_matches_the_stamp(&h);
     println!("test nesting_matches_the_stamp ... ok");
+    text_keeps_the_state_around_it(&h);
+    println!("test text_keeps_the_state_around_it ... ok");
 }
 
 const BACKGROUND: [f32; 3] = [0.8, 0.6, 0.4];
@@ -208,7 +213,59 @@ fn nesting_matches_the_stamp(h: &Harness) {
     assert_eq!(h.pixel(&frame(vec![background(), inside])), h.pixel(&frame(vec![background()])), "opacity inside");
 }
 
+fn text_keeps_the_state_around_it(h: &Harness) {
+    let solid = |rgb: [f32; 3]| {
+        let quad = plain(MaterialDescription::emissive(rgb[0], rgb[1], rgb[2], 1.0), -2.0, 0.0);
+        h.pixel(&frame(vec![quad]))
+    };
+    let (white, red, green) = (solid([1.0; 3]), solid([1.0, 0.0, 0.0]), solid([0.0, 1.0, 0.0]));
+    // An earlier frame's `Scene.opacity` colour does not tint root text.
+    let offscreen =
+        Scene3D::cube().transform(Matrix4::from_translation(cgmath::vec3(50.0, 0.0, -2.0)));
+    let tinted_opacity = with(
+        color([1.0, 0.0, 0.0]),
+        Scene3D {
+            obj: SceneObject::Opacity(0.5, vec![offscreen]),
+            xform: Matrix4::from_scale(1.0),
+        },
+    );
+    let scene = frame(vec![background(), tinted_opacity, bar(0.0)]);
+    assert_near(h.pixel(&scene), white, "root text, first frame");
+    assert_near(h.pixel(&scene), white, "root text, next frame");
+    // Inside a blend material, the colour around that material.
+    let blended = with(color([1.0, 0.0, 0.0]), with(additive([0.0; 3]), bar(0.0)));
+    assert_near(h.pixel(&frame(vec![background(), blended])), red, "text in a blend material");
+    // `Scene.facing` reaches text the blend and opacity passes draw: edge-on
+    // (turned 90°) text faces the camera again.
+    let facing_blend = with(color([0.0, 1.0, 0.0]), with(additive([0.0; 3]), bar(90.0))).facing();
+    assert_near(h.pixel(&frame(vec![background(), facing_blend])), green, "facing, blend pass");
+    let facing_opacity = Scene3D {
+        obj: SceneObject::Opacity(0.5, vec![with(color([0.0, 1.0, 0.0]), bar(90.0))]),
+        xform: Matrix4::from_scale(1.0),
+    }
+    .facing();
+    assert_near(h.pixel(&frame(vec![background(), facing_opacity])), green, "facing, opacity pass");
+    // Without it, edge-on text leaves the background.
+    let edge_on = with(color([0.0, 1.0, 0.0]), bar(90.0));
+    let bare = h.pixel(&frame(vec![background()]));
+    assert_eq!(h.pixel(&frame(vec![background(), edge_on])), bare, "edge-on");
+}
+
 // ---- Scenes ---------------------------------------------------------------
+
+fn color(rgb: [f32; 3]) -> MaterialDescription {
+    MaterialDescription::Color(vec4(rgb[0], rgb[1], rgb[2], 1.0))
+}
+
+/// A `|` label whose stroke covers the centre pixel, at depth 2, turned
+/// `degrees` about y.
+fn bar(degrees: f32) -> Scene3D {
+    Scene3D::text("|", TextLayout::LABEL).transform(
+        Matrix4::from_translation(cgmath::vec3(0.0, 0.0, -2.0))
+            * Matrix4::from_angle_y(Deg(degrees))
+            * Matrix4::from_scale(20.0),
+    )
+}
 
 fn multiply(rgb: [f32; 3]) -> MaterialDescription {
     MaterialDescription::Multiply {

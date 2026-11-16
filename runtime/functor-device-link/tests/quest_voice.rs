@@ -6,9 +6,10 @@
 //! pass records a test tone (`debug.functor.voice_tone`), so the stub can
 //! check the audio; a second records the real microphone (room sound),
 //! checked for shape only; a third revokes `RECORD_AUDIO` and walks the
-//! permission prompt. The stub sends statuses the toast must show. The
-//! headset's pairing file, properties and permission are put back
-//! afterwards; stills land in `FUNCTOR_QUEST_CAPTURES` when set.
+//! permission prompt. The stub sends statuses the toast must show, then
+//! spoken replies the headset must play, and stop. The headset's pairing
+//! file, properties and permission are put back afterwards; stills land in
+//! `FUNCTOR_QUEST_CAPTURES` when set.
 #![cfg(feature = "client")]
 
 mod stub;
@@ -20,11 +21,14 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use functor_device_link::adb::{self, PACKAGE};
 use functor_device_link::client::Stored;
-use functor_device_link::voice::{Capsule, Clip, Stage, Status, CLIP_CHANNEL, SAMPLE_RATE};
+use functor_device_link::voice::{
+    Capsule, Clip, Speech, Stage, Status, CLIP_CHANNEL, PLAYS, SAMPLE_RATE, SPEECH_CHANNEL,
+};
 use functor_device_link::{hex, os_random, Secret, SERVICE};
 use serde_json::{json, Value};
 
@@ -135,6 +139,21 @@ impl Quest {
         serde_json::from_slice(&body).map_err(|e| e.to_string())
     }
 
+    /// The app's AAudio output streams open now, as `dumpsys audio` lists
+    /// its players (a closed stream's is gone).
+    fn outputs(&self) -> usize {
+        let uid = self.shell(&format!("pm list packages -U {PACKAGE}"));
+        let uid = uid.rsplit("uid:").next().unwrap();
+        let audio = self.shell("dumpsys audio");
+        let players = audio.split("\n  players:").nth(1).expect("a players list");
+        let players = players.split("ducked players").next().unwrap();
+        let ours = format!("u/pid:{uid}/");
+        players
+            .lines()
+            .filter(|l| l.contains("type:AAudio") && l.contains(&ours))
+            .count()
+    }
+
     fn voice(&self) -> Value {
         self.state().unwrap()["link"]["voice"].clone()
     }
@@ -210,6 +229,35 @@ fn http(addr: &str, method: &str, path: &str, body: &[u8]) -> Result<(u16, Vec<u
         .and_then(|s| s.parse().ok())
         .ok_or("no status")?;
     Ok((status, bytes[split + 4..].to_vec()))
+}
+
+type Message = (u32, u16, Vec<u8>);
+
+/// Leaves only clips on `received`; the rest (`PLAYS`, load statuses) come
+/// on the receiver returned.
+fn split(received: &mut Receiver<Message>) -> Receiver<Message> {
+    let (clips_tx, clips) = mpsc::channel();
+    let (others_tx, others) = mpsc::channel();
+    let all = std::mem::replace(received, clips);
+    std::thread::spawn(move || {
+        for message in all {
+            let to = if message.1 == CLIP_CHANNEL {
+                &clips_tx
+            } else {
+                &others_tx
+            };
+            let _ = to.send(message);
+        }
+    });
+    others
+}
+
+/// `seconds` of a quiet 440 Hz tone at the link's rate.
+fn tone(seconds: f64) -> Vec<i16> {
+    let step = 440.0 * std::f64::consts::TAU / SAMPLE_RATE as f64;
+    (0..(seconds * SAMPLE_RATE as f64) as usize)
+        .map(|i| ((i as f64 * step).sin() * 2000.0) as i16)
+        .collect()
 }
 
 /// The stub's clip messages until `End` or `Cancel`.
@@ -317,7 +365,8 @@ fn quest_talks_to_a_desktop() {
     }
     let quest = Quest::attach();
     let (id, secret) = (os_random::<16>(), Secret(os_random::<32>()));
-    let stub = stub::start("0.0.0.0:0", id, secret.clone());
+    let mut stub = stub::start("0.0.0.0:0", id, secret.clone());
+    let others = split(&mut stub.received);
     let port = stub.addr.rsplit(':').next().unwrap().parse().unwrap();
     let _mdns = advertise(&id, port);
     // Paired by its file, keeping the headset's own id.
@@ -395,6 +444,8 @@ fn quest_talks_to_a_desktop() {
         matches!(clips.last(), Some(Clip::Cancel { .. })),
         "{clips:?}"
     );
+    // Gone before the next hold, which must not see it.
+    until("it fades again", || quest.voice().is_null().then_some(()));
 
     // The real microphone: the AAudio stream, its reads and the resampler.
     // Room sound, so only its shape is checked.
@@ -429,6 +480,58 @@ fn quest_talks_to_a_desktop() {
     let held = talk(&quest, "voice-microphone-2.png", false);
     let (_, pcm) = received_utterance(&stub);
     assert_length(&pcm, held);
+
+    // Each link (one per launch) was told replies play here, once.
+    let mut plays = HashMap::new();
+    for (link, channel, data) in others.try_iter() {
+        let count = plays.entry(link).or_insert(0);
+        *count += (channel == SPEECH_CHANNEL && data == PLAYS) as u32;
+    }
+    assert!(
+        plays.len() >= 2 && plays.values().all(|n| *n == 1),
+        "{plays:?}"
+    );
+
+    // A 2 s reply: an output stream while it plays, closed once it idles.
+    let since = quest.shell("date +%s");
+    let quiet = quest.outputs();
+    let say = |reply, seconds| {
+        for frame in Speech::frames(reply, &tone(seconds)) {
+            stub.send.send(Some(frame)).unwrap();
+        }
+    };
+    let sent = Instant::now();
+    say(1, 2.0);
+    until("it plays", || (quest.outputs() > quiet).then_some(()));
+    eprintln!("playing after {:?}", sent.elapsed());
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(quest.outputs() > quiet, "still playing at 1 s");
+    until("it closes", || (quest.outputs() == quiet).then_some(()));
+    let closed = sent.elapsed();
+    eprintln!("closed after {closed:?}");
+    // 2 s, the last half second from the stream's buffer, then the
+    // speaker's 2 s idle.
+    assert!(
+        closed > Duration::from_secs(3) && closed < Duration::from_secs(6),
+        "{closed:?}"
+    );
+
+    // Stopped mid-way, a long reply goes at once.
+    say(2, 20.0);
+    until("it plays again", || (quest.outputs() > quiet).then_some(()));
+    std::thread::sleep(Duration::from_millis(1000));
+    let stop = Instant::now();
+    stub.send
+        .send(Some(Speech::Stop { reply: 2 }.frame().unwrap()))
+        .unwrap();
+    until("it stops", || (quest.outputs() == quiet).then_some(()));
+    let stopped = stop.elapsed();
+    eprintln!("stopped after {stopped:?}");
+    assert!(stopped < Duration::from_millis(1500), "{stopped:?}");
+
+    // The speaker said nothing went wrong.
+    let log = quest.shell(&format!("logcat -d -T {since}.000 -s functor:W"));
+    assert!(!log.contains("voice:"), "{log}");
 
     // Paired with a desktop that is not there: holding says so.
     let mut away = stored.clone();

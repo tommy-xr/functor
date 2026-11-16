@@ -1001,7 +1001,7 @@ reading.
   a documented engine for apps and its voice is not ours to choose.
 - **Where it plays:** in the headset when one is linked — PCM on a link
   channel of its own, through the headset's audio output — otherwise on the
-  desktop. The first build plays on the desktop only.
+  desktop.
 - **Barge-in:** holding push-to-talk stops the reply at once. A new reply
   replaces one still playing.
 

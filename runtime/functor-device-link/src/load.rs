@@ -5,9 +5,10 @@
 //! the card hides.
 //!
 //! The first line is the step's kind — `waiting`, `connected`, `receiving`,
-//! `starting`, `assets`, `running`, `reloading`, `failed` — and the rest are
-//! the card's lines as the headset words them (heading first). A desktop
-//! shows a kind it does not know as nothing.
+//! `up_to_date` (a push the headset already holds), `starting`, `assets`,
+//! `running`, `reloading`, `failed` — and the rest are the card's lines as
+//! the headset words them (heading first). A desktop shows a kind it does
+//! not know as nothing.
 
 /// Headset → desktop: the kind and the card's lines, UTF-8, one per line.
 pub const CHANNEL: u16 = 5;

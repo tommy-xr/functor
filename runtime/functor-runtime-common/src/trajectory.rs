@@ -138,7 +138,8 @@ fn collect_transforms(
         | SceneObject::Material(_, children)
         | SceneObject::Opacity(_, children)
         | SceneObject::Cells(_, children)
-        | SceneObject::CastShadows(_, children) => {
+        | SceneObject::CastShadows(_, children)
+        | SceneObject::Facing(children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -180,7 +181,8 @@ fn collect_anchor(
         SceneObject::Group(children)
         | SceneObject::Opacity(_, children)
         | SceneObject::Cells(_, children)
-        | SceneObject::CastShadows(_, children) => {
+        | SceneObject::CastShadows(_, children)
+        | SceneObject::Facing(children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -331,7 +333,8 @@ fn collect_sample_leaves<'a>(
         SceneObject::Group(children)
         | SceneObject::Opacity(_, children)
         | SceneObject::Cells(_, children)
-        | SceneObject::CastShadows(_, children) => {
+        | SceneObject::CastShadows(_, children)
+        | SceneObject::Facing(children) => {
             let count = children.len();
             for (i, child) in children.iter().enumerate() {
                 path.push((i, count));
@@ -1123,7 +1126,8 @@ fn scale_presence(scene: &mut Scene3D, presence: f32) {
         }
         SceneObject::Group(items)
         | SceneObject::Cells(_, items)
-        | SceneObject::CastShadows(_, items) => {
+        | SceneObject::CastShadows(_, items)
+        | SceneObject::Facing(items) => {
             for item in items {
                 scale_presence(item, presence);
             }
@@ -2161,7 +2165,8 @@ mod tests {
             SceneObject::Group(items)
             | SceneObject::Opacity(_, items)
             | SceneObject::Cells(_, items)
-            | SceneObject::CastShadows(_, items) => {
+            | SceneObject::CastShadows(_, items)
+            | SceneObject::Facing(items) => {
                 for item in items {
                     material_alphas(item, out);
                 }

@@ -2806,7 +2806,12 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(long.line("voice "), "voice 1 failed longer than 60 seconds");
     drop(long);
 
-    let quest = stub(&app.link, store.path(), "Test Quest", &["--say", CLIP]);
+    let quest = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--say", CLIP, "--barge-in"],
+    );
     quest.line("linked ");
     let devices = app
         .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
@@ -2833,16 +2838,22 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     // The agent's edit is pushed, as `functor run vr` does after a save.
     assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
     assert_eq!(quest.line("voice "), "voice 1 reloaded");
-    // Its reply is said aloud (D47), and not before the first clip started.
-    let spoke = until("the reply is said", || {
-        let spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
-        spoke.contains("play ").then_some(spoke)
-    })
-    .await;
-    assert!(spoke.starts_with("play "), "{spoke:?}");
-    // Its one record (D43) went through every step to the reload.
+    // Its reply is said aloud (D47) in the headset that asked: the whole
+    // reply arrives there, and nothing plays on the desktop.
+    let speech = quest.line("speech ");
+    let (reply, samples) = speech
+        .strip_prefix("speech ")
+        .and_then(|s| s.split_once(' '))
+        .unwrap_or_else(|| panic!("{speech}"));
+    assert!(samples.parse::<usize>().is_ok_and(|n| n > 0), "{speech}");
+    let here = std::fs::read_to_string(&voice_log).unwrap_or_default();
+    assert!(!here.contains("play"), "{here:?}");
+    // The stub talks over it (barge-in): the headset is told to stop it.
+    assert_eq!(quest.line("speech "), format!("speech {reply} stopped"));
+    // Its one record (D43) went through every step to the reload (the
+    // barge-in, cancelled, has its own).
     let reloaded = |s: &Value| {
-        s["requests"].as_array().and_then(|r| r.last()).cloned().filter(|r| r["outcome"]["reload"] == "reloaded")
+        s["requests"].as_array().and_then(|r| r.iter().find(|r| r["outcome"]["reload"] == "reloaded")).cloned()
     };
     let state = app.state_where("the request reloaded", 10, |s| reloaded(s).is_some()).await;
     let request = reloaded(&state).unwrap();
@@ -2898,6 +2909,78 @@ async fn a_spoken_clip_starts_a_task_and_reports_the_reload() {
     assert_eq!(cancel.line("voice "), "voice 1 idle");
     let state = app.state_where("the state", 10, |_| true).await;
     assert_eq!(state["tasks"].as_array().unwrap().len(), 1);
+}
+
+/// A headset app from before spoken replies never says it plays them: its
+/// reply is said on the desktop, and nothing is sent to it.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn an_older_headsets_reply_is_said_on_the_desktop() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("game");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(
+        project.join("functor.json"),
+        r#"{"language": "functor-lang"}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("game.fun"), "").unwrap();
+    let functor = voice_functor(dir.path());
+    let fixture = dir.path().join("agent.jsonl");
+    std::fs::write(
+        &fixture,
+        "{\"ms\":0,\"event\":{\"type\":\"started\",\"session\":\"s1\",\"model\":\"m\"}}\n\
+         {\"ms\":200,\"event\":{\"type\":\"finished\",\"ok\":true,\"summary\":\"done\"}}\n",
+    )
+    .unwrap();
+    let args = [
+        "--device-link",
+        "127.0.0.1:0",
+        "--no-mdns",
+        "--adb",
+        NO_ADB,
+        "--functor",
+        functor.to_str().unwrap(),
+    ];
+    let voice = tempfile::tempdir().unwrap();
+    let voice_log = voice.path().join("said");
+    let envs = [
+        ("FUNCTOR_APP_FAKE_AGENT", fixture.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_VOICE", voice_log.to_str().unwrap()),
+        ("FUNCTOR_APP_FAKE_TRANSCRIPT", "make the ball red"),
+    ];
+    let mut app = app_env(&project, &args, &envs).await;
+    let store = tempfile::tempdir().unwrap();
+    drop(pair(&mut app, store.path(), "Test Quest").await);
+    app.devices_where("it is away", |d| state_of(d, "Test Quest") == "away")
+        .await;
+    let quest = stub(
+        &app.link,
+        store.path(),
+        "Test Quest",
+        &["--say", CLIP, "--no-speech"],
+    );
+    quest.line("linked ");
+    let devices = app
+        .devices_where("it connects", |d| state_of(d, "Test Quest") == "connected")
+        .await;
+    let card = card(&devices, "Test Quest").unwrap();
+    let (id, tunnel) = (
+        card["id"].clone(),
+        card["tunnel"].as_str().unwrap().to_string(),
+    );
+    app.send(json!({"type": "layout", "op": {"type": "place_on_headset", "device": id}}))
+        .await;
+    assert_eq!(quest.line("voice 1 w"), "voice 1 working");
+    assert_eq!(post(&tunnel, "/reload-project", "").unwrap().0, 200);
+    assert_eq!(quest.line("voice "), "voice 1 reloaded");
+    let spoke = until("the reply is said", || {
+        let spoke = std::fs::read_to_string(&voice_log).unwrap_or_default();
+        spoke.contains("play ").then_some(spoke)
+    })
+    .await;
+    assert!(spoke.starts_with("play "), "{spoke:?}");
+    drop(quest);
 }
 
 /// A slow transcription (11 s, as the real model took on the headset):

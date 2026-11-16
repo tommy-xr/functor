@@ -11,7 +11,11 @@
 //! once a game runs on it, printing each voice status it gets back: `voice 1 heard`,
 //! `voice 1 transcribed <text>`, `voice 1 working`, `voice 1 reloaded`,
 //! `voice 1 failed <why>`, `voice 1 idle`; with `--say-again`, the clip
-//! again as utterance 2 once the first is working. With `--mirror <json>` it answers
+//! again as utterance 2 once the first is working. It says it plays spoken
+//! replies (unless `--no-speech`, as an app from before them): one it is sent
+//! prints `speech <reply> <samples>` once whole (the samples it would play),
+//! `speech <reply> stopped` when told to stop; with `--barge-in` it then
+//! starts a clip over it (utterance 2, cancelled). With `--mirror <json>` it answers
 //! `GET /mirror` with that recorded snapshot, for a desktop mirror to draw.
 
 use std::io::Write;
@@ -78,6 +82,15 @@ pub struct StubArgs {
     /// clip again as utterance 2.
     #[arg(long, requires = "say")]
     say_again: bool,
+
+    /// With --say: once a spoken reply arrives whole, start talking over it
+    /// (utterance 2, cancelled halfway).
+    #[arg(long, requires = "say")]
+    barge_in: bool,
+
+    /// Never say it plays spoken replies, as a headset app from before them.
+    #[arg(long)]
+    no_speech: bool,
 
     /// Answer `GET /mirror` with this recorded snapshot (its JSON), so a
     /// desktop mirror draws it; without, `GET /mirror` is a 404.
@@ -257,6 +270,7 @@ async fn session(
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut silent = false;
     let mut served = 0u64;
+    let mut player = functor_device_link::play::Player::default();
     loop {
         let out = tokio::select! {
             msg = ws.next() => match msg {
@@ -320,6 +334,11 @@ async fn session(
                         }
                         _ => {}
                     }
+                    // As the headset app does once a link.
+                    let plays = (!args.no_speech).then_some(Frame::Channel {
+                        channel: voice::SPEECH_CHANNEL,
+                        data: voice::PLAYS.to_vec(),
+                    });
                     let frames = match args.misbehave {
                         Some(Misbehave::VoiceGarbage) => vec![Frame::Channel {
                             channel: voice::CLIP_CHANNEL,
@@ -331,7 +350,7 @@ async fn session(
                         }
                         _ => Vec::new(),
                     };
-                    for frame in frames {
+                    for frame in plays.into_iter().chain(frames) {
                         for msg in machine.send(&frame).map_err(|e| e.to_string())? {
                             ws.send(Message::Binary(msg.into()))
                                 .await
@@ -391,6 +410,32 @@ async fn session(
                         }
                     }
                     Err(e) => say(&format!("voice unreadable {e}")),
+                },
+                device::Event::Channel {
+                    channel: voice::SPEECH_CHANNEL,
+                    data,
+                } => match voice::Speech::decode(&data) {
+                    Ok(speech) => {
+                        let reply = speech.reply();
+                        let end = matches!(speech, voice::Speech::End { .. });
+                        let stop = matches!(speech, voice::Speech::Stop { .. });
+                        player.receive(speech, voice::SAMPLE_RATE);
+                        if end {
+                            say(&format!("speech {reply} {}", player.pending().len()));
+                        } else if stop {
+                            say(&format!("speech {reply} stopped"));
+                        }
+                        if let (true, true, Some(pcm)) = (args.barge_in, end, clip) {
+                            for frame in utterance(pcm, runtime, true, 2) {
+                                for msg in machine.send(&frame).map_err(|e| e.to_string())? {
+                                    ws.send(Message::Binary(msg.into()))
+                                        .await
+                                        .map_err(|e| e.to_string())?;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => say(&format!("speech unreadable {e}")),
                 },
                 device::Event::Channel { .. } => {}
                 device::Event::Rejected(reject) => say(&format!("rejected {reject:?}")),

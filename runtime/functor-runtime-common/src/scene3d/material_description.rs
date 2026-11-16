@@ -142,12 +142,18 @@ impl MaterialDescription {
     /// texture's per-texel alpha is deliberately not consulted, since that
     /// would mean blending every textured surface.
     pub fn color_alpha(&self) -> Option<f32> {
+        self.constant_color().map(|color| color.w)
+    }
+
+    /// The material's constant colour (sRGB, as authored) — also what a text
+    /// leaf inside it takes. Blend materials compose by their own pass and
+    /// have none.
+    pub fn constant_color(&self) -> Option<Vector4<f32>> {
         match self {
             MaterialDescription::Color(color)
             | MaterialDescription::Emissive { color, .. }
             | MaterialDescription::Lit { color, .. }
-            | MaterialDescription::SpriteTexture { color, .. } => Some(color.w),
-            // Blend materials compose by their own blend pass, never by alpha.
+            | MaterialDescription::SpriteTexture { color, .. } => Some(*color),
             MaterialDescription::Texture(_)
             | MaterialDescription::Multiply { .. }
             | MaterialDescription::Additive { .. } => None,

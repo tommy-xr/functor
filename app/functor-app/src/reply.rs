@@ -1,6 +1,7 @@
 //! Spoken replies, the shell's half (D47): the core's text turned into
-//! sound here on this machine and played on its speakers. One reply at a
-//! time: a new one replaces one still playing, and while the user talks
+//! sound here on this machine and played on its speakers, or in the headset
+//! that asked (the link's output). One reply at a time, wherever it plays: a
+//! new one replaces one still playing, and while the user talks
 //! ([`Replies::talking`]) none plays. Off with `FUNCTOR_APP_SPEAK=off`.
 
 use std::path::PathBuf;
@@ -79,16 +80,26 @@ impl Replies {
         self.now.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Says reply `mine`, unless the user is talking or it was replaced
-    /// meanwhile: how long it plays for. Blocks while it is synthesised: call it off the async
-    /// threads.
+    /// Says reply `mine` on this machine, unless the user is talking or it
+    /// was replaced meanwhile: how long it plays for. Blocks while it is
+    /// synthesised: call it off the async threads.
     pub fn say(&self, mine: u64, text: &str) -> Result<std::time::Duration, String> {
+        self.say_on(mine, text, &*self.output)
+    }
+
+    /// [`Replies::say`], on `output`.
+    pub fn say_on(
+        &self,
+        mine: u64,
+        text: &str,
+        output: &dyn Output,
+    ) -> Result<std::time::Duration, String> {
         let pcm = self.synth.synth(text)?;
         let seconds = pcm.len() as f32 / functor_stt::SAMPLE_RATE as f32;
         let mut now = self.lock();
         // Talking, or replaced, while it was synthesised.
         if now.reply == mine && !now.talking {
-            now.playing = Some(self.output.play(pcm)?);
+            now.playing = Some(output.play(pcm)?);
         }
         Ok(std::time::Duration::from_secs_f32(seconds))
     }
@@ -332,8 +343,12 @@ mod tests {
         replies.talking(false);
         replies.say(asked, "later").unwrap();
         assert!(seen.try_recv().is_err(), "said after the user's new request");
-        // Once the clip is in, replies play again.
-        replies.say(replies.next(), "four").unwrap();
+        // Once the clip is in, replies play again, here or on another output
+        // (a headset), each replacing the last.
+        let (tx, there) = mpsc::channel();
+        replies.say_on(replies.next(), "there", &Out(tx)).unwrap();
+        replies.say(replies.next(), "here").unwrap();
+        assert_eq!(there.try_iter().collect::<Vec<_>>(), [Seen::Play(5), Seen::Stop]);
         assert_eq!(seen.try_recv(), Ok(Seen::Play(4)));
     }
 

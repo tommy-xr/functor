@@ -112,6 +112,9 @@
 /// Also: instance paints — `paints` on the `Instanced` node
 /// (`Scene.instancedPaint`: `{tint, glow}` per copy) and `glow` on a `Lit`
 /// material, both omitted when absent, so other frames keep their shape.
+/// Also: scene text — the `Shape::Text` variant (`Scene.text`,
+/// `Scene.textBlock`) and the `SceneObject::Facing` variant
+/// (`Scene.facing`), emitted only by them.
 ///
 /// v23: fused rooms — `Frame.fused_room` (`Frame.withFusedRoom`), defaulted
 /// and omitted when absent, so every other frame keeps its v22 shape.
@@ -1092,6 +1095,21 @@ mod tests {
         assert_eq!(
             json,
             r#"{"CastShadows":[false,[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]]}"#
+        );
+        let back: SceneObject = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, scene);
+    }
+
+    /// `Scene.facing` is its children.
+    #[test]
+    fn facing_wire_is_pinned() {
+        use crate::{Scene3D, SceneObject};
+
+        let scene = SceneObject::Facing(vec![Scene3D::cube()]);
+        let json = serde_json::to_string(&scene).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"Facing":[{"obj":{"Geometry":"Cube"},"xform":[[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]}]}"#
         );
         let back: SceneObject = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, scene);

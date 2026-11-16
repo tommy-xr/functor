@@ -1124,6 +1124,8 @@ fn forward_pass(
     // recipe (which owns blending for the whole scene) draws without it.
     // Blend materials the opaque walk reaches, for the blend passes.
     let blends = crate::scene3d::BlendQueue::default();
+    // Text a previous pass queued but did not draw, and its colour/facing.
+    scene_context.discard_texts();
     let render_scene = |with_grid: bool| {
         if let Some(room) = stand_in_room {
             room.render_queueing_blends(
@@ -1196,6 +1198,8 @@ fn forward_pass(
             gl.blend_color(0.0, 0.0, 0.0, TRANSPARENT_DEBUG_ALPHA);
         }
         render_scene(false);
+        // The recipe shows surfaces; text would only cover them.
+        scene_context.discard_texts();
         unsafe {
             end_constant_alpha_blend(gl);
             gl.depth_func(glow::LESS);
@@ -1231,6 +1235,12 @@ fn forward_pass(
                 &view_matrix,
                 pass_blends,
             );
+        }
+        // `Scene.text`: one blended batch over everything, depth-tested.
+        if matches!(debug_render_mode, DebugRenderMode::Normals | DebugRenderMode::Tangents) {
+            scene_context.discard_texts();
+        } else {
+            scene_context.draw_texts(&render_context, &projection_matrix, &view_matrix);
         }
     }
 }
@@ -1339,6 +1349,8 @@ fn transparent_pass<'a>(
         let material = draw
             .material
             .map(|description| description.get(&context, scene_context));
+        // Text under the deferred node takes the colour and facing around it.
+        let outer = scene_context.replace_text_state(draw.text);
         Scene3D::render(
             draw.node,
             &context,
@@ -1348,6 +1360,7 @@ fn transparent_pass<'a>(
             view_matrix,
             material.as_ref().unwrap_or(&root_material),
         );
+        scene_context.replace_text_state(outer);
     }
 
     unsafe {

@@ -2619,6 +2619,30 @@ fn register_scene(reg: &mut crate::host_registry::Registry) {
         FunctorLangScene(Scene3D::billboard())
     });
     reg.fn0("Scene.plane", "Scene.plane()", || FunctorLangScene(Scene3D::plane()));
+    // Text in the scene, set in the Inter MSDF atlas (`text_layout`).
+    reg.fn1("Scene.text", "Scene.text(string)", |text: String| {
+        FunctorLangScene(Scene3D::text(text, crate::scene3d::text_layout::TextLayout::LABEL))
+    });
+    reg.fn3(
+        "Scene.textBlock",
+        "Scene.textBlock(width, lines, string)",
+        |width: f64, lines: f64, text: String| {
+            if !(width.is_finite() && width > 0.0) {
+                return Err(format!("Scene.textBlock: the width must be above 0, got {width}"));
+            }
+            if !(lines >= 1.0 && lines.fract() == 0.0 && lines <= u32::MAX as f64) {
+                return Err(format!("Scene.textBlock: lines must be a whole number of 1 or more, got {lines}"));
+            }
+            let layout = crate::scene3d::text_layout::TextLayout {
+                width: Some(width as f32),
+                lines: lines as u32,
+            };
+            Ok(FunctorLangScene(Scene3D::text(text, layout)))
+        },
+    );
+    reg.fn1("Scene.facing", "Scene.facing(scene)", |scene: FunctorLangScene| {
+        FunctorLangScene(scene.0.facing())
+    });
     // A glTF model by file path (relative to the game dir), the Functor Lang
     // face of F#'s `Model.file |> Graphics.Scene3D.model`. Loading is the
     // shells' asset pipeline; a missing file logs an error and renders as
@@ -10780,6 +10804,65 @@ Vec3.make(x, y, z)"
         assert!(json.contains("\"Blend\""), "json: {json}");
         let back: Scene3D = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+
+    // --- Scene.text ---
+
+    /// `Scene.text` is a text leaf, `Scene.facing` wraps it (through the
+    /// wrappers around it, keeping a memoized subtree shared), and
+    /// `Scene.textBlock` refuses a bad width or line count.
+    #[test]
+    fn scene_text_builds_text_leaves() {
+        use crate::scene3d::text_layout::TextLayout;
+        let value = eval(
+            "let main = () => Scene.group([Scene.text(\"hi\") |> Scene.scale(2.0)]) \
+             |> Scene.color(Color.rgb(1.0, 0.0, 0.0)) |> Scene.facing",
+        );
+        let scene = scene_of(&value).expect("a Scene");
+        let mut found = None;
+        fn find(scene: &Scene3D, facing: bool, found: &mut Option<(String, bool)>) {
+            match scene.obj.resolved() {
+                SceneObject::Geometry(crate::scene3d::Shape::Text { text, .. }) => {
+                    *found = Some((text.clone(), facing))
+                }
+                SceneObject::Group(items) | SceneObject::Material(_, items) => {
+                    items.iter().for_each(|item| find(item, facing, found))
+                }
+                SceneObject::Facing(items) => items.iter().for_each(|item| find(item, true, found)),
+                _ => {}
+            }
+        }
+        find(&scene, false, &mut found);
+        assert_eq!(found, Some(("hi".to_string(), true)));
+
+        // A memoized subtree stays shared under `Scene.facing`.
+        let memo = eval(
+            "let labels = (n) => Scene.group([Scene.text(\"a\")]) \
+             let main = () => Scene.facing(Scene.memo(\"labels\", 1, labels))",
+        );
+        let SceneObject::Facing(items) = &scene_of(&memo).unwrap().obj else {
+            panic!("a facing node");
+        };
+        assert!(matches!(items[0].obj, SceneObject::Shared(_)), "{:?}", items[0].obj);
+        // A transform's group turns in place: no extra node.
+        let scaled = eval("let main = () => Scene.text(\"a\") |> Scene.scale(2.0) |> Scene.facing");
+        let scaled = scene_of(&scaled).unwrap();
+        let SceneObject::Facing(items) = &scaled.obj else { panic!("{:?}", scaled.obj) };
+        assert!(matches!(items[0].obj, SceneObject::Geometry(_)));
+        assert_eq!(scaled.xform, Matrix4::from_scale(2.0));
+
+        let block = eval("let main = () => Scene.textBlock(4.0, 2.0, \"a b c\")");
+        let SceneObject::Geometry(crate::scene3d::Shape::Text { layout, .. }) =
+            &scene_of(&block).unwrap().obj
+        else {
+            panic!("a text leaf");
+        };
+        assert_eq!(*layout, TextLayout { width: Some(4.0), lines: 2 });
+        for bad in ["0.0, 2.0", "4.0, 0.5"] {
+            let source = format!("let main = () => Scene.textBlock({bad}, \"x\")");
+            let module = functor_lang::lower(functor_lang::parse(&source).unwrap()).unwrap();
+            assert!(functor_lang::run_with_host(&module, Tracing::Off, &mut FunctorHost).is_err());
+        }
     }
 
     // --- Scene.instanced / Instance.t ---
